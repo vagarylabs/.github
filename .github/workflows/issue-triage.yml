@@ -1,12 +1,57 @@
-# Assign every newly opened issue to the org maintainers (org variable ISSUE_TRIAGE_ASSIGNEES).
-name: issue-triage
+# Reusable issue triage: assign every newly opened issue to the org maintainers.
+#
+# Callers add .github/workflows/issue-triage.yml:
+#
+#   name: issue-triage
+#   on:
+#     issues:
+#       types: [opened]
+#   permissions:
+#     issues: write
+#   jobs:
+#     triage:
+#       uses: vagarylabs/.github/.github/workflows/issue-triage.yml@main
+#       with:
+#         assignees: ${{ vars.ISSUE_TRIAGE_ASSIGNEES }}
+#
+# GitHub cannot assign an issue to a team, so the assignees are the members of the `maintainers`
+# team, held in ONE place: the org Actions variable ISSUE_TRIAGE_ASSIGNEES (comma-separated logins).
+# Changing who triages is a variable edit, not a PR to every repository.
+name: Reusable issue triage
+
 on:
   issues:
     types: [opened]
+  workflow_call:
+    inputs:
+      assignees:
+        description: Comma-separated GitHub logins to assign.
+        required: false
+        default: ""
+        type: string
+
 permissions:
   issues: write
+
 jobs:
-  triage:
-    uses: vagarylabs/.github/.github/workflows/issue-triage.yml@main
-    with:
-      assignees: ${{ vars.ISSUE_TRIAGE_ASSIGNEES }}
+  assign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Assign to maintainers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNEES: ${{ inputs.assignees || vars.ISSUE_TRIAGE_ASSIGNEES }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ASSIGNEES// /}" ]; then
+            echo "::error::no assignees: set the org variable ISSUE_TRIAGE_ASSIGNEES"
+            exit 1
+          fi
+          json=$(printf '%s' "$ASSIGNEES" | tr -d ' ' | jq -R 'split(",") | map(select(length > 0)) | {assignees: .}')
+          echo "$json" | gh api -X POST "repos/$REPO/issues/$ISSUE/assignees" --input - --jq '[.assignees[].login] | join(",")' > assigned.txt
+          echo "assigned: $(cat assigned.txt)"
+          [ -s assigned.txt ] || { echo "::error::no assignee was accepted"; exit 1; }

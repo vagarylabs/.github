@@ -173,8 +173,12 @@ def discover_pnpm_packages(root: Path) -> dict[str, dict]:
 def declared_packages(cfg: dict) -> dict[str, dict]:
     """For repos without a JS workspace: `workspace.packages = {name: {"dir": "x", "deps": [..]}}`."""
     pkgs = {}
+    extra = cfg.get("extra_deps") or {}
     for name, spec in (cfg.get("packages") or {}).items():
-        pkgs[name] = {"dir": spec["dir"].rstrip("/"), "deps": set(spec.get("deps") or [])}
+        pkgs[name] = {"dir": spec["dir"].rstrip("/"), "deps": set(spec.get("deps") or []) | set(extra.get(name) or [])}
+    unknown_extra = set(extra) - set(pkgs)
+    if unknown_extra:
+        raise ValueError(f"extra_deps names undeclared package(s) {sorted(unknown_extra)}")
     for name, info in pkgs.items():
         unknown = info["deps"] - set(pkgs)
         if unknown:

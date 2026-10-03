@@ -40,6 +40,13 @@ inputs:
       actions/full-run-receipt). Never applies to schedule, release, dispatch or merge_group.
     required: false
     default: "false"
+  edge-check:
+    description: >-
+      'true' runs edges.py check against the job's existing full checkout of this repo ($GITHUB_WORKSPACE)
+      and FAILS the step when the tree reads a package the config does not declare. Requires a prior
+      actions/checkout of the candidate in the workspace root.
+    required: false
+    default: "false"
 outputs:
   mode:
     description: full | reduced
@@ -208,6 +215,12 @@ runs:
           --out-json "$RUNNER_TEMP/ci-plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
         python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$RUNNER_TEMP/ci-plan.json"
+    - name: Undeclared-read drift (edges.py check on the candidate tree)
+      if: ${{ inputs.edge-check == 'true' }}
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+      run: python3 "$GITHUB_ACTION_PATH/edges.py" check --config "$CONFIG" --repo "$GITHUB_WORKSPACE"
     - name: Remove the sparse checkouts
       if: ${{ always() }}
       shell: bash

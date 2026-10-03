@@ -1,0 +1,137 @@
+# Change-impact planner: decides which CI work a change can affect (deterministic operator
+# ci.change-impact-plan; method and contract in plan.py's docstring).
+#
+# It is a STEP, not a job, so it adds no runner registration. Use it in the job that already classifies
+# the change:
+#
+#   plan:
+#     outputs:
+#       mode: ${{ steps.plan.outputs.mode }}
+#       run: ${{ steps.plan.outputs.run }}
+#       matrices: ${{ steps.plan.outputs.matrices }}
+#       plan_id: ${{ steps.plan.outputs.plan_id }}
+#     steps:
+#       - id: plan
+#         uses: vagarylabs/.github/actions/change-impact-plan@<sha>
+#
+# and gate each job on the plan:
+#   if: ${{ !cancelled() && (needs.plan.outputs.mode == 'full' || fromJSON(needs.plan.outputs.run).e2e) }}
+# Always test `mode == 'full'` first: with no config the run map is empty, and full must still run everything.
+# A required check that the plan skips must still REPORT success, with "skipped by plan <plan_id>: <reason>"
+# in its summary; read the reason from `plan` (jobs.<id>.reason).
+#
+# The script comes from this action's own ref (github.action_path), so pinning the action pins the planner.
+# The repo config (.github/ci-plan.json) is read from the PR's BASE commit, so a change cannot reduce its own
+# plan. Python 3 standard library only; no install.
+name: change-impact-plan
+description: Plan the CI work a change can affect; unknown impact runs the full suite.
+inputs:
+  config:
+    description: Plan config path, relative to the repository root.
+    required: false
+    default: .github/ci-plan.json
+  token:
+    description: Token that can read the pull request's files.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  mode:
+    description: full | reduced
+    value: ${{ steps.plan.outputs.mode }}
+  plan_id:
+    description: Stable id of this plan (hash of its validity predicate and the changed paths).
+    value: ${{ steps.plan.outputs.plan_id }}
+  run:
+    description: JSON object, job id -> bool.
+    value: ${{ steps.plan.outputs.run }}
+  matrices:
+    description: JSON object, matrix name -> include list.
+    value: ${{ steps.plan.outputs.matrices }}
+  plan:
+    description: The full decision record (JSON).
+    value: ${{ steps.plan.outputs.plan }}
+runs:
+  using: composite
+  steps:
+    - name: Base commit manifests and plan config (sparse)
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        ref: ${{ github.event.pull_request.base.sha || github.sha }}
+        path: .ci-plan-base
+        fetch-depth: 1
+        persist-credentials: false
+        sparse-checkout-cone-mode: false
+        sparse-checkout: |
+          ${{ inputs.config }}
+          /pnpm-workspace.yaml
+          /pnpm-lock.yaml
+          /package-lock.json
+          /yarn.lock
+          /poetry.lock
+          /uv.lock
+          **/package.json
+          /.github/workflows/
+    - name: Head plan config (enumerates the full suite only when the base has none)
+      if: ${{ github.event.pull_request.head.sha != '' }}
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        path: .ci-plan-head
+        fetch-depth: 1
+        persist-credentials: false
+        sparse-checkout-cone-mode: false
+        sparse-checkout: ${{ inputs.config }}
+    - name: Changed paths (every page, renames listed under both names; a short list plans full)
+      if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        REPORTED: ${{ github.event.pull_request.changed_files }}
+      run: |
+        set -euo pipefail
+        python3 - > "$RUNNER_TEMP/ci-plan-paths.txt" <<'PY'
+        import json, os, sys, urllib.request
+        paths, entries, page = [], 0, 1
+        while True:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{os.environ['REPO']}/pulls/{os.environ['PR']}/files?per_page=100&page={page}",
+                headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
+            batch = json.load(urllib.request.urlopen(req, timeout=30))
+            for f in batch:
+                entries += 1
+                paths.append(f["filename"])
+                if f.get("previous_filename"):
+                    paths.append(f["previous_filename"])
+            if len(batch) < 100:
+                break
+            page += 1
+        if entries != int(os.environ["REPORTED"]):
+            # The files API stops at 3,000 entries. An incomplete list must not be planned as if complete.
+            print(f"change-impact-plan: read {entries} files, PR reports {os.environ['REPORTED']}: planning full", file=sys.stderr)
+            sys.exit(0)
+        print("\n".join(paths))
+        PY
+        echo "changed paths: $(wc -l < "$RUNNER_TEMP/ci-plan-paths.txt")"
+    - name: Plan
+      id: plan
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/plan.py" \
+          --config "$CONFIG" --root .ci-plan-base --fallback-config ".ci-plan-head/$CONFIG" \
+          --paths-file "$RUNNER_TEMP/ci-plan-paths.txt" \
+          --event "$EVENT" --base "$BASE" --head "$HEAD" \
+          --out-json "$RUNNER_TEMP/ci-plan.json" \
+          --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
+        python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$RUNNER_TEMP/ci-plan.json"
+    - name: Remove the sparse checkouts
+      if: ${{ always() }}
+      shell: bash
+      run: rm -rf .ci-plan-base .ci-plan-head

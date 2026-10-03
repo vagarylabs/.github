@@ -5,8 +5,11 @@
   edges.py derive --config .github/ci-plan.json [--repo .]   prints {"deps": {...}, "readers": {...}}
   edges.py check  --config .github/ci-plan.json [--repo .]   exit 1 if the tree has a read the config lacks
 
-A READ is a path literal `<root>/<name>` (roots from config `edge_scan.roots`, e.g. services, apps) on a
-non-comment line of a non-Markdown tracked file that lives in ANOTHER package. A literal in a comment is not
+A READ, on a non-comment line of a non-Markdown tracked file that lives in ANOTHER package, is any of:
+  - a path literal `<root>/<name>` (roots from config `edge_scan.roots`, e.g. services, apps);
+  - a component join `"<root>" / "<name>"` or `"<root>", "<name>"` (pathlib, os.path.join);
+  - a relative path `../x/...` that, resolved from the file's directory, lands in another package
+    (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment is not
 a read; one in a docstring or a string IS counted (over-approximation only costs extra test runs, never a
 skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
 the packages it reads; the config's job named by `edge_scan.reader_job` must list at least those.
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -32,13 +36,16 @@ def scan(repo: Path, cfg: dict) -> tuple[dict[str, set[str]], dict[str, set[str]
     roots = es.get("roots") or ["services", "apps"]
     pkgs = (cfg.get("workspace") or {}).get("packages") or {}
     by_dir = {spec["dir"].rstrip("/"): name for name, spec in pkgs.items()}
-    pattern = "(" + "|".join(re.escape(r) for r in roots) + ")/[A-Za-z0-9_-]+"
+    alt = "|".join(re.escape(r) for r in roots)
+    pattern = f"({alt})/[A-Za-z0-9_-]+|[\"']({alt})[\"']|\\.\\./"
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
     out = subprocess.run(["git", "-C", str(repo), "grep", "-n", "-I", "-E", pattern, "--", ".", *excludes],
                          capture_output=True, text=True)
     if out.returncode not in (0, 1):
         raise SystemExit(f"edges: git grep failed: {out.stderr.strip()}")
-    lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + "|".join(re.escape(r) for r in roots) + r")/[A-Za-z0-9_-]+)")
+    lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")/[A-Za-z0-9_-]+)")
+    join = re.compile(r"[\"'](" + alt + r")[\"']\s*[/,]\s*[\"']([A-Za-z0-9_-]+)[\"']")
+    rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
     reader_dirs = set(es.get("reader_dirs") or [])
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
@@ -49,12 +56,18 @@ def scan(repo: Path, cfg: dict) -> tuple[dict[str, set[str]], dict[str, set[str]
         t = text.strip()
         if t.startswith(COMMENT_PREFIXES):
             continue
+        targets = set()
         for m in lit.finditer(t):
-            target = by_dir.get(m.group(1))
-            if not target or target == owner:
-                continue
             if "github.com" in t[max(0, m.start() - 40):m.start()]:
                 continue
+            targets.add(by_dir.get(m.group(1)))
+        for m in join.finditer(t):
+            targets.add(by_dir.get(f"{m.group(1)}/{m.group(2)}"))
+        for m in rel.finditer(t):
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))
+            rparts = resolved.split("/")
+            targets.add(by_dir.get("/".join(rparts[:2])) or by_dir.get(rparts[0]))
+        for target in targets - {None, owner}:
             if owner:
                 deps[owner].add(target)
             elif parts[0] in reader_dirs:

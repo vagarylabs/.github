@@ -73,6 +73,27 @@ class EdgesTest(unittest.TestCase):
         self.write_cfg(cfg)
         self.assertEqual(self.run_check()[0], 0)
 
+    def test_component_joins_and_relative_paths_are_reads(self):
+        (self.repo / "services/c").mkdir(parents=True)
+        (self.repo / "services/c/test").mkdir()
+        shapes = {
+            "pathlib join": 'P = ROOT / "services" / "b" / "app.py"\n',
+            "os.path.join": 'P = os.path.join(ROOT, "services", "b")\n',
+            "relative URL": 'const p = new URL("../../b/app.py", import.meta.url)\n',
+            "go relative read": 'right, e := os.ReadFile("../../b/app.py")\n',
+        }
+        cfg = json.loads(json.dumps(CFG))
+        cfg["workspace"]["packages"]["c"] = {"dir": "services/c", "deps": []}
+        for name, line in shapes.items():
+            with self.subTest(name):
+                (self.repo / "services/c/test/x.src").write_text(line)
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                deps, _ = E.scan(self.repo, cfg)
+                self.assertEqual(deps["c"], {"b"}, name)
+        (self.repo / "services/c/test/x.src").write_text('local = "../fixtures/a.json"\n')
+        deps, _ = E.scan(self.repo, cfg)
+        self.assertEqual(deps["c"], set(), "a relative path inside its own package is not a cross-package read")
+
 
 if __name__ == "__main__":
     unittest.main()

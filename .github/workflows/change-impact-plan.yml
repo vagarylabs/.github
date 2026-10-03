@@ -1,0 +1,56 @@
+# Reusable wrapper around actions/change-impact-plan for a repo that wants the plan as its own job.
+# Prefer the action as a STEP inside a job you already have: on a one-job-at-a-time runner every extra
+# job is another registration and another wait. Caller:
+#
+#   jobs:
+#     plan:
+#       uses: vagarylabs/.github/.github/workflows/change-impact-plan.yml@<sha>
+#     tests:
+#       needs: plan
+#       if: ${{ needs.plan.outputs.mode == 'full' || fromJSON(needs.plan.outputs.run).tests }}
+name: Reusable change-impact plan
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label; defaults to the caller's CI_PLAN_RUNNER variable, else ubuntu-latest.
+        required: false
+        type: string
+        default: ""
+      config:
+        required: false
+        type: string
+        default: .github/ci-plan.json
+    outputs:
+      mode:
+        value: ${{ jobs.plan.outputs.mode }}
+      plan_id:
+        value: ${{ jobs.plan.outputs.plan_id }}
+      run:
+        value: ${{ jobs.plan.outputs.run }}
+      matrices:
+        value: ${{ jobs.plan.outputs.matrices }}
+      plan:
+        value: ${{ jobs.plan.outputs.plan }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: change-impact plan
+    runs-on: ${{ inputs.runner != '' && inputs.runner || vars.CI_PLAN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      plan_id: ${{ steps.plan.outputs.plan_id }}
+      run: ${{ steps.plan.outputs.run }}
+      matrices: ${{ steps.plan.outputs.matrices }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - id: plan
+        uses: vagarylabs/.github/actions/change-impact-plan@main
+        with:
+          config: ${{ inputs.config }}

@@ -27,6 +27,9 @@ Method (version PLANNER_VERSION)
      the workspace graph read from the manifests).
   5. Any `hub_packages` member affected => full.
   6. Otherwise each job and matrix entry runs iff its rule matches the affected set.
+  Reuse (v1.1): a PUSH whose tree has a receipt from a successful FULL run (actions/full-run-receipt) of the
+  identical tree, with equal lockfile and workflow hashes and the same planner version, plans `reused`:
+  every planned job is skipped with the run id as the reason. No other event ever reuses.
 """
 from __future__ import annotations
 
@@ -38,7 +41,7 @@ import re
 import sys
 from pathlib import Path
 
-PLANNER_VERSION = "1.0.0"
+PLANNER_VERSION = "1.1.0"
 OPERATOR_ID = "ci.change-impact-plan"
 
 # Paths that can change how CI itself, the dependency graph or the database behaves. Always full.
@@ -241,8 +244,41 @@ def validity_predicate(root: Path, config_path: Path, cfg: dict, base: str, head
     }
 
 
+def tested_identity(tested_root: Path | None, tree: str) -> dict | None:
+    """What a FULL run actually tested: the tree it checked out, plus the lockfile and workflow hashes of
+    that same tree. Tree equality already implies the rest; the hashes are carried so a receipt names its
+    own validity predicate explicitly."""
+    if not tree or tested_root is None or not tested_root.is_dir():
+        return None
+    lockfiles = {}
+    for lf in ("pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock", "uv.lock"):
+        h = sha256_file(tested_root / lf)
+        if h:
+            lockfiles[lf] = h
+    return {"tree": tree, "lockfiles_sha256": lockfiles,
+            "workflows_sha256": sha256_tree(tested_root, ".github/workflows"), "planner_version": PLANNER_VERSION}
+
+
+def reuse_verdict(receipt: dict | None, tested: dict | None, event: str) -> tuple[bool, str]:
+    """A push may reuse a successful FULL run that tested the identical tree. Any other event never does
+    (schedule, release, dispatch and merge_group always run in full)."""
+    if event != "push":
+        return False, f"event {event} never reuses a run"
+    if not receipt:
+        return False, "no full-run receipt for this tree"
+    if not tested:
+        return False, "the tested tree could not be identified"
+    if receipt.get("mode") != "full":
+        return False, "the receipt is not from a full plan"
+    for key in ("tree", "lockfiles_sha256", "workflows_sha256", "planner_version"):
+        if receipt.get("tested", {}).get(key) != tested.get(key):
+            return False, f"receipt {key} differs from this tree's"
+    return True, f"run {receipt.get('run_id')} passed the full suite on identical tree {tested['tree'][:12]}"
+
+
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
-         base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None) -> dict:
+         base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
+         tested: dict | None = None, receipt: dict | None = None) -> dict:
     paths = sorted({p.strip() for p in (paths or []) if p.strip()})
     record = {
         "operator": OPERATOR_ID,
@@ -258,6 +294,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         },
         "evidence": {"full_triggers": [], "unmapped": [], "inert": [], "changed_packages": []},
         "affected_packages": [],
+        "tested": tested,
     }
 
     def finish(mode: str, reason: str, affected: set[str] | None = None) -> dict:
@@ -268,7 +305,9 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         cfg_jobs = (cfg or {}).get("jobs") or {}
         cfg_mats = (cfg or {}).get("matrices") or {}
         for job, rule in sorted(cfg_jobs.items()):
-            if mode == "full":
+            if mode == "reused":
+                jobs[job] = {"run": False, "reason": f"reused: {reason}"}
+            elif mode == "full":
                 jobs[job] = {"run": True, "reason": f"full plan: {reason}"}
             else:
                 run, why = rule_matches(rule, affected or set())
@@ -276,6 +315,9 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         for name, entries in sorted(cfg_mats.items()):
             inc, skipped = [], []
             for entry in entries:
+                if mode == "reused":
+                    skipped.append({"entry": entry["include"], "reason": f"reused: {reason}"})
+                    continue
                 if mode == "full":
                     inc.append(entry["include"])
                     continue
@@ -290,6 +332,10 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         record["plan_id"] = hashlib.sha256(ident.encode()).hexdigest()[:12]
         return record
 
+    reuse, why = reuse_verdict(receipt, tested, event)
+    record["reuse"] = {"reused": reuse, "reason": why}
+    if reuse and cfg is not None and not forced_full_reason:
+        return finish("reused", why)
     if forced_full_reason:
         return finish("full", forced_full_reason)
     if cfg is None:
@@ -383,6 +429,9 @@ def main(argv=None) -> int:
     ap.add_argument("--event", required=True)
     ap.add_argument("--base", default="")
     ap.add_argument("--head", default="")
+    ap.add_argument("--tree", default="", help="tree SHA of the commit this run tests")
+    ap.add_argument("--tested-root", help="checkout of the tested commit (lockfiles + workflows)")
+    ap.add_argument("--receipt", help="a full-run receipt found for --tree (push events only)")
     ap.add_argument("--out-json")
     ap.add_argument("--github-output")
     ap.add_argument("--summary")
@@ -402,7 +451,9 @@ def main(argv=None) -> int:
         forced = "no plan config on the base commit (head config used only to list the full suite)"
     paths = Path(a.paths_file).read_text().splitlines() if a.paths_file and os.path.exists(a.paths_file) else []
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
-               head=a.head, expected_count=a.expected_count, forced_full_reason=forced)
+               head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
+               tested=tested_identity(Path(a.tested_root) if a.tested_root else None, a.tree),
+               receipt=json.loads(Path(a.receipt).read_text()) if a.receipt and os.path.exists(a.receipt) else None)
     text = json.dumps(rec, indent=2, sort_keys=True)
     print(text)
     if a.out_json:
@@ -413,6 +464,7 @@ def main(argv=None) -> int:
         with open(a.github_output, "a") as fh:
             fh.write(f"plan={json.dumps(rec, sort_keys=True, separators=(',', ':'))}\n")
             fh.write(f"mode={rec['mode']}\nplan_id={rec['plan_id']}\n")
+            fh.write(f"tested={json.dumps(rec.get('tested'), sort_keys=True, separators=(',', ':'))}\n")
             fh.write(f"run={json.dumps(run, separators=(',', ':'))}\n")
             fh.write(f"matrices={json.dumps(mats, separators=(',', ':'))}\n")
     if a.summary:

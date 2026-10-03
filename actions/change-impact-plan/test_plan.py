@@ -223,6 +223,45 @@ class PlannerTest(unittest.TestCase):
         (self.root / ".github" / "ci-plan.json").write_text(json.dumps(cfg))
         self.assertEqual(self.run_plan(["pnpm-lock.yaml"])["mode"], "full")
 
+    # Reuse of an identical tree's full run (push only).
+    def tested(self, tree="t" * 40):
+        return P.tested_identity(self.root, tree)
+
+    def receipt(self, **over):
+        r = {"mode": "full", "run_id": 123, "tested": self.tested()}
+        r.update(over)
+        return r
+
+    def test_push_reuses_a_full_run_of_the_identical_tree(self):
+        rec = P.plan(cfg=CONFIG, root=self.root, config_path=self.root / ".github/ci-plan.json", paths=[],
+                     event="push", base="b", head="h", expected_count=None, tested=self.tested(), receipt=self.receipt())
+        self.assertEqual(rec["mode"], "reused")
+        self.assertIn("run 123", rec["reason"])
+        self.assertFalse(any(j["run"] for j in rec["jobs"].values()))
+        self.assertEqual(rec["matrices"]["general_tests"]["include"], [])
+
+    def test_reuse_refused_when_the_predicate_breaks(self):
+        cases = {
+            "other tree": self.receipt(tested=dict(self.tested(), tree="u" * 40)),
+            "reduced run": self.receipt(mode="reduced"),
+            "lockfile": self.receipt(tested=dict(self.tested(), lockfiles_sha256={"pnpm-lock.yaml": "0"})),
+            "workflows": self.receipt(tested=dict(self.tested(), workflows_sha256="0")),
+            "planner": self.receipt(tested=dict(self.tested(), planner_version="0.9")),
+        }
+        for name, receipt in cases.items():
+            with self.subTest(name):
+                rec = P.plan(cfg=CONFIG, root=self.root, config_path=self.root / ".github/ci-plan.json", paths=[],
+                             event="push", base="b", head="h", expected_count=None, tested=self.tested(), receipt=receipt)
+                self.assertEqual(rec["mode"], "full")
+                self.assertFalse(rec["reuse"]["reused"])
+
+    def test_only_push_events_reuse(self):
+        for ev in ["schedule", "release", "workflow_dispatch", "merge_group", "pull_request"]:
+            with self.subTest(ev=ev):
+                rec = P.plan(cfg=CONFIG, root=self.root, config_path=self.root / ".github/ci-plan.json", paths=PR397,
+                             event=ev, base="b", head="h", expected_count=None, tested=self.tested(), receipt=self.receipt())
+                self.assertNotEqual(rec["mode"], "reused")
+
     def test_glob(self):
         r = P.glob_to_regex
         self.assertTrue(r("**/package.json").match("package.json"))

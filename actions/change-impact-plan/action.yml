@@ -31,9 +31,15 @@ inputs:
     required: false
     default: .github/ci-plan.json
   token:
-    description: Token that can read the pull request's files.
+    description: Token that can read the pull request's files (and, for reuse, actions artifacts).
     required: false
     default: ${{ github.token }}
+  reuse:
+    description: >-
+      'true' lets a PUSH reuse a successful FULL run of the identical tree (receipt written by
+      actions/full-run-receipt). Never applies to schedule, release, dispatch or merge_group.
+    required: false
+    default: "false"
 outputs:
   mode:
     description: full | reduced
@@ -50,6 +56,9 @@ outputs:
   plan:
     description: The full decision record (JSON).
     value: ${{ steps.plan.outputs.plan }}
+  tested:
+    description: JSON identity of the tested tree (tree, lockfile and workflow hashes, planner version).
+    value: ${{ steps.plan.outputs.tested }}
 runs:
   using: composite
   steps:
@@ -71,16 +80,82 @@ runs:
           /uv.lock
           **/package.json
           /.github/workflows/
-    - name: Head plan config (enumerates the full suite only when the base has none)
-      if: ${{ github.event.pull_request.head.sha != '' }}
+    - name: Tested commit (fallback config, lockfiles and workflows of the tree this run tests)
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
-        ref: ${{ github.event.pull_request.head.sha }}
-        path: .ci-plan-head
+        ref: ${{ github.sha }}
+        path: .ci-plan-tested
         fetch-depth: 1
         persist-credentials: false
         sparse-checkout-cone-mode: false
-        sparse-checkout: ${{ inputs.config }}
+        sparse-checkout: |
+          ${{ inputs.config }}
+          /pnpm-lock.yaml
+          /package-lock.json
+          /yarn.lock
+          /poetry.lock
+          /uv.lock
+          /.github/workflows/
+    - name: Tree of the tested commit, and a full-run receipt for it (push + reuse only)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ github.sha }}
+        EVENT: ${{ github.event_name }}
+        REUSE: ${{ inputs.reuse }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import io, json, os, urllib.request, zipfile
+        class NoAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+            # The artifact zip redirects to blob storage; the GitHub token must not follow it there.
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                new = super().redirect_request(req, fp, code, msg, headers, newurl)
+                if new is not None:
+                    new.remove_header("Authorization")
+                return new
+        opener = urllib.request.build_opener(NoAuthOnRedirect)
+        def get(url, raw=False):
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                                                       "Accept": "application/vnd.github+json"})
+            with opener.open(req, timeout=30) as r:
+                return r.read() if raw else json.load(r)
+        api = f"https://api.github.com/repos/{os.environ['REPO']}"
+        tmp = os.environ["RUNNER_TEMP"]
+        tree = get(f"{api}/commits/{os.environ['SHA']}")["commit"]["tree"]["sha"]
+        open(f"{tmp}/ci-plan-tree.txt", "w").write(tree)
+        print(f"tested tree: {tree}")
+        if os.environ["EVENT"] != "push" or os.environ["REUSE"] != "true":
+            raise SystemExit(0)
+        path = os.environ["WORKFLOW_REF"].split("/", 2)[2].split("@", 1)[0]
+        arts = get(f"{api}/actions/artifacts?name=ci-full-run-{tree}&per_page=20").get("artifacts", [])
+        for art in sorted(arts, key=lambda a: a["created_at"], reverse=True):
+            if art.get("expired"):
+                continue
+            run = get(f"{api}/actions/runs/{art['workflow_run']['id']}")
+            why = None
+            if run.get("repository", {}).get("full_name") != os.environ["REPO"]:
+                why = "another repository"
+            elif run.get("path") != path:
+                why = f"workflow {run.get('path')} is not {path}"
+            elif run.get("event") != "pull_request":
+                why = f"event {run.get('event')}"
+            elif run.get("conclusion") != "success":
+                why = f"run conclusion {run.get('conclusion')}"
+            if why:
+                print(f"receipt {art['id']} (run {run.get('id')}) not usable: {why}")
+                continue
+            with zipfile.ZipFile(io.BytesIO(get(art["archive_download_url"], raw=True))) as z:
+                receipt = json.loads(z.read("receipt.json"))
+            receipt["run_id"] = run["id"]
+            json.dump(receipt, open(f"{tmp}/ci-plan-receipt.json", "w"))
+            print(f"receipt found: run {run['id']} (artifact {art['id']})")
+            break
+        else:
+            print("no usable full-run receipt for this tree")
+        PY
     - name: Changed paths (every page, renames listed under both names; a short list plans full)
       if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
       shell: bash
@@ -125,7 +200,9 @@ runs:
       run: |
         set -euo pipefail
         python3 "$GITHUB_ACTION_PATH/plan.py" \
-          --config "$CONFIG" --root .ci-plan-base --fallback-config ".ci-plan-head/$CONFIG" \
+          --config "$CONFIG" --root .ci-plan-base --fallback-config ".ci-plan-tested/$CONFIG" \
+          --tree "$(cat "$RUNNER_TEMP/ci-plan-tree.txt")" --tested-root .ci-plan-tested \
+          --receipt "$RUNNER_TEMP/ci-plan-receipt.json" \
           --paths-file "$RUNNER_TEMP/ci-plan-paths.txt" \
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
           --out-json "$RUNNER_TEMP/ci-plan.json" \
@@ -134,4 +211,4 @@ runs:
     - name: Remove the sparse checkouts
       if: ${{ always() }}
       shell: bash
-      run: rm -rf .ci-plan-base .ci-plan-head
+      run: rm -rf .ci-plan-base .ci-plan-tested

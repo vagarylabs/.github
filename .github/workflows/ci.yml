@@ -8,7 +8,8 @@ permissions:
   contents: read
 jobs:
   actionlint:
-    runs-on: ubuntu-latest
+    # GitHub-hosted minutes are budget-blocked (operator, 2026-10-03); CI_RUNNER routes to the capped runner.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -17,3 +18,11 @@ jobs:
           set -euo pipefail
           bash <(curl -sSfL --retry 3 https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
           ./actionlint -color
+
+  planner-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: change-impact planner unit tests
+        run: python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v

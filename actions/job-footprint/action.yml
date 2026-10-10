@@ -1,0 +1,38 @@
+# Job footprint: records the job's peak memory and CPU time so every CI job can be fitted to a runner
+# (capped compute-1: 3 CPU / 7 GB; Oracle ARM: 4 OCPU / 24 GB) from measurements, not guesses.
+#
+# Add as the LAST step of a job:
+#   - if: ${{ always() }}
+#     uses: vagarylabs/.github/actions/job-footprint@<sha>
+#
+# On an ephemeral one-job container (vl-c1-capped) the cgroup is the job's, so memory.peak is the job's
+# peak. On a shared VM the cgroup is the runner service's and the numbers are an upper bound; the step
+# says which. It never fails the job.
+name: job-footprint
+description: Report the job's peak memory and CPU seconds (cgroup v2) in the step summary.
+outputs:
+  peak_mib:
+    value: ${{ steps.fp.outputs.peak_mib }}
+  cpu_seconds:
+    value: ${{ steps.fp.outputs.cpu_seconds }}
+runs:
+  using: composite
+  steps:
+    - id: fp
+      shell: bash
+      run: |
+        cg="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)"
+        [ -r "$cg/memory.peak" ] || cg=/sys/fs/cgroup
+        peak=$(cat "$cg/memory.peak" 2>/dev/null || echo "")
+        usec=$(awk '$1=="usage_usec"{print $2}' "$cg/cpu.stat" 2>/dev/null || echo "")
+        max=$(cat "$cg/memory.max" 2>/dev/null || echo "")
+        cpus=$(awk '{print $1/$2}' "$cg/cpu.max" 2>/dev/null || echo "")
+        if [ -z "$peak" ]; then
+          echo "job-footprint: no cgroup v2 memory.peak readable here (runner $RUNNER_NAME, $(uname -sm)); nothing measured"
+          exit 0
+        fi
+        peak_mib=$((peak / 1048576)); cpu_s=$(( ${usec:-0} / 1000000 ))
+        scope="cgroup $cg (the job alone only on an ephemeral one-job container)"
+        { echo "peak_mib=$peak_mib"; echo "cpu_seconds=$cpu_s"; } >> "$GITHUB_OUTPUT"
+        line="job-footprint: ${GITHUB_JOB} peak ${peak_mib} MiB, cpu ${cpu_s} s, limit mem ${max} cpus ${cpus:-?}, runner ${RUNNER_NAME} $(uname -m), ${scope}"
+        echo "$line"; echo "$line" >> "$GITHUB_STEP_SUMMARY"

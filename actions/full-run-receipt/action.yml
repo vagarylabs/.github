@@ -1,0 +1,50 @@
+# Full-run receipt: after a FULL plan's suite has passed, record what was tested so a later push of the
+# IDENTICAL tree can reuse this run instead of running everything again (actions/change-impact-plan, reuse).
+#
+# Add as the last step of the job that aggregates the suite (vagaris: `verify`), only on success:
+#   - if: ${{ success() }}
+#     uses: vagarylabs/.github/actions/full-run-receipt@<sha>
+#     with:
+#       plan: ${{ needs.change_class.outputs.plan }}
+#
+# It writes nothing unless the plan was FULL, the event a pull_request and the tested tree is known.
+# The artifact is ~1 KB, kept 3 days (a push normally follows its PR run within hours).
+name: full-run-receipt
+description: Record a passed FULL run's tested-tree identity for identical-tree reuse.
+inputs:
+  plan:
+    description: The change-impact plan record (JSON) of this run.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: write
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        EVENT: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/ci-full-run"
+        python3 - <<'PY'
+        import json, os
+        p = json.loads(os.environ.get("PLAN") or "{}")
+        tested = p.get("tested") or {}
+        out = os.environ["GITHUB_OUTPUT"]
+        if p.get("mode") != "full" or os.environ["EVENT"] != "pull_request" or not tested.get("tree"):
+            print(f"no receipt: mode {p.get('mode')}, event {os.environ['EVENT']}, tree {tested.get('tree')}")
+            open(out, "a").write("tree=\n")
+            raise SystemExit(0)
+        receipt = {"mode": "full", "tested": tested, "plan_id": p.get("plan_id"),
+                   "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])}
+        json.dump(receipt, open(os.path.join(os.environ["RUNNER_TEMP"], "ci-full-run", "receipt.json"), "w"), sort_keys=True)
+        open(out, "a").write(f"tree={tested['tree']}\n")
+        print(f"receipt written for tree {tested['tree']}")
+        PY
+    - if: ${{ steps.write.outputs.tree != '' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ci-full-run-${{ steps.write.outputs.tree }}
+        path: ${{ runner.temp }}/ci-full-run/receipt.json
+        retention-days: 3
+        if-no-files-found: error

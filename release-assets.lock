@@ -5,3 +5,19 @@
 restic 0.18.1 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
 # prometheus (promtool): sha256sums.txt of v3.11.2
 prometheus 3.11.2 https://github.com/prometheus/prometheus/releases/download/v3.11.2/prometheus-3.11.2.linux-amd64.tar.gz f643ea1ee90d109329302d27bddb1fb2e52655b1fa84e9e26f9a6f340da144a6
+# cosign: cosign_checksums.txt of v2.5.2 (its keyless .sig/.pem over the checksum file NOT verified here)
+# source: https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign_checksums.txt
+cosign 2.5.2 https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-amd64 bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734
+# cosign: cosign_checksums.txt of v3.0.6 (its .sigstore.json bundle over the checksum file NOT verified here)
+# source: https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_checksums.txt
+cosign 3.0.6 https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64 c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+# gitleaks: gitleaks_8.30.1_checksums.txt of v8.30.1
+# source: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+gitleaks 8.30.1 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+# syft: syft_1.46.0_checksums.txt of v1.46.0 (its .sig/.pem over the checksum file NOT verified here)
+# source: https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_checksums.txt
+syft 1.46.0 https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.0_linux_amd64.tar.gz d654f678b709eb53c393d38519d5ed7d2e57205529404018614cfefa0fb2b5ca
+# trufflehog: trufflehog_3.97.0_checksums.txt of v3.97.0 (its .sig/.pem over the checksum file NOT verified here)
+# source: https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_checksums.txt
+trufflehog 3.97.0 https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_linux_amd64.tar.gz 62224de2f9dd7cd418800feb953760a302ed2f82a7c547fe1146a4874fb179e4
+# Not pinned here: shellcheck v0.11.0 and lychee v0.23.0 publish no checksum file in their releases.

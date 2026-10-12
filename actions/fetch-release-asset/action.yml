@@ -1,0 +1,59 @@
+# Fetch release asset: deliver one pinned GitHub release asset, verified by sha256, from the runner's shared
+# tool cache when it holds a good copy, else by a resumable download that is then cached for the next job.
+# release-assets.githubusercontent.com has served 10-90 KB/s for hours at a time (2026-10-12); a per-job
+# download of a 150 MB tarball then takes longer than the job may run.
+#
+#   - uses: vagarylabs/.github/actions/fetch-release-asset@<commit sha>   # pin a SHA, never @main
+#     with:
+#       tool: restic
+#       version: 0.18.1
+#       url: https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2
+#       sha256: 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
+#       dest: ${{ runner.temp }}/restic.bz2
+#
+# Cache entry: ${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/<tool>/<version>/<url basename>. An entry whose
+# sha256 is not the pin is a MISS (refetched and overwritten), not an error; a DOWNLOAD whose sha256 is not
+# the pin fails the step and writes nothing. A cache that cannot be written (hosted runners) is skipped.
+# Script and tests: fetch.sh, test_fetch.sh; usage and the lock file format: README.md.
+name: fetch-release-asset
+description: Fetch a sha256-pinned release asset through the runner's shared tool cache.
+inputs:
+  tool:
+    description: Tool name, a cache path component ([A-Za-z0-9._+-]+).
+    required: true
+  version:
+    description: Tool version, a cache path component ([A-Za-z0-9._+-]+).
+    required: true
+  url:
+    description: Full https URL of the release asset.
+    required: true
+  sha256:
+    description: sha256 of the downloaded FILE (64 lowercase hex), pinned in the caller's repository.
+    required: true
+  dest:
+    description: Path to write the verified file to; its parent directory is created.
+    required: true
+  max-time:
+    description: curl --max-time for the download, in seconds.
+    required: false
+    default: "300"
+outputs:
+  path:
+    description: The verified file (equal to dest).
+    value: ${{ steps.fetch.outputs.path }}
+  source:
+    description: cache-hit | downloaded
+    value: ${{ steps.fetch.outputs.source }}
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        ASSET_TOOL: ${{ inputs.tool }}
+        ASSET_VERSION: ${{ inputs.version }}
+        ASSET_URL: ${{ inputs.url }}
+        ASSET_SHA256: ${{ inputs.sha256 }}
+        ASSET_DEST: ${{ inputs.dest }}
+        ASSET_MAX_TIME: ${{ inputs.max-time }}
+      run: bash "$GITHUB_ACTION_PATH/fetch.sh"

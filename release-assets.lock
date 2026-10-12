@@ -20,4 +20,9 @@ syft 1.46.0 https://github.com/anchore/syft/releases/download/v1.46.0/syft_1.46.
 # trufflehog: trufflehog_3.97.0_checksums.txt of v3.97.0 (its .sig/.pem over the checksum file NOT verified here)
 # source: https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_checksums.txt
 trufflehog 3.97.0 https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_linux_amd64.tar.gz 62224de2f9dd7cd418800feb953760a302ed2f82a7c547fe1146a4874fb179e4
-# Not pinned here: shellcheck v0.11.0 and lychee v0.23.0 publish no checksum file in their releases.
+# shellcheck: the release publishes no checksum file, so this pin is trust-on-first-use, recorded 2026-10-13
+# source: tofu: gh digest + 2 independent fetches (GitHub release-asset digest; Mac workstation; vl-bridge VM), all three agreed
+shellcheck 0.11.0 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+# lychee: the release publishes no checksum file, so this pin is trust-on-first-use, recorded 2026-10-13
+# source: tofu: gh digest + 2 independent fetches (GitHub release-asset digest; Mac workstation; vl-bridge VM), all three agreed
+lychee 0.23.0 https://github.com/lycheeverse/lychee/releases/download/lychee-v0.23.0/lychee-x86_64-unknown-linux-gnu.tar.gz 1fcb6ccf10d04c22b8c5873c5b9cb7be32ee7423e12169d6f1a79a6f1962ef81

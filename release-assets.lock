@@ -1,0 +1,7 @@
+# Release assets pinned for Vagary Labs CI: one per line, `<tool> <version> <url> <sha256>`.
+# The sha256 is that of the downloaded FILE at <url>, taken from the project's own checksum file for that
+# release. Feed a line to actions/fetch-release-asset (README.md there shows how).
+# restic: SHA256SUMS of v0.18.1
+restic 0.18.1 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
+# prometheus (promtool): sha256sums.txt of v3.11.2
+prometheus 3.11.2 https://github.com/prometheus/prometheus/releases/download/v3.11.2/prometheus-3.11.2.linux-amd64.tar.gz f643ea1ee90d109329302d27bddb1fb2e52655b1fa84e9e26f9a6f340da144a6

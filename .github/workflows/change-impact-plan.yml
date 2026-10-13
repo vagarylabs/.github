@@ -56,6 +56,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: plan
-        uses: vagarylabs/.github/actions/change-impact-plan@abf3bc73c079a089eba03d3b588fca2507b150b2
+        uses: vagarylabs/.github/actions/change-impact-plan@0d66f84d025a2792932c37f3bc3866ba407a7b8d
         with:
           config: ${{ inputs.config }}

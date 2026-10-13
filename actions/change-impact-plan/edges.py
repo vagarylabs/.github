@@ -32,7 +32,7 @@ from pathlib import Path
 # -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
 if sys.flags.isolated:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plan import declared_packages, discover_pnpm_packages
+from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
@@ -133,23 +133,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     return deps, readers
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["derive", "check"])
-    ap.add_argument("--config", required=True)
-    ap.add_argument("--repo", default=".")
-    ap.add_argument("--manifest-root", help="trusted base workspace metadata")
-    ap.add_argument("--revision", help="immutable candidate commit for source reads")
-    a = ap.parse_args(argv)
-    repo = Path(a.repo)
-    cfg = json.loads((repo / a.config).read_text())
-    manifest_root = Path(a.manifest_root) if a.manifest_root else repo
-    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision)
-    if a.mode == "derive":
-        print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
-                          "readers": {k: sorted(v) for k, v in sorted(readers.items())}}, indent=1))
-        return 0
-    pkgs = workspace_graph(manifest_root, cfg)
+def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path) -> dict:
     failures, stale = [], []
     if readers.get("<unmapped>"):
         failures.append("unmapped source readers require a declared obligation: " + ", ".join(sorted(readers["<unmapped>"])))
@@ -173,6 +157,38 @@ def main(argv=None) -> int:
             continue
         for target in sorted(found - set(listed)):
             failures.append(f"{directory}/ reads {target}, but job '{job}' does not list it")
+    result = {"schema": 1, "status": "unmatched" if failures else "matched", "revision": revision,
+              "coverage": "supported-static-readers-only", "policy_config_sha256": sha256_file(config_path),
+              "graph_sha256": graph_digest(pkgs), "scanner_source_sha256": sha256_file(Path(__file__)),
+              "deps": {name: sorted(values) for name, values in sorted(deps.items())},
+              "readers": {name: sorted(values) for name, values in sorted(readers.items())},
+              "failures": failures, "stale": stale}
+    result["assessment_sha256"] = canonical_digest(result)
+    return result
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=["derive", "check"])
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--repo", default=".")
+    ap.add_argument("--manifest-root", help="trusted base workspace metadata")
+    ap.add_argument("--revision", help="immutable candidate commit for source reads")
+    ap.add_argument("--out-json", help="write the same supported-reader check as a bound assessment")
+    a = ap.parse_args(argv)
+    repo = Path(a.repo)
+    cfg = json.loads((repo / a.config).read_text())
+    manifest_root = Path(a.manifest_root) if a.manifest_root else repo
+    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision)
+    if a.mode == "derive":
+        print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
+                          "readers": {k: sorted(v) for k, v in sorted(readers.items())}}, indent=1))
+        return 0
+    pkgs = workspace_graph(manifest_root, cfg)
+    assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config)
+    failures, stale = assessment["failures"], assessment["stale"]
+    if a.out_json:
+        Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")
     for s in stale:
         print(s)
     for f in failures:

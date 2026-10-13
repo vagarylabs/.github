@@ -28,7 +28,9 @@ Method (version PLANNER_VERSION)
      the workspace graph read from the manifests).
   5. Any `hub_packages` member affected => full.
   6. Otherwise each job and matrix entry runs iff its rule matches the affected set.
-  Canonical entrypoint v1.2 observes the frozen candidate with Git. Legacy --paths-file and
+  Canonical entrypoint v1.3 observes the frozen candidate with Git.
+  Its information-only cumulative impact record reuses this same graph computation;
+  supported reader assessment and modeled impact never grant qualification or activation. Legacy --paths-file and
   --receipt inputs never authorize reduced/reused execution. The historical receipt comparison
   helper is retained for compatibility tests; the action/CLI do not admit run-result reuse.
 """
@@ -45,7 +47,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PLANNER_VERSION = "1.2.0"
+PLANNER_VERSION = "1.3.0"
 OPERATOR_ID = "ci.change-impact-plan"
 
 
@@ -398,6 +400,136 @@ def owner_package(path: str, pkgs: dict[str, dict]) -> str | None:
 
 # ---------- planning ----------
 
+def canonical_digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def graph_digest(pkgs: dict[str, dict]) -> str:
+    return canonical_digest({"schema": 1, "packages": [
+        {"name": name, "dir": info["dir"], "deps": sorted(info["deps"])}
+        for name, info in sorted(pkgs.items())]})
+
+
+def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
+    """One path/owner/reverse-closure computation for legacy selection and informational impact."""
+    evidence = {"full_triggers": [], "unmapped": [], "inert": [], "changed_packages": []}
+    result = {"evidence": evidence, "affected": set(), "hubs": [], "error": None}
+    full_globs = BUILTIN_FULL_GLOBS + list(cfg.get("full_globs") or [])
+    evidence["full_triggers"] = [{"path": path, "rule": rule} for path in paths
+                                 if (rule := first_match(path, full_globs))]
+    if evidence["full_triggers"]:
+        return result
+    changed: set[str] = set()
+    for path in paths:
+        if first_match(path, list(cfg.get("inert_globs") or [])):
+            evidence["inert"].append(path)
+            continue
+        owners = set()
+        for glob, targets in (cfg.get("extra_edges") or {}).items():
+            if glob_to_regex(glob).match(path):
+                owners.update(targets)
+        owner = owner_package(path, pkgs)
+        if owner:
+            owners.add(owner)
+        unknown = owners - set(pkgs)
+        if unknown:
+            result["error"] = f"extra_edges for {path} name unknown package(s) {sorted(unknown)}"
+            return result
+        if not owners:
+            evidence["unmapped"].append(path)
+        changed |= owners
+    evidence["changed_packages"] = sorted(changed)
+    if not evidence["unmapped"]:
+        result["affected"] = reverse_closure(pkgs, changed)
+        result["hubs"] = sorted(result["affected"] & set(cfg.get("hub_packages") or []))
+    return result
+
+
+def impact_record(record: dict, cfg: dict | None, pkgs: dict, assessment: dict | None,
+                  readers, unknown_reason: str | None) -> dict:
+    """Input-bound modeled impact; it never grants qualification, job selection, or reuse authority."""
+    observation, validity = record["observation"], record["validity"]
+    evidence = (assessment or {}).get("evidence", {})
+    graph_sha = graph_digest(pkgs) if cfg is not None and assessment is not None else None
+    identity = {key: observation.get(key) for key in ("event", "repository", "candidate", "tree",
+        "target_ref", "target_sha", "diff_base", "policy_revision", "policy_blob", "policy_sha256",
+        "run_id", "run_attempt")}
+    identity.update(paths_sha256=record["inputs"]["paths_sha256"])
+    identity.update({key: validity[key] for key in
+        ("planner_source_sha256", "reader_source_sha256", "action_source_sha256")})
+    result = {"schema": 1, "status": "unknown", "selection_authority": False,
+        "reason": "cumulative_scope_unproven", "changed_packages": None, "affected_packages": None,
+        "affected_hubs": None, "global_inputs": evidence.get("full_triggers", []),
+        "unmapped_inputs": evidence.get("unmapped", []), "inert_inputs": evidence.get("inert", []),
+        "graph": {"sha256": graph_sha, "package_count": len(pkgs) if graph_sha else None},
+        "readers": {"status": "unavailable", "sha256": None, "coverage": "supported-static-readers-only"},
+        "identity": identity}
+    # The existing immutable_scope and final canonical-target read establish this context.
+    # A direct/legacy planner call without that evidence cannot claim a known cumulative impact.
+    if (unknown_reason or cfg is None or assessment is None or observation.get("status") != "known"
+            or observation.get("schema") != 2 or observation.get("event") != "merge_group"
+            or observation.get("scope_kind") != "canonical-target-cumulative"
+            or observation.get("target_sha") != observation.get("policy_revision")
+            or observation.get("target_sha") != observation.get("diff_base")):
+        return result
+    if any(not isinstance(observation.get(key), str) or not re.fullmatch(r"[0-9a-f]{40}", observation[key])
+           or observation[key] == "0" * 40 for key in ("candidate", "tree", "target_sha", "policy_revision", "diff_base")) \
+            or observation.get("target_source") != "canonical-git-ls-remote":
+        return result
+    policy_hash = observation.get("policy_sha256")
+    if not isinstance(policy_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", policy_hash) \
+            or policy_hash != validity.get("config_sha256") or not isinstance(observation.get("policy_blob"), str) \
+            or not re.fullmatch(r"[0-9a-f]{40}", observation["policy_blob"]):
+        result["reason"] = "trusted_policy_unproven"
+        return result
+    if not isinstance(readers, dict):
+        result["reason"] = "reader_assessment_unproven"
+        return result
+    expected = {"schema": 1, "revision": observation.get("candidate"), "policy_config_sha256": policy_hash,
+                "graph_sha256": graph_sha, "scanner_source_sha256": validity["reader_source_sha256"],
+                "coverage": "supported-static-readers-only"}
+    supplied_hash = readers.get("assessment_sha256")
+    payload = {key: value for key, value in readers.items() if key != "assessment_sha256"}
+    if type(readers.get("schema")) is not int or any(readers.get(key) != value for key, value in expected.items()) or supplied_hash != canonical_digest(payload) \
+            or readers.get("status") not in ("matched", "unmatched") \
+            or not isinstance(readers.get("failures"), list) or not isinstance(readers.get("stale"), list) \
+            or any(not isinstance(row, str) for row in readers["failures"] + readers["stale"]) \
+            or any(not isinstance(readers.get(key), dict) or any(not isinstance(name, str)
+                   or not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+                   or values != sorted(set(values)) for name, values in readers[key].items()) for key in ("deps", "readers")):
+        result["reason"] = "reader_assessment_unproven"
+        return result
+    if set(readers["deps"]) != set(pkgs) or any(set(values) - set(pkgs) for values in readers["deps"].values()) \
+            or any(set(values) - set(pkgs) for values in readers["readers"].values()):
+        result["reason"] = "reader_assessment_unproven"
+        return result
+    edge_scan = cfg.get("edge_scan") or {}
+    directories = edge_scan.get("reader_dirs", []) if isinstance(edge_scan, dict) else None
+    if not isinstance(directories, list) or any(not isinstance(name, str) or not name or name == "<unmapped>"
+                                              for name in directories) or len(set(directories)) != len(directories):
+        result["reason"] = "reader_assessment_unproven"
+        return result
+    expected_readers, observed_readers = set(directories), set(readers["readers"])
+    if observed_readers not in (expected_readers, expected_readers | {"<unmapped>"}):
+        result["reason"] = "reader_assessment_unproven"
+        return result
+    if readers["status"] == "matched" and readers["readers"].get("<unmapped>"):
+        result["reason"] = "reader_assessment_unmatched"
+        return result
+    result["readers"].update(status=readers["status"], sha256=supplied_hash)
+    if readers["status"] != "matched" or readers["failures"]:
+        result["reason"] = "reader_assessment_unmatched"
+        return result
+    if evidence.get("full_triggers") or evidence.get("unmapped") or assessment["error"]:
+        result["reason"] = "global_or_unmapped_inputs"
+        return result
+    result.update(status="known", reason="modeled_cumulative_impact_not_qualification",
+                  changed_packages=evidence["changed_packages"], affected_packages=sorted(assessment["affected"]),
+                  affected_hubs=assessment["hubs"])
+    return result
+
+
+
 def validate_selection_rules(cfg: dict, pkgs: dict[str, dict]) -> None:
     """A misspelled obligation cannot become a successful empty package intersection."""
     def validate(rule):
@@ -498,13 +630,14 @@ def reuse_verdict(receipt: dict | None, tested: dict | None, event: str) -> tupl
 def bind_plan_id(record: dict) -> None:
     identity = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"],
                            "e": record["inputs"]["event"], "observation": record["observation"],
-                           "jobs": record["jobs"], "matrices": record["matrices"]}, sort_keys=True)
+                           "jobs": record["jobs"], "matrices": record["matrices"], "impact": record["impact"]}, sort_keys=True)
     record["plan_id"] = hashlib.sha256(identity.encode()).hexdigest()[:12]
 
 
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
-         tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None) -> dict:
+         tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None,
+         reader_assessment: dict | None = None) -> dict:
     if paths is not None and (not isinstance(paths, list) or any(
             not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
             or any(part in (".", "..") for part in p.split("/")) for p in paths)):
@@ -529,6 +662,11 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         "observation": {key: value for key, value in (scope or {}).items() if key != "paths"},
         "requires_full_caller_roster": cfg is None,
     }
+
+    pkgs, assessment = {}, None
+    impact_unknown = forced_full_reason or ("paths_unavailable" if not paths else None)
+    if expected_count is not None and expected_count > len(paths):
+        impact_unknown = "truncated_paths"
 
     def finish(mode: str, reason: str, affected: set[str] | None = None) -> dict:
         record["mode"] = mode
@@ -561,6 +699,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         record["jobs"] = jobs
         record["matrices"] = matrices
         record["validity"] = validity_predicate(root, config_path, cfg or {}, base, head)
+        record["impact"] = impact_record(record, cfg, pkgs, assessment, reader_assessment, impact_unknown)
         bind_plan_id(record)
         return record
 
@@ -582,6 +721,8 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
 
     if cfg is not None:
         validate_selection_rules(cfg, pkgs)
+        if event in ("pull_request", "pull_request_target", "merge_group") and not impact_unknown:
+            assessment = classify_paths(paths, cfg, pkgs)
 
     if reuse and cfg is not None and not forced_full_reason:
         return finish("reused", why)
@@ -596,40 +737,17 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
     if expected_count is not None and expected_count > len(paths):
         return finish("full", f"changed-file list looks truncated ({len(paths)} read, {expected_count} reported)")
 
-    full_globs = BUILTIN_FULL_GLOBS + list(cfg.get("full_globs") or [])
-    triggers = [{"path": p, "rule": g} for p in paths if (g := first_match(p, full_globs))]
-    record["evidence"]["full_triggers"] = triggers
+    record["evidence"] = assessment["evidence"]
+    triggers = record["evidence"]["full_triggers"]
     if triggers:
         return finish("full", f"{triggers[0]['path']} matches full trigger {triggers[0]['rule']}"
                       + (f" (+{len(triggers) - 1} more)" if len(triggers) > 1 else ""))
-
-    inert_globs = list(cfg.get("inert_globs") or [])
-    extra_edges = cfg.get("extra_edges") or {}
-    changed: set[str] = set()
-    for p in paths:
-        if first_match(p, inert_globs):
-            record["evidence"]["inert"].append(p)
-            continue
-        owners = set()
-        for glob, targets in extra_edges.items():
-            if glob_to_regex(glob).match(p):
-                owners.update(targets)
-        owner = owner_package(p, pkgs)
-        if owner:
-            owners.add(owner)
-        unknown = owners - set(pkgs)
-        if unknown:
-            return finish("full", f"extra_edges for {p} name unknown package(s) {sorted(unknown)}")
-        if not owners:
-            record["evidence"]["unmapped"].append(p)
-        changed |= owners
-    record["evidence"]["changed_packages"] = sorted(changed)
+    if assessment["error"]:
+        return finish("full", assessment["error"])
     if record["evidence"]["unmapped"]:
         u = record["evidence"]["unmapped"]
         return finish("full", f"{u[0]} maps to no package (unknown impact)" + (f" (+{len(u) - 1} more)" if len(u) > 1 else ""))
-
-    affected = reverse_closure(pkgs, changed)
-    hubs = sorted(affected & set(cfg.get("hub_packages") or []))
+    affected, hubs = assessment["affected"], assessment["hubs"]
     if hubs:
         return finish("full", "hub package affected: " + ", ".join(hubs), affected)
     if not affected:
@@ -669,6 +787,7 @@ def main(argv=None) -> int:
     ap.add_argument("--root", required=True)
     ap.add_argument("--fallback-config", help="deprecated compatibility input; never read")
     ap.add_argument("--paths-file")
+    ap.add_argument("--reader-assessment", help="attempt-local supported-reader assessment; information only")
     ap.add_argument("--force-full-reason", help="trusted reader assessment can only widen obligations")
     ap.add_argument("--scope-root", help="existing checkout of the exact event candidate")
     ap.add_argument("--repository", default="")
@@ -725,11 +844,17 @@ def main(argv=None) -> int:
         cfg = json.loads(config_path.read_text())
         if cfg.get("schema") != 1:
             cfg, forced = None, f"plan config schema {cfg.get('schema')!r} is not 1"
+    readers = None
+    if a.reader_assessment:
+        try:
+            readers = json.loads(Path(a.reader_assessment).read_text())
+        except (OSError, ValueError, UnicodeError):
+            pass
     paths = scope.get("paths")
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
-               receipt=None, scope=scope)
+               receipt=None, scope=scope, reader_assessment=readers)
     if a.event == "merge_group" and scope["status"] == "known":
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)
@@ -741,7 +866,7 @@ def main(argv=None) -> int:
                          reason="canonical target changed or unavailable before output")
             rec = plan(cfg=None, root=root, config_path=config_path, paths=None, event=a.event, base=a.base,
                        head=a.head, expected_count=a.expected_count, forced_full_reason=scope["reason"],
-                       tested=rec.get("tested"), receipt=None, scope=scope)
+                       tested=rec.get("tested"), receipt=None, scope=scope, reader_assessment=readers)
         else:
             rec["observation"] = {key: value for key, value in scope.items() if key != "paths"}
             bind_plan_id(rec)

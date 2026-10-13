@@ -133,6 +133,24 @@ class PlannerTest(unittest.TestCase):
                     self.run_plan(["docs/readme.md"])
 
 
+    def test_graph_digest_is_order_independent_but_binds_declared_edges_and_directories(self):
+        graph = P.discover_pnpm_packages(self.root)
+        self.assertEqual(P.graph_digest(graph), P.graph_digest(dict(reversed(list(graph.items())))))
+        modified = {name: {"dir": row["dir"], "deps": set(row["deps"])} for name, row in graph.items()}
+        modified["@v/server"]["deps"].add("@v/ui")
+        self.assertNotEqual(P.graph_digest(graph), P.graph_digest(modified))
+        modified = {name: {"dir": row["dir"], "deps": set(row["deps"])} for name, row in graph.items()}
+        modified["@v/cli"]["dir"] = "moved-cli"
+        self.assertNotEqual(P.graph_digest(graph), P.graph_digest(modified))
+
+    def test_legacy_pr_selection_remains_distinct_from_unqualified_impact(self):
+        result = self.run_plan(PR397)
+        self.assertEqual(result["mode"], "reduced")
+        self.assertEqual(result["affected_packages"], ["@v/cli"])
+        self.assertEqual(result["impact"]["status"], "unknown")
+        self.assertIsNone(result["impact"]["affected_packages"])
+        self.assertIs(result["impact"]["selection_authority"], False)
+
     # The two proofs the cc:root report asks for.
     def test_green_cli_only_diff_is_reduced(self):
         rec = self.run_plan(PR397)

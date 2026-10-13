@@ -8,11 +8,13 @@ permissions:
   contents: read
 jobs:
   actionlint:
-    # GitHub-hosted minutes are budget-blocked (operator, 2026-10-03); CI_RUNNER routes to the capped runner.
+    # Approved public-repository Ubuntu profile (2026-10-13); private caller placement remains separate.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: actionlint
         run: |
           set -euo pipefail
@@ -24,6 +26,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: change-impact planner unit tests
         run: python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v
 
@@ -32,5 +36,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: fetch-release-asset tests (curl stubbed; private temp cache) and release-assets.lock lint
         run: bash actions/fetch-release-asset/test_fetch.sh

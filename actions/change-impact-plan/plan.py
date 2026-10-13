@@ -35,20 +35,126 @@ Method (version PLANNER_VERSION)
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PLANNER_VERSION = "1.2.0"
 OPERATOR_ID = "ci.change-impact-plan"
 
 
+def canonical_coordinates(repository: str, target_ref: str, server_url: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or any(p in (".", "..") for p in repository.split("/")):
+        raise ValueError("invalid canonical repository")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?", server_url):
+        raise ValueError("invalid canonical server")
+    if not re.fullmatch(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*", target_ref) or ".." in target_ref or "//" in target_ref \
+        or target_ref.endswith("/") or target_ref.startswith("refs/heads/gh-readonly-queue/") \
+        or any(part.startswith(".") or part.endswith(".lock") for part in target_ref.split("/")):
+        raise ValueError("invalid canonical target ref")
+
+
+def canonical_target(repository: str, target_ref: str, server_url: str) -> str:
+    """Resolve exactly one trusted HTTPS ref without candidate Git configuration or logged credentials."""
+    canonical_coordinates(repository, target_ref, server_url)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    options = [("core.hooksPath", os.devnull), ("credential.helper", ""), ("http.followRedirects", "false")]
+    token = os.environ.get("GH_TOKEN", "")
+    if token:
+        credential = base64.b64encode(("x-access-token:" + token).encode()).decode()
+        options.append((f"http.{server_url}/.extraheader", "AUTHORIZATION: basic " + credential))
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0",
+               GIT_CONFIG_COUNT=str(len(options)))
+    for number, (key, value) in enumerate(options):
+        env[f"GIT_CONFIG_KEY_{number}"] = key
+        env[f"GIT_CONFIG_VALUE_{number}"] = value
+    with tempfile.TemporaryDirectory(prefix="ci-canonical-target-") as empty:
+        # An explicit empty bare repository prevents parent-repository discovery through TMPDIR.
+        subprocess.check_output(["git", "--no-replace-objects", "init", "--bare", "--template=", empty],
+                                env=env, stderr=subprocess.PIPE, timeout=5)
+        raw = subprocess.check_output(["git", "--no-replace-objects", "-C", empty, "ls-remote", "--refs",
+            "--exit-code", server_url + "/" + repository + ".git", target_ref],
+            env=env, stderr=subprocess.PIPE, timeout=15).decode("ascii")
+    lines = raw.splitlines()
+    if len(lines) != 1 or lines[0].split("\t")[1:] != [target_ref]:
+        raise ValueError("ambiguous canonical target")
+    sha = lines[0].split("\t")[0]
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or sha == "0" * 40:
+        raise ValueError("invalid canonical target SHA")
+    return sha
+
+
+def target_context(repository, event_repository, target_ref, server_url, candidate, run_id, run_attempt):
+    canonical_coordinates(repository, target_ref, server_url)
+    if repository != event_repository or not re.fullmatch(r"[0-9a-f]{40}", candidate) or candidate == "0" * 40 \
+        or not str(run_id).isdigit() or int(run_id) < 1 or not str(run_attempt).isdigit() or int(run_attempt) < 1:
+        raise ValueError("invalid target context")
+    return {"schema": 2, "scope_kind": "canonical-target-cumulative", "target_source": "canonical-git-ls-remote",
+            "repository": repository, "target_ref": target_ref, "server_url": server_url,
+            "candidate": candidate, "run_id": str(run_id), "run_attempt": str(run_attempt),
+            "source_sha256": sha256_file(Path(__file__))}
+
+
+def resolve_target_observation(**context):
+    result = {"schema": 2, "status": "unknown", "reason": "canonical target snapshot unavailable"}
+    try:
+        result.update(target_context(**context))
+        result.update(status="known", target_sha=canonical_target(context["repository"], context["target_ref"], context["server_url"]))
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        pass
+    return result
+
+
+def git_policy(root: Path, *args) -> str:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return subprocess.check_output(["git", "--no-replace-objects", "-C", str(root), *args],
+                                   env=env, stderr=subprocess.PIPE, timeout=5).decode().strip()
+
+
+def verify_target_policy(git, root: Path, target: str, config: str) -> dict:
+    if not config or config.startswith("/") or any(part in ("", ".", "..") for part in config.split("/")) or "\n" in config or "\r" in config:
+        raise ValueError("invalid policy path")
+    metadata = {config, "pnpm-workspace.yaml", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock", "uv.lock"}
+    tracked = {}
+    for entry in git("ls-tree", "-r", "-z", target).split(b"\0"):
+        if not entry:
+            continue
+        header, raw_path = entry.split(b"\t", 1)
+        path = raw_path.decode("utf-8")
+        if path in metadata or path == "package.json" or path.endswith("/package.json") or path.startswith(".github/workflows/"):
+            mode, kind, blob = header.decode("ascii").split()
+            if mode not in ("100644", "100755") or kind != "blob":
+                raise ValueError("policy metadata is not a regular blob")
+            local = root / path
+            if local.is_symlink() or not local.is_file() or not local.resolve().is_relative_to(root.resolve()):
+                raise ValueError("policy metadata checkout incomplete")
+            data = local.read_bytes()
+            if data != git("cat-file", "blob", blob):
+                raise ValueError("policy metadata differs from target")
+            tracked[path] = (blob, hashlib.sha256(data).hexdigest())
+    actual_manifests = {path.relative_to(root).as_posix() for path in root.rglob("package.json")}
+    if actual_manifests != {path for path in tracked if path == "package.json" or path.endswith("/package.json")}:
+        raise ValueError("unexpected policy metadata")
+    if config not in tracked:
+        if (root / config).exists():
+            raise ValueError("untracked policy config")
+        return {"policy_blob": None, "policy_sha256": None}
+    blob, digest = tracked[config]
+    return {"policy_blob": blob, "policy_sha256": digest}
+
+
 def immutable_scope(root: Path, *, event: str, base: str, head: str,
-                    candidate: str, repository: str) -> dict:
+                    candidate: str, repository: str, target_observation: dict | None = None,
+                    target_ref: str = "", server_url: str = "", event_repository: str = "",
+                    policy_root: Path | None = None, config: str = ".github/ci-plan.json",
+                    run_id: str = "", run_attempt: str = "", policy_checkout_outcome: str = "") -> dict:
     """Observe the frozen integration tree. Mutable refs and PR APIs are not inputs."""
     result = {"schema": 1, "event": event, "repository": repository,
               "base": base, "head": head, "candidate": candidate,
@@ -81,7 +187,25 @@ def immutable_scope(root: Path, *, event: str, base: str, head: str,
         elif event == "merge_group":
             if head != candidate:
                 raise ValueError("merge group head differs from candidate")
+            expected = target_context(repository, event_repository, target_ref, server_url, candidate, run_id, run_attempt)
+            observation = target_observation or {}
+            if not isinstance(observation, dict) or policy_checkout_outcome != "success":
+                raise ValueError("canonical policy checkout unavailable")
+            if observation.get("status") != "known" or any(observation.get(key) != value for key, value in expected.items()):
+                raise ValueError("canonical target observation missing or replayed")
+            target = observation.get("target_sha", "")
+            if not isinstance(target, str) or not re.fullmatch(r"[0-9a-f]{40}", target) or target == "0" * 40:
+                raise ValueError("canonical target SHA invalid")
+            git("cat-file", "-e", target + "^{commit}")
             git("merge-base", "--is-ancestor", base, candidate)
+            git("merge-base", "--is-ancestor", target, candidate)
+            if policy_root is None or git_policy(policy_root, "rev-parse", "HEAD") != target:
+                raise ValueError("canonical policy checkout mismatch")
+            policy = verify_target_policy(git, policy_root, target, config)
+            result.update(schema=2, scope_kind="canonical-target-cumulative", target_source="canonical-git-ls-remote", server_url=server_url, event_base=base, target_ref=target_ref, target_sha=target, diff_base=target,
+                          policy_revision=target, policy_path=config, run_id=str(run_id), run_attempt=str(run_attempt),
+                          source_sha256=expected["source_sha256"], **policy)
+            base = target
         elif event == "push":
             if head != candidate:
                 raise ValueError("push head differs from candidate")
@@ -371,6 +495,13 @@ def reuse_verdict(receipt: dict | None, tested: dict | None, event: str) -> tupl
     return True, f"run {receipt.get('run_id')} passed the full suite on identical tree {tested['tree'][:12]}"
 
 
+def bind_plan_id(record: dict) -> None:
+    identity = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"],
+                           "e": record["inputs"]["event"], "observation": record["observation"],
+                           "jobs": record["jobs"], "matrices": record["matrices"]}, sort_keys=True)
+    record["plan_id"] = hashlib.sha256(identity.encode()).hexdigest()[:12]
+
+
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
          tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None) -> dict:
@@ -430,10 +561,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         record["jobs"] = jobs
         record["matrices"] = matrices
         record["validity"] = validity_predicate(root, config_path, cfg or {}, base, head)
-        ident = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"], "e": event,
-                            "observation": record["observation"], "jobs": jobs, "matrices": matrices},
-                           sort_keys=True)
-        record["plan_id"] = hashlib.sha256(ident.encode()).hexdigest()[:12]
+        bind_plan_id(record)
         return record
 
     reuse, why = reuse_verdict(receipt, tested, event)
@@ -530,6 +658,14 @@ def summary_markdown(rec: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--resolve-target", action="store_true", help="internal pre-checkout target snapshot")
+    ap.add_argument("--target-observation", default="")
+    ap.add_argument("--policy-checkout-outcome", default="")
+    ap.add_argument("--target-ref", default="")
+    ap.add_argument("--server-url", default="")
+    ap.add_argument("--event-repository", default="")
+    ap.add_argument("--run-id", default="")
+    ap.add_argument("--run-attempt", default="")
     ap.add_argument("--root", required=True)
     ap.add_argument("--fallback-config", help="deprecated compatibility input; never read")
     ap.add_argument("--paths-file")
@@ -549,29 +685,66 @@ def main(argv=None) -> int:
     ap.add_argument("--summary")
     a = ap.parse_args(argv)
 
+    context = dict(repository=a.repository, event_repository=a.event_repository, target_ref=a.target_ref,
+                   server_url=a.server_url, candidate=a.candidate, run_id=a.run_id, run_attempt=a.run_attempt)
+    if a.resolve_target:
+        observation = resolve_target_observation(**context) if a.event == "merge_group" else {"status": "not_applicable"}
+        policy_ref = observation.get("target_sha", "") if a.event == "merge_group" else a.base
+        if a.out_json:
+            Path(a.out_json).write_text(json.dumps(observation, sort_keys=True) + "\n")
+        if a.github_output:
+            with open(a.github_output, "a") as output:
+                output.write(f"policy_ref={policy_ref}\n")
+        return 0
+
     root = Path(a.root)
     config_path = root / a.config
     cfg, forced = None, a.force_full_reason or None
-    if config_path.is_file():
-        cfg = json.loads(config_path.read_text())
-        if cfg.get("schema") != 1:
-            cfg, forced = None, f"plan config schema {cfg.get('schema')!r} is not 1"
     # The candidate cannot supply even a supposedly full roster. In an adoption
     # PR, the caller must run its existing complete roster and verify every lane.
     # --fallback-config remains accepted for callers migrating from v1.1, but is
     # deliberately not read (including malformed/empty candidate files).
     # Legacy line-delimited paths and receipts cannot authorize reduced execution.
     # The canonical action supplies a checkout, never a caller-asserted path list.
+    target_observation = None
+    if a.target_observation:
+        try:
+            target_observation = json.loads(Path(a.target_observation).read_text())
+        except (OSError, ValueError):
+            pass
     scope = immutable_scope(Path(a.scope_root), event=a.event, base=a.base, head=a.head,
-                            candidate=a.candidate, repository=a.repository) if a.scope_root else {
+                            candidate=a.candidate, repository=a.repository, target_observation=target_observation,
+                            target_ref=a.target_ref, server_url=a.server_url, event_repository=a.event_repository,
+                            policy_root=root, config=a.config, run_id=a.run_id, run_attempt=a.run_attempt,
+                            policy_checkout_outcome=a.policy_checkout_outcome) if a.scope_root else {
         "status": "unknown", "reason": "immutable scope checkout is required"}
     if scope["status"] != "known":
         forced = forced or scope["reason"]
+    if config_path.is_file() and a.policy_checkout_outcome in ("", "success") \
+        and (a.event != "merge_group" or scope["status"] == "known"):
+        cfg = json.loads(config_path.read_text())
+        if cfg.get("schema") != 1:
+            cfg, forced = None, f"plan config schema {cfg.get('schema')!r} is not 1"
     paths = scope.get("paths")
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
                receipt=None, scope=scope)
+    if a.event == "merge_group" and scope["status"] == "known":
+        try:
+            rechecked = canonical_target(a.repository, a.target_ref, a.server_url)
+        except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+            rechecked = None
+        scope["target_rechecked_sha"] = rechecked
+        if rechecked != scope["target_sha"]:
+            scope.update(status="unknown", paths=None, diff_base=None, policy_revision=None, policy_blob=None, policy_sha256=None,
+                         reason="canonical target changed or unavailable before output")
+            rec = plan(cfg=None, root=root, config_path=config_path, paths=None, event=a.event, base=a.base,
+                       head=a.head, expected_count=a.expected_count, forced_full_reason=scope["reason"],
+                       tested=rec.get("tested"), receipt=None, scope=scope)
+        else:
+            rec["observation"] = {key: value for key, value in scope.items() if key != "paths"}
+            bind_plan_id(rec)
     text = json.dumps(rec, indent=2, sort_keys=True)
     print(text)
     if a.out_json:

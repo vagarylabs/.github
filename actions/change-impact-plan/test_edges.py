@@ -80,6 +80,20 @@ class EdgesTest(unittest.TestCase):
         self.write_cfg(cfg)
         self.assertEqual(self.run_check()[0], 0)
 
+    def test_nearby_github_host_text_cannot_hide_a_local_reader(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["jobs"]["root"]["packages"] = ["b"]
+        for host in ("github.com", "github.com.invalid", "evilgithub.com"):
+            with self.subTest(host=host):
+                (self.repo / "services/a/app.py").write_text(f'url = "{host}"; DATA = "services/b/app.py"\n')
+                self.write_cfg(cfg)
+                self.assertEqual(self.run_check()[0], 1, "nearby host text must not suppress the local read")
+                cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
+                self.write_cfg(cfg)
+                self.assertEqual(self.run_check()[0], 0)
+                cfg["workspace"]["packages"]["a"]["deps"] = []
+
+
     def test_unmapped_reader_is_unknown_not_an_empty_success(self):
         cfg = json.loads(json.dumps(CFG))
         cfg["jobs"]["root"]["packages"] = ["b"]

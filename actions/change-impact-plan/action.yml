@@ -83,10 +83,33 @@ runs:
         state=$(mktemp -d "$GITHUB_WORKSPACE/.ci-plan.XXXXXX")
         echo "directory=$state" >> "$GITHUB_OUTPUT"
         echo "relative=${state#"$GITHUB_WORKSPACE/"}" >> "$GITHUB_OUTPUT"
+    - name: Freeze canonical target before policy checkout
+      id: target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+        TARGET_REF: ${{ github.event.merge_group.base_ref }}
+        SERVER_URL: ${{ github.server_url }}
+        REPOSITORY: ${{ github.repository }}
+        EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+        CANDIDATE: ${{ github.sha }}
+        STATE: ${{ steps.state.outputs.directory }}
+      run: |
+        set -euo pipefail
+        python3 -I "$GITHUB_ACTION_PATH/plan.py" --resolve-target --config .github/ci-plan.json --root "$STATE/base" \
+          --event "$EVENT" --base "$BASE" --candidate "$CANDIDATE" --repository "$REPOSITORY" \
+          --event-repository "$EVENT_REPOSITORY" --target-ref "$TARGET_REF" --server-url "$SERVER_URL" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+          --out-json "$STATE/target.json" --github-output "$GITHUB_OUTPUT"
     - name: Base commit manifests and plan config (sparse)
+      id: policy
+      continue-on-error: true
+      if: ${{ steps.target.outputs.policy_ref != '' }}
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
-        ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+        ref: ${{ steps.target.outputs.policy_ref }}
         path: ${{ steps.state.outputs.relative }}/base
         token: ${{ inputs.token }}
         fetch-depth: 1
@@ -127,14 +150,17 @@ runs:
         CANDIDATE_ROOT: ${{ inputs.candidate-root }}
         CANDIDATE: ${{ github.sha }}
         EDGE_CHECK: ${{ inputs.edge-check }}
+        POLICY_OUTCOME: ${{ steps.policy.outcome }}
       run: |
         set -euo pipefail
         reason=""
-        if [ "$EDGE_CHECK" != true ]; then
+        if [ "$POLICY_OUTCOME" != success ]; then
+          reason="policy checkout unavailable; caller full roster required"
+        elif [ "$EDGE_CHECK" != true ]; then
           reason="reader closure check disabled"
         elif [ ! -f "$STATE/base/$CONFIG" ]; then
           reason="no base policy; caller full roster required"
-        elif ! python3 "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
+        elif ! python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
           --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE"; then
           reason="reader closure unproven; full validation required"
         fi
@@ -149,15 +175,23 @@ runs:
         CONFIG: ${{ inputs.config }}
         CANDIDATE: ${{ github.sha }}
         REPOSITORY: ${{ github.repository }}
+        EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+        TARGET_REF: ${{ github.event.merge_group.base_ref }}
+        SERVER_URL: ${{ github.server_url }}
+        GH_TOKEN: ${{ inputs.token }}
+        POLICY_OUTCOME: ${{ steps.policy.outcome }}
         CANDIDATE_ROOT: ${{ inputs.candidate-root }}
         STATE: ${{ steps.state.outputs.directory }}
         FORCE_FULL_REASON: ${{ steps.readers.outputs.force_full_reason }}
       run: |
         set -euo pipefail
-        python3 "$GITHUB_ACTION_PATH/plan.py" \
+        python3 -I "$GITHUB_ACTION_PATH/plan.py" \
           --config "$CONFIG" --root "$STATE/base" \
           --tested-root "$STATE/tested" --scope-root "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
-          --candidate "$CANDIDATE" --repository "$REPOSITORY" --force-full-reason "$FORCE_FULL_REASON" \
+          --candidate "$CANDIDATE" --repository "$REPOSITORY" --event-repository "$EVENT_REPOSITORY" \
+          --target-ref "$TARGET_REF" --server-url "$SERVER_URL" --target-observation "$STATE/target.json" \
+          --policy-checkout-outcome "$POLICY_OUTCOME" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --force-full-reason "$FORCE_FULL_REASON" \
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
           --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null

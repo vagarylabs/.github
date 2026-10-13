@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -96,6 +97,185 @@ class FrozenScope(unittest.TestCase):
         self.assertFalse(github_output.exists())
 
 
+    def canonical_plan(self, target=None, observation_changes=None, final_target=None, context_changes=None,
+                       policy_change=None, checkout="success"):
+        target = target or self.base
+        number = getattr(self, "policy_number", 0) + 1
+        self.policy_number = number
+        policy = Path(self.temp.name) / f"canonical-policy-{number}"
+        self.git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(self.root), str(policy))
+        self.git("-C", str(policy), "reset", "--hard", target)
+        if policy_change:
+            policy_change(policy)
+        context = dict(repository="fixture/repo", event_repository="fixture/repo", target_ref="refs/heads/main",
+                       server_url="https://github.com", candidate=self.candidate, run_id="41", run_attempt="1")
+        with patch.object(P, "canonical_target", return_value=target):
+            observation = P.resolve_target_observation(**context)
+        observation.update(observation_changes or {})
+        context.update(context_changes or {})
+        observation_file = Path(self.temp.name) / f"target-{number}.json"
+        observation_file.write_text(json.dumps(observation))
+        output = Path(self.temp.name) / f"canonical-plan-{number}.json"
+        args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
+                "--event", "merge_group", "--base", self.base, "--head", self.candidate, "--out-json", str(output),
+                "--target-observation", str(observation_file), "--policy-checkout-outcome", checkout]
+        for key, value in context.items():
+            args += ["--" + key.replace("_", "-"), value]
+        remote = final_target if final_target is not None else target
+        with patch.object(P, "canonical_target", side_effect=remote if isinstance(remote, Exception) else None,
+                          return_value=None if isinstance(remote, Exception) else remote) as final_read, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(P.main(args), 0)
+        return json.loads(output.read_text()), final_read.call_count
+
+    def test_canonical_target_includes_runtime_prefix_when_event_base_is_docs_predecessor(self):
+        target = self.base
+        prefix = self.candidate
+        self.base = prefix
+        self.make_candidate("docs/readme.md", "docs tail\n")
+        result, reads = self.canonical_plan(target)
+        self.assertEqual(reads, 1, "final lookup must independently re-resolve")
+        self.assertEqual(result["mode"], "full")
+        self.assertEqual(result["inputs"]["changed_paths"], 2)
+        self.assertEqual(result["inputs"]["base"], prefix)
+        self.assertEqual(result["observation"]["diff_base"], target)
+        self.assertEqual(result["observation"]["target_rechecked_sha"], target)
+        self.assertEqual(result["observation"]["scope_kind"], "canonical-target-cumulative")
+        self.assertEqual(result["observation"]["target_source"], "canonical-git-ls-remote")
+        self.assertEqual(result["observation"]["status"], "known")
+
+    def test_target_policy_not_predecessor_or_candidate_config_is_used(self):
+        target = self.base
+        malicious = json.loads(json.dumps(self.cfg)); malicious["jobs"] = {}
+        self.make_candidate(".github/ci-plan.json", json.dumps(malicious))
+        self.base = self.candidate
+        self.make_candidate("docs/readme.md", "docs tail\n")
+        result, _ = self.canonical_plan(target)
+        expected_blob = self.git("rev-parse", target + ":.github/ci-plan.json")
+        self.assertEqual(result["observation"]["policy_blob"], expected_blob)
+        self.assertEqual(result["observation"]["policy_revision"], target)
+        self.assertTrue(result["jobs"]["server_tests"]["run"])
+
+    def test_target_observation_identity_replay_and_forgery_are_unknown_full(self):
+        for change in ({"repository": "foreign/repo"}, {"target_ref": "refs/heads/other"},
+                       {"run_id": "40"}, {"run_attempt": "2"}, {"candidate": self.head},
+                       {"source_sha256": "0" * 64}, {"target_sha": "0" * 40}, {"target_sha": "f" * 40}):
+            with self.subTest(change=change):
+                result, reads = self.canonical_plan(observation_changes=change)
+                self.assertEqual(result["mode"], "full")
+                self.assertEqual(result["observation"]["status"], "unknown")
+                self.assertEqual(reads, 0)
+                self.assertTrue(result["requires_full_caller_roster"])
+
+    def test_moved_or_unreadable_final_target_discards_known_scope_without_repinning(self):
+        for answer in (self.candidate, subprocess.CalledProcessError(1, ["git"], stderr=b"PRIVATE_TOKEN")):
+            result, reads = self.canonical_plan(final_target=answer)
+            self.assertEqual(reads, 1)
+            self.assertEqual(result["mode"], "full")
+            self.assertEqual(result["observation"]["status"], "unknown")
+            self.assertEqual(result["jobs"], {})
+            self.assertNotIn("PRIVATE_TOKEN", json.dumps(result))
+
+    def test_failed_or_tampered_policy_checkout_never_supplies_a_plan(self):
+        result, _ = self.canonical_plan(checkout="failure", policy_change=lambda root:
+                                      (root / ".github/ci-plan.json").write_text("{ malformed partial policy"))
+        self.assertEqual(result["observation"]["status"], "unknown")
+        self.assertEqual(result["jobs"], {})
+        result, _ = self.canonical_plan(policy_change=lambda root:
+                                      (root / ".github/ci-plan.json").write_text('{"schema":1,"jobs":{}}'))
+        self.assertEqual(result["observation"]["status"], "unknown")
+        self.assertEqual(result["jobs"], {})
+
+    def test_canonical_git_reader_is_isolated_and_rejects_ambiguous_or_queue_refs(self):
+        def fake_git(command, **kwargs):
+            self.assertNotIn("GIT_DIR", kwargs["env"])
+            self.assertNotIn("GIT_WORK_TREE", kwargs["env"])
+            self.assertNotIn("PRIVATE_TOKEN", " ".join(command))
+            if "init" in command:
+                self.assertIn("--bare", command); self.assertIn("--template=", command)
+                return b""
+            return (self.base + "\trefs/heads/main\n").encode()
+        with patch.dict(os.environ, GIT_DIR="/foreign", GIT_WORK_TREE="/foreign", GH_TOKEN="PRIVATE_TOKEN"), \
+                patch.object(P.subprocess, "check_output", side_effect=fake_git):
+            self.assertEqual(P.canonical_target("fixture/repo", "refs/heads/main", "https://github.com"), self.base)
+        for answer in (b"", (self.base + "\trefs/heads/main\n") .encode() * 2,
+                       ("0" * 40 + "\trefs/heads/main\n").encode()):
+            with patch.object(P.subprocess, "check_output", return_value=answer):
+                with self.assertRaises(ValueError):
+                    P.canonical_target("fixture/repo", "refs/heads/main", "https://github.com")
+        with patch.object(P.subprocess, "check_output") as git:
+            for ref in ("refs/heads/gh-readonly-queue/main/pr-1", "refs/tags/main", "refs/heads/../main"):
+                with self.assertRaises(ValueError):
+                    P.canonical_target("fixture/repo", ref, "https://github.com")
+            git.assert_not_called()
+
+
+    def test_known_docs_cumulative_scope_and_missing_policy_still_run_full(self):
+        self.make_candidate("docs/readme.md", "docs only\n")
+        result, _ = self.canonical_plan()
+        self.assertEqual(result["observation"]["status"], "known")
+        self.assertEqual(result["inputs"]["changed_paths"], 1)
+        self.assertEqual(result["mode"], "full")
+        self.git("reset", "--hard", self.base)
+        self.config.unlink(); self.git("add", "-A")
+        self.base = self.git("commit-tree", self.git("write-tree"), "-p", self.base, input=b"no policy\n")
+        self.make_candidate("docs/readme.md", "tail without policy\n")
+        result, _ = self.canonical_plan()
+        self.assertEqual(result["observation"]["status"], "known")
+        self.assertIsNone(result["observation"]["policy_blob"])
+        self.assertTrue(result["requires_full_caller_roster"])
+        self.assertEqual(result["jobs"], {})
+
+    def test_diverged_target_and_wrong_policy_head_or_candidate_head_are_unknown(self):
+        foreign = self.git("commit-tree", self.git("rev-parse", self.base + "^{tree}"), input=b"foreign root\n")
+        result, _ = self.canonical_plan(target=foreign)
+        self.assertEqual(result["observation"]["status"], "unknown")
+        result, _ = self.canonical_plan(policy_change=lambda root: self.git("-C", str(root), "reset", "--hard", self.candidate))
+        self.assertEqual(result["observation"]["status"], "unknown")
+        self.git("reset", "--hard", self.head)
+        result, _ = self.canonical_plan()
+        self.assertEqual(result["observation"]["status"], "unknown")
+
+    def test_isolated_real_cli_does_not_import_consumer_pythonpath_or_git_environment(self):
+        poison = Path(self.temp.name) / "python-poison"; poison.mkdir()
+        marker = Path(self.temp.name) / "consumer-imported"
+        (poison / "json.py").write_text(f"from pathlib import Path; Path({str(marker)!r}).touch(); raise RuntimeError('PRIVATE_IMPORT')\n")
+        output = Path(self.temp.name) / "isolated-plan.json"
+        args = [sys.executable, "-I", P.__file__, "--config", ".github/ci-plan.json", "--root", str(self.root),
+                "--scope-root", str(self.root), "--repository", "fixture/repo", "--event", "pull_request",
+                "--base", self.base, "--head", self.head, "--candidate", self.candidate, "--out-json", str(output)]
+        env = dict(os.environ, PYTHONPATH=str(poison), GIT_DIR="/foreign", GIT_WORK_TREE="/foreign")
+        result = subprocess.run(args, cwd=poison, env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(marker.exists())
+        self.assertEqual(json.loads(output.read_text())["observation"]["status"], "known")
+
+    def test_action_snapshots_before_policy_checkout_and_isolates_python(self):
+        action = Path(P.__file__).with_name("action.yml").read_text()
+        self.assertLess(action.index("name: Freeze canonical target"), action.index("name: Base commit manifests"))
+        self.assertIn("ref: ${{ steps.target.outputs.policy_ref }}", action)
+        self.assertIn("continue-on-error: true", action)
+        self.assertIn('--policy-checkout-outcome "$POLICY_OUTCOME"', action)
+        self.assertIn('--target-observation "$STATE/target.json"', action)
+        self.assertIn('python3 -I "$GITHUB_ACTION_PATH/plan.py"', action)
+        self.assertIn('python3 -I "$GITHUB_ACTION_PATH/edges.py"', action)
+
+
+    def test_absent_first_snapshot_and_skipped_checkout_are_unknown_full(self):
+        with patch.object(P, "canonical_target", side_effect=subprocess.CalledProcessError(1, ["git"], stderr=b"PRIVATE_TOKEN")):
+            observation = P.resolve_target_observation(repository="fixture/repo", event_repository="fixture/repo",
+                target_ref="refs/heads/main", server_url="https://github.com", candidate=self.candidate,
+                run_id="41", run_attempt="1")
+        self.assertEqual(observation["status"], "unknown")
+        self.assertNotIn("PRIVATE_TOKEN", json.dumps(observation))
+        result, reads = self.canonical_plan(observation_changes={"status": "unknown"})
+        self.assertEqual(result["observation"]["status"], "unknown")
+        self.assertEqual(reads, 0)
+        result, reads = self.canonical_plan(checkout="skipped")
+        self.assertEqual(result["observation"]["status"], "unknown")
+        self.assertEqual(result["jobs"], {})
+
+
     def test_same_count_later_push_cannot_replace_frozen_candidate_scope(self):
         old_head, old_candidate = self.head, self.candidate
         self.git("update-ref", "refs/heads/mutable-pr", self.head)
@@ -129,9 +309,11 @@ class FrozenScope(unittest.TestCase):
             self.assertIsNone(value["paths"])
         self.assertEqual(self.cli_plan(head=self.base)["mode"], "full")
 
-    def test_merge_group_and_push_bind_candidate(self):
+    def test_merge_group_requires_canonical_evidence_and_push_still_binds_candidate(self):
+        self.assertEqual(self.scope(event="merge_group", head=self.candidate)["status"], "unknown")
+        self.assertIsNone(self.scope(event="merge_group", head=self.candidate)["paths"])
+        self.assertEqual(self.scope(event="push", head=self.candidate)["status"], "known")
         for event in ("merge_group", "push"):
-            self.assertEqual(self.scope(event=event, head=self.candidate)["status"], "known")
             self.assertEqual(self.scope(event=event)["status"], "unknown")
             self.assertEqual(self.cli_plan(event=event, head=self.candidate)["mode"], "full")
 
@@ -230,15 +412,17 @@ class ActionContract(unittest.TestCase):
             # A malformed graph causes the REAL checker to refuse; not a fake
             # pass or a simulation of GitHub's scheduler.
             (root / "base/.github/ci-plan.json").write_text('{"workspace":{"type":"unsupported"}}')
-            for enabled in ("true", "false"):
-                output = root / (enabled + "-output")
+            for enabled, checkout in (("true", "success"), ("false", "success"), ("true", "failure")):
+                output = root / (enabled + "-" + checkout + "-output")
                 env = dict(os.environ, CONFIG=".github/ci-plan.json", STATE=str(root),
                            GITHUB_WORKSPACE=str(root), CANDIDATE_ROOT=".", CANDIDATE="a" * 40,
-                           EDGE_CHECK=enabled, GITHUB_ACTION_PATH=str(Path(__file__).parent), GITHUB_OUTPUT=str(output))
+                           EDGE_CHECK=enabled, POLICY_OUTCOME=checkout, GITHUB_ACTION_PATH=str(Path(__file__).parent), GITHUB_OUTPUT=str(output))
                 result = subprocess.run(["bash", "-eu", "-c", body], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 reason = output.read_text().strip().split("=", 1)[1]
                 self.assertTrue(reason)
+                if checkout == "failure":
+                    self.assertIn("policy checkout unavailable", reason)
                 cfg = {"workspace": {"type": "declared", "packages": {"ui": {"dir": "ui"}}},
                        "jobs": {"server": "full_only"}}
                 full = P.plan(cfg=cfg, root=root, config_path=root / "base/.github/ci-plan.json",

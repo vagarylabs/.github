@@ -29,6 +29,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
+if sys.flags.isolated:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plan import declared_packages, discover_pnpm_packages
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
@@ -94,8 +97,6 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             continue
         targets = set()
         for m in lit.finditer(t):
-            if "github.com" in t[max(0, m.start() - 40):m.start()]:
-                continue
             targets.add(owner(m.group(1)))
         for m in join_root.finditer(t):
             cursor, components = m.end(), [m.group(1)]

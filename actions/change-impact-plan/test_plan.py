@@ -94,6 +94,45 @@ class PlannerTest(unittest.TestCase):
     def included(self, rec, name="general_tests"):
         return [e["group"] for e in rec["matrices"][name]["include"]]
 
+    def test_every_job_and_matrix_package_reference_is_validated_before_reduction(self):
+        for collection in ("jobs", "matrices"):
+            for kind in ("packages", "any_except"):
+                for paths in (["docs/readme.md"], ["cli/src/main.ts"]):
+                    with self.subTest(collection=collection, kind=kind, paths=paths):
+                        cfg = json.loads(json.dumps(CONFIG))
+                        invalid = {kind: ["@v/does-not-exist"]}
+                        if collection == "jobs":
+                            cfg["jobs"]["invalid"] = invalid
+                        else:
+                            cfg["matrices"]["general_tests"].append({"include": {"group": "invalid"}, "rule": invalid})
+                        (self.root / ".github/ci-plan.json").write_text(json.dumps(cfg))
+                        with self.assertRaisesRegex(ValueError, "undeclared package"):
+                            self.run_plan(paths)
+
+    def test_valid_package_rules_retain_positive_and_negative_selection(self):
+        cfg = json.loads(json.dumps(CONFIG))
+        cfg["jobs"]["cli_direct"] = {"packages": ["@v/cli"]}
+        cfg["jobs"]["ui_direct"] = {"packages": ["@v/ui"]}
+        cfg["jobs"]["non_cli"] = {"any_except": ["@v/cli"]}
+        (self.root / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        result = self.run_plan(["cli/src/main.ts"])
+        self.assertEqual(result["mode"], "reduced")
+        self.assertTrue(result["jobs"]["cli_direct"]["run"])
+        self.assertFalse(result["jobs"]["ui_direct"]["run"])
+        self.assertFalse(result["jobs"]["non_cli"]["run"])
+        self.assertIn("general-workspaces-a", self.included(result))
+
+    def test_malformed_rules_fail_instead_of_silently_omitting_obligations(self):
+        for rule in ({"packages": "@v/cli"}, {"any_except": [None]},
+                     {"packages": ["@v/cli"], "any_except": []}, {"typo": []}, "not_a_rule"):
+            with self.subTest(rule=rule):
+                cfg = json.loads(json.dumps(CONFIG))
+                cfg["jobs"]["invalid"] = rule
+                (self.root / ".github/ci-plan.json").write_text(json.dumps(cfg))
+                with self.assertRaises(ValueError):
+                    self.run_plan(["docs/readme.md"])
+
+
     # The two proofs the cc:root report asks for.
     def test_green_cli_only_diff_is_reduced(self):
         rec = self.run_plan(PR397)
@@ -161,7 +200,7 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(rec["mode"], "full")
         self.assertIn("no plan config", rec["reason"])
 
-    def test_adoption_pr_uses_head_config_only_to_list_the_full_suite(self):
+    def test_adoption_pr_cannot_take_its_full_roster_from_candidate_config(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "base").mkdir()
             root = make_repo(Path(td) / "base", config=None)
@@ -174,8 +213,37 @@ class PlannerTest(unittest.TestCase):
                     "--paths-file", str(paths), "--event", "pull_request", "--github-output", str(out)])
             kv = dict(line.split("=", 1) for line in out.read_text().splitlines())
         self.assertEqual(kv["mode"], "full")
-        self.assertTrue(all(json.loads(kv["run"]).values()))
-        self.assertEqual(len(json.loads(kv["matrices"])["general_tests"]), 3)
+        self.assertEqual(json.loads(kv["run"]), {})
+        self.assertEqual(json.loads(kv["matrices"]), {})
+        self.assertTrue(json.loads(kv["plan"])["requires_full_caller_roster"])
+
+    def test_unknown_or_malformed_base_never_uses_candidate_roster(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".github").mkdir()
+            base = root / ".github/ci-plan.json"
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps({"schema": 1, "jobs": {"only_candidate_job": "always"}}))
+            output = root / "output"
+            args = ["--config", ".github/ci-plan.json", "--root", str(root),
+                    "--fallback-config", str(candidate), "--event", "pull_request",
+                    "--github-output", str(output)]
+            base.write_text('{"schema": 999}')
+            self.assertEqual(P.main(args), 0)
+            value = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(json.loads(value["run"]), {})
+            self.assertTrue(json.loads(value["plan"])["requires_full_caller_roster"])
+            output.unlink()
+            base.write_text("{malformed")
+            with self.assertRaises(json.JSONDecodeError):
+                P.main(args)
+            self.assertFalse(output.exists())
+            base.unlink()
+            candidate.write_text("{malformed")
+            self.assertEqual(P.main(args), 0)
+            value = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(json.loads(value["run"]), {})
+            self.assertEqual(value["mode"], "full")
 
     def test_docs_only_runs_no_package_work(self):
         rec = self.run_plan(["docs/cli/login.md"])
@@ -270,7 +338,7 @@ class PlannerTest(unittest.TestCase):
         self.assertTrue(r("docs/**").match("docs/a/b.md"))
         self.assertFalse(r("docs/**").match("docsx/a.md"))
 
-    def test_github_output_shape(self):
+    def test_legacy_path_file_cannot_reduce_without_immutable_scope(self):
         with tempfile.TemporaryDirectory() as td:
             paths = Path(td) / "paths.txt"
             paths.write_text("\n".join(PR397))
@@ -279,10 +347,10 @@ class PlannerTest(unittest.TestCase):
                     "--event", "pull_request", "--base", "b", "--head", "h", "--github-output", str(out),
                     "--summary", str(Path(td) / "s.md")])
             kv = dict(line.split("=", 1) for line in out.read_text().splitlines())
-            self.assertEqual(kv["mode"], "reduced")
-            self.assertEqual(json.loads(kv["run"])["canary_dry_run"], False)
-            self.assertEqual(json.loads(kv["matrices"])["general_tests"], [{"group": "general-workspaces-a"}])
-            self.assertIn("skipped by plan", (Path(td) / "s.md").read_text())
+            self.assertEqual(kv["mode"], "full")
+            self.assertTrue(json.loads(kv["run"])["canary_dry_run"])
+            self.assertEqual(len(json.loads(kv["matrices"])["general_tests"]), 3)
+            self.assertIn("immutable scope checkout is required", (Path(td) / "s.md").read_text())
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 undeclared read (the RED case) while a declared one passes."""
 import io
 import json
+import os
+from unittest.mock import patch
 import subprocess
 import tempfile
 import unittest
@@ -23,6 +25,11 @@ CFG = {
 
 class EdgesTest(unittest.TestCase):
     def setUp(self):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
         self._td = tempfile.TemporaryDirectory()
         self.repo = Path(self._td.name)
         for d in ("services/a", "services/b", "scripts", ".github"):
@@ -73,6 +80,51 @@ class EdgesTest(unittest.TestCase):
         self.write_cfg(cfg)
         self.assertEqual(self.run_check()[0], 0)
 
+    def test_nearby_github_host_text_cannot_hide_a_local_reader(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["jobs"]["root"]["packages"] = ["b"]
+        for host in ("github.com", "github.com.invalid", "evilgithub.com"):
+            with self.subTest(host=host):
+                (self.repo / "services/a/app.py").write_text(f'url = "{host}"; DATA = "services/b/app.py"\n')
+                self.write_cfg(cfg)
+                self.assertEqual(self.run_check()[0], 1, "nearby host text must not suppress the local read")
+                cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
+                self.write_cfg(cfg)
+                self.assertEqual(self.run_check()[0], 0)
+                cfg["workspace"]["packages"]["a"]["deps"] = []
+
+
+    def test_unmapped_reader_is_unknown_not_an_empty_success(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["jobs"]["root"]["packages"] = ["b"]
+        self.write_cfg(cfg)
+        (self.repo / "other-tests").mkdir()
+        (self.repo / "other-tests/read.py").write_text('input = "services/a/app.py"\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        rc, output = self.run_check()
+        self.assertEqual(rc, 1)
+        self.assertIn("unmapped source readers", output)
+
+    def test_external_readers_require_an_actual_mapped_obligation(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["jobs"]["root"] = {"packages": ["b"]}
+        cfg["edge_scan"].pop("reader_job")
+        self.write_cfg(cfg)
+        rc, output = self.run_check()
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid declared reader job", output)
+        cfg["edge_scan"]["reader_job"] = "missing"
+        self.write_cfg(cfg)
+        self.assertEqual(self.run_check()[0], 1)
+        cfg["edge_scan"]["reader_job"] = "root"
+        cfg["jobs"]["root"] = "full_only"
+        self.write_cfg(cfg)
+        self.assertEqual(self.run_check()[0], 1)
+        for rule in ("always", {"packages": ["b"]}):
+            cfg["jobs"]["root"] = rule
+            self.write_cfg(cfg)
+            self.assertEqual(self.run_check()[0], 0)
+
     def test_component_joins_and_relative_paths_are_reads(self):
         (self.repo / "services/c").mkdir(parents=True)
         (self.repo / "services/c/test").mkdir()
@@ -93,6 +145,100 @@ class EdgesTest(unittest.TestCase):
         (self.repo / "services/c/test/x.src").write_text('local = "../fixtures/a.json"\n')
         deps, _ = E.scan(self.repo, cfg)
         self.assertEqual(deps["c"], set(), "a relative path inside its own package is not a cross-package read")
+
+
+    def pnpm_fixture(self):
+        packages = {"server": "server", "cli": "cli", "ui": "ui",
+                    "sdk": "packages/plugins/sdk", "plugin": "packages/plugins/plugin"}
+        (self.repo / "pnpm-workspace.yaml").write_text('packages:\n  - "server"\n  - "cli"\n  - "ui"\n  - "packages/plugins/*"\n')
+        for name, directory in packages.items():
+            path = self.repo / directory
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "package.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+        (self.repo / "server/test.ts").write_text('import "../cli/a.js";\n')
+        (self.repo / "cli/test.ts").write_text('import "../packages/plugins/sdk/index.js";\n')
+        (self.repo / "ui/test.ts").write_text('import "../server/index.js";\n')
+        nested = self.repo / "packages/plugins/plugin/src"
+        nested.mkdir()
+        (nested / "odd:name\nfile.ts").write_text('import "../../sdk/index.js";\n')
+        cfg = {"schema": 1, "workspace": {"type": "pnpm"},
+               "edge_scan": {"roots": ["server", "cli", "ui", "packages"]}, "jobs": {}}
+        self.write_cfg(cfg)
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        return cfg
+
+    def test_pnpm_nested_packages_and_cross_surface_test_readers_are_accounted(self):
+        cfg = self.pnpm_fixture()
+        deps, _ = E.scan(self.repo, cfg)
+        expected = {"server": {"cli"}, "cli": {"sdk"}, "ui": {"server"}, "plugin": {"sdk"}, "sdk": set()}
+        self.assertEqual(deps, expected)
+        self.assertEqual(self.run_check()[0], 1)
+        cfg["workspace"]["extra_deps"] = {name: sorted(values) for name, values in expected.items() if values}
+        self.write_cfg(cfg)
+        self.assertEqual(self.run_check()[0], 0)
+        # Planner and checker share the same graph, including test-only cross-package reads.
+        graph = E.workspace_graph(self.repo, cfg)
+        import plan
+        self.assertEqual(plan.reverse_closure(graph, {"sdk"}), {"sdk", "plugin", "cli", "server", "ui"})
+
+    def test_complete_nested_component_joins_preserve_reader_ownership(self):
+        cfg = self.pnpm_fixture()
+        cfg["edge_scan"].update(reader_dirs=["scripts"], reader_job="root")
+        cfg["workspace"]["extra_deps"] = {"server": ["cli"], "cli": ["sdk"], "ui": ["server"], "plugin": ["sdk"]}
+        cfg["jobs"]["root"] = {"packages": []}
+        for expression in (
+            'path.join(root, "packages", "plugins", "sdk", "index.js")',
+            'ROOT / "packages" / "plugins" / "sdk" / "index.js"',
+            'os.path.join(ROOT, "packages", "plugins/sdk", "index.js")',
+        ):
+            with self.subTest(expression=expression):
+                (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                self.write_cfg(cfg)
+                self.assertEqual(E.scan(self.repo, cfg)[1]["scripts"], {"sdk"})
+                self.assertEqual(self.run_check()[0], 1, "undeclared SDK reader must be red")
+                cfg["jobs"]["root"]["packages"] = ["sdk"]
+                self.write_cfg(cfg)
+                self.assertEqual(self.run_check()[0], 0)
+                cfg["jobs"]["root"]["packages"] = []
+
+    def test_unresolved_or_dynamic_workspace_component_joins_refuse(self):
+        cfg = self.pnpm_fixture()
+        for expression in (
+            'path.join(root, "packages", "plugins")',
+            'path.join(root, "packages", "plugins", "missing", "index.js")',
+            'path.join(root, "packages", pluginName, "index.js")',
+            'path.join(root, "packages", "plugins", "sdk", selectedFile)',
+            'ROOT / "packages" / pluginName',
+        ):
+            with self.subTest(expression=expression):
+                (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
+                    E.scan(self.repo, cfg)
+
+
+    def test_reader_scan_uses_immutable_revision_not_later_working_tree(self):
+        cfg = self.pnpm_fixture()
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "frozen source"], check=True)
+        revision = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        (self.repo / "server/test.ts").write_text("// later working-tree edit removes the reader\n")
+        deps, _ = E.scan(self.repo, cfg, revision=revision)
+        self.assertEqual(deps["server"], {"cli"})
+        self.assertEqual(E.scan(self.repo, cfg)[0]["server"], set())
+        with self.assertRaises(ValueError):
+            E.scan(self.repo, cfg, revision="main")
+
+    def test_unknown_declared_edge_and_duplicate_pnpm_name_are_not_ignored(self):
+        cfg = self.pnpm_fixture()
+        cfg["workspace"]["extra_deps"] = {"server": ["missing"]}
+        with self.assertRaises(ValueError):
+            E.workspace_graph(self.repo, cfg)
+        cfg["workspace"].pop("extra_deps")
+        (self.repo / "cli/package.json").write_text('{"name":"server"}')
+        with self.assertRaises(ValueError):
+            E.workspace_graph(self.repo, cfg)
 
 
 if __name__ == "__main__":

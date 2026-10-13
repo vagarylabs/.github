@@ -11,14 +11,17 @@
 #       matrices: ${{ steps.plan.outputs.matrices }}
 #       plan_id: ${{ steps.plan.outputs.plan_id }}
 #     steps:
+#       - uses: actions/checkout@<sha>
+#         with: {ref: "${{ github.sha }}", fetch-depth: 0}
 #       - id: plan
 #         uses: vagarylabs/.github/actions/change-impact-plan@<sha>
 #
 # and gate each job on the plan:
-#   if: ${{ !cancelled() && (needs.plan.outputs.mode == 'full' || fromJSON(needs.plan.outputs.run).e2e) }}
+#   if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'full' || fromJSON(needs.plan.outputs.run).e2e) }}
 # Always test `mode == 'full'` first: with no config the run map is empty, and full must still run everything.
-# A required check that the plan skips must still REPORT success, with "skipped by plan <plan_id>: <reason>"
-# in its summary; read the reason from `plan` (jobs.<id>.reason).
+# The required aggregator must account for every obligation. A policy-proven
+# inapplicable obligation is not an executed test; missing/blocked evidence fails.
+# Full plans use the caller's complete known roster even when config is absent.
 #
 # The script comes from this action's own ref (github.action_path), so pinning the action pins the planner.
 # The repo config (.github/ci-plan.json) is read from the PR's BASE commit, so a change cannot reduce its own
@@ -30,23 +33,26 @@ inputs:
     description: Plan config path, relative to the repository root.
     required: false
     default: .github/ci-plan.json
+  candidate-root:
+    description: Existing checkout of the exact event candidate, relative to the workspace. Missing objects widen the plan.
+    required: false
+    default: .
   token:
-    description: Token that can read the pull request's files (and, for reuse, actions artifacts).
+    description: Token for reading immutable base and tested source checkouts.
     required: false
     default: ${{ github.token }}
   reuse:
     description: >-
-      'true' lets a PUSH reuse a successful FULL run of the identical tree (receipt written by
-      actions/full-run-receipt). Never applies to schedule, release, dispatch or merge_group.
+      Compatibility input. Run-result reuse is not admitted by this action version;
+      every selected obligation must execute. Dependency caches are unaffected.
     required: false
     default: "false"
   edge-check:
     description: >-
-      'true' runs edges.py check against the job's existing full checkout of this repo ($GITHUB_WORKSPACE)
-      and FAILS the step when the tree reads a package the config does not declare. Requires a prior
-      actions/checkout of the candidate in the workspace root.
+      Check immutable candidate readers against base policy. Unknown or undeclared readers widen
+      to full validation; disabling this check also forces full. Requires the exact candidate checkout.
     required: false
-    default: "false"
+    default: "true"
 outputs:
   mode:
     description: full | reduced
@@ -69,11 +75,43 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Allocate attempt-local input state
+      id: state
+      shell: bash
+      run: |
+        set -euo pipefail
+        state=$(mktemp -d "$GITHUB_WORKSPACE/.ci-plan.XXXXXX")
+        echo "directory=$state" >> "$GITHUB_OUTPUT"
+        echo "relative=${state#"$GITHUB_WORKSPACE/"}" >> "$GITHUB_OUTPUT"
+    - name: Freeze canonical target before policy checkout
+      id: target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+        TARGET_REF: ${{ github.event.merge_group.base_ref }}
+        SERVER_URL: ${{ github.server_url }}
+        REPOSITORY: ${{ github.repository }}
+        EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+        CANDIDATE: ${{ github.sha }}
+        STATE: ${{ steps.state.outputs.directory }}
+      run: |
+        set -euo pipefail
+        python3 -I "$GITHUB_ACTION_PATH/plan.py" --resolve-target --config .github/ci-plan.json --root "$STATE/base" \
+          --event "$EVENT" --base "$BASE" --candidate "$CANDIDATE" --repository "$REPOSITORY" \
+          --event-repository "$EVENT_REPOSITORY" --target-ref "$TARGET_REF" --server-url "$SERVER_URL" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+          --out-json "$STATE/target.json" --github-output "$GITHUB_OUTPUT"
     - name: Base commit manifests and plan config (sparse)
+      id: policy
+      continue-on-error: true
+      if: ${{ steps.target.outputs.policy_ref != '' }}
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
-        ref: ${{ github.event.pull_request.base.sha || github.sha }}
-        path: .ci-plan-base
+        ref: ${{ steps.target.outputs.policy_ref }}
+        path: ${{ steps.state.outputs.relative }}/base
+        token: ${{ inputs.token }}
         fetch-depth: 1
         persist-credentials: false
         sparse-checkout-cone-mode: false
@@ -87,91 +125,84 @@ runs:
           /uv.lock
           **/package.json
           /.github/workflows/
-    - name: Tested commit (fallback config, lockfiles and workflows of the tree this run tests)
+    - name: Tested commit (lockfiles and workflows of the tree this run tests)
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         ref: ${{ github.sha }}
-        path: .ci-plan-tested
+        path: ${{ steps.state.outputs.relative }}/tested
+        token: ${{ inputs.token }}
         fetch-depth: 1
         persist-credentials: false
         sparse-checkout-cone-mode: false
         sparse-checkout: |
-          ${{ inputs.config }}
           /pnpm-lock.yaml
           /package-lock.json
           /yarn.lock
           /poetry.lock
           /uv.lock
           /.github/workflows/
-    - name: Tree of the tested commit, and a full-run receipt for it (push + reuse only)
+    - name: Assess immutable readers against the trusted base policy
+      id: readers
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
-        REPO: ${{ github.repository }}
-        SHA: ${{ github.sha }}
-        EVENT: ${{ github.event_name }}
-        REUSE: ${{ inputs.reuse }}
-        WORKFLOW_REF: ${{ github.workflow_ref }}
-      run: python3 "$GITHUB_ACTION_PATH/reuse.py" lookup
-    - name: Changed paths (every page, renames listed under both names; a short list plans full)
-      if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token }}
-        REPO: ${{ github.repository }}
-        PR: ${{ github.event.pull_request.number }}
-        REPORTED: ${{ github.event.pull_request.changed_files }}
+        CONFIG: ${{ inputs.config }}
+        STATE: ${{ steps.state.outputs.directory }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        CANDIDATE: ${{ github.sha }}
+        EDGE_CHECK: ${{ inputs.edge-check }}
+        POLICY_OUTCOME: ${{ steps.policy.outcome }}
       run: |
         set -euo pipefail
-        python3 - > "$RUNNER_TEMP/ci-plan-paths.txt" <<'PY'
-        import json, os, sys, urllib.request
-        paths, entries, page = [], 0, 1
-        while True:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{os.environ['REPO']}/pulls/{os.environ['PR']}/files?per_page=100&page={page}",
-                headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
-            batch = json.load(urllib.request.urlopen(req, timeout=30))
-            for f in batch:
-                entries += 1
-                paths.append(f["filename"])
-                if f.get("previous_filename"):
-                    paths.append(f["previous_filename"])
-            if len(batch) < 100:
-                break
-            page += 1
-        if entries != int(os.environ["REPORTED"]):
-            # The files API stops at 3,000 entries. An incomplete list must not be planned as if complete.
-            print(f"change-impact-plan: read {entries} files, PR reports {os.environ['REPORTED']}: planning full", file=sys.stderr)
-            sys.exit(0)
-        print("\n".join(paths))
-        PY
-        echo "changed paths: $(wc -l < "$RUNNER_TEMP/ci-plan-paths.txt")"
+        reason=""
+        if [ "$POLICY_OUTCOME" != success ]; then
+          reason="policy checkout unavailable; caller full roster required"
+        elif [ "$EDGE_CHECK" != true ]; then
+          reason="reader closure check disabled"
+        elif [ ! -f "$STATE/base/$CONFIG" ]; then
+          reason="no base policy; caller full roster required"
+        elif ! python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
+          --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE"; then
+          reason="reader closure unproven; full validation required"
+        fi
+        echo "force_full_reason=$reason" >> "$GITHUB_OUTPUT"
     - name: Plan
       id: plan
       shell: bash
       env:
         EVENT: ${{ github.event_name }}
-        BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         CONFIG: ${{ inputs.config }}
+        CANDIDATE: ${{ github.sha }}
+        REPOSITORY: ${{ github.repository }}
+        EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+        TARGET_REF: ${{ github.event.merge_group.base_ref }}
+        SERVER_URL: ${{ github.server_url }}
+        GH_TOKEN: ${{ inputs.token }}
+        POLICY_OUTCOME: ${{ steps.policy.outcome }}
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        STATE: ${{ steps.state.outputs.directory }}
+        FORCE_FULL_REASON: ${{ steps.readers.outputs.force_full_reason }}
       run: |
         set -euo pipefail
-        python3 "$GITHUB_ACTION_PATH/plan.py" \
-          --config "$CONFIG" --root .ci-plan-base --fallback-config ".ci-plan-tested/$CONFIG" \
-          --tree "$(cat "$RUNNER_TEMP/ci-plan-tree.txt")" --tested-root .ci-plan-tested \
-          --receipt "$RUNNER_TEMP/ci-plan-receipt.json" \
-          --paths-file "$RUNNER_TEMP/ci-plan-paths.txt" \
+        python3 -I "$GITHUB_ACTION_PATH/plan.py" \
+          --config "$CONFIG" --root "$STATE/base" \
+          --tested-root "$STATE/tested" --scope-root "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
+          --candidate "$CANDIDATE" --repository "$REPOSITORY" --event-repository "$EVENT_REPOSITORY" \
+          --target-ref "$TARGET_REF" --server-url "$SERVER_URL" --target-observation "$STATE/target.json" \
+          --policy-checkout-outcome "$POLICY_OUTCOME" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --force-full-reason "$FORCE_FULL_REASON" \
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
-          --out-json "$RUNNER_TEMP/ci-plan.json" \
+          --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
-        python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$RUNNER_TEMP/ci-plan.json"
-    - name: Undeclared-read drift (edges.py check on the candidate tree)
-      if: ${{ inputs.edge-check == 'true' }}
+        python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
+    - name: Remove attempt-local inputs
+      if: ${{ always() && steps.state.outputs.directory != '' }}
       shell: bash
       env:
-        CONFIG: ${{ inputs.config }}
-      run: python3 "$GITHUB_ACTION_PATH/edges.py" check --config "$CONFIG" --repo "$GITHUB_WORKSPACE"
-    - name: Remove the sparse checkouts
-      if: ${{ always() }}
-      shell: bash
-      run: rm -rf .ci-plan-base .ci-plan-tested
+        STATE: ${{ steps.state.outputs.directory }}
+      run: |
+        case "$STATE" in
+          "$GITHUB_WORKSPACE"/.ci-plan.*) rm -rf -- "$STATE" ;;
+          *) echo "refusing unexpected planner state path" >&2; exit 1 ;;
+        esac

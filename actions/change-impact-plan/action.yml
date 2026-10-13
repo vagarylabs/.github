@@ -67,7 +67,7 @@ outputs:
     description: JSON object, matrix name -> include list.
     value: ${{ steps.plan.outputs.matrices }}
   plan:
-    description: The full decision record (JSON).
+    description: The full decision record including information-only cumulative impact (JSON); impact grants no skip or reuse authority.
     value: ${{ steps.plan.outputs.plan }}
   tested:
     description: JSON identity of the tested tree (tree, lockfile and workflow hashes, planner version).
@@ -161,7 +161,8 @@ runs:
         elif [ ! -f "$STATE/base/$CONFIG" ]; then
           reason="no base policy; caller full roster required"
         elif ! python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
-          --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE"; then
+          --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE" \
+          --out-json "$STATE/readers.json"; then
           reason="reader closure unproven; full validation required"
         fi
         echo "force_full_reason=$reason" >> "$GITHUB_OUTPUT"
@@ -192,6 +193,7 @@ runs:
           --target-ref "$TARGET_REF" --server-url "$SERVER_URL" --target-observation "$STATE/target.json" \
           --policy-checkout-outcome "$POLICY_OUTCOME" \
           --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --force-full-reason "$FORCE_FULL_REASON" \
+          --reader-assessment "$STATE/readers.json" \
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
           --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null

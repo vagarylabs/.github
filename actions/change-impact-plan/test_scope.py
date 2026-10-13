@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import plan as P
+import edges as E
 
 
 class FrozenScope(unittest.TestCase):
@@ -98,7 +99,7 @@ class FrozenScope(unittest.TestCase):
 
 
     def canonical_plan(self, target=None, observation_changes=None, final_target=None, context_changes=None,
-                       policy_change=None, checkout="success"):
+                       policy_change=None, checkout="success", with_readers=False, reader_change=None):
         target = target or self.base
         number = getattr(self, "policy_number", 0) + 1
         self.policy_number = number
@@ -121,12 +122,147 @@ class FrozenScope(unittest.TestCase):
                 "--target-observation", str(observation_file), "--policy-checkout-outcome", checkout]
         for key, value in context.items():
             args += ["--" + key.replace("_", "-"), value]
+        if with_readers and (policy / ".github/ci-plan.json").is_file():
+            assessment_file = Path(self.temp.name) / f"readers-{number}.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                E.main(["check", "--config", str(policy / ".github/ci-plan.json"), "--repo", str(self.root),
+                        "--manifest-root", str(policy), "--revision", self.candidate, "--out-json", str(assessment_file)])
+            if reader_change:
+                record = json.loads(assessment_file.read_text())
+                reader_change(record)
+                record["assessment_sha256"] = P.canonical_digest({k: v for k, v in record.items() if k != "assessment_sha256"})
+                assessment_file.write_text(json.dumps(record))
+            args += ["--reader-assessment", str(assessment_file)]
         remote = final_target if final_target is not None else target
         with patch.object(P, "canonical_target", side_effect=remote if isinstance(remote, Exception) else None,
                           return_value=None if isinstance(remote, Exception) else remote) as final_read, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(P.main(args), 0)
         return json.loads(output.read_text()), final_read.call_count
+
+    def test_cumulative_impact_is_known_but_legacy_jobs_remain_full(self):
+        target = self.base
+        prefix = self.candidate
+        self.base = prefix
+        self.make_candidate("docs/readme.md", "docs tail\n")
+        result, _ = self.canonical_plan(target, with_readers=True)
+        impact = result["impact"]
+        self.assertEqual(result["mode"], "full")
+        self.assertTrue(result["requires_full_caller_roster"])
+        self.assertTrue(all(job["run"] for job in result["jobs"].values()))
+        self.assertEqual(impact["schema"], 1)
+        self.assertEqual(impact["status"], "known")
+        self.assertIs(impact["selection_authority"], False)
+        self.assertEqual(impact["affected_packages"], ["server"])
+        self.assertEqual(impact["affected_hubs"], ["server"])
+        self.assertEqual(impact["identity"]["diff_base"], target)
+        self.assertNotEqual(impact["identity"]["diff_base"], prefix)
+        self.assertEqual(impact["readers"]["status"], "matched")
+        self.assertEqual(impact["readers"]["coverage"], "supported-static-readers-only")
+        self.assertFalse(result["reuse"]["reused"])
+
+    def test_no_reader_assessment_is_unknown_not_empty_impact(self):
+        result, _ = self.canonical_plan()
+        self.assertEqual(result["impact"]["status"], "unknown")
+        self.assertIsNone(result["impact"]["affected_packages"])
+        self.assertEqual(result["mode"], "full")
+
+    def test_rehashed_reader_identity_or_roster_tampering_is_unknown(self):
+        for key, value in (("revision", self.head), ("policy_config_sha256", "0" * 64),
+                           ("graph_sha256", "0" * 64), ("scanner_source_sha256", "0" * 64),
+                           ("deps", {}), ("deps", None), ("readers", []), ("failures", None)):
+            with self.subTest(key=key):
+                result, _ = self.canonical_plan(with_readers=True, reader_change=lambda record: record.update({key: value}))
+                self.assertEqual(result["impact"]["status"], "unknown")
+                self.assertIsNone(result["impact"]["affected_packages"])
+                self.assertTrue(all(job["run"] for job in result["jobs"].values()))
+
+    def test_rehashed_reader_directory_deletion_or_unexpected_keys_cannot_claim_known_impact(self):
+        self.git("reset", "--hard", self.base)
+        self.cfg["edge_scan"] = {"reader_dirs": ["scripts"], "reader_job": "server_tests"}
+        self.config.write_text(json.dumps(self.cfg)); self.git("add", ".")
+        self.base = self.git("commit-tree", self.git("write-tree"), "-p", self.base, input=b"trusted reader directory\n")
+        self.make_candidate("ui/a.ts", "UI change\n")
+        result, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["impact"]["status"], "known")
+        for reader_map in ({}, {"scripts": [], "unexpected": []}, {"scripts": None},
+                           {"scripts": [], "<unmapped>": ["ui"]}):
+            with self.subTest(reader_map=reader_map):
+                # canonical_plan recomputes the real assessment hash after this mutation.
+                result, _ = self.canonical_plan(with_readers=True,
+                    reader_change=lambda record: record.update(readers=reader_map))
+                self.assertEqual(result["impact"]["status"], "unknown")
+                self.assertIsNone(result["impact"]["affected_packages"])
+                self.assertEqual(result["mode"], "full")
+                self.assertTrue(all(job["run"] for job in result["jobs"].values()))
+        result, _ = self.canonical_plan(with_readers=True,
+            reader_change=lambda record: record["readers"].update({"<unmapped>": []}))
+        self.assertEqual(result["impact"]["status"], "known")
+
+    def test_cumulative_impact_uses_real_declared_reader_reverse_closure(self):
+        self.git("reset", "--hard", self.base)
+        self.cfg["workspace"]["packages"]["server"]["deps"] = ["ui"]
+        self.config.write_text(json.dumps(self.cfg))
+        (self.root / "server/a.py").write_text('open("../ui/a.ts")\n')
+        self.git("add", ".")
+        self.base = self.git("commit-tree", self.git("write-tree"), "-p", self.base, input=b"trusted reader edge\n")
+        self.make_candidate("ui/a.ts", "changed UI\n")
+        result, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["impact"]["affected_packages"], ["server", "ui"])
+        self.assertEqual(result["impact"]["status"], "known")
+        # Remove the real declaration, retaining the actual read: the SAME edge scanner refuses it.
+        self.git("reset", "--hard", self.base)
+        self.cfg["workspace"]["packages"]["server"]["deps"] = []
+        self.config.write_text(json.dumps(self.cfg)); self.git("add", ".")
+        self.base = self.git("commit-tree", self.git("write-tree"), "-p", self.base, input=b"missing declared edge\n")
+        self.make_candidate("ui/a.ts", "changed UI again\n")
+        result, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["impact"]["status"], "unknown")
+        self.assertEqual(result["impact"]["readers"]["status"], "unmatched")
+        self.assertIsNone(result["impact"]["affected_packages"])
+
+    def test_global_unmapped_and_moved_target_never_claim_empty_known_impact(self):
+        for path in (".github/ci-plan.json", "unmapped.txt"):
+            text = self.config.read_text() + "\n" if path.endswith("ci-plan.json") else "unknown\n"
+            self.make_candidate(path, text)
+            result, _ = self.canonical_plan(with_readers=True)
+            impact = result["impact"]
+            self.assertEqual(impact["status"], "unknown")
+            self.assertIsNone(impact["affected_packages"])
+            self.assertTrue(impact["global_inputs"] or impact["unmapped_inputs"])
+        result, _ = self.canonical_plan(with_readers=True, final_target=self.head)
+        self.assertEqual(result["impact"]["status"], "unknown")
+        self.assertIsNone(result["impact"]["affected_packages"])
+
+    def test_only_proven_inert_cumulative_paths_can_have_known_empty_impact(self):
+        self.make_candidate("docs/readme.md", "docs only\n")
+        result, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["impact"]["status"], "known")
+        self.assertEqual(result["impact"]["affected_packages"], [])
+        self.assertEqual(result["mode"], "full")
+        self.git("reset", "--hard", self.base)
+        self.config.unlink(); self.git("add", "-A")
+        self.base = self.git("commit-tree", self.git("write-tree"), "-p", self.base, input=b"no trusted policy\n")
+        self.make_candidate("docs/readme.md", "no policy tail\n")
+        result, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["impact"]["status"], "unknown")
+        self.assertIsNone(result["impact"]["affected_packages"])
+
+    def test_impact_is_in_plan_id_domain_and_stable_for_same_inputs(self):
+        result, _ = self.canonical_plan(with_readers=True)
+        same, _ = self.canonical_plan(with_readers=True)
+        self.assertEqual(result["plan_id"], same["plan_id"])
+        for key, value in (("affected_packages", []), ("graph", {"sha256": "0" * 64}),
+                           ("readers", {"status": "unknown"}), ("identity", {}), ("status", "unknown")):
+            altered = json.loads(json.dumps(result)); altered["impact"][key] = value
+            P.bind_plan_id(altered)
+            self.assertNotEqual(altered["plan_id"], result["plan_id"])
+
+    def test_action_passes_same_attempt_reader_assessment_without_reuse_activation(self):
+        action = Path(P.__file__).with_name("action.yml").read_text()
+        self.assertIn('--out-json "$STATE/readers.json"', action)
+        self.assertIn('--reader-assessment "$STATE/readers.json"', action)
+        self.assertNotIn('--receipt ', action)
 
     def test_canonical_target_includes_runtime_prefix_when_event_base_is_docs_predecessor(self):
         target = self.base

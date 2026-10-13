@@ -26,3 +26,6 @@ shellcheck 0.11.0 https://github.com/koalaman/shellcheck/releases/download/v0.11
 # lychee: the release publishes no checksum file, so this pin is trust-on-first-use, recorded 2026-10-13
 # source: tofu: gh digest + 2 independent fetches (GitHub release-asset digest; Mac workstation; vl-bridge VM), all three agreed
 lychee 0.23.0 https://github.com/lycheeverse/lychee/releases/download/lychee-v0.23.0/lychee-x86_64-unknown-linux-gnu.tar.gz 1fcb6ccf10d04c22b8c5873c5b9cb7be32ee7423e12169d6f1a79a6f1962ef81
+# actionlint: official actionlint_1.7.7_checksums.txt of v1.7.7; downloaded archive verified against this pin
+# source: https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_checksums.txt
+actionlint 1.7.7 https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757

@@ -18,8 +18,31 @@ jobs:
       - name: actionlint
         run: |
           set -euo pipefail
-          bash <(curl -sSfL --retry 3 https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
-          ./actionlint -color
+          mapfile -t pins < <(awk '$1 == "actionlint" && $2 == "1.7.7" { print }' release-assets.lock)
+          [ "${#pins[@]}" -eq 1 ] || { echo "Expected one locked actionlint 1.7.7 asset" >&2; exit 1; }
+          read -r ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256 extra <<< "${pins[0]}"
+          [ -z "$extra" ] || { echo "Malformed actionlint lock entry" >&2; exit 1; }
+          export ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256
+          export ASSET_DEST="$RUNNER_TEMP/actionlint.tar.gz"
+          export RUNNER_TOOL_CACHE="$RUNNER_TEMP/actionlint-cache"
+          bash actions/fetch-release-asset/fetch.sh
+          mkdir -p "$RUNNER_TEMP/actionlint-bin"
+          tar -xzf "$ASSET_DEST" -C "$RUNNER_TEMP/actionlint-bin" actionlint
+          lint="$RUNNER_TEMP/actionlint-bin/actionlint"
+          invalid="$RUNNER_TEMP/actionlint-invalid.yml"
+          {
+            printf '%s\n' 'name: actionlint rejection control' 'on: workflow_dispatch' 'jobs:' \
+              '  proof:' '    runs-on: ubuntu-latest' '    steps:' \
+              '      - id: known_step' '        run: echo known' '      - name: invalid expression'
+            # Construct the expression as fixture data; the enclosing workflow must not evaluate it.
+            printf '        run: echo "%s{{ steps.proof_missing_step.outputs.value }}"\n' '$'
+          } > "$invalid"
+          negative_status=0
+          "$lint" -oneline "$invalid" > "$RUNNER_TEMP/actionlint-invalid.log" 2>&1 || negative_status=$?
+          [ "$negative_status" -eq 1 ] || { echo "Expected actionlint lint rejection, not a tool failure" >&2; exit 1; }
+          grep -F 'property "proof_missing_step" is not defined' "$RUNNER_TEMP/actionlint-invalid.log"
+          grep -F '[expression]' "$RUNNER_TEMP/actionlint-invalid.log"
+          "$lint" -color
 
   planner-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

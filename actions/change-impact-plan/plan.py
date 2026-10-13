@@ -2,7 +2,8 @@
 """Change-impact planner: decide which CI work a change can affect, deterministically.
 
 This is a DETERMINISTIC cognitive operator (cognition-ladder ruling, 2026-10-01): the same inputs always
-give the same plan, its confidence is 1.0, and the decision record carries a validity predicate. When the
+give the same plan. Determinism does not establish completeness of a declared dependency graph.
+The decision record carries a validity predicate. When the
 predicate's inputs change, the record is stale and the plan must be recomputed. Anything it cannot decide
 for certain becomes mode=full. It never skips silently: every skipped job carries a reason and the plan id.
 
@@ -27,9 +28,9 @@ Method (version PLANNER_VERSION)
      the workspace graph read from the manifests).
   5. Any `hub_packages` member affected => full.
   6. Otherwise each job and matrix entry runs iff its rule matches the affected set.
-  Reuse (v1.1): a PUSH whose tree has a receipt from a successful FULL run (actions/full-run-receipt) of the
-  identical tree, with equal lockfile and workflow hashes and the same planner version, plans `reused`:
-  every planned job is skipped with the run id as the reason. No other event ever reuses.
+  Canonical entrypoint v1.2 observes the frozen candidate with Git. Legacy --paths-file and
+  --receipt inputs never authorize reduced/reused execution. The historical receipt comparison
+  helper is retained for compatibility tests; the action/CLI do not admit run-result reuse.
 """
 from __future__ import annotations
 
@@ -38,11 +39,64 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-PLANNER_VERSION = "1.1.0"
+PLANNER_VERSION = "1.2.0"
 OPERATOR_ID = "ci.change-impact-plan"
+
+
+def immutable_scope(root: Path, *, event: str, base: str, head: str,
+                    candidate: str, repository: str) -> dict:
+    """Observe the frozen integration tree. Mutable refs and PR APIs are not inputs."""
+    result = {"schema": 1, "event": event, "repository": repository,
+              "base": base, "head": head, "candidate": candidate,
+              "tree": None, "paths": None, "status": "unknown"}
+
+    def git(*args):
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("GIT_")}
+        environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0",
+                           GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        return subprocess.check_output(
+            ["git", "--no-replace-objects", "-C", str(root), *args],
+            stderr=subprocess.PIPE, timeout=5, env=environment)
+
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            raise ValueError("missing repository identity")
+        for revision in (base, head, candidate):
+            if not re.fullmatch(r"[0-9a-f]{40}", revision) or revision == "0" * 40:
+                raise ValueError("missing immutable revision")
+            git("cat-file", "-e", revision + "^{commit}")
+        if git("rev-parse", "HEAD").decode().strip() != candidate:
+            raise ValueError("checkout differs from candidate")
+        # Read the object itself: a shallow graft must not erase its parent binding.
+        headers = git("cat-file", "-p", candidate).split(b"\n\n", 1)[0].splitlines()
+        parents = [line[7:].decode("ascii") for line in headers if line.startswith(b"parent ")]
+        if event == "pull_request":
+            if parents != [base, head]:
+                raise ValueError("event base/head differ from candidate parents")
+        elif event == "merge_group":
+            if head != candidate:
+                raise ValueError("merge group head differs from candidate")
+            git("merge-base", "--is-ancestor", base, candidate)
+        elif event == "push":
+            if head != candidate:
+                raise ValueError("push head differs from candidate")
+        else:
+            raise ValueError("unsupported event")
+        raw = git("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, candidate, "--")
+        if raw and not raw.endswith(b"\0"):
+            raise ValueError("incomplete path output")
+        paths = [value.decode("utf-8") for value in raw.split(b"\0") if value]
+        result.update(status="known", paths=paths,
+                      tree=git("rev-parse", candidate + "^{tree}").decode("ascii").strip())
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
+        # Git stderr may contain credential-bearing remote URLs.
+        result["reason"] = "immutable scope unavailable: " + type(error).__name__
+    return result
 
 # Paths that can change how CI itself, the dependency graph or the database behaves. Always full.
 BUILTIN_FULL_GLOBS = [
@@ -144,7 +198,7 @@ def read_pnpm_workspace_patterns(root: Path) -> list[str]:
     return patterns
 
 
-def discover_pnpm_packages(root: Path) -> dict[str, dict]:
+def discover_pnpm_packages(root: Path, extra_deps: dict | None = None) -> dict[str, dict]:
     patterns = read_pnpm_workspace_patterns(root)
     include = [p for p in patterns if not p.startswith("!")]
     exclude = [p[1:] for p in patterns if p.startswith("!")]
@@ -161,12 +215,21 @@ def discover_pnpm_packages(root: Path) -> dict[str, dict]:
         name = data.get("name")
         if not name:
             raise ValueError(f"{rel_dir}/package.json has no name")
+        if name in pkgs:
+            raise ValueError(f"duplicate workspace package name {name}")
         deps = set()
         for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
             deps.update((data.get(key) or {}).keys())
         pkgs[name] = {"dir": rel_dir, "deps": deps}
     for info in pkgs.values():
         info["deps"] = {d for d in info["deps"] if d in pkgs}
+    extra = extra_deps or {}
+    if set(extra) - set(pkgs):
+        raise ValueError("extra_deps names an undeclared workspace package")
+    for name, dependencies in extra.items():
+        if not isinstance(dependencies, list) or any(not isinstance(dep, str) or dep not in pkgs for dep in dependencies):
+            raise ValueError(f"extra_deps for {name} contains an undeclared dependency")
+        pkgs[name]["deps"].update(dependencies)
     return pkgs
 
 
@@ -211,6 +274,31 @@ def owner_package(path: str, pkgs: dict[str, dict]) -> str | None:
 
 # ---------- planning ----------
 
+def validate_selection_rules(cfg: dict, pkgs: dict[str, dict]) -> None:
+    """A misspelled obligation cannot become a successful empty package intersection."""
+    def validate(rule):
+        if isinstance(rule, str) and rule in ("always", "full_only", "any_package"):
+            return
+        if not isinstance(rule, dict) or len(rule) != 1 or not set(rule) <= {"packages", "any_except"}:
+            raise ValueError("invalid selection rule")
+        references = next(iter(rule.values()))
+        if not isinstance(references, list) or any(not isinstance(name, str) or name not in pkgs for name in references):
+            raise ValueError("selection rule references undeclared package")
+
+    jobs, matrices = cfg.get("jobs", {}), cfg.get("matrices", {})
+    if not isinstance(jobs, dict) or not isinstance(matrices, dict):
+        raise ValueError("invalid job or matrix selection policy")
+    for rule in jobs.values():
+        validate(rule)
+    for entries in matrices.values():
+        if not isinstance(entries, list):
+            raise ValueError("invalid matrix selection policy")
+        for entry in entries:
+            if not isinstance(entry, dict) or "include" not in entry or not isinstance(entry["include"], dict):
+                raise ValueError("invalid matrix entry")
+            validate(entry.get("rule", "always"))
+
+
 def rule_matches(rule, affected: set[str]) -> tuple[bool, str]:
     if rule == "always":
         return True, "always runs"
@@ -239,12 +327,15 @@ def validity_predicate(root: Path, config_path: Path, cfg: dict, base: str, head
             lockfiles[lf] = h
     return {
         "planner_version": PLANNER_VERSION,
+        "planner_source_sha256": sha256_file(Path(__file__)),
+        "action_source_sha256": sha256_file(Path(__file__).with_name("action.yml")),
+        "reader_source_sha256": sha256_file(Path(__file__).with_name("edges.py")),
         "config_sha256": sha256_file(config_path),
         "lockfiles_sha256": lockfiles,
         "workflows_sha256": sha256_tree(root, ".github/workflows"),
         "base": base,
         "head": head,
-        "holds_while": "planner_version, config, lockfiles and workflows at base are unchanged and head is the same commit",
+        "holds_while": "planner/action source, config, lockfiles, base workflows and bound event candidate observation are unchanged",
     }
 
 
@@ -282,8 +373,13 @@ def reuse_verdict(receipt: dict | None, tested: dict | None, event: str) -> tupl
 
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
-         tested: dict | None = None, receipt: dict | None = None) -> dict:
-    paths = sorted({p.strip() for p in (paths or []) if p.strip()})
+         tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None) -> dict:
+    if paths is not None and (not isinstance(paths, list) or any(
+            not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
+            or any(part in (".", "..") for part in p.split("/")) for p in paths)):
+        forced_full_reason = "invalid lossless path input"
+        paths = []
+    paths = sorted(set(paths or []))
     record = {
         "operator": OPERATOR_ID,
         "planner_version": PLANNER_VERSION,
@@ -294,15 +390,18 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
             "base": base,
             "head": head,
             "changed_paths": len(paths),
-            "paths_sha256": hashlib.sha256("\n".join(paths).encode()).hexdigest(),
+            "paths_sha256": hashlib.sha256(json.dumps(paths, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest(),
         },
         "evidence": {"full_triggers": [], "unmapped": [], "inert": [], "changed_packages": []},
         "affected_packages": [],
         "tested": tested,
+        "observation": {key: value for key, value in (scope or {}).items() if key != "paths"},
+        "requires_full_caller_roster": cfg is None,
     }
 
     def finish(mode: str, reason: str, affected: set[str] | None = None) -> dict:
         record["mode"] = mode
+        record["requires_full_caller_roster"] = mode == "full"
         record["reason"] = reason
         record["affected_packages"] = sorted(affected or [])
         jobs, matrices = {}, {}
@@ -331,13 +430,31 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         record["jobs"] = jobs
         record["matrices"] = matrices
         record["validity"] = validity_predicate(root, config_path, cfg or {}, base, head)
-        ident = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"], "e": event},
+        ident = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"], "e": event,
+                            "observation": record["observation"], "jobs": jobs, "matrices": matrices},
                            sort_keys=True)
         record["plan_id"] = hashlib.sha256(ident.encode()).hexdigest()[:12]
         return record
 
     reuse, why = reuse_verdict(receipt, tested, event)
     record["reuse"] = {"reused": reuse, "reason": why}
+
+    ws = (cfg or {}).get("workspace") or {"type": "none"}
+    try:
+        if ws.get("type") == "pnpm":
+            pkgs = discover_pnpm_packages(root, ws.get("extra_deps"))
+        elif ws.get("type") == "declared":
+            pkgs = declared_packages(ws)
+        elif ws.get("type") == "none":
+            pkgs = {}
+        else:
+            raise ValueError(f"unknown workspace type {ws.get('type')!r}")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return finish("full", f"workspace graph unreadable: {exc}")
+
+    if cfg is not None:
+        validate_selection_rules(cfg, pkgs)
+
     if reuse and cfg is not None and not forced_full_reason:
         return finish("reused", why)
     if forced_full_reason:
@@ -357,19 +474,6 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
     if triggers:
         return finish("full", f"{triggers[0]['path']} matches full trigger {triggers[0]['rule']}"
                       + (f" (+{len(triggers) - 1} more)" if len(triggers) > 1 else ""))
-
-    ws = cfg.get("workspace") or {"type": "none"}
-    try:
-        if ws.get("type") == "pnpm":
-            pkgs = discover_pnpm_packages(root)
-        elif ws.get("type") == "declared":
-            pkgs = declared_packages(ws)
-        elif ws.get("type") == "none":
-            pkgs = {}
-        else:
-            raise ValueError(f"unknown workspace type {ws.get('type')!r}")
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return finish("full", f"workspace graph unreadable: {exc}")
 
     inert_globs = list(cfg.get("inert_globs") or [])
     extra_edges = cfg.get("extra_edges") or {}
@@ -427,8 +531,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--root", required=True)
-    ap.add_argument("--fallback-config", help="head-commit config, used only to enumerate a FULL plan")
+    ap.add_argument("--fallback-config", help="deprecated compatibility input; never read")
     ap.add_argument("--paths-file")
+    ap.add_argument("--force-full-reason", help="trusted reader assessment can only widen obligations")
+    ap.add_argument("--scope-root", help="existing checkout of the exact event candidate")
+    ap.add_argument("--repository", default="")
+    ap.add_argument("--candidate", default="")
     ap.add_argument("--expected-count", type=int)
     ap.add_argument("--event", required=True)
     ap.add_argument("--base", default="")
@@ -443,25 +551,36 @@ def main(argv=None) -> int:
 
     root = Path(a.root)
     config_path = root / a.config
-    cfg, forced = None, None
+    cfg, forced = None, a.force_full_reason or None
     if config_path.is_file():
         cfg = json.loads(config_path.read_text())
         if cfg.get("schema") != 1:
             cfg, forced = None, f"plan config schema {cfg.get('schema')!r} is not 1"
-    elif a.fallback_config and Path(a.fallback_config).is_file():
-        # The base has no config (the adoption PR itself, or a base older than adoption). The head's config may
-        # only ENUMERATE the full suite; it never reduces anything, because a change must not plan itself.
-        cfg = json.loads(Path(a.fallback_config).read_text())
-        forced = "no plan config on the base commit (head config used only to list the full suite)"
-    paths = Path(a.paths_file).read_text().splitlines() if a.paths_file and os.path.exists(a.paths_file) else []
+    # The candidate cannot supply even a supposedly full roster. In an adoption
+    # PR, the caller must run its existing complete roster and verify every lane.
+    # --fallback-config remains accepted for callers migrating from v1.1, but is
+    # deliberately not read (including malformed/empty candidate files).
+    # Legacy line-delimited paths and receipts cannot authorize reduced execution.
+    # The canonical action supplies a checkout, never a caller-asserted path list.
+    scope = immutable_scope(Path(a.scope_root), event=a.event, base=a.base, head=a.head,
+                            candidate=a.candidate, repository=a.repository) if a.scope_root else {
+        "status": "unknown", "reason": "immutable scope checkout is required"}
+    if scope["status"] != "known":
+        forced = forced or scope["reason"]
+    paths = scope.get("paths")
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
-               tested=tested_identity(Path(a.tested_root) if a.tested_root else None, a.tree),
-               receipt=json.loads(Path(a.receipt).read_text()) if a.receipt and os.path.exists(a.receipt) else None)
+               tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
+               receipt=None, scope=scope)
     text = json.dumps(rec, indent=2, sort_keys=True)
     print(text)
     if a.out_json:
         Path(a.out_json).write_text(text + "\n")
+    if a.summary:
+        with open(a.summary, "a") as fh:
+            fh.write(summary_markdown(rec))
+    # Publish last. The caller must still require this step/job to succeed:
+    # filesystem failures can interrupt even a final output write.
     if a.github_output:
         run = {k: v["run"] for k, v in rec["jobs"].items()}
         mats = {k: v["include"] for k, v in rec["matrices"].items()}
@@ -471,9 +590,6 @@ def main(argv=None) -> int:
             fh.write(f"tested={json.dumps(rec.get('tested'), sort_keys=True, separators=(',', ':'))}\n")
             fh.write(f"run={json.dumps(run, separators=(',', ':'))}\n")
             fh.write(f"matrices={json.dumps(mats, separators=(',', ':'))}\n")
-    if a.summary:
-        with open(a.summary, "a") as fh:
-            fh.write(summary_markdown(rec))
     return 0
 
 

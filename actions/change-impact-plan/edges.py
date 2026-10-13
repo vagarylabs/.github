@@ -22,37 +22,73 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import posixpath
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from plan import declared_packages, discover_pnpm_packages
+
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
 
-def scan(repo: Path, cfg: dict) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def workspace_graph(root: Path, cfg: dict) -> dict[str, dict]:
+    workspace = cfg.get("workspace") or {}
+    if workspace.get("type") == "pnpm":
+        return discover_pnpm_packages(root, workspace.get("extra_deps"))
+    if workspace.get("type") == "declared":
+        return declared_packages(workspace)
+    raise ValueError("reader graph requires declared or pnpm workspace")
+
+
+def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
-    pkgs = (cfg.get("workspace") or {}).get("packages") or {}
+    pkgs = workspace_graph(manifest_root or repo, cfg)
     by_dir = {spec["dir"].rstrip("/"): name for name, spec in pkgs.items()}
+    ordered_dirs = sorted(by_dir, key=len, reverse=True)
+
+    def owner(path):
+        for directory in ordered_dirs:
+            if path == directory or path.startswith(directory + "/"):
+                return by_dir[directory]
+        return None
+
     alt = "|".join(re.escape(r) for r in roots)
     pattern = f"({alt})/[A-Za-z0-9_-]+|[\"']({alt})[\"']|\\.\\./"
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
-    out = subprocess.run(["git", "-C", str(repo), "grep", "-n", "-I", "-E", pattern, "--", ".", *excludes],
-                         capture_output=True, text=True)
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("reader scan revision must be an immutable commit")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
+                          *([revision] if revision else []), "--", ".", *excludes],
+                         capture_output=True, text=True, timeout=15, env=environment)
     if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed: {out.stderr.strip()}")
-    lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")/[A-Za-z0-9_-]+)")
-    join = re.compile(r"[\"'](" + alt + r")[\"']\s*[/,]\s*[\"']([A-Za-z0-9_-]+)[\"']")
+        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")
+    join_root = re.compile(r"[\"'](" + alt + r")[\"']")
+    component = re.compile(r"([\"'])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)\1")
     rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
     reader_dirs = set(es.get("reader_dirs") or [])
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
-    for line in out.stdout.splitlines():
-        path, _, text = line.split(":", 2)
+    remaining = out.stdout
+    while remaining:
+        path, separator, remaining = remaining.partition("\0")
+        number, second, remaining = remaining.partition("\0")
+        text, newline, remaining = remaining.partition("\n")
+        if not separator or not second or not number.isdigit():
+            raise ValueError("incomplete reader scan output")
+        if revision:
+            prefix = revision + ":"
+            if not path.startswith(prefix):
+                raise ValueError("reader scan revision mismatch")
+            path = path[len(prefix):]
         parts = path.split("/")
-        owner = by_dir.get("/".join(parts[:2])) or by_dir.get(parts[0])
+        reader = owner(path)
         t = text.strip()
         if t.startswith(COMMENT_PREFIXES):
             continue
@@ -60,18 +96,39 @@ def scan(repo: Path, cfg: dict) -> tuple[dict[str, set[str]], dict[str, set[str]
         for m in lit.finditer(t):
             if "github.com" in t[max(0, m.start() - 40):m.start()]:
                 continue
-            targets.add(by_dir.get(m.group(1)))
-        for m in join.finditer(t):
-            targets.add(by_dir.get(f"{m.group(1)}/{m.group(2)}"))
+            targets.add(owner(m.group(1)))
+        for m in join_root.finditer(t):
+            cursor, components = m.end(), [m.group(1)]
+            joined = False
+            while True:
+                separator = re.match(r"\s*([/,])\s*", t[cursor:])
+                if not separator:
+                    break
+                joined = True
+                cursor += separator.end()
+                part = component.match(t, cursor)
+                if part is None:
+                    raise ValueError(f"unsupported workspace-root reader expression in {path}")
+                components.append(part.group(2))
+                cursor = part.end()
+            # A root alone is metadata unless used as a path-construction argument.
+            constructed = re.search(r"(?:\.join|\.resolve|joinpath)\([^)]*$", t[:m.start()])
+            if joined or constructed:
+                resolved = posixpath.normpath("/".join(components))
+                target = owner(resolved)
+                if target is None or any(part in (".", "..") for item in components for part in item.split("/")):
+                    raise ValueError(f"unresolved workspace-root reader expression in {path}")
+                targets.add(target)
         for m in rel.finditer(t):
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))
-            rparts = resolved.split("/")
-            targets.add(by_dir.get("/".join(rparts[:2])) or by_dir.get(rparts[0]))
-        for target in targets - {None, owner}:
-            if owner:
-                deps[owner].add(target)
+            targets.add(owner(resolved))
+        for target in targets - {None, reader}:
+            if reader:
+                deps[reader].add(target)
             elif parts[0] in reader_dirs:
                 readers[parts[0]].add(target)
+            else:
+                readers.setdefault("<unmapped>", set()).add(target)
     return deps, readers
 
 
@@ -80,30 +137,41 @@ def main(argv=None) -> int:
     ap.add_argument("mode", choices=["derive", "check"])
     ap.add_argument("--config", required=True)
     ap.add_argument("--repo", default=".")
+    ap.add_argument("--manifest-root", help="trusted base workspace metadata")
+    ap.add_argument("--revision", help="immutable candidate commit for source reads")
     a = ap.parse_args(argv)
     repo = Path(a.repo)
     cfg = json.loads((repo / a.config).read_text())
-    deps, readers = scan(repo, cfg)
+    manifest_root = Path(a.manifest_root) if a.manifest_root else repo
+    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision)
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
                           "readers": {k: sorted(v) for k, v in sorted(readers.items())}}, indent=1))
         return 0
-    pkgs = cfg["workspace"]["packages"]
-    extra = (cfg["workspace"].get("extra_deps") or {})
+    pkgs = workspace_graph(manifest_root, cfg)
     failures, stale = [], []
+    if readers.get("<unmapped>"):
+        failures.append("unmapped source readers require a declared obligation: " + ", ".join(sorted(readers["<unmapped>"])))
     for name, found in deps.items():
-        declared = set(pkgs[name].get("deps") or []) | set(extra.get(name) or [])
+        declared = set(pkgs[name].get("deps") or [])
         for t in sorted(found - declared):
             failures.append(f"undeclared read: {name} reads {t} (add it to workspace.packages.{name}.deps)")
         for t in sorted(set(pkgs[name].get("deps") or []) - found):
             stale.append(f"stale dep: {name} -> {t} (no read found; safe, only runs more)")
     es = cfg.get("edge_scan") or {}
     job = es.get("reader_job")
-    if job:
-        listed = set(((cfg.get("jobs") or {}).get(job) or {}).get("packages") or [])
-        for d, found in readers.items():
-            for t in sorted(found - listed):
-                failures.append(f"{d}/ reads {t}, but job '{job}' does not list it")
+    for directory, found in readers.items():
+        if not found or directory == "<unmapped>":
+            continue
+        rule = (cfg.get("jobs") or {}).get(job) if job else None
+        if rule == "always":
+            continue
+        listed = rule.get("packages") if isinstance(rule, dict) else None
+        if not isinstance(listed, list) or any(not isinstance(name, str) or name not in pkgs for name in listed):
+            failures.append(f"{directory}/ has source readers but no valid declared reader job")
+            continue
+        for target in sorted(found - set(listed)):
+            failures.append(f"{directory}/ reads {target}, but job '{job}' does not list it")
     for s in stale:
         print(s)
     for f in failures:

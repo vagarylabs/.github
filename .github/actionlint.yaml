@@ -1,0 +1,5 @@
+# Self-hosted runner labels used by the trusted ruleset workflows (bridge runners on the mini-PC).
+self-hosted-runner:
+  labels:
+    - vl-light
+    - vl-bridge

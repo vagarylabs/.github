@@ -1,0 +1,51 @@
+# trusted-workflow-integrity: an org-ruleset REQUIRED WORKFLOW ("Require workflows to pass before merging").
+# GENERATED from trusted/templates/trusted-workflow-integrity.yml.in by `python3 trusted/render.py`; edit the template.
+#
+# Runs from the ruleset's pinned vagarylabs/.github SHA in the TARGET repository's context. The manifest and
+# classifier below are byte-identical inline copies of trusted/manifest.json and trusted/classify.py (the CI
+# job trusted-tests fails on drift), so the pinned workflow bytes are the whole trust root: nothing is read
+# from the PR except as data, through `git show <sha>:<path>`, and nothing from the PR is executed.
+#
+# Contract: BLOCKS only on integrity errors (a base or head that is not an exact resolvable SHA, an invalid
+# manifest, a ratchet file that does not parse). Every change to a declared protected workflow, protected path
+# or ratchet constant is REPORTED (job summary + notice annotation) as a protected-path change; deciding on it
+# is trusted-protected-paths' job. Ratchet constants are compared against the base side with ast.parse (parsed,
+# never executed), not against the constants the PR's own checkout carries.
+name: trusted-workflow-integrity
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  trusted-workflow-integrity:
+    name: trusted-workflow-integrity
+    # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
+    if: github.repository != 'vagarylabs/.github'
+    # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
+    runs-on: [self-hosted, Linux, X64, vl-light]
+    timeout-minutes: 10
+    steps:
+{{INCLUDE:_shas.yml.in}}
+      - name: Classify against BASE (integrity)
+        env:
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
+          python3 -I "$d/classify.py" integrity --manifest "$d/manifest.json" \
+            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"

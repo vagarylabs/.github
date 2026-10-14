@@ -1,0 +1,55 @@
+# trusted-protected-paths: an org-ruleset REQUIRED WORKFLOW ("Require workflows to pass before merging").
+# GENERATED from trusted/templates/trusted-protected-paths.yml.in by `python3 trusted/render.py`; edit the template.
+#
+# Runs from the ruleset's pinned vagarylabs/.github SHA in the TARGET repository's context. The manifest and
+# classifier below are byte-identical inline copies of trusted/manifest.json and trusted/classify.py (the CI
+# job trusted-tests fails on drift), so the pinned workflow bytes are the whole trust root: nothing is read
+# from the PR except as data, through `git show <sha>:<path>`, and nothing from the PR is executed.
+#
+# Contract: classifies changed paths into protected classes (ci-judge, release, iac, authority-binding) and asks
+# verify_vagaris_approval() for the Vagaris signed approval (the G-23 seam).
+#
+# INTERIM EXCEPTION (the single one in this set): verify_vagaris_approval() returns "not-yet-available" and
+# INTERIM_REPORT_ONLY is True, so this job REPORTS (job summary + neutral notice) and does NOT block. One org
+# account cannot approve its own PR, and a blocking gate would deadlock every protected IaC change.
+# THE SWITCH: in trusted/classify.py, implement verify_vagaris_approval() so it can return "verified", and set
+# INTERIM_REPORT_ONLY = False in the same PR. From then on "not-yet-available", "missing" and "denied" fail the
+# job; root re-pins the ruleset to that merge SHA.
+name: trusted-protected-paths
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  trusted-protected-paths:
+    name: trusted-protected-paths
+    # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
+    if: github.repository != 'vagarylabs/.github'
+    # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
+    runs-on: [self-hosted, Linux, X64, vl-light]
+    timeout-minutes: 10
+    steps:
+{{INCLUDE:_shas.yml.in}}
+      - name: Classify against BASE (protected-paths)
+        env:
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
+          python3 -I "$d/classify.py" protected-paths --manifest "$d/manifest.json" \
+            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"

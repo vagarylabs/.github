@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "default": {
+    "protected": [
+      {"class": "ci-judge", "patterns": [".github/workflows/*", ".github/actions/**", ".gitleaks.toml", ".gitleaksignore"]}
+    ],
+    "ratchet_files": []
+  },
+  "repos": {
+    "vagarylabs/vps-ansible": {
+      "protected": [
+        {"class": "ci-judge", "patterns": [".github/workflows/*", ".gitleaks.toml", "scripts/test-ci-hosted-routing.py"]},
+        {"class": "release", "patterns": ["scripts/test-*-release-runner.py", "playbooks/build-cell-*-release-runner.yml"]},
+        {"class": "iac", "patterns": ["roles/**"]},
+        {"class": "authority-binding", "patterns": ["scripts/build-controller/source-delivery-binding.json", "scripts/build-controller/github-apps.json"]}
+      ],
+      "ratchet_files": ["scripts/test-ci-hosted-routing.py"]
+    }
+  }
+}

@@ -63,3 +63,13 @@ jobs:
           persist-credentials: false
       - name: fetch-release-asset tests (curl stubbed; private temp cache) and release-assets.lock lint
         run: bash actions/fetch-release-asset/test_fetch.sh
+
+  trusted-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: trusted ruleset workflows (manifest, classifier, render drift, invariants)
+        run: python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v

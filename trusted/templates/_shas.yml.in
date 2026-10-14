@@ -1,0 +1,39 @@
+      # The PR is DATA: exact SHAs come from the event payload, never from the PR's files.
+      - name: Resolve exact base and head SHAs
+        id: shas
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
+            *) echo "::error::unsupported event $EVENT (ruleset workflows run on pull_request and merge_group)"; exit 1 ;;
+          esac
+          [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected exact 40-hex base and head SHAs"; exit 1; }
+          { echo "base=$base"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
+      - name: Check out the PR head as data (no credentials kept, nothing executed)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.shas.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind base, head and merge-base in the local object store
+        id: mb
+        env:
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          # fetch-depth 0 brought every branch; a base it did not bring fails closed (no credentials kept to refetch).
+          git cat-file -e "${BASE}^{commit}" || { echo "::error::base $BASE is not in the fetched history"; exit 1; }
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || { echo "::error::checkout is not the PR head"; exit 1; }
+          mb="$(git merge-base "$BASE" "$HEAD_SHA")"
+          [[ "$mb" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no merge-base for $BASE and $HEAD_SHA"; exit 1; }
+          echo "merge_base=$mb" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE head=$HEAD_SHA merge-base=$mb commits=$(git rev-list --count "$mb..$HEAD_SHA")"

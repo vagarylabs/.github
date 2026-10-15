@@ -755,7 +755,7 @@ class HermeticTest(unittest.TestCase):
         with open(driver, "w") as fh:
             fh.write("import os, signal, sys\nsys.path.insert(0, %r)\nimport srcstats\n%s\n"
                      "sys.exit(srcstats.main(['after']))\n" % (HERE, body))
-        proc = subprocess.Popen([sys.executable, driver], env=self.job.env(**extra), stdout=subprocess.DEVNULL,
+        proc = subprocess.Popen([sys.executable, "-B", driver], env=self.job.env(**extra), stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
         try:
             if wait:

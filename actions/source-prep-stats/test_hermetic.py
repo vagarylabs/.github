@@ -329,6 +329,30 @@ class HermeticTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 dogfood_check.main(["record", "depth0", text, fixture])
 
+    def test_dogfood_record_check_reports_an_unmeasured_git_dir_size(self):
+        """A record whose git_dir_bytes_after is null (a walk ran out of time) fails the du check with a message;
+        the check used to raise TypeError on None - int before it could report."""
+        import dogfood_check
+        r = self.job.prepare(self.url, "dogfood-null")
+        r["bytes_detail"]["git_dir_bytes_after"] = None
+        r["unknown"]["git_dir_bytes"] = srcstats.WALK_TIMED_OUT
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [], "positive control: a valid record")
+        real_run = subprocess.run
+
+        def gnu_du_94(argv, *args, **kwargs):
+            if list(argv[:1]) != ["du"]:
+                return real_run(argv, *args, **kwargs)
+            if list(argv[1:]) == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, "du (GNU coreutils) 9.4\n", "")
+            return subprocess.CompletedProcess(argv, 0, "4096\t%s\n" % argv[-1], "")
+
+        printed = io.StringIO()
+        with mock.patch.object(dogfood_check.subprocess, "run", gnu_du_94), contextlib.redirect_stdout(printed), \
+                self.assertRaises(SystemExit) as failed:
+            dogfood_check.main(["record", "depth0", json.dumps(r), os.path.join(self.job.ws, "dogfood-null")])
+        self.assertEqual(failed.exception.code, 1)
+        self.assertRegex(printed.getvalue(), r"FAIL git_dir_bytes measured and du -sb \.git non-zero \(4096\)")
+
     def test_planted_trace_strings_reach_no_published_output(self):
         """A credential-bearing URL in every free-text trace field: the record carries "other" for the two
         published trace strings, and the URL is in no output, log, summary or file left under the job."""

@@ -80,7 +80,7 @@ Both schemas are drafts. Their canonical home is `vagary-core` `contracts/delive
 python3 -m unittest discover -s actions/source-prep-stats -p 'test_*.py' -v
 ```
 
-- `test_trace2.py` pins the trace reading on real, sanitized git traces in `fixtures/trace2` and on synthetic edge cases. Regenerate the fixtures with `fixtures/make_trace2_fixtures.py`.
+- `test_trace2.py` pins the trace reading on real, sanitized git traces in `fixtures/trace2` and on synthetic edge cases. Regenerate the fixtures with `fixtures/make_trace2_fixtures.py`. It bounds the summary's work by counting operations, never by wall-clock time, so runner load cannot fail it; the wall-clock time is printed as a report and gates nothing.
 - `test_hermetic.py` runs a local smart-HTTP git server with a 429 injector. It drives the same git sequence as `actions/checkout`, through the action's own entry points. It checks that:
   - bytes match the server's pack within 5%;
   - the injector's 429 counts as one throttle hit and one retry;

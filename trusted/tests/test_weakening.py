@@ -704,6 +704,34 @@ class IntegrityReportTests(unittest.TestCase):
         self.assertEqual({f["detail"] for f in findings[classify.WEAKENING_MAX_LISTED:]},
                          {"adds `continue-on-error: true`"})
 
+    def test_red_finding_cap_stops_the_scan_as_incomplete(self):
+        # Red on 108ff47: no cap, so findings (and memory: 1.9 MB of `it.skip(` made 243k) followed the PR's size.
+        files = {"src/f1.test.ts": "it.skip('a', () => {})\n" * 8, "src/f2.test.ts": "it.skip('b', () => {})\n" * 8,
+                 "src/f3.test.ts": "it.skip('c', () => {})\n"}
+        head = self.repo.case(files)
+        with mock.patch.object(classify, "WEAKENING_MAX_FINDINGS", 10, create=True):
+            findings, incomplete, in_scope = self.repo.scan(head)
+        self.assertEqual((len(findings), in_scope), (16, 3))
+        self.assertEqual(incomplete, ["the 10-finding cap was reached after 2 of 3 files in scope; the rest were not "
+                                      "scanned"])
+        # Control: reaching the cap on the LAST file leaves nothing unscanned, so the scan is complete.
+        with mock.patch.object(classify, "WEAKENING_MAX_FINDINGS", 17, create=True):
+            findings, incomplete, _ = self.repo.scan(head)
+        self.assertEqual((len(findings), incomplete), (17, []))
+
+    def test_red_incomplete_listing_is_bounded_and_keeps_scan_wide_reasons(self):
+        head = self.repo.case({"src/g%d.test.ts" % i: "it('g%d', () => {})\n" % i for i in range(7)})
+        with mock.patch.object(classify, "WEAKENING_MAX_PATCH_BYTES", 10), \
+                mock.patch.object(classify, "WEAKENING_MAX_FILES", 6), \
+                mock.patch.object(classify, "WEAKENING_MAX_LISTED", 3):
+            code, out = self.repo.integrity(head)
+        self.assertEqual(code, 0, out)
+        reasons = [l for l in out.splitlines() if l.startswith("- INCOMPLETE: ")]
+        self.assertEqual(reasons, ["- INCOMPLETE: 7 files in scope; only the first 6 were scanned",
+                                   "- INCOMPLETE: `src/g0.test.ts`: diff larger than 10 bytes, not scanned",
+                                   "- INCOMPLETE: `src/g1.test.ts`: diff larger than 10 bytes, not scanned",
+                                   "- INCOMPLETE: ... and 4 more per-file reasons"])
+
     def test_file_cap_is_incomplete(self):
         head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n", "src/d.test.ts": "it('d', () => {})\n"})
         with mock.patch.object(classify, "WEAKENING_MAX_FILES", 1):

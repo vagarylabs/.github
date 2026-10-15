@@ -301,6 +301,7 @@ jobs:
           WEAKENING_DEADLINE_SECONDS = 120   # the whole scan, every git call included; the job's own timeout is 10 minutes
           WEAKENING_MAX_LISTED = 200        # findings listed; only these are enriched from the head file and given refs
           WEAKENING_MAX_REFS = 5             # references named per finding; the rest are counted
+          WEAKENING_MAX_FINDINGS = 5000      # findings kept; reaching it stops the scan after that file: INCOMPLETE
           WEAKENING_MAX_WALK = 10000         # lines coe_level walks up to a step or job (the fleet's longest workflow: 3234)
           WEAKENING_MAX_ANNOTATIONS = 8      # GitHub keeps 10 warnings per step: 2 stay free for the pointers below
 
@@ -1028,6 +1029,8 @@ jobs:
           def _stop_reason(kind):
               if kind == "time":
                   return "the %ds scan budget ran out" % WEAKENING_DEADLINE_SECONDS
+              if kind == "findings":
+                  return "the %d-finding cap was reached" % WEAKENING_MAX_FINDINGS
               return "the %d-byte read budget ran out" % WEAKENING_MAX_TOTAL_BYTES
 
 
@@ -1107,23 +1110,33 @@ jobs:
               return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
 
 
-          def scan_patches(budget, mb, head, scoped, todo, results, incomplete):
-              """Fill results[i] for every i in todo; the budget's stop kind, or None when every file was read.
+          def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room):
+              """Fill results[i] for every i in todo; the stop kind, or None when every file was read. Once the files scanned hold
+              room findings, the next file stops the scan ("findings"): a PR of `it.skip(` makes ~125k findings per MB of diff.
 
               The files are read from ONE streamed git diff (per pathspec batch), and a section is bound to its file only by
               its exact expected header. A path git quotes (control or non-ASCII bytes) or a rename paired differently in
               the narrower pathspec is not bound, and that file is diffed on its own afterwards.
               """
-              want = {}
+              want, kept = {}, [0]
               for i in todo:
                   want.setdefault("diff --git a/%s b/%s" % (scoped[i][1], scoped[i][2]), i)
+
+              def scan(i, patch):
+                  if kept[0] >= room:
+                      raise Exhausted("findings")
+                  results[i] = scan_file(scoped[i], patch, incomplete)
+                  kept[0] += len(results[i])
               try:
                   for batch in pathspec_batches([(i, {scoped[i][1], scoped[i][2]}) for i in todo]):
                       chunks = git_chunks(budget, diff_args(mb, head, {p for _, ps in batch for p in ps}))
-                      for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
-                          i = want.get(header)
-                          if i is not None and i not in results:
-                              results[i] = scan_file(scoped[i], patch, incomplete)
+                      try:
+                          for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
+                              i = want.get(header)
+                              if i is not None and i not in results:
+                                  scan(i, patch)
+                      finally:
+                          chunks.close()  # kills git now, also on an early stop
                   for i in todo:
                       if i in results:
                           continue
@@ -1134,7 +1147,7 @@ jobs:
                           if exc.kind != "cap":
                               raise
                           patch = None
-                      results[i] = scan_file(scoped[i], patch, incomplete)
+                      scan(i, patch)
               except Exhausted as exc:
                   return exc.kind
               return None
@@ -1179,7 +1192,7 @@ jobs:
                           results[i] = []
                       else:
                           todo.append(i)
-                  stop = scan_patches(budget, mb, head, scoped, todo, results, incomplete)
+                  stop = scan_patches(budget, mb, head, scoped, todo, results, incomplete, WEAKENING_MAX_FINDINGS - len(findings))
               if stop:
                   incomplete.append("%s after %d of %d files in scope; the rest were not scanned"
                                     % (_stop_reason(stop), len(results), in_scope))
@@ -1227,6 +1240,12 @@ jobs:
               if len(findings) > WEAKENING_MAX_ANNOTATIONS:
                   print("::warning title=test weakening (FL-4)::%d more findings in the job summary"
                         % (len(findings) - WEAKENING_MAX_ANNOTATIONS))
+              if len(incomplete) > WEAKENING_MAX_LISTED:
+                  # Per-file reasons start with the file's path; the scan-wide ones (a stop, a cap) are always listed.
+                  scan_wide = [r for r in incomplete if not r.startswith("`")]
+                  per_file = [r for r in incomplete if r.startswith("`")]
+                  shown = per_file[: max(WEAKENING_MAX_LISTED - len(scan_wide), 0)]
+                  incomplete = scan_wide + shown + ["... and %d more per-file reasons" % (len(per_file) - len(shown))]
               for reason in incomplete:
                   lines.append("- INCOMPLETE: %s" % reason)
               if incomplete:

@@ -48,8 +48,9 @@ Optional inputs:
 | `shallow`, `partial`, `filter`, `sparse`, `sparse_cone`, `sparse_patterns`, `sparse_patterns_sha256` | Read from the repository after the checkout. The `requested` block shows what was asked for. Requested and observed can differ: sparse implies `blob:none`. |
 | `files_materialised`, `files_skipped` | Index entries written to disk and entries marked skip-worktree. |
 | `checkout.seconds` | Wall time of the checkout step. `transfer.fetch_seconds` is git's own time for the top-level fetches. |
-| `retries` | Failed fetch attempts that were followed by an identical attempt, which is how `actions/checkout` retries. |
-| `throttle_hits` | Fetch attempts that hit HTTP 429, "Too Many Requests" or a (secondary) rate limit. One attempt counts once, however many of its processes reported it. |
+| `retries` | Failed fetch attempts that were followed by an identical attempt, which is how `actions/checkout` retries. git's own HTTP 429 retries (`http.maxRetries`, git 2.54+, off by default) are not attempts; they show in `transfer.http_429_responses`. |
+| `throttle_hits` | Fetch attempts that hit HTTP 429, "Too Many Requests" or a (secondary) rate limit, whether git reported it as an error or (2.54+) as traced 429 data. One attempt counts once, however many of its processes reported it. |
+| `transfer.http_429_responses` | Every 429 response git received, including ones it retried itself. `null` before git 2.54, which does not report them. |
 | `transfer.lazy_fetches`, `lazy_objects` | Promisor (partial clone) fetches during the checkout and the objects they brought. |
 | `transfer.protocol_version`, `negotiation_rounds`, `haves_sent`, `filter_effective` | The fetch negotiation summary from trace2. |
 | `warm` | Whether a repository with objects was already at the path (persistent runners). |

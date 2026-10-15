@@ -469,6 +469,14 @@
             "string",
             "null"
           ]
+        },
+        "http_429_responses": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "HTTP 429 responses git received, including ones it retried itself (http.maxRetries). Null before git 2.54, which does not report them."
         }
       },
       "required": [
@@ -477,6 +485,7 @@
         "fetch_seconds",
         "filter_effective",
         "haves_sent",
+        "http_429_responses",
         "lazy_fetch_failures",
         "lazy_fetches",
         "lazy_objects",

@@ -19,8 +19,8 @@ ROOT = "20261015T000000.000000Z-H00000000-P"
 
 
 def proc(sid, name, hierarchy, argv, code=0, t=0.5, at="2026-10-15T00:00:00.000000Z", errors=(), data=(),
-         exited=True):
-    events = [{"event": "version", "sid": sid, "evt": "4", "exe": "2.50.1"},
+         exited=True, exe="2.50.1"):
+    events = [{"event": "version", "sid": sid, "evt": "4", "exe": exe},
               {"event": "start", "sid": sid, "argv": ["git"] + argv, "time": at, "t_abs": 0.0},
               {"event": "cmd_name", "sid": sid, "name": name, "hierarchy": hierarchy}]
     events += [{"event": "error", "sid": sid, "msg": m, "fmt": "%s"} for m in errors]
@@ -48,7 +48,7 @@ class Trace:
     @staticmethod
     def assert_no_raw(s):
         text = json.dumps(s)
-        for leak in ("127.0.0.1", "http", "argv", "unable to access", "/fixture"):
+        for leak in ("127.0.0.1", "http://", "https://", "argv", "unable to access", "/fixture"):
             assert leak not in text, "raw trace content leaked into the summary: %s" % leak
 
     def close(self):
@@ -113,6 +113,26 @@ class SyntheticTests(unittest.TestCase):
         self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"], s["throttle_hits"]),
                          (3, 2, 2, 2))
         self.assertEqual(s["fetch_seconds"], 1.5)
+
+    def test_git_2_54_internal_429_retries_count_as_throttling(self):
+        # http.maxRetries > 0: remote-curl got two 429s, retried them itself and succeeded. No error event.
+        a = ROOT + "1"
+        self.t.add(proc(a, "fetch", "fetch", FETCH, exe="2.54.0"))
+        self.t.add(proc(a + "/x", "remote-curl", "fetch/_run_dashed_/remote-curl", ["remote-https", "origin", "u"],
+                        exe="2.54.0", data=[("http", "http/429-retry-after", "0"), ("http", "http/429-retry-after", "0"),
+                                            ("http", "http/429-retry-source", "config-default")]))
+        s, _ = self.t.summary()
+        self.assertEqual((s["throttle_hits"], s["http_429_responses"], s["failed_fetch_attempts"]), (1, 2, 0))
+
+    def test_429_responses_are_unknown_before_git_2_54(self):
+        self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
+        s, _ = self.t.summary()
+        self.assertIsNone(s["http_429_responses"], "git 2.50 does not report each 429: unknown, not 0")
+
+    def test_429_responses_are_a_measured_zero_on_git_2_54(self):
+        self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH, exe="2.54.1"))
+        s, _ = self.t.summary()
+        self.assertEqual(s["http_429_responses"], 0)
 
     def test_other_errors_are_not_throttling(self):
         self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH, code=128, errors=["repository not found (port 4290)"]))

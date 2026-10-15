@@ -35,6 +35,7 @@ FETCH_FAMILY = {"fetch", "clone", "fetch-pack", "pull"}
 SERVER_SIDE = {"upload-pack", "http-backend", "receive-pack", "upload-archive"}
 THROTTLE_RE = re.compile(r"\b429\b|too many requests|rate[ -]?limit", re.I)
 PACK_HEADER_RE = re.compile(r"^--pack_header=\d+,(\d+)$")
+HTTP_429_SINCE = (2, 54)  # git >= 2.54 traces every 429 response (http/429-retry-after), retried or not
 LAZY_MARK = "fetch.negotiationAlgorithm=noop"  # promisor-remote.c runs lazy fetches as `git -c <this> fetch ... --stdin`
 DEFAULT_WALK_BUDGET = 20.0
 STRIP_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
@@ -73,9 +74,11 @@ def read_trace(trace_dir):
                     continue
                 p = procs.setdefault(ev["sid"], {
                     "sid": ev["sid"], "argv": [], "name": None, "hierarchy": "", "started": False, "exited": False,
-                    "code": None, "t_abs": None, "time": None, "throttled": False, "data": []})
+                    "code": None, "t_abs": None, "time": None, "throttled": False, "data": [], "exe": None})
                 kind = ev.get("event")
-                if kind == "start":
+                if kind == "version":
+                    p["exe"] = ev.get("exe")
+                elif kind == "start":
                     p["started"], p["argv"], p["time"] = True, list(ev.get("argv") or []), ev.get("time")
                 elif kind == "cmd_name":
                     p["name"], p["hierarchy"] = ev.get("name"), ev.get("hierarchy") or ""
@@ -88,6 +91,9 @@ def read_trace(trace_dir):
                         p["throttled"] = True
                 elif kind == "data":
                     p["data"].append((ev.get("category"), ev.get("key"), ev.get("value")))
+                    # git >= 2.54 reports each 429 as data, including ones it retried itself (http.maxRetries)
+                    if ev.get("category") == "http" and str(ev.get("key", "")).startswith("http/429"):
+                        p["throttled"] = True
     return procs, bad_lines
 
 
@@ -109,6 +115,16 @@ def summarize_trace(trace_dir):
     def ancestors(sid):
         parts = sid.split("/")
         return ["/".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]  # nearest first
+
+    def version(p):
+        m = re.match(r"(\d+)\.(\d+)", str(p["exe"] or ""))
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    versions = [version(p) for p in client.values()]
+    responses_429 = None
+    if versions and all(v is not None and v >= HTTP_429_SINCE for v in versions):
+        responses_429 = sum(1 for p in client.values() for c, k, _ in p["data"]
+                            if c == "http" and k == "http/429-retry-after")
 
     attempts, lazies = [], []
     for sid, p in client.items():
@@ -173,6 +189,7 @@ def summarize_trace(trace_dir):
         "negotiation_rounds": rounds,
         "haves_sent": haves,
         "filter_effective": filter_effective,
+        "http_429_responses": responses_429,
         "trace": {"processes": len(client), "excluded_server_processes": len(procs) - len(client),
                   "unterminated": unterminated, "bad_lines": bad_lines},
     }, None

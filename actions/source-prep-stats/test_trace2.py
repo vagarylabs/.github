@@ -414,10 +414,13 @@ class OpsExceeded(BaseException):
     ordinary unknown transfer and hide it."""
 
 
-class ArgvOps:
-    """Counts every hash and equality test made on an argv element during a summary: the work the retry scan does,
-    as a number that does not depend on how loaded the runner is. Past `limit` it raises OpsExceeded, so a
-    quadratic scan fails in milliseconds instead of running for minutes."""
+class SummaryOps:
+    """Counts the summary's work as a number that does not depend on how loaded the runner is: every read of a
+    process's fields (p[key], p.get) and every hash and equality test on an argv element (what the retry scan's
+    set does). A pairwise loop over the processes that reads a field or compares argv on each inner step shows
+    here. Past `limit` it raises OpsExceeded, so such a scan fails at the bound instead of running for minutes.
+    Not seen: C-level work on plain values derived from the fields (a joined string in a list), which only the
+    wall-clock report below would show."""
 
     def __init__(self, limit):
         self.count, self.limit = 0, limit
@@ -438,7 +441,18 @@ class ArgvOps:
                 ops.tick()
                 return str.__ne__(self, other)
 
-        self.counted = Counted
+        class Fields(dict):
+            __slots__ = ()
+
+            def __getitem__(self, key):
+                ops.tick()
+                return dict.__getitem__(self, key)
+
+            def get(self, key, default=None):
+                ops.tick()
+                return dict.get(self, key, default)
+
+        self.counted, self.fields = Counted, Fields
 
     def tick(self):
         self.count += 1
@@ -446,13 +460,14 @@ class ArgvOps:
             raise OpsExceeded(self.count)
 
     def patch(self):
-        """read_trace, its every argv element counted (the elements stay equal strings)."""
+        """read_trace, each process a counted dict and its every argv element counted (equal values)."""
         real = srcstats.read_trace
 
         def read_trace(trace_dir, budget):
             procs, bad_lines = real(trace_dir, budget)
-            for p in procs.values():
+            for sid, p in procs.items():
                 p["argv"] = [self.counted(a) for a in p["argv"]]
+                procs[sid] = self.fields(p)
             return procs, bad_lines
 
         return mock.patch.object(srcstats, "read_trace", read_trace)
@@ -467,9 +482,10 @@ class SummaryWorkTests(unittest.TestCase):
     """The summary's work is bounded by counting operations, never by a stopwatch: a required test must not depend
     on runner load. The production deadline (Budget, charged by the summary) is pinned separately above."""
 
-    # The one-pass retry scan makes about 10 argv hash/equality tests per attempt (7 where CPython caches tuple
-    # hashes); a pairwise scan makes about one per earlier attempt, so n/2 per attempt on average.
-    OPS_PER_ATTEMPT = 32
+    # The summary makes 26 counted operations per attempt (CPython 3.11: 16 field reads, 10 argv hash/equality
+    # tests; fewer argv hashes where CPython caches tuple hashes). A loop over the earlier or later attempts makes
+    # at least one per inner step, so n/2 per attempt on average: past this bound from a few hundred attempts on.
+    OPS_PER_ATTEMPT = 100
     SIZES = (2000, getattr(srcstats, "MAX_PROCESSES", 20000))
 
     def setUp(self):
@@ -489,7 +505,7 @@ class SummaryWorkTests(unittest.TestCase):
 
     def counted_summary(self, n):
         self.failed_attempts(n)
-        ops = ArgvOps(self.OPS_PER_ATTEMPT * n)
+        ops = SummaryOps(self.OPS_PER_ATTEMPT * n)
         with ops.patch():
             s, reason = srcstats.summarize_trace(self.t.dir)
         return s, reason, ops
@@ -500,11 +516,11 @@ class SummaryWorkTests(unittest.TestCase):
                 try:
                     s, reason, ops = self.counted_summary(n)
                 except OpsExceeded:
-                    self.fail("more than %d argv hash/equality tests per attempt for %d attempts: the retry scan is "
-                              "not linear in the attempts" % (self.OPS_PER_ATTEMPT, n))
+                    self.fail("more than %d counted operations per attempt for %d attempts: the summary is not "
+                              "linear in the attempts" % (self.OPS_PER_ATTEMPT, n))
                 self.assertIsNotNone(s, reason)
                 self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"]), (n, n, 0))
-                self.assertGreaterEqual(ops.count, n, "positive control: the counter sees each attempt's argv")
+                self.assertGreaterEqual(ops.count, n, "positive control: the counter sees each attempt's work")
                 self.assertLessEqual(ops.count, self.OPS_PER_ATTEMPT * n)
 
     def test_positive_control_a_planted_quadratic_scan_breaks_the_bound(self):

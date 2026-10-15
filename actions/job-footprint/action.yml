@@ -48,8 +48,10 @@ runs:
   steps:
     - id: fp
       shell: bash
+      continue-on-error: true
       run: |
-        cg="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)"
+        # No /proc/self/cgroup (a macOS runner) is "nothing measured", never a failed step under bash -e.
+        cg="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null || true)"
         [ -r "$cg/memory.peak" ] || cg=/sys/fs/cgroup
         peak=$(cat "$cg/memory.peak" 2>/dev/null || echo "")
         usec=$(awk '$1=="usage_usec"{print $2}' "$cg/cpu.stat" 2>/dev/null || echo "")

@@ -50,7 +50,7 @@ def check_record(leg, text, fixture):
             du = int(subprocess.run(["du", "-sb", os.path.join(fixture, ".git")], capture_output=True, text=True,
                                     check=True).stdout.split()[0])
             got = r["bytes_detail"]["git_dir_bytes_after"]
-            expect(abs(got - du) / du <= 0.01, "git_dir_bytes within 1% of du -sb .git (%d)" % du, got)
+            expect(abs(got - du) / du <= 0.01, "git_dir_bytes within 1%% of du -sb .git (%d)" % du, got)
     elif leg == "blobless":
         expect((r["partial"], r["filter"], r["depth"]) == (True, "blob:none", "full"), "partial/filter/depth",
                (r["partial"], r["filter"], r["depth"]))

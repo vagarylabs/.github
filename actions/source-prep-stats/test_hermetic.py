@@ -211,6 +211,42 @@ class HermeticTest(unittest.TestCase):
         self.assertLessEqual(abs(got - du) / du, 0.01, (got, du))  # the acceptance bound; in practice equal
         self.assertEqual(got, du)
 
+    def test_dogfood_record_check_reports_the_du_comparison(self):
+        """dogfood_check.py record depth0 on a real record, through its own main(), down to the du comparison.
+
+        On a host without GNU du >= 9.2 (macOS) that branch is skipped, so du is stubbed as GNU 9.4: the line
+        that compares git_dir_bytes with du must report ok or FAIL, never raise while building its message."""
+        import dogfood_check
+        r = self.job.prepare(self.url, "dogfood")
+        fixture, text = os.path.join(self.job.ws, "dogfood"), json.dumps(r)
+        got = r["bytes_detail"]["git_dir_bytes_after"]
+        real_run = subprocess.run
+
+        def du_reporting(size):
+            def run(argv, *args, **kwargs):
+                if list(argv[:1]) != ["du"]:
+                    return real_run(argv, *args, **kwargs)
+                if list(argv[1:]) == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, "du (GNU coreutils) 9.4\n", "")
+                return subprocess.CompletedProcess(argv, 0, "%d\t%s\n" % (size, argv[-1]), "")
+            return run
+
+        printed = io.StringIO()
+        with mock.patch.object(dogfood_check.subprocess, "run", du_reporting(got)), contextlib.redirect_stdout(printed):
+            dogfood_check.main(["record", "depth0", text, fixture])
+        self.assertRegex(printed.getvalue(), r"ok +git_dir_bytes within 1%% of du -sb \.git \(%d\)" % got)
+
+        printed = io.StringIO()
+        with mock.patch.object(dogfood_check.subprocess, "run", du_reporting(int(got * 1.05))), \
+                contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as failed:
+            dogfood_check.main(["record", "depth0", text, fixture])
+        self.assertEqual(failed.exception.code, 1, "a 5% gap is reported as a failed expectation")
+        self.assertRegex(printed.getvalue(), r"FAIL git_dir_bytes within 1% of du")
+
+        if gnu_du() == "du":  # a Linux runner: the same path once more against the real du
+            with contextlib.redirect_stdout(io.StringIO()):
+                dogfood_check.main(["record", "depth0", text, fixture])
+
     def test_429_injector_counts_one_throttle_hit_and_one_retry(self):
         before = self.server.throttled
         self.server.throttle(1)

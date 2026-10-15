@@ -753,7 +753,13 @@ def _tree_shape(path, budget):
         tags = [entry[:1] for entry in listing.split("\0") if entry]
         shape["files_skipped"] = tags.count("S")
         shape["files_materialised"] = len(tags) - shape["files_skipped"]
-    shape["has_submodules"] = os.path.isfile(os.path.join(path, ".gitmodules"))
+    try:  # not os.path.isfile: it answers False for a path it may not stat, which read as "no submodules"
+        shape["has_submodules"] = stat.S_ISREG(os.stat(os.path.join(path, ".gitmodules")).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        shape["has_submodules"] = False
+    except OSError as exc:
+        shape["has_submodules"] = None
+        unknown["has_submodules"] = _unreadable(".gitmodules", exc)
     head = (git(path, budget, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
     shape["commit"] = head if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) else None
     return shape, unknown
@@ -764,6 +770,7 @@ def completeness(outcome, shape, requested):
     if not shape:
         return "unknown", []
     reasons = []
+    submodules_skipped = str(requested.get("submodules") or "false").lower() == "false"
     if outcome not in (None, "success"):
         reasons.append("checkout-" + str(outcome))
     if shape.get("shallow") is True:
@@ -772,11 +779,12 @@ def completeness(outcome, shape, requested):
         reasons.append("partial")
     if shape.get("sparse") is True or (shape.get("files_skipped") or 0) > 0:
         reasons.append("sparse")
-    if shape.get("has_submodules") and str(requested.get("submodules") or "false").lower() == "false":
+    if shape.get("has_submodules") and submodules_skipped:
         reasons.append("submodules-not-fetched")
     if reasons:
         return "incomplete", reasons
-    if None in (shape.get("shallow"), shape.get("partial"), shape.get("sparse"), shape.get("files_skipped")):
+    if None in (shape.get("shallow"), shape.get("partial"), shape.get("sparse"), shape.get("files_skipped")) \
+            or (submodules_skipped and shape.get("has_submodules") is None):
         return "unknown", []
     return "complete", []
 

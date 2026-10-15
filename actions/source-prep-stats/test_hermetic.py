@@ -635,6 +635,25 @@ class HermeticTest(unittest.TestCase):
                 self.assertGreaterEqual(r["sparse_patterns"], 1, "the patterns are still read")
                 self.assertEqual(r["completeness"], "incomplete")
 
+    def test_a_gitmodules_that_cannot_be_statted_is_unknown_never_no_submodules(self):
+        """os.path.isfile answers False for a .gitmodules it may not stat, so a tree whose submodules were not
+        fetched was published complete."""
+        self.job.prepare(self.url, "lockedmodules")
+        dest = os.path.join(self.job.ws, "lockedmodules")
+        with open(os.path.join(dest, ".gitmodules"), "w") as fh:
+            fh.write('[submodule "sub"]\n\tpath = sub\n\turl = ../sub.git\n')
+        out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="lockedmodules", SPS_OUTCOME="success")
+        r = json.loads(out["record"])
+        self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["submodules-not-fetched"]),
+                         "positive control: readable, the same .gitmodules makes the tree incomplete")
+        with stat_refused(os.path.join(dest, ".gitmodules")):
+            out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="lockedmodules", SPS_OUTCOME="success")
+        r = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertNotEqual(r["completeness"], "complete", "an unread fact rounded up")
+        self.assertEqual(r["completeness"], "unknown")
+        self.assertIn("could not be read", r["unknown"].get("has_submodules", ""))
+
     def test_warm_refetch_counts_only_the_new_objects(self):
         first = self.job.prepare(self.url, "warm")
         extra = os.path.join(self.tmp, "warm-work")

@@ -583,9 +583,13 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(srcstats.completeness("success", shape, {"submodules": "recursive"})[0], "complete")
 
     def test_unknown_facts_never_round_up_to_complete(self):
-        for key in ("shallow", "partial", "sparse", "files_skipped"):
+        for key in ("shallow", "partial", "sparse", "files_skipped", "has_submodules"):
             with self.subTest(key):
                 self.assertEqual(srcstats.completeness("success", dict(self.BASE, **{key: None}), {})[0], "unknown")
+
+    def test_unknown_submodules_do_not_matter_once_submodules_were_fetched(self):
+        shape = dict(self.BASE, has_submodules=None)
+        self.assertEqual(srcstats.completeness("success", shape, {"submodules": "recursive"}), ("complete", []))
 
     def test_failed_checkout_is_incomplete(self):
         self.assertEqual(srcstats.completeness("failure", self.BASE, {}), ("incomplete", ["checkout-failure"]))

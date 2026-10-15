@@ -252,6 +252,8 @@ def summarize_trace(trace_dir, budget=None):
 
 
 def _summarize(procs, bad_lines, budget):
+    if not procs and bad_lines:  # the files were there, but no line of them could be read
+        return None, "every trace2 line was malformed (%d bad lines)" % bad_lines
     if not procs:
         return None, "no git process wrote trace2 output (git older than 2.22, or checkout fell back to the REST API)"
     client = {sid: p for sid, p in procs.items() if not _hierarchy_is_server(p["hierarchy"])}

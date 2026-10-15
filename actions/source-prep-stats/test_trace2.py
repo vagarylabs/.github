@@ -192,6 +192,14 @@ class SyntheticTests(unittest.TestCase):
         self.assertEqual((s["negotiation_rounds"], s["haves_sent"], s["filter_effective"], s["protocol_version"]),
                          (2, 20, "tree:0", "2"))
 
+    def test_a_trace_of_only_bad_lines_says_so(self):
+        """Unknown either way; the reason must not blame an old git or the REST API for a trace that is there."""
+        self.t.add([{"event": "start"}], raw_tail="{not json\n")
+        s, reason = srcstats.summarize_trace(self.t.dir)
+        self.assertIsNone(s)
+        self.assertIn("malformed", reason)
+        self.assertNotIn("REST API", reason)
+
     def test_published_trace_strings_are_allow_listed_never_raw(self):
         """negotiated-version and filter/effective are the only trace strings in the record: any value outside
         their closed form is "other", and the raw value (here a credential-bearing URL) appears nowhere."""

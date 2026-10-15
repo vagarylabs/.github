@@ -1,0 +1,6 @@
+{"event": "version", "evt": "4", "exe": "2.50.1 (Apple Git-155)", "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "thread": "main", "time": "2026-10-15T16:15:52.536250Z"}
+{"argv": ["git", "unpack-objects", "-q", "--pack_header=2,48"], "event": "start", "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "t_abs": 0.000672, "thread": "main", "time": "2026-10-15T16:15:52.536283Z"}
+{"event": "def_repo", "repo": 1, "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "thread": "main", "time": "2026-10-15T16:15:52.536424Z", "worktree": "/fixture/http"}
+{"event": "cmd_name", "hierarchy": "fetch/unpack-objects", "name": "unpack-objects", "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "thread": "main", "time": "2026-10-15T16:15:52.536550Z"}
+{"code": 0, "event": "exit", "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "t_abs": 0.027768, "thread": "main", "time": "2026-10-15T16:15:52.563378Z"}
+{"code": 0, "event": "atexit", "sid": "20261015T161552.408789Z-H6db4b9fc-P0001810d/20261015T161552.535878Z-H6db4b9fc-P00018129", "t_abs": 0.027784, "thread": "main", "time": "2026-10-15T16:15:52.563393Z"}

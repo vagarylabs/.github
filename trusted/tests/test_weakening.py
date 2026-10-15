@@ -161,6 +161,12 @@ class WeakeningCases(unittest.TestCase):
         hit = self.assertFlagged({"src/b.test.ts": "it.skip('b', () => {})\n"}, "test-skip", "`it.skip`")[0]
         self.assertEqual((hit["path"], hit["line"]), ("src/b.test.ts", 1))
 
+    def test_red_skip_behind_a_closed_block_comment(self):
+        got = self.findings({"src/b.test.ts": "/**/ it.skip('b', () => {})\n",
+                             "scripts/ci.sh": 'case "$1" in\n  *) npm test || true ;;\nesac\n'})
+        self.assertEqual(sorted((f["rule"], f["detail"]) for f in got),
+                         [("swallowed-failure", "adds `npm test || true`"), ("test-skip", "adds `it.skip`")])
+
     def test_red_todo(self):
         self.assertFlagged({"src/b.test.ts": BASE["src/b.test.ts"] + "describe.todo('later')\n"},
                            "test-skip", "`describe.todo`")
@@ -431,6 +437,7 @@ class IntegrityReportTests(unittest.TestCase):
         # A swallow tail after many candidate command starts (quotes, interpreters, run:) inside one segment.
         lines += [(s * classify.WEAKENING_MAX_LINE)[: classify.WEAKENING_MAX_LINE - 8] + " || true"
                   for s in ("bash '", "'", "run: ./", "python3 -")]
+        lines += ["/**/" * n * 2, "*/ /*" * n, "/*" * n * 2]
         files = {"e2e/adv.test.js": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
                  "scripts/adv.sh": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
                  ".github/workflows/adv.yml": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n"}
@@ -513,6 +520,14 @@ class PredicateUnitTests(unittest.TestCase):
         self.assertEqual(classify.coe_level(lines, 3), "job `build`")
         self.assertEqual(classify.coe_level(lines, 6), "step")
         self.assertEqual(classify.coe_level(lines, 7), "step")
+
+    def test_is_comment(self):
+        for line, want in (("// it.skip('a')", True), ("  # continue-on-error: true", True), ("/* it.skip('d') */", True),
+                           ("/* it.skip('e')", True), ("   * it.skip('f')", True), ("*", True), ("<!-- x -->", True),
+                           ("/**/ it.skip('b')", False), (" */ it.skip('c')", False), ("/* a */ /* b */ xit('g')", False),
+                           ("  *) npm test || true ;;", False), ("it.skip('h')", False), ("", False)):
+            with self.subTest(line=line):
+                self.assertEqual(classify.is_comment(line), want)
 
     def test_docs_are_never_in_scope(self):
         for p in ("README.md", "docs/ci/retries.md", "CHANGELOG.mdx", "notes.txt", "tests/README.md"):

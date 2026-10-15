@@ -347,9 +347,19 @@ jobs:
               return s
 
 
+          # A leading `*/` and closed `/* ... */` blocks: code after them is not a comment (`/**/ it.skip(...)`).
+          _LEADING_BLOCK_COMMENTS = re.compile(r"(?:\*/)?\s*(?:/\*.*?\*/\s*)*")
+
+
           def is_comment(text):
               s = text.strip()
-              return s.startswith(("#", "//", "/*", "*", "<!--"))
+              if not s:
+                  return False
+              rest = s[_LEADING_BLOCK_COMMENTS.match(s).end():]
+              if not rest or rest.startswith(("#", "//", "/*", "<!--")):
+                  return True
+              # ` * text` inside a block comment; a shell case arm `*) npm test || true ;;` is code.
+              return rest == "*" or rest.startswith(("* ", "*\t", "**"))
 
 
           # Token rules -------------------------------------------------------------------------------

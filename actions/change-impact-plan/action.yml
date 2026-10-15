@@ -53,6 +53,13 @@ inputs:
       to full validation; disabling this check also forces full. Requires the exact candidate checkout.
     required: false
     default: "true"
+  source-query:
+    description: >-
+      off | witness. witness also asks the provider's compare API (with this action's token) which paths
+      differ between the pinned base and candidate SHAs, under finite caps. A truncated, capped, throttled,
+      malformed or disagreeing answer forces full; a complete agreeing answer changes nothing. It never narrows.
+    required: false
+    default: "off"
 outputs:
   mode:
     description: full | reduced
@@ -184,12 +191,18 @@ runs:
         CANDIDATE_ROOT: ${{ inputs.candidate-root }}
         STATE: ${{ steps.state.outputs.directory }}
         FORCE_FULL_REASON: ${{ steps.readers.outputs.force_full_reason }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+        SOURCE_QUERY: ${{ inputs.source-query }}
+        API_URL: ${{ github.api_url }}
       run: |
         set -euo pipefail
         python3 -I "$GITHUB_ACTION_PATH/plan.py" \
           --config "$CONFIG" --root "$STATE/base" \
           --tested-root "$STATE/tested" --scope-root "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
           --candidate "$CANDIDATE" --repository "$REPOSITORY" --event-repository "$EVENT_REPOSITORY" \
+          --repository-id "$REPOSITORY_ID" --repository-owner-id "$REPOSITORY_OWNER_ID" \
+          --source-query "$SOURCE_QUERY" --api-url "$API_URL" \
           --target-ref "$TARGET_REF" --server-url "$SERVER_URL" --target-observation "$STATE/target.json" \
           --policy-checkout-outcome "$POLICY_OUTCOME" \
           --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --force-full-reason "$FORCE_FULL_REASON" \

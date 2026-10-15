@@ -7,32 +7,94 @@
 #
 # On an ephemeral one-job container (vl-c1-capped) the cgroup is the job's, so memory.peak is the job's
 # peak. On a shared VM the cgroup is the runner service's and the numbers are an upper bound; the step
-# says which. It never fails the job.
+# says which. Pass `scope: job` or `scope: shared` to put that in the record.
+#
+# It also writes job-telemetry.json (schema job-telemetry.v1, draft; see actions/source-prep-stats): the
+# footprint, the runner, and every source-prep.v1 record that actions/source-prep-stats wrote in this job,
+# uploaded as a ~2 KB artifact kept 3 days. Unmeasured values are null with a reason, never 0. It never fails
+# the job.
 name: job-footprint
-description: Report the job's peak memory and CPU seconds (cgroup v2) in the step summary.
+description: Report the job's peak memory and CPU seconds (cgroup v2) in the step summary and as job-telemetry.json.
+inputs:
+  scope:
+    description: >-
+      Whose cgroup this is: "job" (ephemeral one-job container) or "shared" (runner service on a shared VM).
+      Empty records the scope as unknown.
+    default: ""
+  pnpm-store-dir:
+    description: >-
+      pnpm store to size at the end of the job. Defaults to the one source-prep-stats measured before install,
+      which also gives the delta.
+    default: ""
+  upload:
+    description: '"true" uploads job-telemetry.json as an artifact; "false" only writes it under RUNNER_TEMP.'
+    default: "true"
+  retention-days:
+    description: Artifact retention in days.
+    default: "3"
 outputs:
   peak_mib:
     value: ${{ steps.fp.outputs.peak_mib }}
   cpu_seconds:
     value: ${{ steps.fp.outputs.cpu_seconds }}
+  telemetry_path:
+    description: Path of job-telemetry.json (empty when it could not be written).
+    value: ${{ steps.telemetry.outputs.path }}
+  artifact_name:
+    description: Name of the uploaded job-telemetry artifact.
+    value: ${{ steps.telemetry.outputs.name }}
 runs:
   using: composite
   steps:
     - id: fp
       shell: bash
+      continue-on-error: true
       run: |
-        cg="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)"
+        # No /proc/self/cgroup (a macOS runner) is "nothing measured", never a failed step under bash -e.
+        cg="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null || true)"
         [ -r "$cg/memory.peak" ] || cg=/sys/fs/cgroup
         peak=$(cat "$cg/memory.peak" 2>/dev/null || echo "")
         usec=$(awk '$1=="usage_usec"{print $2}' "$cg/cpu.stat" 2>/dev/null || echo "")
         max=$(cat "$cg/memory.max" 2>/dev/null || echo "")
-        cpus=$(awk '{print $1/$2}' "$cg/cpu.max" 2>/dev/null || echo "")
+        cpu_max=$(cat "$cg/cpu.max" 2>/dev/null || echo "")
+        # cpu.max is "<quota> <period>" or "max <period>": unlimited is "max", never 0.
+        cpus=$(awk '$1 == "max" { print "max"; exit } $2 > 0 { print $1 / $2 }' "$cg/cpu.max" 2>/dev/null || echo "")
+        # Raw readings for job-telemetry.json; empty means unread, and the record turns that into null + reason.
+        [ -n "$peak" ] || cg=""
+        { echo "peak_bytes=$peak"; echo "usage_usec=$usec"; echo "mem_max=$max"; echo "cpu_max=$cpu_max"
+          echo "cgroup=$cg"; } >> "$GITHUB_OUTPUT"
         if [ -z "$peak" ]; then
           echo "job-footprint: no cgroup v2 memory.peak readable here (runner $RUNNER_NAME, $(uname -sm)); nothing measured"
           exit 0
         fi
-        peak_mib=$((peak / 1048576)); cpu_s=$(( ${usec:-0} / 1000000 ))
+        # An unreadable cpu.stat is unmeasured: the output stays empty and the line says "?", never 0.
+        peak_mib=$((peak / 1048576)); cpu_s=""
+        [ -z "$usec" ] || cpu_s=$((usec / 1000000))
         scope="cgroup $cg (the job alone only on an ephemeral one-job container)"
         { echo "peak_mib=$peak_mib"; echo "cpu_seconds=$cpu_s"; } >> "$GITHUB_OUTPUT"
-        line="job-footprint: ${GITHUB_JOB} peak ${peak_mib} MiB, cpu ${cpu_s} s, limit mem ${max} cpus ${cpus:-?}, runner ${RUNNER_NAME} $(uname -m), ${scope}"
+        line="job-footprint: ${GITHUB_JOB} peak ${peak_mib} MiB, cpu ${cpu_s:-?} s, limit mem ${max} cpus ${cpus:-?}, runner ${RUNNER_NAME} $(uname -m), ${scope}"
         echo "$line"; echo "$line" >> "$GITHUB_STEP_SUMMARY"
+    - id: telemetry
+      if: ${{ always() }}
+      shell: bash
+      continue-on-error: true
+      env:
+        FP_PEAK_BYTES: ${{ steps.fp.outputs.peak_bytes }}
+        FP_USAGE_USEC: ${{ steps.fp.outputs.usage_usec }}
+        FP_MEM_MAX: ${{ steps.fp.outputs.mem_max }}
+        FP_CPU_MAX: ${{ steps.fp.outputs.cpu_max }}
+        FP_CGROUP: ${{ steps.fp.outputs.cgroup }}
+        FP_SCOPE: ${{ inputs.scope }}
+        SPS_PNPM_STORE: ${{ inputs.pnpm-store-dir }}
+      # The writer lives beside source-prep-stats: one schema, one producer, one copy of the code.
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../source-prep-stats/srcstats.py" telemetry \
+          || echo "::warning::job-footprint: no job-telemetry.json (is python3 on this runner?)"
+    - if: ${{ always() && inputs.upload == 'true' && steps.telemetry.outputs.path != '' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.telemetry.outputs.name }}
+        path: ${{ steps.telemetry.outputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: warn

@@ -11,6 +11,14 @@
 # or ratchet constant is REPORTED (job summary + notice annotation) as a protected-path change; deciding on it
 # is trusted-protected-paths' job. Ratchet constants are compared against the base side with ast.parse (parsed,
 # never executed), not against the constants the PR's own checkout carries.
+#
+# FL-4 (report-only): the same step REPORTS test-weakening predicates over the diff's +/- lines (a test skip or
+# todo, a retry, continue-on-error, a swallowed test failure, a deleted test with no successor, a loosened
+# budget or timeout) as a job-summary section plus warning annotations. A finding never changes the exit code,
+# and a scan failure is reported as INCOMPLETE, never as clean. Every git read of the scan runs under one time
+# and byte budget (a file over the blob cap is never diffed); running out is INCOMPLETE too, never a red job and
+# never a silent pass. A quarantine or approval reference is listed and never honoured until a verifier for
+# those records exists.
 name: trusted-workflow-integrity
 
 on:

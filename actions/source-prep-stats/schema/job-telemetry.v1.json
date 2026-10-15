@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vagarylabs/.github/actions/source-prep-stats/schema/job-telemetry.v1.json",
+  "title": "job-telemetry.v1 (draft)",
+  "description": "One CI job's footprint and source preparation, written by actions/job-footprint. Draft producer schema (P7-01 owns the canonical one). Null = not measured (see unknown).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "job-telemetry.v1"
+    },
+    "schema_status": {
+      "enum": [
+        "draft"
+      ]
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_os": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_arch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_environment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "run_attempt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "event",
+        "job",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "runner_arch",
+        "runner_environment",
+        "runner_name",
+        "runner_os",
+        "workflow"
+      ]
+    },
+    "footprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "peak_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cpu_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "mem_limit": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "cpus": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "const": "max"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cgroup": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "job",
+            "shared",
+            null
+          ]
+        }
+      },
+      "required": [
+        "cgroup",
+        "cpu_s",
+        "cpus",
+        "mem_limit",
+        "peak_mib",
+        "scope"
+      ]
+    },
+    "source_prep": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "source-prep.v1.json"
+      }
+    },
+    "after_checkout_git": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fetch_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_fetch_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "throttle_hits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lazy_fetches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lazy_fetch_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lazy_objects": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "failed_fetch_attempts",
+        "fetch_attempts",
+        "lazy_fetch_failures",
+        "lazy_fetches",
+        "lazy_objects",
+        "processes",
+        "retries",
+        "throttle_hits"
+      ]
+    },
+    "pnpm_store": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bytes_before": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "bytes_after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "delta": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bytes_after",
+        "bytes_before",
+        "delta"
+      ]
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "measured field -> why it is null. Not listed here by design: attribution fields (null when the runner does not provide them), sparse_* when sparse is false and filter when partial is false (not applicable)."
+    }
+  },
+  "required": [
+    "after_checkout_git",
+    "attribution",
+    "footprint",
+    "pnpm_store",
+    "schema",
+    "schema_status",
+    "source_prep",
+    "unknown"
+  ]
+}

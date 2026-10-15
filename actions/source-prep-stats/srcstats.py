@@ -10,7 +10,9 @@ Rules the record keeps:
   - A value that was not measured is null, and "unknown" says why. 0 only ever means "measured zero".
   - A shallow, partial (filtered), sparse or submodule-less tree is "incomplete", never "complete".
   - Only allow-listed aggregates leave this module. Raw trace2 lines carry argv, remote URLs and error
-    text; they stay in a 0700 directory under RUNNER_TEMP and are deleted once parsed.
+    text; they stay in a 0700 directory under RUNNER_TEMP and are deleted once parsed. The two trace strings
+    that are published (protocol version, effective filter) are mapped to a closed form first: anything
+    outside it is "other", never the raw value.
 
 Schemas: schema/source-prep.v1.json and schema/job-telemetry.v1.json (draft; the canonical home is
 vagary-core contracts/delivery/v1, P7-01). Standard library only.
@@ -25,6 +27,8 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
+import urllib.parse
 
 SOURCE_PREP_SCHEMA = "source-prep.v1"
 TELEMETRY_SCHEMA = "job-telemetry.v1"
@@ -38,6 +42,12 @@ PACK_HEADER_RE = re.compile(r"^--pack_header=\d+,(\d+)$")
 HTTP_429_SINCE = (2, 54)  # git >= 2.54 traces every 429 response (http/429-retry-after), retried or not
 LAZY_MARK = "fetch.negotiationAlgorithm=noop"  # promisor-remote.c runs lazy fetches as `git -c <this> fetch ... --stdin`
 DEFAULT_WALK_BUDGET = 20.0
+PROTOCOL_VERSIONS = ("0", "1", "2")
+# Every published filter is one of these (or "other"). sparse:oid=<rev> keeps only its kind: the rev is free text.
+FILTER_PART_RE = re.compile(r"blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|"
+                            r"object:type=(?:blob|tree|commit|tag)")
+MAX_FILTER_LEN = 512
+MAX_COMBINE_PARTS = 8
 STRIP_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE")
 
@@ -53,6 +63,31 @@ def _int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def protocol_version(value):
+    """A traced negotiated-version as "0", "1" or "2"; any other value is "other", never echoed."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return "other"
+    return str(value) if str(value) in PROTOCOL_VERSIONS else "other"
+
+
+def filter_spec(value, nested=False):
+    """A partial-clone filter spec in its allow-listed form; any other value is "other", never echoed.
+
+    blob:none, blob:limit=<n>[kmg], tree:<depth>, object:type=<type>, sparse:oid (its rev dropped) and
+    combine:<a>+<b>... of those (git URL-encodes each part)."""
+    if not isinstance(value, str) or len(value) > MAX_FILTER_LEN:
+        return "other"
+    if value.startswith("sparse:oid="):
+        return "sparse:oid"
+    if value.startswith("combine:") and not nested:
+        parts = value[len("combine:"):].split("+")
+        if not 2 <= len(parts) <= MAX_COMBINE_PARTS:
+            return "other"
+        normalized = [filter_spec(urllib.parse.unquote(part), nested=True) for part in parts]
+        return "other" if "other" in normalized else "combine:" + "+".join(normalized)
+    return value if FILTER_PART_RE.fullmatch(value) else "other"
 
 
 def read_trace(trace_dir):
@@ -166,9 +201,9 @@ def summarize_trace(trace_dir):
             elif category == "promisor" and key == "fetch_count" and _int(value) is not None:
                 lazy_objects = (lazy_objects or 0) + _int(value)
             elif category == "transfer" and key == "negotiated-version" and protocol is None:
-                protocol = str(value)
+                protocol = protocol_version(value)  # a closed form: the raw trace value is never published
             elif category == "fetch" and key == "filter/effective" and filter_effective is None:
-                filter_effective = str(value)
+                filter_effective = filter_spec(value)
     if lazy_objects is None and not lazies:
         lazy_objects = 0  # no lazy fetch ran, so none of its objects were fetched: a measured zero
     if not attempts and not lazies:
@@ -335,8 +370,8 @@ def tree_shape(path):
         remote = next((l.split()[0][len("remote."):-len(".promisor")] for l in promisors.splitlines()
                        if l.split()[-1:] == ["true"]), "")
     shape["partial"] = bool(remote)
-    shape["filter"] = (git(path, "config", "--get", "remote.%s.partialclonefilter" % remote) or "").strip() or None \
-        if remote else None
+    raw_filter = (git(path, "config", "--get", "remote.%s.partialclonefilter" % remote) or "").strip() if remote else ""
+    shape["filter"] = filter_spec(raw_filter) if raw_filter else None
     sparse = (git(path, "config", "--bool", "--get", "core.sparseCheckout") or "false").strip() == "true"
     shape["sparse"] = sparse
     shape["sparse_cone"] = None
@@ -805,7 +840,11 @@ def main(argv=None):
     try:
         {"before": cmd_before, "after": cmd_after, "telemetry": cmd_telemetry}[args.cmd](args)
     except Exception as exc:  # measurement never fails the job
-        print("::warning::source-prep-stats %s: %s: %s" % (args.cmd, type(exc).__name__, exc))
+        # The job log is public on a public repository, and an exception's text can quote trace content (a URL,
+        # an argv). Name the exception and where it was raised, never its message.
+        where = traceback.extract_tb(exc.__traceback__)[-1:]
+        print("::warning::source-prep-stats %s: %s%s (message withheld)" % (
+            args.cmd, type(exc).__name__, " in %s line %d" % (where[0].name, where[0].lineno) if where else ""))
     return 0
 
 

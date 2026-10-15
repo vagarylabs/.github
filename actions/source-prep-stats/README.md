@@ -34,7 +34,8 @@ Optional inputs:
   - Partial and sparse are recorded separately. `actions/checkout` turns every sparse checkout into a `blob:none` partial clone, so a sparse checkout reports both.
 - **Raw traces never leave the runner.**
   - git trace2 events carry argv, remote URLs and error text. They are written to a `0700` directory under `RUNNER_TEMP`, reduced to allow-listed counts, and deleted.
-  - The record holds no URL, argv or error message.
+  - The record holds no URL, argv or error message. The only trace strings it publishes, `transfer.protocol_version` and `transfer.filter_effective`, are mapped to a closed form first (`0`, `1`, `2`; `blob:none`, `blob:limit=<n>`, `tree:<n>`, `object:type=<type>`, `sparse:oid` without its rev, and `combine:` of those). Any other value is `other`, never the raw text. `filter`, read from the repository's config, is mapped the same way.
+  - A step warning names the exception and where it was raised, never its message, because a message can quote trace content and job logs of a public repository are public.
   - With `trace-job`, the job-wide trace directory is emptied when `job-footprint` parses it. `GIT_TRACE2_EVENT` stays set, so git calls after that (post steps included) still write raw traces there, in the same `0700` directory, until the runner cleans `RUNNER_TEMP`.
 
 ## The record (`schema/source-prep.v1.json`, draft)
@@ -52,7 +53,7 @@ Optional inputs:
 | `throttle_hits` | Fetch attempts that hit HTTP 429, "Too Many Requests" or a (secondary) rate limit, whether git reported it as an error or (2.54+) as traced 429 data. One attempt counts once, however many of its processes reported it. |
 | `transfer.http_429_responses` | Every 429 response git received, including ones it retried itself. `null` before git 2.54, which does not report them. |
 | `transfer.lazy_fetches`, `lazy_objects` | Promisor (partial clone) fetches during the checkout and the objects they brought. |
-| `transfer.protocol_version`, `negotiation_rounds`, `haves_sent`, `filter_effective` | The fetch negotiation summary from trace2. |
+| `transfer.protocol_version`, `negotiation_rounds`, `haves_sent`, `filter_effective` | The fetch negotiation summary from trace2. The two strings are allow-listed: anything else is `other`. |
 | `warm` | Whether a repository with objects was already at the path (persistent runners). |
 | `measurement.complete` | `false` when the trace was missing or damaged (a process never exited, or a line was unparseable) or a size walk ran out of time. |
 

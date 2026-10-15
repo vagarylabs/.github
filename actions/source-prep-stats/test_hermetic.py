@@ -24,6 +24,9 @@ from gitserver import GitHTTPServer  # noqa: E402
 
 SCRIPT = os.path.join(HERE, "srcstats.py")
 CLEAN = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "GITHUB_", "RUNNER_", "SPS_", "FP_"))}
+# A fake credential-bearing remote, assembled at run time so no scanner mistakes the source for a real one.
+PLANTED_TOKEN = "planted-" + "token"
+PLANTED = "https://user:%s@example.invalid/org/repo.git" % PLANTED_TOKEN
 
 
 def git(*args, cwd=None, env=None, check=True, stdin=None):
@@ -65,6 +68,36 @@ def read(path):
         return fh.read()
 
 
+def files_containing(root, needle):
+    """Every file under root whose bytes contain needle (symlinks are not followed)."""
+    found = []
+    for dirpath, _, names in os.walk(root):
+        for name in names:
+            path = os.path.join(dirpath, name)
+            if os.path.isfile(path) and not os.path.islink(path):
+                with open(path, "rb") as fh:
+                    if needle.encode() in fh.read():
+                        found.append(path)
+    return found
+
+
+def planted_events(sid):
+    """One client fetch whose every free-text trace field carries PLANTED: argv, error text, and the two data
+    values the record publishes (negotiated-version, filter/effective)."""
+    return [{"event": "version", "sid": sid, "evt": "4", "exe": "2.50.1"},
+            {"event": "start", "sid": sid, "argv": ["git", "fetch", PLANTED], "time": "2026-10-15T00:00:00Z"},
+            {"event": "cmd_name", "sid": sid, "name": "fetch", "hierarchy": "fetch"},
+            {"event": "error", "sid": sid, "msg": "unable to access '%s'" % PLANTED, "fmt": "%s"},
+            {"event": "data", "sid": sid, "category": "transfer", "key": "negotiated-version", "value": PLANTED},
+            {"event": "data", "sid": sid, "category": "fetch", "key": "filter/effective", "value": PLANTED},
+            {"event": "exit", "sid": sid, "code": 0, "t_abs": 0.1}]
+
+
+def write_trace(trace_dir, name, events, tail=""):
+    with open(os.path.join(trace_dir, name), "w") as fh:
+        fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
+
+
 class Env:
     """One simulated job: workspace, RUNNER_TEMP and the GitHub command files."""
 
@@ -87,17 +120,36 @@ class Env:
         return env
 
     def step(self, cmd, **extra):
+        out, log = self.step_logged(cmd, **extra)
+        assert "::warning::" not in log, log
+        return out
+
+    def step_logged(self, cmd, **extra):
+        """One subcommand as a separate process: its GITHUB_OUTPUT values and its log (stdout + stderr)."""
         open(self.files["GITHUB_OUTPUT"], "w").close()
         r = subprocess.run([sys.executable, SCRIPT, cmd], env=self.env(**extra), capture_output=True, text=True,
                            timeout=120)
         assert r.returncode == 0, r.stderr
-        assert "::warning::" not in r.stdout, r.stdout
         out = {}
         with open(self.files["GITHUB_OUTPUT"]) as fh:
             for line in fh:
                 key, _, value = line.rstrip("\n").partition("=")
                 out[key] = value
-        return out
+        return out, r.stdout + r.stderr
+
+    def published(self):
+        """What the steps publish besides their log: outputs, env and step summary files."""
+        return "".join(read(f) for f in self.files.values())
+
+    def inproc(self, cmd, **extra):
+        """One subcommand in this process (so a test can patch the module): its outputs and its printed log."""
+        open(self.files["GITHUB_OUTPUT"], "w").close()
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, self.env(**extra), clear=True), contextlib.redirect_stdout(printed), \
+                contextlib.redirect_stderr(printed):
+            assert srcstats.main([cmd]) == 0
+        with open(self.files["GITHUB_OUTPUT"]) as fh:
+            return dict(line.rstrip("\n").partition("=")[::2] for line in fh), printed.getvalue()
 
     def checkout(self, url, path, depth=0, filt=None, sparse=None, trace=None, attempts=3):
         """actions/checkout v4's git sequence: init, remote, fetch (3 tries), sparse-checkout, checkout -B."""
@@ -246,6 +298,43 @@ class HermeticTest(unittest.TestCase):
         if gnu_du() == "du":  # a Linux runner: the same path once more against the real du
             with contextlib.redirect_stdout(io.StringIO()):
                 dogfood_check.main(["record", "depth0", text, fixture])
+
+    def test_planted_trace_strings_reach_no_published_output(self):
+        """A credential-bearing URL in every free-text trace field: the record carries "other" for the two
+        published trace strings, and the URL is in no output, log, summary or file left under the job."""
+        b = self.job.step("before", SPS_PATH="planted")
+        outcome = self.job.checkout(self.url, "planted", trace=b["trace_dir"])
+        write_trace(b["trace_dir"], "0000-planted", planted_events("planted-sid"))  # sorts first: its values win
+        out, log = self.job.step_logged("after", SPS_ID=b["id"], SPS_PATH="planted", SPS_OUTCOME=outcome)
+        record = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        self.assertEqual((record["transfer"]["protocol_version"], record["transfer"]["filter_effective"]),
+                         ("other", "other"))
+        self.assertNotIn(PLANTED_TOKEN, out["record"])
+        self.assertNotIn(PLANTED_TOKEN, log)
+        self.assertNotIn(PLANTED_TOKEN, self.job.published())
+        self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
+
+    def test_an_exception_message_never_reaches_the_public_log(self):
+        """The catch-all names the exception, never its text: a message can quote trace content (a URL)."""
+        b = self.job.step("before", SPS_PATH="raises")
+
+        def leaky(*args, **kwargs):
+            raise RuntimeError("unable to access '%s'" % PLANTED)
+
+        with mock.patch.object(srcstats, "summarize_trace", leaky):
+            _, log = self.job.inproc("after", SPS_ID=b["id"], SPS_PATH="raises", SPS_OUTCOME="failure")
+        self.assertIn("::warning::", log)
+        self.assertIn("RuntimeError", log)
+        self.assertNotIn(PLANTED_TOKEN, log)
+
+    def test_partial_clone_filter_from_config_is_allow_listed(self):
+        self.job.prepare(self.url, "cfgfilter", filt="blob:none")
+        git("-C", os.path.join(self.job.ws, "cfgfilter"), "config", "remote.origin.partialclonefilter", PLANTED)
+        out = self.job.step("after", SPS_ID="", SPS_PATH="cfgfilter", SPS_OUTCOME="success")
+        record = json.loads(out["record"])
+        self.assertEqual((record["partial"], record["filter"]), (True, "other"))
+        self.assertNotIn(PLANTED_TOKEN, self.job.published())
 
     def test_429_injector_counts_one_throttle_hit_and_one_retry(self):
         before = self.server.throttled

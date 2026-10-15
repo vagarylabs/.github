@@ -16,6 +16,9 @@ import srcstats  # noqa: E402
 
 FIXTURES = os.path.join(HERE, "fixtures", "trace2")
 ROOT = "20261015T000000.000000Z-H00000000-P"
+# A fake credential-bearing remote, assembled at run time so no scanner mistakes the source for a real one.
+PLANTED_TOKEN = "planted-" + "token"
+PLANTED = "https://user:%s@example.invalid/org/repo.git" % PLANTED_TOKEN
 
 
 def proc(sid, name, hierarchy, argv, code=0, t=0.5, at="2026-10-15T00:00:00.000000Z", errors=(), data=(),
@@ -185,6 +188,17 @@ class SyntheticTests(unittest.TestCase):
         self.assertEqual((s["negotiation_rounds"], s["haves_sent"], s["filter_effective"], s["protocol_version"]),
                          (2, 20, "tree:0", "2"))
 
+    def test_published_trace_strings_are_allow_listed_never_raw(self):
+        """negotiated-version and filter/effective are the only trace strings in the record: any value outside
+        their closed form is "other", and the raw value (here a credential-bearing URL) appears nowhere."""
+        self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH + [PLANTED], code=128,
+                        errors=["unable to access '%s': 429" % PLANTED],
+                        data=[("transfer", "negotiated-version", PLANTED), ("fetch", "filter/effective", PLANTED)]))
+        s, _ = srcstats.summarize_trace(self.t.dir)
+        self.assertNotIn(PLANTED_TOKEN, json.dumps(s))
+        self.assertEqual((s["protocol_version"], s["filter_effective"]), ("other", "other"))
+        self.assertEqual(s["throttle_hits"], 1, "the error text is still read, only never published")
+
     def test_fetch_without_negotiation_data_is_unknown(self):
         self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
         s, _ = self.t.summary()
@@ -217,6 +231,40 @@ class SyntheticTests(unittest.TestCase):
         self.t.add(events)
         s, _ = self.t.summary()
         self.assertEqual((s["failed_fetch_attempts"], s["fetch_seconds"]), (0, 1.0))
+
+
+class AllowListTests(unittest.TestCase):
+    def test_filter_specs(self):
+        cases = [
+            ("blob:none", "blob:none"), ("blob:limit=1024", "blob:limit=1024"), ("blob:limit=1k", "blob:limit=1k"),
+            ("tree:0", "tree:0"), ("object:type=commit", "object:type=commit"),
+            ("sparse:oid=main:" + PLANTED, "sparse:oid"),  # the rev is free text: only the kind is kept
+            ("combine:blob%3Anone+tree%3A3", "combine:blob:none+tree:3"),
+            ("combine:blob%3Anone+" + PLANTED.replace(":", "%3A"), "other"),
+            ("combine:combine%3Ablob%3Anone+tree%3A0", "other"), ("combine:blob%3Anone", "other"),
+            (PLANTED, "other"), ("blob:none ", "other"), ("tree:-1", "other"), ("blob:limit=1t", "other"),
+            ("", "other"), ("x" * 600, "other"), (7, "other"), (None, "other"), (["blob:none"], "other"),
+        ]
+        with open(os.path.join(HERE, "schema", "source-prep.v1.json")) as fh:
+            schema = json.load(fh)["properties"]["filter"]
+        for raw, want in cases:
+            with self.subTest(raw=raw):
+                got = srcstats.filter_spec(raw)
+                self.assertEqual(got, want)
+                self.assertEqual(srcstats.validate(got, schema), [])
+
+    def test_protocol_versions(self):
+        for raw, want in (("2", "2"), (2, "2"), ("1", "1"), ("0", "0"), ("3", "other"), (True, "other"),
+                          (PLANTED, "other"), (None, "other"), ({"v": 2}, "other")):
+            with self.subTest(raw=raw):
+                self.assertEqual(srcstats.protocol_version(raw), want)
+
+    def test_schema_rejects_raw_trace_strings(self):
+        with open(os.path.join(HERE, "schema", "source-prep.v1.json")) as fh:
+            props = json.load(fh)["properties"]
+        self.assertNotEqual(srcstats.validate(PLANTED, props["filter"]), [])
+        self.assertNotEqual(srcstats.validate(PLANTED, props["transfer"]["properties"]["filter_effective"]), [])
+        self.assertNotEqual(srcstats.validate(PLANTED, props["transfer"]["properties"]["protocol_version"]), [])
 
 
 class CompletenessTests(unittest.TestCase):

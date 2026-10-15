@@ -2,7 +2,7 @@
 
 Vagary owns the execution contract and its qualification. A Git tag names reviewed source; it does not grant execution permission, qualify a consumer, change billing, or authorize a release.
 
-At the October 16, 2026 inventory, `vagarylabs/.github` has no Git tags and no GitHub releases. `PLANNER_VERSION = "1.3.0"` is the planner's internal record version, not a published repository release. No version is assigned by this document. Until a real tag is verified, first-party SHA pins retain the agreed `# main` annotation. That annotation does not make the reference floating.
+At the October 16, 2026 inventory, `vagarylabs/.github` has no Git tags and no GitHub releases. `PLANNER_VERSION = "1.4.0"` is the planner's internal record version, not a published repository release. No version is assigned by this document. Until a real tag is verified, first-party SHA pins retain the agreed `# main` annotation. That annotation does not make the reference floating.
 
 ## Named ownership and triggers
 

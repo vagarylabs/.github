@@ -614,7 +614,14 @@ class HermeticTest(unittest.TestCase):
     def test_a_failed_filter_or_cone_read_is_unknown_never_a_default(self):
         self.job.prepare(self.url, "failed-filter", filt="blob:none")
         self.job.prepare(self.url, "failed-cone", depth=1, sparse=["a"])
+        promisor = git("-C", os.path.join(self.job.ws, "failed-filter"), "config", "--get", "remote.origin.promisor")
+        self.assertEqual(promisor.stdout.strip(), b"true", "positive control: the blobless checkout has a promisor")
         for code in FAILED_READS:
+            with self.subTest(read="extensions.partialclone, promisor found", code=code):
+                r = self.after_with_failed_read("failed-filter", "extensions.partialclone", code)
+                self.assertEqual((r["partial"], r["filter"]), (True, "blob:none"), "a promisor found is partial")
+                self.assertNotIn("partial", r["unknown"])
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
             with self.subTest(read="filter", code=code):
                 r = self.after_with_failed_read("failed-filter", "remote.origin.partialclonefilter", code)
                 self.assertEqual((r["partial"], r["filter"]), (True, None))

@@ -583,9 +583,10 @@ def git(path, budget, *args):
 
 def git_config(path, budget, label, *args):
     """One `git config` read: (value, None) when the key is set, (None, None) when it is not, (None, reason) when
-    the read failed. Only exit 1 means "not set" (the keys read here are fixed, so it is never "invalid key");
-    any other exit, a kill or git not starting is a failed read, never an unset key. label names the key in the
-    reason, which is published: never a name read from the repository's config."""
+    the read failed. Only exit 1 means "not set"; any other exit, a kill or git not starting is a failed read,
+    never an unset key. git also exits 1 for an invalid key: the keys read here are fixed except the remote name in
+    remote.<promisor>.partialclonefilter, and that read only happens once the tree is already partial. label names
+    the key in the reason, which is published: never a name read from the repository's config."""
     code, out = _git_run(path, budget, "config", *args)
     if code == 0:
         return out.strip(), None

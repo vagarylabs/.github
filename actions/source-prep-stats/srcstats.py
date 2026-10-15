@@ -464,8 +464,12 @@ def object_files(objects_dir, budget):
     packs, loose = {}, 0
     pack_dir = os.path.join(objects_dir, "pack")
     try:
-        if os.path.isdir(pack_dir):
-            with os.scandir(pack_dir) as entries:
+        try:  # not os.path.isdir: it answers False for a directory it may not stat, which read as "no packs"
+            pack_entries = os.scandir(pack_dir)
+        except FileNotFoundError:
+            pack_entries = None  # no pack directory: no packs, measured
+        if pack_entries is not None:
+            with pack_entries as entries:
                 for e in entries:
                     budget.charge(events=1)
                     if e.name.endswith(".pack") and e.is_file(follow_symlinks=False):
@@ -589,9 +593,14 @@ def count_objects(path, budget):
 
 def snapshot(path, budget, whole_git_dir=True, walk=True):
     """The repository at path, or {'repo': False} when there is none (a cold start: zero, measured).
-    walk=False leaves the size walks to size_walks(), so they cannot starve the cheaper facts."""
-    if not os.path.exists(os.path.join(path, ".git")):
+    walk=False leaves the size walks to size_walks(), so they cannot starve the cheaper facts. A path that cannot
+    be read is unknown, never "no repository": that would make a warm checkout a cold one with every object new."""
+    try:  # not os.path.exists: it answers False for a path it may not stat
+        os.stat(os.path.join(path, ".git"))
+    except (FileNotFoundError, NotADirectoryError):
         return {"repo": False}
+    except OSError as exc:
+        return {"repo": None, "unknown": {"repository": _unreadable("the checkout path", exc)}}
     try:
         git_dir = (git(path, budget, "rev-parse", "--absolute-git-dir") or "").strip()
     except BudgetExhausted as exc:
@@ -823,7 +832,13 @@ def dumps(obj):
 
 def store_snapshot(store, budget):
     store = os.path.abspath(os.path.expanduser(store))
-    if not os.path.isdir(store):
+    try:
+        is_dir = stat.S_ISDIR(os.stat(store).st_mode)
+    except FileNotFoundError:
+        is_dir = None
+    except OSError as exc:
+        return {"path": store, "bytes": None, "reason": _unreadable("the store directory", exc)}
+    if not is_dir:
         return {"path": store, "bytes": None, "reason": "store directory does not exist"}
     size, reason = walk_bytes(store, budget)
     return {"path": store, "bytes": size, "reason": reason}

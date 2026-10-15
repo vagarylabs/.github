@@ -123,6 +123,31 @@ def unreadable(*paths):
     return mock.patch.object(srcstats.os, "scandir", scandir)
 
 
+def stat_refused(*paths):
+    """os.stat and os.scandir refuse these paths with EACCES, as when a parent directory is not searchable, for
+    whoever runs the test. os.path.exists and os.path.isdir answer False for such a path rather than raise."""
+    real_stat, real_scandir = os.stat, os.scandir
+    refused = {os.path.normpath(p) for p in paths}
+
+    def denied(path):
+        return isinstance(path, str) and os.path.normpath(path) in refused
+
+    def stat_(path, *args, **kwargs):
+        if denied(path):
+            raise PermissionError(13, "Permission denied", path)
+        return real_stat(path, *args, **kwargs)
+
+    def scandir(path="."):
+        if denied(path):
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(srcstats.os, "stat", stat_))
+    stack.enter_context(mock.patch.object(srcstats.os, "scandir", scandir))
+    return stack
+
+
 def write_trace(trace_dir, name, events, tail=""):
     with open(os.path.join(trace_dir, name), "w") as fh:
         fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
@@ -641,6 +666,41 @@ class HermeticTest(unittest.TestCase):
         self.assertEqual(srcstats.validate(doc, "job-telemetry.v1.json"), [])
         self.assertIsNone(doc["pnpm_store"]["bytes_after"], "an unreadable store is unknown, never 0 bytes")
         self.assertIn("could not be read", doc["unknown"]["pnpm_store.bytes_after"])
+
+    def test_an_unreadable_checkout_path_is_unknown_not_a_cold_start(self):
+        """A warm path the before step cannot stat: os.path.exists said "no .git", so the warm re-fetch was
+        recorded as a cold start (warm false, objects before 0) and every pack already there as new bytes."""
+        self.job.prepare(self.url, "locked")
+        with stat_refused(os.path.join(self.job.ws, "locked", ".git")):
+            b, log = self.job.inproc("before", SPS_PATH="locked")
+        self.assertNotIn("::warning::", log)
+        outcome = self.job.checkout(self.url, "locked", trace=b["trace_dir"])
+        r = json.loads(self.job.step("after", SPS_ID=b["id"], SPS_PATH="locked", SPS_OUTCOME=outcome)["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertGreater(r["objects_detail"]["after"], 0, "positive control: the repository is there after")
+        self.assertIsNone(r["warm"])
+        self.assertEqual((r["bytes"], r["objects"], r["objects_detail"]["before"]), (None, None, None))
+        self.assertIn("could not be read", r["unknown"]["before.repository"])
+        self.assertFalse(r["measurement"]["complete"])
+
+    def test_a_pack_directory_that_cannot_be_statted_is_unknown_not_empty(self):
+        """os.path.isdir answered False for a pack directory it could not stat, which listed as "no packs"."""
+        self.job.prepare(self.url, "lockedpack")
+        objects = os.path.join(self.job.ws, "lockedpack", ".git", "objects")
+        packs, loose, reason = srcstats.object_files(objects, srcstats.Budget(20))
+        self.assertTrue(packs, "positive control: the pack is listed when readable")
+        with stat_refused(os.path.join(objects, "pack")):
+            packs, loose, reason = srcstats.object_files(objects, srcstats.Budget(20))
+        self.assertEqual((packs, loose), (None, None))
+        self.assertIn("could not be read", reason)
+
+    def test_a_store_that_cannot_be_statted_says_so(self):
+        store = os.path.join(self.job.root, "unstattable-store")
+        os.makedirs(store)
+        with stat_refused(store):
+            snap = srcstats.store_snapshot(store, srcstats.Budget(20))
+        self.assertIsNone(snap["bytes"])
+        self.assertIn("could not be read", snap["reason"], "it exists: 'does not exist' is the wrong reason")
 
     def test_a_non_finite_walk_budget_is_refused_and_the_walk_still_stops(self):
         """walk-budget-seconds inf (or 1e400, NaN, negative) is refused with a warning and the default used. A

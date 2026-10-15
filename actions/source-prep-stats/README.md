@@ -26,7 +26,7 @@ Optional inputs:
 - **It never fails a job.** The measuring steps run `if: always()` with `continue-on-error`. A failed checkout still fails the job, as it would without this action.
 - **Unknown stays unknown.** A value that was not measured is `null`, and `unknown` says why. `0` always means a measured zero, such as "no lazy fetch ran" or "nothing existed before a cold checkout".
   - Attribution fields are `null` when the runner does not provide them.
-  - A directory that cannot be read (under `.git`, or the pnpm store) makes that size `null` with the reason, never a smaller or zero total. A "before" value that was not read is never taken as zero.
+  - A directory that cannot be read (under `.git`, or the pnpm store) makes that size `null` with the reason, never a smaller or zero total. A "before" value that was not read is never taken as zero. A checkout path that cannot be read is an unknown repository, never "no repository": that would turn a warm checkout into a cold one with every object new.
   - `sparse_*` fields are `null` when `sparse` is `false`, because they don't apply.
   - `filter` is `null` when `partial` is `false`.
 - **Every read is bounded.** One step's reads (trace2 files, git output, the object listing and the size walks) share one 120 s deadline, a 256 MiB byte budget and a 4 million event budget (trace events and directory entries). A git command that outlasts the deadline is killed with its process group. Whatever runs out is `null` with the reason, never a partial count, a crash or a hang. The cheap facts are read first and the size walks last, so a slow walk costs only the sizes.

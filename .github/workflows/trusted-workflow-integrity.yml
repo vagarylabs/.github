@@ -382,7 +382,7 @@ jobs:
           _WRAPPERS = re.compile(
               r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+|(?:env|sudo|time|command|exec)\s+|nice(?:\s+-n\s*-?\d+)?\s+"
               r"|timeout\s+(?:-\S+\s+)*\S+\s+|xvfb-run\s+(?:-\S+\s+)*|npx\s+(?:--yes\s+|-y\s+)?|bunx\s+"
-              r"|pnpm\s+(?:exec|dlx)\s+|yarn\s+(?=(?:vitest|jest|mocha|playwright|eslint|tsc)\b)"
+              r"|pnpm\s+(?:exec|dlx)\s+|(?:pnpm|yarn)\s+(?=(?:vitest|jest|mocha|playwright|eslint|tsc)\b)"
               r"|(?:uv|poetry|pipenv|hatch)\s+run\s+|python3?(?:\.\d+)?\s+-m\s+|(?:\./)?node_modules/\.bin/)+")
 
 
@@ -407,6 +407,33 @@ jobs:
               return ["continue-on-error: true" if v == "true" else "continue-on-error: <expression>"]
 
 
+          _INTERPRETER = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|bash|sh|zsh|node|bats)$")
+          _SCRIPT_ROOT = re.compile(r"^(?:\$\{?GITHUB_WORKSPACE\}?/|\./)+")
+
+
+          def test_script(cand, command_pos):
+              """The test file that cand runs as `<interpreter> [flags] <path>` or as a bare path, or None.
+
+              The fleet mostly runs tests this way (python3 scripts/test-*.py, bash test/run-*.sh). A bare path counts
+              in command position (segment start, after `run:`) or with a ./ or $GITHUB_WORKSPACE/ prefix; after a
+              quote it is more likely an argument (git diff -- "tests/test_x.py"), so there it needs an interpreter.
+              """
+              words = cand.split(None, 6)
+              if not words:
+                  return None
+              i = 0
+              if _INTERPRETER.match(words[0].strip("\"'").rsplit("/", 1)[-1]):
+                  i = 1
+                  while i < len(words) and words[i].startswith("-"):
+                      i += 1
+                  if i >= len(words):
+                      return None
+              elif not command_pos and not _SCRIPT_ROOT.match(words[0].lstrip("\"'")):
+                  return None
+              path = _SCRIPT_ROOT.sub("", words[i].strip("\"'"))
+              return path if path and is_test_file(path) else None
+
+
           def swallowed_runner(line):
               """The test or check command whose failure a `|| true`-style tail swallows, or None."""
               sep_ends = [s.end() for s in _SEGMENT_SEP.finditer(line)]  # one pass: segments stay linear in the line
@@ -414,12 +441,16 @@ jobs:
                   i = bisect.bisect_right(sep_ends, m.start()) - 1
                   segment = line[(sep_ends[i] if i >= 0 else 0): m.start()]
                   for element in segment.split("|"):
-                      starts = [0] + [x.end() for x in re.finditer(r"[\"']|\brun:\s*", element)]
-                      for st in starts:
+                      starts = [(0, True)] + [(x.end(), x.group().startswith("run"))
+                                              for x in re.finditer(r"[\"']|\brun:\s*", element)]
+                      for st, command_pos in starts:
                           cand = _WRAPPERS.sub("", element[st:].lstrip(" \t\"'"))
                           r = _RUNNER.match(cand)
                           if r:
                               return safe_tok("%s || %s" % (r.group("r"), m.group("s")))
+                          script = test_script(cand, command_pos)
+                          if script:
+                              return safe_tok("%s || %s" % (script, m.group("s")))
               return None
 
 

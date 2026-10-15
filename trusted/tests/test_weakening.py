@@ -214,6 +214,12 @@ class WeakeningCases(unittest.TestCase):
         self.assertEqual(sorted(f["detail"] for f in got if f["rule"] == "swallowed-failure"),
                          ["adds `pytest || exit 0`", "adds `vitest || true`"])
 
+    def test_red_or_true_after_a_test_script_run_by_path(self):
+        wf = BASE[".github/workflows/ci.yml"] + "      - run: python3 scripts/test-routing.py || true\n"
+        hit = self.assertFlagged({".github/workflows/ci.yml": wf}, "swallowed-failure",
+                                 "adds `scripts/test-routing.py || true`")[0]
+        self.assertEqual(hit["line"], 9)
+
     def test_red_test_deleted_without_successor(self):
         hit = self.assertFlagged({"tests/test_x.py": None}, "test-deleted", "no successor")[0]
         self.assertEqual((hit["path"], hit["line"]), ("tests/test_x.py", None))
@@ -414,6 +420,9 @@ class IntegrityReportTests(unittest.TestCase):
         n = classify.WEAKENING_MAX_LINE // 13
         lines = ["it(a,{x:1});" * n, "aBudget" * (n * 2), "x || " * (n * 2), "'\"" * (n * 5),
                  "test.describe.configure({" * (n // 2), "continue-on-error: " + " " * (n * 12) + "x"]
+        # A swallow tail after many candidate command starts (quotes, interpreters, run:) inside one segment.
+        lines += [(s * classify.WEAKENING_MAX_LINE)[: classify.WEAKENING_MAX_LINE - 8] + " || true"
+                  for s in ("bash '", "'", "run: ./", "python3 -")]
         files = {"e2e/adv.test.js": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
                  "scripts/adv.sh": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
                  ".github/workflows/adv.yml": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n"}
@@ -460,6 +469,20 @@ class PredicateUnitTests(unittest.TestCase):
             "CI=1 npx vitest run | tee out.log || true": "vitest || true",
             "timeout 600 go test ./... || echo failed": "go test || echo",
             "make test || exit 0": "make test || exit 0",
+            "pnpm vitest run || true": "vitest || true",
+            # A test file run by path, the fleet's usual form (vps-ansible, vagary-core, vagary-voice workflows).
+            "  - run: python3 scripts/test-ci-hosted-routing.py || true": "scripts/test-ci-hosted-routing.py || true",
+            'run: PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/test-canon.py || true':
+                "scripts/test-canon.py || true",
+            "python3 -I roles/automation/tests/test_dump.py || true": "roles/automation/tests/test_dump.py || true",
+            "bash test/run-functional.sh || exit 0": "test/run-functional.sh || exit 0",
+            "./scripts/lib/test-canon-guard.sh || :": "scripts/lib/test-canon-guard.sh || :",
+            '"test:ci": "bash tests/run.sh || true",': "tests/run.sh || true",
+            'bash "$GITHUB_WORKSPACE/scripts/ci-test-pg.sh" down "$CN" || true': None,
+            "python3 scripts/capability-catalog-gen.py >/dev/null 2>&1 || true": None,
+            'git diff --quiet -- "tests/test_x.py" || true': None,
+            "rm -f tests/test_x.py || true": None,
+            "python3 -c 'import x' || true": None,
             "pip install pytest || true": None,
             "python3 -m pip install -q httpx pytest || true": None,
             "grep -q vitest package.json || true": None,

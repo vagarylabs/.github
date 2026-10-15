@@ -67,9 +67,11 @@ line between them):
 - `expires` may be at most 90 days after the day of the run (UTC). A renewal is a new approval.
 - If an entry has no approver, has no expiry, is expired, or has an expiry more than 90 days out, the
   `exceptions` check is FINDINGS. The gitleaks job then fails.
-- The check reads HEAD's files as data. An expired entry fails every PR until a PR renews or removes it,
-  and that PR passes. The scan itself always uses BASE's configuration, so a change takes effect only after
-  merge. `.gitleaks.toml` and `.gitleaksignore` are protected paths.
+- Which files are judged: BASE's (the register in force), unless the PR edits `.gitleaks.toml` or
+  `.gitleaksignore`, in which case HEAD's. An open PR that branched before a migration or renewal follows
+  main; an expired entry on main fails every PR that does not touch the files, until a PR renews or removes
+  it, and that PR passes on its own. The scan itself always uses BASE's configuration, so an edit takes
+  effect only after merge. Both files are protected paths.
 - Ledger C9 item 4 asks for a human-attributable approver who is not the author. The migration entries
   name `cc:root (migration 2026-10-15)`, as root directed. Each renewal should name a person.
 
@@ -92,7 +94,17 @@ line between them):
      package version with a known advisory. Both must show FINDINGS.
    - planted unavailable: semgrep, a ruleset fetch blocked or a file semgrep cannot parse; SCA, a lockfile
      osv-scanner cannot extract. Both must show UNAVAILABLE.
-4. **Signed off by root** on the board.
+4. **Supply chain and recourse.**
+   - semgrep is installed from a hash-pinned requirements file (`pip install --require-hashes`), not the
+     bare version pin used while report-only.
+   - An exception path is wired: semgrep and SCA findings can be waived only by an AUTHORIZED_EXCEPTION
+     register entry with approver and expiry, read from BASE. Without it, a false positive on a required
+     check has no recourse.
+5. **Signed off by root** on the board.
+
+Capacity: `trusted-code-scan` adds one vl-light job per PR and merge group in five repositories, and when a
+file changed it creates a fresh venv and installs semgrep. Add it to the ruleset's `workflows` list only
+after root's criterion (a) holds.
 
 ## Runners
 

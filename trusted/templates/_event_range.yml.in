@@ -41,5 +41,9 @@
           fi
           commits=0
           if [ -n "$lower" ]; then commits="$(git rev-list --count "${lower}..${head}")"; fi
-          echo "scan range: ${lower:-unresolved}..${head} = $commits commit(s) [$how]"
-          { echo "lower=$lower"; echo "head=$head"; echo "commits=$commits"; } >> "$GITHUB_OUTPUT"
+          # trufflehog scans HEAD, which on a pull_request is the merge commit; bounding it at the merge-base
+          # would add main's own newer commits, so it stays bounded at the base tip there, as before.
+          since="$lower"
+          if [ "$EVENT" = pull_request ] && [ -n "$lower" ]; then since="$PR_BASE"; fi
+          echo "scan range: ${lower:-unresolved}..${head} = $commits commit(s) [$how]; trufflehog since ${since:-unresolved}"
+          { echo "lower=$lower"; echo "head=$head"; echo "commits=$commits"; echo "since=$since"; } >> "$GITHUB_OUTPUT"

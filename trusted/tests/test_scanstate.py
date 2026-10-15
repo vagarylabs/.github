@@ -375,11 +375,87 @@ class EventRangeTests(unittest.TestCase):
     def test_pull_request(self):
         o, _ = self.resolve("pull_request", pr_base=self.main, pr_head=self.after)
         self.assertEqual((o["lower"], o["head"], o["commits"]), (self.main, self.after, "2"))
+        # trufflehog scans the merge commit on a PR, so it stays bounded at the base tip, as before
+        self.assertEqual(o["since"], self.main)
 
     def test_default_branch_without_usable_before_is_unresolved(self):
         o, _ = self.resolve("push", before="0" * 40, after=self.main)
         self.assertEqual((o["lower"], o["commits"]), ("", "0"))
         self.assertEqual(ss.classify_gitleaks(0, "[]", int(o["commits"]), "unresolved")["state"], "UNAVAILABLE")
+
+
+def step_block(workflow, name):
+    """The run body of the step called `name` in a rendered workflow, de-indented."""
+    t = (WF / (workflow + ".yml")).read_text()
+    i = t.index("- name: " + name)
+    m = re.compile(r"\n( +)run: \|\n").search(t, i)
+    ind, out = len(m.group(1)) + 2, []
+    for line in t[m.end():].split("\n"):
+        if line.strip() and not line.startswith(" " * ind):
+            break
+        out.append(line[ind:])
+    return "\n".join(out) + "\n"
+
+
+class AllowlistSideTests(unittest.TestCase):
+    """The register is judged at BASE unless the PR edits it: a stale PR follows main, a renewal passes."""
+
+    OLD = "[[allowlists]]\npaths = ['x']\n"
+    NEW = "[[allowlists]]\napprover = \"cc:root (migration 2026-10-15)\"\nexpires = %s\npaths = ['x']\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = os.path.join(self.tmp.name, "repo")
+        self.rt = os.path.join(self.tmp.name, "rt")
+        os.makedirs(os.path.join(self.rt, "trusted"))
+        pathlib.Path(self.rt, "trusted", "scanstate.py").write_text((ROOT / "trusted" / "scanstate.py").read_text())
+        os.makedirs(self.d)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.invalid")
+        self.git("config", "user.name", "t")
+        self.mb = self.commit(".gitleaks.toml", self.OLD)
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        self.expires = (today + datetime.timedelta(days=30)).isoformat()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *a):
+        return subprocess.run(("git",) + a, cwd=self.d, check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, path, text):
+        pathlib.Path(self.d, path).write_text(text)
+        self.git("add", "-A")
+        self.git("commit", "-qm", path)
+        return self.git("rev-parse", "HEAD")
+
+    def judge(self, base, head):
+        rec = os.path.join(self.rt, "rec-" + head[:8])
+        env = dict(os.environ, RUNNER_TEMP=self.rt, BASE=base, MB=self.mb, HEAD_SHA=head, SCAN_RECORDS=rec)
+        r = subprocess.run(["bash", "-c", step_block("trusted-secret-scan", "Allowlist entries")], cwd=self.d,
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return ss.load(rec, "gitleaks")[-1], r.stdout
+
+    def test_stale_pr_follows_migrated_base(self):
+        head = self.commit("feature.txt", "work\n")  # the PR branched before the migration
+        self.git("checkout", "-q", "-b", "later-main", self.mb)
+        base = self.commit(".gitleaks.toml", self.NEW % self.expires)  # main migrated afterwards
+        rec, out = self.judge(base, head)
+        self.assertEqual(rec["state"], "PASSED", out)
+        self.assertIn("BASE (this PR does not edit them)", out)
+
+    def test_unmigrated_base_fails_untouched_pr(self):
+        head = self.commit("feature.txt", "work\n")
+        self.assertEqual(self.judge(self.mb, head)[0]["state"], "FINDINGS")
+
+    def test_pr_that_renews_passes_and_bad_edit_fails(self):
+        renew = self.commit(".gitleaks.toml", self.NEW % self.expires)
+        rec, out = self.judge(self.mb, renew)
+        self.assertEqual(rec["state"], "PASSED", out)
+        self.assertIn("HEAD (this PR edits them)", out)
+        bad = self.commit(".gitleaks.toml", self.NEW % "2020-01-01")
+        self.assertEqual(self.judge(self.mb, bad)[0]["state"], "FINDINGS")
 
 
 class WorkflowInlineTests(unittest.TestCase):
@@ -420,6 +496,21 @@ class WorkflowInlineTests(unittest.TestCase):
         self.assertIn('git show "$BASE:.semgrepignore"', text)
         self.assertIn('--config "$T/empty.toml"', text)
         self.assertIn("--metrics=off", text)
+
+    def test_code_scan_budget_fits_the_job(self):
+        text = (WF / "trusted-code-scan.yml").read_text()
+        self.assertIn("timeout-minutes: 20", text)
+        self.assertNotIn("--retry 2", text)
+        for needle in ("--max-time 30 --retry 1", "timeout 60 python3 -m venv", "timeout 150",
+                       'run "$T/head" "$T/head.json" 240', 'run "$T/base" "$T/base.json" 120',
+                       "--max-time 90 -o", "timeout 45"):
+            self.assertIn(needle, text)
+        self.assertLess(2 * 62 + 60 + 150 + 240 + 120 + 90 + 2 * 45, 15 * 60)
+
+    def test_uploads_overwrite_on_rerun(self):
+        for name in ("trusted-secret-scan", "trusted-code-scan"):
+            text = (WF / (name + ".yml")).read_text()
+            self.assertEqual(text.count("uses: actions/upload-artifact@"), text.count("overwrite: true"), name)
 
 
 if __name__ == "__main__":

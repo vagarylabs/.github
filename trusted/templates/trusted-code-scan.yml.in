@@ -9,7 +9,9 @@
 # REPORT-ONLY (trusted/scanstate.py REPORT_ONLY): both scanners record exactly one state (PASSED, FINDINGS,
 # UNAVAILABLE, NOT_APPLICABLE) into the job summary and scan-result-<scanner>.json, and the job does not fail
 # on FINDINGS or UNAVAILABLE. Every acquisition and scan is inside a bounded step that records UNAVAILABLE on
-# failure instead of failing the step, so report-only cannot block a merge. Flip criterion: trusted/README.md.
+# failure instead of failing the step, and every command has a budget that keeps the job inside its deadline.
+# What can still fail the job: the recorder install, checkout or merge-base steps, and the artifact upload.
+# Flip criterion: trusted/README.md.
 #
 # Scope: semgrep compares the changed files at head with the same files at the merge-base and reports only
 # findings the merge-base does not already carry. SCA scans the changed lockfiles at head and at the
@@ -32,8 +34,11 @@ jobs:
     if: github.repository != 'vagarylabs/.github'
     # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
     runs-on: [self-hosted, Linux, X64, vl-light]
-    # The inner commands carry their own timeouts (sum < 14 min) so the job deadline is never what ends a scan.
-    timeout-minutes: 16
+    # Every network and scan command carries its own budget; the worst case of all of them is 875 s
+    # (semgrep: 2 rulesets x 62 + venv 60 + pip 150 + head 240 + base 120 = 694; osv: download 90 + 2 x 45 = 180),
+    # under 15 min, so the 20-minute job deadline, which would skip the gate and the upload, is never what ends
+    # a scan. Setup steps (recorder install, checkout, merge-base) and the upload can still fail the job.
+    timeout-minutes: 20
     env:
       SEMGREP_VERSION: "1.174.0"
       SEMGREP_RULESETS: "p/secrets p/owasp-top-ten"
@@ -75,23 +80,23 @@ jobs:
           args=()
           for p in $SEMGREP_RULESETS; do
             out="$T/rules/${p//\//-}.yml"
-            curl -sSf --max-time 60 --retry 2 -o "$out" "https://semgrep.dev/c/$p" || rec UNAVAILABLE "ruleset $p could not be fetched"
+            curl -sSf --max-time 30 --retry 1 -o "$out" "https://semgrep.dev/c/$p" || rec UNAVAILABLE "ruleset $p could not be fetched"
             args+=(--config "$out")
           done
           rules="$(cat "$T"/rules/*.yml | grep -cE '^- id:' || true)"
           rules_sha="$(cat "$T"/rules/*.yml | sha256sum | cut -d' ' -f1)"
           echo "rulesets: $SEMGREP_RULESETS, $rules rules, sha256 $rules_sha"
-          { timeout 120 python3 -m venv "$T/venv" && timeout 300 "$T/venv/bin/pip" install -q --no-cache-dir \
+          { timeout 60 python3 -m venv "$T/venv" && timeout 150 "$T/venv/bin/pip" install -q --no-cache-dir \
               --disable-pip-version-check "semgrep==$SEMGREP_VERSION"; } > "$T/install.log" 2>&1 \
             || { tail -n 5 "$T/install.log"; rec UNAVAILABLE "semgrep $SEMGREP_VERSION could not be installed (python3 -m venv + pip)"; }
           run() {
-            (cd "$1" && timeout 420 "$T/venv/bin/semgrep" scan "${args[@]}" --metrics=off --disable-version-check \
+            (cd "$1" && timeout "$3" "$T/venv/bin/semgrep" scan "${args[@]}" --metrics=off --disable-version-check \
               --disable-nosem --json --output "$2" --timeout 20 --jobs 2 --max-memory 2000 --quiet .)
           }
-          run "$T/head" "$T/head.json"; rc=$?
+          run "$T/head" "$T/head.json" 240; rc=$?
           base_json=()
           if [ -n "$(find "$T/base" -type f ! -name .semgrepignore -print -quit)" ]; then
-            run "$T/base" "$T/base.json"; rcb=$?
+            run "$T/base" "$T/base.json" 120; rcb=$?
             [ "$rc" -ne 0 ] || rc=$rcb
             base_json=(--base "$T/base.json" --base-root "$T/base")
           fi
@@ -118,7 +123,7 @@ jobs:
           cache="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/osv-scanner/$OSV_VERSION/osv-scanner_linux_amd64"
           if [ -f "$cache" ]; then cp "$cache" "$bin" 2>/dev/null || true; fi
           if ! echo "$OSV_SHA256  $bin" | sha256sum -c - >/dev/null 2>&1; then
-            curl -sSfL --max-time 180 --retry 2 -o "$bin" \
+            curl -sSfL --max-time 90 -o "$bin" \
               "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" \
               || rec UNAVAILABLE "osv-scanner $OSV_VERSION could not be downloaded"
           fi
@@ -134,7 +139,7 @@ jobs:
               case "${f##*/}" in requirements.txt) a+=(-L "$f") ;; requirements*.txt) a+=(-L "requirements.txt:$f") ;; *) a+=(-L "$f") ;; esac
             done < "$T/lockfiles.txt"
             [ "${#a[@]}" -gt 0 ] || return 200
-            (cd "$T/$side" && timeout 240 "$bin" scan source --config "$T/empty.toml" --format json "${a[@]}" \
+            (cd "$T/$side" && timeout 45 "$bin" scan source --config "$T/empty.toml" --format json "${a[@]}" \
               > "$T/$side.json" 2> "$T/$side.err")
           }
           scan head "$HEAD_SHA"; rch=$?
@@ -160,3 +165,5 @@ jobs:
             ${{ runner.temp }}/scan-records/scan-result-semgrep.json
             ${{ runner.temp }}/scan-records/scan-result-sca.json
           retention-days: 14
+          # A re-run attempt re-uploads under the same name; without overwrite it would fail a passed scan.
+          overwrite: true

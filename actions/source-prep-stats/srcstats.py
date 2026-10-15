@@ -45,7 +45,7 @@ FETCH_FAMILY = {"fetch", "clone", "fetch-pack", "pull"}
 # Server-side processes show up in the client's trace when the transport is local (file://, ssh to localhost).
 SERVER_SIDE = {"upload-pack", "http-backend", "receive-pack", "upload-archive"}
 THROTTLE_RE = re.compile(r"\b429\b|too many requests|rate[ -]?limit", re.I)
-PACK_HEADER_RE = re.compile(r"^--pack_header=\d+,(\d+)$")
+PACK_HEADER_RE = re.compile(r"--pack_header=[0-9]{1,10},([0-9]{1,10})\Z")  # two uint32s
 HTTP_429_SINCE = (2, 54)  # git >= 2.54 traces every 429 response (http/429-retry-after), retried or not
 LAZY_MARK = "fetch.negotiationAlgorithm=noop"  # promisor-remote.c runs lazy fetches as `git -c <this> fetch ... --stdin`
 DEFAULT_WALK_BUDGET = 20.0
@@ -85,6 +85,20 @@ def _int(value):
         return None
 
 
+COUNTER_KEYS = ("total_rounds", "haves_added", "fetch_count")
+MAX_COUNT = 1 << 53  # exact in every JSON reader
+
+
+def _count(value):
+    """A traced counter as a non-negative integer up to MAX_COUNT (git writes them as decimal strings), else None.
+    A negative, fractional, huge or non-numeric value is a damaged line, never a published number."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,16}", value):
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_COUNT:
+        return None
+    return value
+
+
 def protocol_version(value):
     """A traced negotiated-version as "0", "1" or "2"; any other value is "other", never echoed."""
     if isinstance(value, bool) or not isinstance(value, (str, int)):
@@ -112,13 +126,11 @@ def filter_spec(value, nested=False):
 
 # The fields read from each event kind and their JSON types. An event whose read field has another type (a
 # number for a hierarchy, a list for a name, a string for an argv) is a bad line, never a crash.
-_NUM = (int, float)
 EVENT_FIELDS = {
     "version": {"exe": str},
     "start": {"argv": list, "time": str},
     "cmd_name": {"name": str, "hierarchy": str},
-    "exit": {"code": int, "t_abs": _NUM},
-    "signal": {"t_abs": _NUM},
+    "exit": {"code": int},  # t_abs is checked where it is read: a bad time must not cost the exit code
     "error": {"msg": str, "fmt": str},
     "data": {"category": str, "key": str, "value": (str, int)},
 }
@@ -200,14 +212,19 @@ def read_trace(trace_dir, budget):
                     p["started"], p["argv"], p["time"] = True, list(ev.get("argv") or []), ev.get("time")
                 elif kind == "cmd_name":
                     p["name"], p["hierarchy"] = ev.get("name"), ev.get("hierarchy") or ""
-                elif kind == "exit" and not p["exited"]:  # a detached child repeats exit under the same sid
-                    p["exited"], p["code"], p["t_abs"] = True, ev.get("code"), ev.get("t_abs")
-                elif kind == "signal" and not p["exited"]:
-                    p["exited"], p["code"], p["t_abs"] = True, None, ev.get("t_abs")
+                elif kind in ("exit", "signal") and not p["exited"]:  # a detached child repeats exit (same sid)
+                    t_abs = ev.get("t_abs")
+                    if t_abs is not None and not _finite_seconds(t_abs):  # NaN, Infinity, negative, not a number
+                        bad_lines += 1  # the process still ended, with its code; only its time is unknown
+                        t_abs = None
+                    p["exited"], p["code"], p["t_abs"] = True, ev.get("code") if kind == "exit" else None, t_abs
                 elif kind == "error":
                     if THROTTLE_RE.search("%s %s" % (ev.get("msg") or "", ev.get("fmt") or "")):
                         p["throttled"] = True
                 elif kind == "data":
+                    if ev.get("key") in COUNTER_KEYS and _count(ev.get("value")) is None:
+                        bad_lines += 1
+                        continue
                     p["data"].append((ev.get("category"), ev.get("key"), ev.get("value")))
                     # git >= 2.54 reports each 429 as data, including ones it retried itself (http.maxRetries)
                     if ev.get("category") == "http" and (ev.get("key") or "").startswith("http/429"):
@@ -249,7 +266,7 @@ def _summarize(procs, bad_lines, budget):
         return ["/".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]  # nearest first
 
     def version(p):
-        m = re.match(r"(\d+)\.(\d+)", str(p["exe"] or ""))
+        m = re.match(r"([0-9]{1,9})\.([0-9]{1,9})", str(p["exe"] or ""))
         return (int(m.group(1)), int(m.group(2))) if m else None
 
     versions = [version(p) for p in client.values()]
@@ -298,12 +315,12 @@ def _summarize(procs, bad_lines, budget):
                 if m:
                     objects_received += int(m.group(1))
         for category, key, value in p["data"]:
-            if key == "total_rounds" and _int(value) is not None:
-                rounds = (rounds or 0) + _int(value)
-            elif key == "haves_added" and _int(value) is not None:
-                haves = (haves or 0) + _int(value)
-            elif category == "promisor" and key == "fetch_count" and _int(value) is not None:
-                lazy_objects = (lazy_objects or 0) + _int(value)
+            if key == "total_rounds":  # each counter value was checked by _count when it was read
+                rounds = (rounds or 0) + _count(value)
+            elif key == "haves_added":
+                haves = (haves or 0) + _count(value)
+            elif category == "promisor" and key == "fetch_count":
+                lazy_objects = (lazy_objects or 0) + _count(value)
             elif category == "transfer" and key == "negotiated-version" and protocol is None:
                 protocol = protocol_version(value)  # a closed form: the raw trace value is never published
             elif category == "fetch" and key == "filter/effective" and filter_effective is None:
@@ -798,7 +815,8 @@ def export_env(**values):
 
 
 def dumps(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    # allow_nan=False: a non-finite number raises here (the step warns) instead of publishing invalid JSON.
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def store_snapshot(store, budget):
@@ -818,8 +836,8 @@ _TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null":
 def _is_type(value, name):
     if name == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
-    if name == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if name == "number":  # JSON has no NaN or Infinity
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
     return isinstance(value, _TYPES[name])
 
 

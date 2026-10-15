@@ -345,6 +345,30 @@ class HermeticTest(unittest.TestCase):
         self.assertNotIn(PLANTED_TOKEN, self.job.published())
         self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
 
+    def test_non_finite_trace_numbers_never_reach_the_published_record(self):
+        """A fetch whose exit time is NaN and whose counters are negative: the record output is strict JSON that
+        validates, with those values null, and the trace marked damaged."""
+        b = self.job.step("before", SPS_PATH="nonfinite")
+        outcome = self.job.checkout(self.url, "nonfinite", trace=b["trace_dir"])
+        with open(os.path.join(b["trace_dir"], "0000-nonfinite"), "w") as fh:
+            sid = "nonfinite-sid"
+            fh.write('{"event":"start","sid":"%s","argv":["git","fetch","origin"],"time":"2026-10-15T00:00:00Z"}\n'
+                     '{"event":"cmd_name","sid":"%s","name":"fetch","hierarchy":"fetch"}\n'
+                     '{"event":"data","sid":"%s","category":"negotiation_v2","key":"total_rounds","value":"-3"}\n'
+                     '{"event":"exit","sid":"%s","code":0,"t_abs":NaN}\n' % (sid, sid, sid, sid))
+        out, log = self.job.step_logged("after", SPS_ID=b["id"], SPS_PATH="nonfinite", SPS_OUTCOME=outcome)
+        self.assertNotIn("::warning::", log)
+
+        def no_constants(name):
+            raise ValueError("non-standard JSON constant %s in the published record" % name)
+
+        record = json.loads(out["record"], parse_constant=no_constants)
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        self.assertIsNone(record["transfer"]["fetch_seconds"])
+        self.assertGreaterEqual(record["transfer"]["negotiation_rounds"], 1, "the real fetch's rounds, not -3")
+        self.assertEqual(record["measurement"]["trace"]["bad_lines"], 2)
+        self.assertFalse(record["measurement"]["complete"])
+
     def test_an_exception_message_never_reaches_the_public_log(self):
         """The catch-all names the exception, never its text: a message can quote trace content (a URL)."""
         b = self.job.step("before", SPS_PATH="raises")

@@ -242,6 +242,41 @@ class SyntheticTests(unittest.TestCase):
                 self.assertNotIn(PLANTED_TOKEN, json.dumps(s))
                 self.assertIn(s["filter_effective"], ("blob:none", None))
 
+    def test_a_non_finite_or_negative_time_is_unknown_and_the_exit_still_counts(self):
+        """json.loads takes NaN, Infinity and 1e999; published, they make the record invalid JSON. A bad time is
+        dropped (fetch_seconds null) and counted as a bad line, but the exit code is kept: an exit read as
+        missing would fabricate a failed attempt, and a retry with it."""
+        for t_abs in (float("nan"), float("inf"), float("-inf"), -5.0, "0.5"):
+            with self.subTest(t_abs=t_abs):
+                t = Trace()
+                try:
+                    t.add(proc(ROOT + "1", "fetch", "fetch", FETCH, code=0, t=t_abs))
+                    t.add(proc(ROOT + "2", "fetch", "fetch", FETCH, code=0, t=0.5, at="2026-10-15T00:00:01Z"))
+                    s, reason = srcstats.summarize_trace(t.dir)
+                finally:
+                    t.close()
+                self.assertIsNotNone(s, reason)
+                self.assertIsNone(s["fetch_seconds"])
+                self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"]), (2, 0, 0))
+                self.assertEqual((s["trace"]["bad_lines"], s["trace"]["unterminated"]), (1, 0))
+                json.loads(srcstats.dumps(s))  # strict JSON: dumps refuses NaN and Infinity
+
+    def test_a_counter_that_is_not_a_non_negative_integer_is_a_bad_line(self):
+        for value in ("-7", -7, "1.5", "9" * 30, 1 << 60, True, " 2"):
+            with self.subTest(value=value):
+                t = Trace()
+                try:
+                    t.add(proc(ROOT + "1", "fetch", "fetch", FETCH, data=[
+                        ("negotiation_v2", "total_rounds", value), ("negotiation_v2", "haves_added", value)]))
+                    t.add(proc(ROOT + "2", "fetch", "fetch", LAZY, at="2026-10-15T00:00:01Z",
+                               data=[("promisor", "fetch_count", value)]))
+                    s, reason = srcstats.summarize_trace(t.dir)
+                finally:
+                    t.close()
+                self.assertIsNotNone(s, reason)
+                self.assertEqual((s["negotiation_rounds"], s["haves_sent"], s["lazy_objects"]), (None, None, None))
+                self.assertEqual(s["trace"]["bad_lines"], 3)
+
     def test_fetch_without_negotiation_data_is_unknown(self):
         self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
         s, _ = self.t.summary()
@@ -454,6 +489,16 @@ class SchemaValidatorTests(unittest.TestCase):
                     {"a": 1, "c": "xyz"}):
             with self.subTest(bad=bad):
                 self.assertNotEqual(srcstats.validate(bad, schema), [])
+
+    def test_non_finite_numbers_are_not_numbers(self):
+        """nan < 0 is False, so a minimum alone lets NaN through; JSON has no NaN or Infinity at all."""
+        schema = {"type": ["number", "null"], "minimum": 0}
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(srcstats.validate(bad, schema), [])
+                with self.assertRaises(ValueError):
+                    srcstats.dumps({"fetch_seconds": bad})
+        self.assertEqual(srcstats.validate(0.5, schema), [], "positive control")
 
     def test_schema_files_are_valid_json_with_versioned_ids(self):
         for name, version in (("source-prep.v1.json", "source-prep.v1"), ("job-telemetry.v1.json", "job-telemetry.v1")):

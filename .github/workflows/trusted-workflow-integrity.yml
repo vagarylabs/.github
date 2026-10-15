@@ -941,8 +941,9 @@ jobs:
                       for key in {new.rsplit("/", 1)[-1], _test_stem(new)}:
                           candidates.setdefault(key, []).append(new)
               deleted_sources = {_test_stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
-              # The listing depends only on the deleted file's name, and a PR can delete thousands of tests of one name.
-              listing = {}
+              # The listing depends only on the deleted file's name, and a PR can delete thousands of tests of one name; their
+              # identical details share one string (16k deletions naming three 4 KB candidate paths held 187 MB of copies).
+              listing, shared = {}, {}
               out = []
               for st, old, new in status_rows:
                   if not is_test_file(old):
@@ -959,13 +960,13 @@ jobs:
                       listing[keys] = _candidate_listing(candidates, keys)
                   listed = listing[keys]
                   if listed:
-                      detail +=("; unverified successor candidate by name only: %s (git does not pair it by content, so the "
+                      detail += ("; unverified successor candidate by name only: %s (git does not pair it by content, so the "
                                  "deleted cases may not run)" % listed)
                   else:
                       detail += " with no successor"
                   if _test_stem(old) in deleted_sources:
                       detail += " (a source file of the same stem is deleted too)"
-                  out.append(_finding("test-deleted", old, None, detail))
+                  out.append(_finding("test-deleted", old, None, shared.setdefault(detail, detail)))
               return out
 
 

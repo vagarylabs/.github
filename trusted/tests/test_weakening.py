@@ -380,6 +380,22 @@ class WeakeningCases(unittest.TestCase):
         self.assertIn("candidate by name only: %s (" % listed, got[0]["detail"])
         self.assertIn("candidate by name only: %s (" % listed, got[-1]["detail"])
 
+    def test_red_same_name_deletions_share_one_detail(self):
+        # Three ~4 KB candidate paths named on every one of 4000 same-name deletions. Red on e2f3d3c: one ~12 KB copy
+        # per finding (48 MB here; 16k deletions from a 1.9 MB listing held 187 MB).
+        long = lambda i: ("x" * 60 + "/") * 64 + "a%d/index.test.ts" % i
+        rows = [("A", long(i), long(i)) for i in range(3)]
+        rows += [("D", "d%d/index.test.ts" % i, "d%d/index.test.ts" % i) for i in range(4000)]
+        tracemalloc.start()
+        try:
+            got = classify.deleted_test_findings(rows)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(got), 4000)
+        self.assertGreater(len(got[-1]["detail"]), 3 * 3900)
+        self.assertLess(peak, 10 * 1024 * 1024)
+
     def test_deleted_test_notes_a_deleted_subject(self):
         # A non-test file of the same stem is not a successor.
         got = self.findings({"pkg/test_util.py": None, "pkg/util.py": "x = 1\n"})

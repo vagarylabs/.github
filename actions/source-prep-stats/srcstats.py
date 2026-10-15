@@ -55,6 +55,10 @@ DEADLINE_SECONDS = 120.0
 MAX_READ_BYTES = 256 << 20  # trace2 lines + git stdout + the sparse-checkout file
 MAX_EVENTS = 4000000  # trace2 events + directory entries
 MAX_TRACE_FILES = 20000
+# git writes one file per process, so a trace holds about one process per file. The cap bounds the per-process
+# state and the summary's work, which the byte and event budgets alone do not (one file can name many sids).
+MAX_PROCESSES = 20000
+MAX_SID_DEPTH = 32  # a child's sid is its parent's plus "/<own>": deeper than this is not a real process tree
 MAX_LINE_BYTES = 1 << 20
 MAX_SPARSE_BYTES = 16 << 20
 PROTOCOL_VERSIONS = ("0", "1", "2")
@@ -122,7 +126,8 @@ MAX_SID_LEN = 1024
 
 
 def _well_formed(ev):
-    if not isinstance(ev, dict) or not isinstance(ev.get("sid"), str) or not 0 < len(ev["sid"]) <= MAX_SID_LEN:
+    if not isinstance(ev, dict) or not isinstance(ev.get("sid"), str) or not 0 < len(ev["sid"]) <= MAX_SID_LEN \
+            or ev["sid"].count("/") > MAX_SID_DEPTH:
         return False
     kind = ev.get("event")
     if not isinstance(kind, str):
@@ -183,6 +188,8 @@ def read_trace(trace_dir, budget):
                 if not _well_formed(ev):
                     bad_lines += 1
                     continue
+                if ev["sid"] not in procs and len(procs) >= MAX_PROCESSES:  # this trace only, as for the files
+                    raise BudgetExhausted("more than %d git processes in the trace" % MAX_PROCESSES)
                 p = procs.setdefault(ev["sid"], {
                     "sid": ev["sid"], "argv": [], "name": None, "hierarchy": "", "started": False, "exited": False,
                     "code": None, "t_abs": None, "time": None, "throttled": False, "data": [], "exe": None})
@@ -212,18 +219,21 @@ def summarize_trace(trace_dir, budget=None):
     """Allow-listed transfer aggregates from a trace2 directory, or (None, reason) when nothing was traced.
 
     Never raises: a trace it cannot read, or one larger than the read budget, is an unknown transfer (never a
-    partial count), and the caller still deletes the raw files."""
+    partial count), and the caller still deletes the raw files. The summary's own work is linear in the
+    processes read and runs under the same deadline as the reads."""
     if not trace_dir or not os.path.isdir(trace_dir):
         return None, "no trace2 directory (the before step did not run)"
+    budget = budget or Budget(DEFAULT_WALK_BUDGET)
     try:
-        return _summarize(*read_trace(trace_dir, budget or Budget(DEFAULT_WALK_BUDGET)))
+        procs, bad_lines = read_trace(trace_dir, budget)
+        return _summarize(procs, bad_lines, budget)
     except BudgetExhausted as exc:
         return None, "trace2 output not read in full: %s" % exc
     except Exception as exc:  # the reason names the failure, never its message (it can quote the trace)
         return None, "the trace2 output could not be read (%s)" % type(exc).__name__
 
 
-def _summarize(procs, bad_lines):
+def _summarize(procs, bad_lines, budget):
     if not procs:
         return None, "no git process wrote trace2 output (git older than 2.22, or checkout fell back to the REST API)"
     client = {sid: p for sid, p in procs.items() if not _hierarchy_is_server(p["hierarchy"])}
@@ -250,6 +260,7 @@ def _summarize(procs, bad_lines):
 
     attempts, lazies = [], []
     for sid, p in client.items():
+        budget.charge()  # the deadline only: the summary's work counts against the step's time like a read
         if is_lazy(p):
             lazies.append(p)
         elif is_fetch(p) and not any(a in client and is_fetch(client[a]) for a in ancestors(sid)):
@@ -259,14 +270,19 @@ def _summarize(procs, bad_lines):
     def failed(p):
         return p["code"] != 0
 
-    retries = 0
-    for i, p in enumerate(attempts):
-        if failed(p) and any(q["argv"][1:] == p["argv"][1:] for q in attempts[i + 1:]):
+    # A failed attempt followed by an identical one is a retry. One pass from the end, never a pairwise scan.
+    retries, later = 0, set()
+    for p in reversed(attempts):
+        budget.charge()
+        same = tuple(p["argv"][1:])
+        if failed(p) and same in later:
             retries += 1
+        later.add(same)
 
     # One throttled attempt is one hit, however many of its processes (remote-curl, fetch) reported it.
     throttled = set()
     for sid, p in client.items():
+        budget.charge()
         if p["throttled"]:
             owner = next((a for a in [sid] + ancestors(sid) if a in client and is_fetch(client[a])), sid)
             throttled.add(owner)
@@ -275,6 +291,7 @@ def _summarize(procs, bad_lines):
     rounds = haves = lazy_objects = None
     protocol = filter_effective = None
     for p in client.values():
+        budget.charge()
         if p["name"] in ("index-pack", "unpack-objects"):
             for arg in p["argv"]:
                 m = PACK_HEADER_RE.match(arg)

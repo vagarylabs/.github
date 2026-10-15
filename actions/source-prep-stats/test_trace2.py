@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -318,6 +319,53 @@ class ReadBudgetTests(unittest.TestCase):
         s, _ = self.summary_with(MAX_LINE_BYTES=2000)
         self.assertEqual(s["trace"]["bad_lines"], 1)
         self.assertEqual((s["fetch_attempts"], s["trace"]["processes"]), (2, 3), "lines after it are still read")
+
+    def test_more_processes_than_the_cap_is_unknown(self):
+        """One file can name any number of sids; the per-process state and the summary's work are capped."""
+        s, reason = self.summary_with(MAX_PROCESSES=1)
+        self.assertIsNone(s)
+        self.assertIn("git processes", reason)
+
+    def test_a_sid_deeper_than_any_process_tree_is_a_bad_line(self):
+        deep = "/".join([ROOT + "9"] + ["c"] * 40)
+        self.t.add(proc(deep, "fetch", "fetch", FETCH, at="2026-10-15T00:00:03Z"))
+        s, _ = srcstats.summarize_trace(self.t.dir)
+        self.assertEqual(s["trace"]["bad_lines"], 4, "each of its four lines")
+        self.assertEqual((s["fetch_attempts"], s["trace"]["processes"]), (2, 2))
+
+    def test_the_summary_runs_under_the_read_deadline(self):
+        """Work after the last read still counts against the step's deadline: here the deadline passes the moment
+        the reads end, and the summary gives up as unknown instead of running on."""
+        real = srcstats.read_trace
+
+        def read_then_expire(trace_dir, budget):
+            result = real(trace_dir, budget)
+            budget.deadline = time.monotonic() - 1
+            return result
+
+        with mock.patch.object(srcstats, "read_trace", read_then_expire):
+            s, reason = srcstats.summarize_trace(self.t.dir)
+        self.assertIsNone(s)
+        self.assertIn("deadline", reason)
+
+    def test_many_distinct_failed_attempts_are_summarized_in_linear_time(self):
+        """20,000 failed fetches with distinct argv, in one 3 MB file (well inside the byte and event budgets).
+        The pairwise retry scan took 103 s on a laptop here (hours at the event budget); one pass takes < 1 s."""
+        n = getattr(srcstats, "MAX_PROCESSES", 20000)
+        with open(os.path.join(self.t.dir, "many"), "w") as fh:
+            for i in range(n):
+                sid = "%s%06d" % (ROOT, i)
+                fh.write(json.dumps({"event": "start", "sid": sid, "argv": ["git", "fetch", "origin", str(i)],
+                                     "time": "t"}) + "\n")
+                fh.write(json.dumps({"event": "cmd_name", "sid": sid, "name": "fetch", "hierarchy": "fetch"}) + "\n")
+        os.remove(os.path.join(self.t.dir, "0001"))
+        os.remove(os.path.join(self.t.dir, "0002"))
+        start = time.monotonic()
+        s, reason = srcstats.summarize_trace(self.t.dir)
+        took = time.monotonic() - start
+        self.assertIsNotNone(s, reason)
+        self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"]), (n, n, 0))
+        self.assertLess(took, 10, "the retry count is not linear in the attempts")
 
     def test_a_non_finite_walk_budget_still_has_a_finite_deadline(self):
         for value in (float("inf"), float("nan"), -1.0):

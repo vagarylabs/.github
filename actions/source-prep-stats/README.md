@@ -31,7 +31,7 @@ Optional inputs:
   - `filter` is `null` when `partial` is `false`.
 - **Every read is bounded.** One step's reads (trace2 files, git output, the object listing and the size walks) share one 120 s deadline, a 256 MiB byte budget and a 4 million event budget (trace events and directory entries). A git command that outlasts the deadline is killed with its process group. Whatever runs out is `null` with the reason, never a partial count, a crash or a hang. The cheap facts are read first and the size walks last, so a slow walk costs only the sizes.
   - `walk-budget-seconds` further limits the size walks. It must be a finite number of seconds >= 0; `inf`, `NaN` or a negative value is refused with a warning and the default (20) used.
-  - trace2 input is capped at 20,000 files and 1 MiB per line; a longer line is a bad line.
+  - trace2 input is capped at 20,000 files, 20,000 git processes and 1 MiB per line; a longer line, or a process id nested deeper than 32 levels, is a bad line. Summarizing the trace is linear in its processes and runs under the same deadline.
 - **A truncated tree is never complete.**
   - `completeness` is `complete` only when the tree is not shallow, not partial (filtered) and not sparse, and when submodules were fetched if the repository has them.
   - If any of those facts is unknown, `completeness` is `unknown`.

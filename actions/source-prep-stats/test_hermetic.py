@@ -148,6 +148,25 @@ def stat_refused(*paths):
     return stack
 
 
+PROMISOR_RE = r"^remote\..*\.promisor$"
+# A config read that failed, by how it failed: git exited with an error, was killed, or never started.
+FAILED_READS = (128, -9, None)
+
+
+def config_read_fails(key, code):
+    """Every `git config` read naming key (an exact argv element: core.sparseCheckout is a prefix of
+    core.sparseCheckoutCone) ends with code, or does not start when code is None; every other git call runs.
+    Only exit 1 means "not set": a read that failed is a different answer."""
+    real = srcstats.run_bounded
+
+    def run_bounded(argv, env, budget):
+        if "config" in argv and key in argv:
+            return (None, None) if code is None else (code, b"")
+        return real(argv, env, budget)
+
+    return mock.patch.object(srcstats, "run_bounded", run_bounded)
+
+
 def write_trace(trace_dir, name, events, tail=""):
     with open(os.path.join(trace_dir, name), "w") as fh:
         fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
@@ -548,6 +567,66 @@ class HermeticTest(unittest.TestCase):
         self.assertIsNone(r["requested"]["filter"], "requested and observed are recorded separately")
         self.assertEqual(r["requested"]["fetch_depth"], 1)
         self.assertTrue(r["requested"]["sparse_checkout"])
+
+    def after_with_failed_read(self, path, key, code):
+        with config_read_fails(key, code):
+            out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH=path, SPS_OUTCOME="success")
+        record = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        return record
+
+    def test_unset_partial_and_sparse_keys_are_a_measured_false(self):
+        r = self.job.prepare(self.url, "unset-keys")
+        dest = os.path.join(self.job.ws, "unset-keys")
+        # positive control: on this checkout each key is really unset, which `git config` answers with exit 1
+        for args in (["--get", "extensions.partialclone"], ["--get-regexp", PROMISOR_RE],
+                     ["--bool", "--get", "core.sparseCheckout"]):
+            self.assertEqual(git("-C", dest, "config", *args, check=False).returncode, 1, args)
+        self.assertEqual((r["partial"], r["filter"], r["sparse"], r["sparse_cone"]), (False, None, False, None))
+        for field in ("partial", "filter", "sparse", "sparse_cone", "sparse_patterns"):
+            self.assertNotIn(field, r["unknown"])
+        self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("complete", []))
+        git("-C", dest, "config", "core.sparseCheckout", "false")  # set to false: the same answer
+        out = self.job.step("after", SPS_ID="", SPS_PATH="unset-keys", SPS_OUTCOME="success")
+        again = json.loads(out["record"])
+        self.assertEqual((again["sparse"], again["completeness"]), (False, "complete"))
+        self.assertNotIn("sparse", again["unknown"])
+
+    def test_a_failed_partial_or_sparse_read_is_unknown_never_false(self):
+        """A config read that failed (an error exit, a kill, git not starting) is unknown with its reason, and
+        the tree is then never complete: only exit 1 says the key is unset."""
+        r = self.job.prepare(self.url, "failed-read")
+        self.assertEqual((r["partial"], r["sparse"], r["completeness"]), (False, False, "complete"),
+                         "positive control: unmocked, the same checkout is measured complete")
+        cases = (("extensions.partialclone", "partial", ("filter",)), (PROMISOR_RE, "partial", ("filter",)),
+                 ("core.sparseCheckout", "sparse", ("sparse_cone", "sparse_patterns")))
+        for key, field, dependent in cases:
+            for code in FAILED_READS:
+                with self.subTest(key=key, code=code):
+                    record = self.after_with_failed_read("failed-read", key, code)
+                    self.assertNotEqual(record["completeness"], "complete", "an unread fact rounded up")
+                    self.assertEqual(record["completeness"], "unknown")
+                    self.assertIsNone(record[field])
+                    self.assertIn("failed", record["unknown"].get(field, ""))
+                    for other in dependent:  # not applicable only when the parent is false, not unknown
+                        self.assertIn(other, record["unknown"])
+
+    def test_a_failed_filter_or_cone_read_is_unknown_never_a_default(self):
+        self.job.prepare(self.url, "failed-filter", filt="blob:none")
+        self.job.prepare(self.url, "failed-cone", depth=1, sparse=["a"])
+        for code in FAILED_READS:
+            with self.subTest(read="filter", code=code):
+                r = self.after_with_failed_read("failed-filter", "remote.origin.partialclonefilter", code)
+                self.assertEqual((r["partial"], r["filter"]), (True, None))
+                self.assertIn("failed", r["unknown"].get("filter", ""))
+                self.assertNotIn("origin", r["unknown"]["filter"], "the remote name is never published")
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
+            with self.subTest(read="cone", code=code):
+                r = self.after_with_failed_read("failed-cone", "core.sparseCheckoutCone", code)
+                self.assertEqual((r["sparse"], r["sparse_cone"]), (True, None))
+                self.assertIn("failed", r["unknown"].get("sparse_cone", ""))
+                self.assertGreaterEqual(r["sparse_patterns"], 1, "the patterns are still read")
+                self.assertEqual(r["completeness"], "incomplete")
 
     def test_warm_refetch_counts_only_the_new_objects(self):
         first = self.job.prepare(self.url, "warm")

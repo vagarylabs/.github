@@ -52,7 +52,9 @@ jobs:
         with:
           persist-credentials: false
       - name: change-impact planner unit tests
-        run: python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v
+        run: |
+          python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v
+          python3 -m unittest discover -s distribution -p 'test_*.py' -v
 
   fetch-release-asset-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

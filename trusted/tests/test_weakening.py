@@ -677,6 +677,7 @@ class IntegrityReportTests(unittest.TestCase):
         findings, incomplete, _ = self.repo.scan(head)
         self.assertEqual((len(findings), incomplete), (250, []))
         listed = findings[:classify.WEAKENING_MAX_LISTED]
+        self.assertLessEqual(max(len(f["refs"]) for f in findings), 6)  # the behaviour, before any new constant
         self.assertEqual(listed[0]["refs"], ["approval `ap-%04d`" % i for i in range(classify.WEAKENING_MAX_REFS)]
                          + ["and %d more" % (3000 - classify.WEAKENING_MAX_REFS)])
         self.assertTrue(all(f["refs"] == listed[0]["refs"] for f in listed))

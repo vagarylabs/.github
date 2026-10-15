@@ -729,18 +729,32 @@ class HermeticTest(unittest.TestCase):
         self.assertIn("transfer", r["unknown"], "no git process ran, so transfer is unknown, not zero")
 
     def test_checkout_seconds_exclude_the_measurement_walks(self):
-        """checkout.seconds is the checkout, not the snapshots around it (seconds of walking on a large warm .git)."""
+        """checkout.seconds is the checkout, not the snapshots around it (seconds of walking on a large warm .git).
+        Each snapshot moves the module's wall clock on by 1000 s instead of sleeping, so a walk counted as
+        checkout time misses the bound by 500 s, which no load on the runner can make up."""
         real = srcstats.snapshot
 
+        class Clock:  # srcstats.time, with time() SKEW seconds ahead; everything else is the real module
+            skew = 0.0
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+            def time(self):
+                return time.time() + self.skew
+
+        clock = Clock()
+
         def slow(*args, **kwargs):
-            time.sleep(1.0)
+            clock.skew += 1000.0
             return real(*args, **kwargs)
 
         def run(cmd, **extra):  # in process, so the slow snapshot is the one the action's code calls
             open(self.job.files["GITHUB_OUTPUT"], "w").close()
             printed = io.StringIO()
             with mock.patch.dict(os.environ, self.job.env(**extra), clear=True), \
-                    mock.patch.object(srcstats, "snapshot", slow), contextlib.redirect_stdout(printed):
+                    mock.patch.object(srcstats, "snapshot", slow), mock.patch.object(srcstats, "time", clock), \
+                    contextlib.redirect_stdout(printed):
                 self.assertEqual(srcstats.main([cmd]), 0)
             self.assertNotIn("::warning::", printed.getvalue())
             with open(self.job.files["GITHUB_OUTPUT"]) as fh:
@@ -752,8 +766,9 @@ class HermeticTest(unittest.TestCase):
         took = time.monotonic() - start
         a = run("after", SPS_ID=b["id"], SPS_PATH="timed", SPS_OUTCOME=outcome)
         seconds = json.loads(a["record"])["checkout"]["seconds"]
+        self.assertEqual(clock.skew, 2000.0, "positive control: both steps' snapshots moved the clock")
         self.assertGreater(seconds, 0)
-        self.assertLess(seconds, took + 0.5, "a 1 s snapshot walk was counted as checkout time")
+        self.assertLess(seconds, took + 500, "a 1000 s snapshot walk was counted as checkout time")
 
     def test_exhausted_walk_budget_is_unknown_not_partial(self):
         r = self.job.prepare(self.url, "budget", SPS_WALK_BUDGET="0")

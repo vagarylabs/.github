@@ -345,6 +345,22 @@ class HermeticTest(unittest.TestCase):
         self.assertNotIn(PLANTED_TOKEN, self.job.published())
         self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
 
+    def test_a_pack_without_a_traced_header_is_unknown_objects_not_zero(self):
+        """fetch.unpackLimit 0: git unpacks the pack without --pack_header, so the received count is not traced.
+        It used to be published as a measured 0 while 135 objects arrived."""
+        b = self.job.step("before", SPS_PATH="noheader")
+        dest = os.path.join(self.job.ws, "noheader")
+        git("init", "-q", dest)  # the checkout's own init, with one config value set before its fetch
+        git("-C", dest, "remote", "add", "origin", self.url)
+        git("-C", dest, "config", "fetch.unpackLimit", "0")
+        outcome = self.job.checkout(self.url, "noheader", trace=b["trace_dir"])
+        r = json.loads(self.job.step("after", SPS_ID=b["id"], SPS_PATH="noheader", SPS_OUTCOME=outcome)["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertEqual(r["objects"], self.server_objects(), "positive control: the objects did arrive")
+        self.assertIsNone(r["objects_detail"]["received"])
+        self.assertIsNone(r["transfer"]["objects_received"])
+        self.assertIn("--pack_header", r["unknown"]["objects_received"])
+
     def test_non_finite_trace_numbers_never_reach_the_published_record(self):
         """A fetch whose exit time is NaN and whose counters are negative: the record output is strict JSON that
         validates, with those values null, and the trace marked damaged."""

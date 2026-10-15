@@ -277,6 +277,18 @@ class SyntheticTests(unittest.TestCase):
                 self.assertEqual((s["negotiation_rounds"], s["haves_sent"], s["lazy_objects"]), (None, None, None))
                 self.assertEqual(s["trace"]["bad_lines"], 3)
 
+    def test_a_pack_indexed_without_a_header_makes_objects_received_unknown(self):
+        """clone, fetch --keep and unpackLimit 0 index a pack without --pack_header: its object count is not in
+        the trace, so the total is unknown, never the sum of the packs that did carry one."""
+        self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
+        self.t.add(proc(ROOT + "1/" + ROOT + "2", "index-pack", "fetch/index-pack",
+                        ["index-pack", "--stdin", "--fix-thin", "--pack_header=2,36"]))
+        s, _ = self.t.summary()
+        self.assertEqual(s["objects_received"], 36, "positive control: a header is counted")
+        self.t.add(proc(ROOT + "1/" + ROOT + "3", "unpack-objects", "fetch/unpack-objects", ["unpack-objects", "-q"]))
+        s, _ = self.t.summary()
+        self.assertIsNone(s["objects_received"])
+
     def test_fetch_without_negotiation_data_is_unknown(self):
         self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
         s, _ = self.t.summary()

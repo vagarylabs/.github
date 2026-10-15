@@ -304,16 +304,18 @@ def _summarize(procs, bad_lines, budget):
             owner = next((a for a in [sid] + ancestors(sid) if a in client and is_fetch(client[a])), sid)
             throttled.add(owner)
 
-    objects_received = 0
+    # fetch-pack passes the pack's object count as --pack_header, except when it keeps the pack (clone, fetch
+    # --keep) or fetch/transfer.unpackLimit is 0: then index-pack or unpack-objects reads the count itself and
+    # trace2 never shows it. One such pack makes the total unknown, never a count that left it out.
+    objects_received, unheadered = 0, False
     rounds = haves = lazy_objects = None
     protocol = filter_effective = None
     for p in client.values():
         budget.charge()
         if p["name"] in ("index-pack", "unpack-objects"):
-            for arg in p["argv"]:
-                m = PACK_HEADER_RE.match(arg)
-                if m:
-                    objects_received += int(m.group(1))
+            counts = [int(m.group(1)) for m in map(PACK_HEADER_RE.match, p["argv"]) if m]
+            objects_received += sum(counts)
+            unheadered = unheadered or not counts
         for category, key, value in p["data"]:
             if key == "total_rounds":  # each counter value was checked by _count when it was read
                 rounds = (rounds or 0) + _count(value)
@@ -337,7 +339,7 @@ def _summarize(procs, bad_lines, budget):
         "retries": retries,
         "throttle_hits": len(throttled),
         "fetch_seconds": round(sum(seconds), 3) if len(seconds) == len(attempts) else None,
-        "objects_received": objects_received,
+        "objects_received": None if unheadered else objects_received,
         "lazy_fetches": len(lazies),
         "lazy_fetch_failures": sum(1 for p in lazies if failed(p)),
         "lazy_objects": lazy_objects,
@@ -918,6 +920,9 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
         unknown["before"] = "no before snapshot (the before step failed or did not run)"
     if transfer is None:
         unknown["transfer"] = transfer_reason
+    elif transfer.get("objects_received") is None:
+        unknown["objects_received"] = ("a pack was indexed without --pack_header (a clone, fetch --keep or "
+                                       "unpackLimit 0), so trace2 does not show its object count")
     if not after.get("repo"):
         unknown["repository"] = "no git repository at the checkout path after the checkout step"
 

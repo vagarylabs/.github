@@ -48,7 +48,7 @@ Optional inputs:
 |---|---|
 | `bytes` | On-disk bytes this preparation added under `.git/objects`: new pack files plus the loose-object delta. For a cold full fetch this equals the pack the server sent. |
 | `bytes_detail.git_dir_bytes_after` | Apparent bytes of `.git`: regular files and symlinks, each inode once, directories 0. That equals GNU `du -sb .git` from coreutils 9.2 on (Ubuntu 24.04 ships 9.4). Coreutils 8.x also added directory sizes. |
-| `objects` | `git count-objects -v` (`count` + `in-pack`), after minus before. `objects_detail.received` is the sum of the `--pack_header` object counts of every received pack, lazy fetches included. |
+| `objects` | `git count-objects -v` (`count` + `in-pack`), after minus before. `objects_detail.received` is the sum of the `--pack_header` object counts of every received pack, lazy fetches included. It is `null` when a pack was indexed without that header (a clone, `fetch --keep`, or `fetch.unpackLimit`/`transfer.unpackLimit` 0), because trace2 then does not show the count. |
 | `depth` | Commits reachable from `HEAD` when shallow, otherwise `"full"`. |
 | `shallow`, `partial`, `filter`, `sparse`, `sparse_cone`, `sparse_patterns`, `sparse_patterns_sha256` | Read from the repository after the checkout. The `requested` block shows what was asked for. Requested and observed can differ: sparse implies `blob:none`. |
 | `files_materialised`, `files_skipped` | Index entries written to disk and entries marked skip-worktree. |

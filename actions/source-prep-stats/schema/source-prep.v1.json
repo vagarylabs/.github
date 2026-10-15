@@ -428,8 +428,12 @@
           "minimum": 0
         },
         "objects_received": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "The --pack_header object counts of every received pack. Null when a pack was indexed without one (a clone, fetch --keep or unpackLimit 0)."
         },
         "lazy_fetches": {
           "type": "integer",

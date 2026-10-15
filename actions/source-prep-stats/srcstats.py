@@ -556,12 +556,14 @@ def cmd_before(args):
     trace_dir = private_dir(os.path.join(run_dir, "trace"))
     budget = Budget(args.walk_budget)
     path = resolve_path(args.path)
-    before = {"t0": time.time(), "path": path, "snapshot": snapshot(path, budget, whole_git_dir=False)}
-    with open(os.path.join(run_dir, "before.json"), "w") as fh:
-        json.dump(before, fh)
+    snap = snapshot(path, budget, whole_git_dir=False)
     if args.pnpm_store and not os.path.exists(os.path.join(state, "pnpm-before.json")):
         with open(os.path.join(state, "pnpm-before.json"), "w") as fh:
             json.dump(store_snapshot(args.pnpm_store, budget), fh)
+    # The checkout clock starts after this step's own walks: they are measurement, not checkout time.
+    before = {"t0": time.time(), "path": path, "snapshot": snap}
+    with open(os.path.join(run_dir, "before.json"), "w") as fh:
+        json.dump(before, fh)
     set_outputs(id=sid, trace_dir=trace_dir)
     print("source-prep-stats: before snapshot %s (repository present: %s)" % (sid, before["snapshot"].get("repo")))
 
@@ -637,6 +639,7 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
 
 
 def cmd_after(args):
+    t_end = time.time()  # the checkout ended before this step began; the parse and walks below are not its time
     state = private_dir(args.state_dir)
     sid = args.id or ""
     run_dir = os.path.join(state, "runs", sid) if sid else None
@@ -654,7 +657,7 @@ def cmd_after(args):
     budget = Budget(args.walk_budget)
     after = snapshot(path, budget)
     shape, shape_unknown = tree_shape(path) if after.get("repo") else ({}, {})
-    seconds = round(time.time() - before["t0"], 3) if before else None
+    seconds = round(t_end - before["t0"], 3) if before else None
     record = build_record(sid, path, before, args.outcome, requested_from_env(), transfer, transfer_reason,
                           shape, shape_unknown, after, seconds, budget.hit)
     records = private_dir(os.path.join(state, "records"))

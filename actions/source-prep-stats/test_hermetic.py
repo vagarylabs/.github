@@ -4,6 +4,8 @@ and the action's subcommands driven exactly as action.yml drives them (env in; G
 No network beyond 127.0.0.1. Needs git with http-backend (any git >= 2.30). Every produced document is checked
 against the draft schemas in schema/.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -11,7 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -297,6 +301,33 @@ class HermeticTest(unittest.TestCase):
         self.assertIsNone(r["depth"])
         self.assertIn("repository", r["unknown"])
         self.assertIn("transfer", r["unknown"], "no git process ran, so transfer is unknown, not zero")
+
+    def test_checkout_seconds_exclude_the_measurement_walks(self):
+        """checkout.seconds is the checkout, not the snapshots around it (seconds of walking on a large warm .git)."""
+        real = srcstats.snapshot
+
+        def slow(*args, **kwargs):
+            time.sleep(1.0)
+            return real(*args, **kwargs)
+
+        def run(cmd, **extra):  # in process, so the slow snapshot is the one the action's code calls
+            open(self.job.files["GITHUB_OUTPUT"], "w").close()
+            printed = io.StringIO()
+            with mock.patch.dict(os.environ, self.job.env(**extra), clear=True), \
+                    mock.patch.object(srcstats, "snapshot", slow), contextlib.redirect_stdout(printed):
+                self.assertEqual(srcstats.main([cmd]), 0)
+            self.assertNotIn("::warning::", printed.getvalue())
+            with open(self.job.files["GITHUB_OUTPUT"]) as fh:
+                return dict(line.rstrip("\n").partition("=")[::2] for line in fh)
+
+        b = run("before", SPS_PATH="timed")
+        start = time.monotonic()
+        outcome = self.job.checkout(self.url, "timed", trace=b["trace_dir"])
+        took = time.monotonic() - start
+        a = run("after", SPS_ID=b["id"], SPS_PATH="timed", SPS_OUTCOME=outcome)
+        seconds = json.loads(a["record"])["checkout"]["seconds"]
+        self.assertGreater(seconds, 0)
+        self.assertLess(seconds, took + 0.5, "a 1 s snapshot walk was counted as checkout time")
 
     def test_exhausted_walk_budget_is_unknown_not_partial(self):
         r = self.job.prepare(self.url, "budget", SPS_WALK_BUDGET="0")

@@ -508,6 +508,16 @@ class PredicateUnitTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(classify.swallowed_runner(line), want)
 
+    def test_per_test_timeout_option(self):
+        p = "src/a.test.ts"
+        scopes = classify.path_scopes(p)
+        old = [(4, "it('slow', { timeout: 5000 }, async () => {")]
+        got = classify.numeric_findings(p, scopes, [(4, "it('slow', { timeout: 60_000 }, async () => {")], old, 4)
+        self.assertEqual([(f["rule"], f["line"], f["detail"]) for f in got],
+                         [("budget-loosened", 4, "raises timeout `timeout` 5000 -> 60000")])
+        self.assertEqual(classify.numeric_findings(
+            p, scopes, [(4, "it('slow', { timeout: 2000 }, async () => {")], old, 4), [])
+
     def test_parse_num(self):
         for raw, want in (("5000,", 5000.0), ("60_000", 60000.0), ("30 * 1000 // ms", 30000.0), ("0", 0.0),
                           ("false", 0.0), ("'2'", 2.0), ("process.env.CI ? 2 : 0", None), ("n", None)):

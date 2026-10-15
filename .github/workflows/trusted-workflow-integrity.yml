@@ -507,6 +507,10 @@ jobs:
                r"\b(?P<k>testTimeout|hookTimeout|teardownTimeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
               ("budget-loosened", "timeout", "js-testlike",
                r"\b(?P<k>jest\.setTimeout|this\.timeout|test\.setTimeout)\s*\(\s*(?P<v>[^,)\n]+)", "up", None),
+              # The per-test options form, it('x', { timeout: 60_000 }, ...): the same shape as the retry option above.
+              ("budget-loosened", "timeout", "js-testlike",
+               r"(?<![\w$.])(?:it|test|describe|suite|bench)(?:\.\w+)*\s*\(\s*(?:'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`|\w+)"
+               r"\s*,\s*\{[^{}\n]*?\b(?P<k>timeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
               ("budget-loosened", "timeout", "playwright-config", r"\b(?P<k>timeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
               ("budget-loosened", "timeout", "py",
                r"@pytest\.mark\.(?P<k>timeout)\s*\(\s*(?:timeout\s*=\s*)?(?P<v>[^,)\n]+)", "up", None),

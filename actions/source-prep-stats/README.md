@@ -35,7 +35,7 @@ Optional inputs:
 - **Raw traces never leave the runner.**
   - git trace2 events carry argv, remote URLs and error text. They are written to a `0700` directory under `RUNNER_TEMP`, reduced to allow-listed counts, and deleted.
   - The record holds no URL, argv or error message.
-  - With `trace-job`, the job-wide trace directory is emptied when `job-footprint` parses it, and the runner removes `RUNNER_TEMP` after the job.
+  - With `trace-job`, the job-wide trace directory is emptied when `job-footprint` parses it. `GIT_TRACE2_EVENT` stays set, so git calls after that (post steps included) still write raw traces there, in the same `0700` directory, until the runner cleans `RUNNER_TEMP`.
 
 ## The record (`schema/source-prep.v1.json`, draft)
 

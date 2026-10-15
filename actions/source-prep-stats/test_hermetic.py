@@ -6,6 +6,7 @@ against the draft schemas in schema/.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,19 @@ def commit_files(work, start, count):
         git("add", "-A", cwd=work)
         git("-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-q", "-m", "c%d" % i,
             cwd=work)
+
+
+def gnu_du():
+    """A GNU du whose -b excludes directory sizes (coreutils >= 9.2): `du` on Linux, `gdu` from Homebrew."""
+    for exe in ("du", "gdu"):
+        try:
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        m = re.search(r"\(GNU coreutils\) (\d+)\.(\d+)", out)
+        if m and (int(m.group(1)), int(m.group(2))) >= (9, 2):
+            return exe
+    return None
 
 
 def read(path):
@@ -181,15 +195,17 @@ class HermeticTest(unittest.TestCase):
         self.assertEqual(r["unknown"], {})
 
     def test_git_dir_bytes_match_du_within_1_percent(self):
-        probe = subprocess.run(["du", "-sb", self.job.ws], capture_output=True)
-        if probe.returncode != 0:
-            self.skipTest("needs GNU du -b (apparent bytes); runs on the Linux CI runner")
+        du_exe = gnu_du()
+        if du_exe is None:
+            self.skipTest("needs GNU du >= 9.2 (du on Linux, gdu from Homebrew coreutils)")
         r = self.job.prepare(self.url, "du")
         git_dir = os.path.join(self.job.ws, "du", ".git")
-        du = int(subprocess.run(["du", "-sb", git_dir], capture_output=True, text=True, check=True).stdout.split()[0])
-        # du -sb counts directory entries too; the record counts file bytes. 1% is the acceptance bound.
-        self.assertLessEqual(abs(r["bytes_detail"]["git_dir_bytes_after"] - du) / du, 0.01,
-                             (r["bytes_detail"]["git_dir_bytes_after"], du))
+        os.symlink("HEAD", os.path.join(git_dir, "link-for-du"))  # du counts a symlink's own size: so must we
+        r = json.loads(self.job.step("after", SPS_ID="", SPS_PATH="du", SPS_OUTCOME="success")["record"])
+        du = int(subprocess.run([du_exe, "-sb", git_dir], capture_output=True, text=True, check=True).stdout.split()[0])
+        got = r["bytes_detail"]["git_dir_bytes_after"]
+        self.assertLessEqual(abs(got - du) / du, 0.01, (got, du))  # the acceptance bound; in practice equal
+        self.assertEqual(got, du)
 
     def test_429_injector_counts_one_throttle_hit_and_one_retry(self):
         before = self.server.throttled

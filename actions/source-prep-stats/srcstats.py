@@ -192,7 +192,8 @@ class Budget:
 
 
 def walk_bytes(root, budget, seen=None):
-    """Apparent bytes of regular files under root, each inode once (du -sb semantics). None when cut short."""
+    """Apparent bytes under root: regular files and symlinks, each inode once, directories 0. That is GNU
+    `du -sb` from coreutils 9.2 on (du.c usable_st_size; 8.x also added directory sizes). None when cut short."""
     seen = set() if seen is None else seen
     total, stack, n = 0, [root], 0
     while stack:
@@ -208,7 +209,7 @@ def walk_bytes(root, budget, seen=None):
             try:
                 if e.is_dir(follow_symlinks=False):
                     stack.append(e.path)
-                elif e.is_file(follow_symlinks=False):
+                elif e.is_file(follow_symlinks=False) or e.is_symlink():
                     st = e.stat(follow_symlinks=False)
                     key = (st.st_dev, st.st_ino)
                     if key not in seen:

@@ -196,6 +196,9 @@ def changed_paths(mb, head):
 # of the scan runs against ONE budget (ScanBudget): wall time to a single deadline and a total of bytes read
 # from git. Bytes are counted before they are kept, a file whose blob is over WEAKENING_MAX_BLOB_BYTES is never
 # diffed (git would load it whole), and git is killed at a limit. Running out is INCOMPLETE, never a clean pass.
+# Work derived from what was read is bounded as well: only the LISTED findings are enriched from the head file
+# (job/step level, inline references), each names at most WEAKENING_MAX_REFS references, and a head-side line over
+# WEAKENING_MAX_LINE is not read.
 
 WEAKENING_VERSION = "fl4-v1"
 WEAKENING_EFFECT = "ci-policy:test-weakening"
@@ -207,7 +210,9 @@ WEAKENING_MAX_CENSUS_BYTES = 4000000    # the changed-file list (about 30k files
 WEAKENING_MAX_TRAILER_BYTES = 1000000   # commit messages read for trailer references
 WEAKENING_MAX_LINE = 4000          # longer lines (minified or generated) are not regex-scanned: INCOMPLETE
 WEAKENING_DEADLINE_SECONDS = 120   # the whole scan, every git call included; the job's own timeout is 10 minutes
-WEAKENING_MAX_LISTED = 200
+WEAKENING_MAX_LISTED = 200        # findings listed; only these are enriched from the head file and given refs
+WEAKENING_MAX_REFS = 5             # references named per finding; the rest are counted
+WEAKENING_MAX_WALK = 10000         # lines coe_level walks up to a step or job (the fleet's longest workflow: 3234)
 WEAKENING_MAX_ANNOTATIONS = 8      # GitHub keeps 10 warnings per step: 2 stay free for the pointers below
 
 _JS_EXT = re.compile(r"\.(?:[cm]?[jt]sx?|vue|svelte)$")
@@ -877,7 +882,10 @@ def coe_level(lines, idx):
     if line.lstrip().startswith("- "):
         return "step"
     ind = indent(line)
-    for j in range(idx - 1, -1, -1):
+    stop = max(idx - 1 - WEAKENING_MAX_WALK, -1)
+    for j in range(idx - 1, stop, -1):
+        if len(lines[j]) > WEAKENING_MAX_LINE:
+            return "unknown"
         s = lines[j].strip()
         if not s or s.startswith("#") or indent(lines[j]) >= ind:
             continue
@@ -887,7 +895,9 @@ def coe_level(lines, idx):
         if not m:
             return "unknown"
         pi = indent(lines[j])
-        for k in range(j - 1, -1, -1):
+        for k in range(j - 1, stop, -1):
+            if len(lines[k]) > WEAKENING_MAX_LINE:
+                return "unknown"
             u = lines[k].strip()
             if not u or u.startswith("#") or indent(lines[k]) >= pi:
                 continue
@@ -900,11 +910,30 @@ _MARKER = re.compile(r"\bvagaris-(?P<kind>quarantine|approval)\s*[:=]\s*(?P<id>[
 
 
 def inline_refs(lines, line_no):
-    refs = []
+    """(distinct markers on the finding's line and the two above it, whether a line was skipped). A head-side line
+    is not capped by the diff, so one over WEAKENING_MAX_LINE is not read, as on the diff side."""
+    refs, skipped = {}, False
     for t in lines[max(line_no - 3, 0): line_no]:
+        if len(t) > WEAKENING_MAX_LINE:
+            skipped = True
+            continue
         for m in _MARKER.finditer(t):
-            refs.append("%s `%s`" % (m.group("kind").lower(), m.group("id")))
-    return refs
+            refs.setdefault("%s `%s`" % (m.group("kind").lower(), m.group("id")), None)
+    return list(refs), skipped
+
+
+def named_refs(own, pr_refs, pr_set):
+    """A finding's references, its own inline ones first: at most WEAKENING_MAX_REFS named and the rest counted, so a
+    PR that floods its commit messages with references cannot grow every finding."""
+    own_set = set(own)
+    named = own[:WEAKENING_MAX_REFS]
+    for r in pr_refs:
+        if len(named) >= WEAKENING_MAX_REFS:
+            break
+        if r not in own_set:
+            named.append(r)
+    total = len(own_set) + len(pr_set) - len(own_set & pr_set)
+    return named + (["and %d more" % (total - len(named))] if total > len(named) else [])
 
 
 def _stop_reason(kind):
@@ -923,27 +952,59 @@ def trailer_refs(budget, mb, head, incomplete):
         incomplete.append("commit messages past %d bytes were not read for references" % WEAKENING_MAX_TRAILER_BYTES
                           if exc.kind == "cap" else
                           "%s while reading commit messages; later references are not listed" % _stop_reason(exc.kind))
-    refs = []
+    refs = {}  # insertion-ordered and de-duplicated in O(1): 1 MB of messages holds ~48k distinct references
     for line in raw.decode("utf-8", "replace").splitlines():
         m = re.match(r"^\s*vagaris-(quarantine|approval)\s*:\s*([A-Za-z0-9][A-Za-z0-9._/#-]{1,63})\s*$", line, re.I)
         if m:
-            ref = "%s `%s`" % (m.group(1).lower(), m.group(2))
-            if ref not in refs:
-                refs.append(ref)
-    return refs
+            refs.setdefault("%s `%s`" % (m.group(1).lower(), m.group(2)), None)
+    return list(refs)
 
 
 def head_lines(budget, sha):
-    """The head-side file's lines (for the job/step level and inline markers), or None when it cannot be read."""
+    """The head-side file's lines (for the job/step level and inline markers), or None when git cannot read it.
+    A budget stop raises Exhausted."""
     try:
         return git_read(budget, ("cat-file", "blob", sha), WEAKENING_MAX_BLOB_BYTES).decode("utf-8", "replace").split("\n")
-    except (Exhausted, IntegrityError):
+    except IntegrityError:
         return None
 
 
-def scan_file(budget, row, patch, incomplete):
+def enrich(budget, listed, heads, incomplete):
+    """The job or step of a continue-on-error and the inline references, for the findings that will be LISTED only,
+    from each one's head file read once. Work follows the listing cap, not the number of findings the PR produces."""
+    by_path = {}
+    for f in listed:
+        if f["line"] and f["path"] in heads:
+            by_path.setdefault(f["path"], []).append(f)
+    for done, (path, fs) in enumerate(by_path.items()):
+        try:
+            lines = head_lines(budget, heads[path])
+        except Exhausted as exc:
+            incomplete.append("%s before the head files of %d of %d files with listed findings were read; their inline "
+                              "references and the job or step of a continue-on-error are not listed"
+                              % (_stop_reason(exc.kind), len(by_path) - done, len(by_path)))
+            return
+        if lines is None:
+            incomplete.append("%s: the head file could not be read; inline references and the job or step of a "
+                              "continue-on-error are not listed" % md_code(path))
+            continue
+        refs_at, skipped = {}, False
+        for f in fs:
+            if f["rule"] == "continue-on-error" and f["line"] <= len(lines):
+                f["detail"] += " on %s; whether it backs a required check is not readable here" % coe_level(
+                    lines, f["line"] - 1)
+            if f["line"] not in refs_at:
+                refs_at[f["line"]], skip = inline_refs(lines, f["line"])
+                skipped = skipped or skip
+            f["refs"] += refs_at[f["line"]]
+        if skipped:
+            incomplete.append("%s: a line over %d chars next to a finding was not read for references"
+                              % (md_code(path), WEAKENING_MAX_LINE))
+
+
+def scan_file(row, patch, incomplete):
     """Findings for one in-scope file from its patch text (None: the diff was over WEAKENING_MAX_PATCH_BYTES)."""
-    st, _, _, path, scopes, _, new_sha = row
+    path, scopes = row[3], row[4]
     if patch is None:
         incomplete.append("%s: diff larger than %d bytes, not scanned" % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
         return []
@@ -954,21 +1015,7 @@ def scan_file(budget, row, patch, incomplete):
         incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
         added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
         removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
-    got = token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
-    if not got or st == "D":
-        return got
-    lines = head_lines(budget, new_sha)
-    if lines is None:
-        incomplete.append("%s: the head file was not read within the budget; inline references and the job or "
-                          "step of a continue-on-error are not listed" % md_code(path))
-        return got
-    for f in got:
-        if f["rule"] == "continue-on-error" and f["line"] and f["line"] <= len(lines):
-            f["detail"] += " on %s; whether it backs a required check is not readable here" % coe_level(
-                lines, f["line"] - 1)
-        if f["line"]:
-            f["refs"] += inline_refs(lines, f["line"])
-    return got
+    return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
 
 
 def scan_patches(budget, mb, head, scoped, todo, results, incomplete):
@@ -987,7 +1034,7 @@ def scan_patches(budget, mb, head, scoped, todo, results, incomplete):
             for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
                 i = want.get(header)
                 if i is not None and i not in results:
-                    results[i] = scan_file(budget, scoped[i], patch, incomplete)
+                    results[i] = scan_file(scoped[i], patch, incomplete)
         for i in todo:
             if i in results:
                 continue
@@ -998,7 +1045,7 @@ def scan_patches(budget, mb, head, scoped, todo, results, incomplete):
                 if exc.kind != "cap":
                     raise
                 patch = None
-            results[i] = scan_file(budget, scoped[i], patch, incomplete)
+            results[i] = scan_file(scoped[i], patch, incomplete)
     except Exhausted as exc:
         return exc.kind
     return None
@@ -1049,9 +1096,12 @@ def weakening_scan(mb, head):
                           % (_stop_reason(stop), len(results), in_scope))
     for i in sorted(results):
         findings += results[i]
-    pr_refs = trailer_refs(budget, mb, head, incomplete) if findings else []
-    for f in findings:
-        f["refs"] += [r for r in pr_refs if r not in f["refs"]]
+    listed = findings[:WEAKENING_MAX_LISTED]
+    enrich(budget, listed, {row[3]: row[6] for row in scoped if row[0] != "D"}, incomplete)
+    pr_refs = trailer_refs(budget, mb, head, incomplete) if listed else []
+    pr_set = set(pr_refs)
+    for f in listed:
+        f["refs"] = named_refs(f["refs"], pr_refs, pr_set)
     return findings, incomplete, in_scope
 
 

@@ -649,6 +649,61 @@ class IntegrityReportTests(unittest.TestCase):
         self.assertEqual([f["refs"] for f in findings], [[]])
         self.assertEqual(incomplete, ["commit messages past %d bytes were not read for references" % cut])
 
+    # --- work DERIVED from what was read is bounded too (adversarial re-review of de8a7b6) -------------------
+    # The byte budget bounds what git prints, not what the scan builds from it. Red on de8a7b6: every finding
+    # carried every commit-message reference (8 KB of findings + 1 MB of messages: 998 x 47,680 refs, 420 MB RSS;
+    # 20 findings made a 15 MB summary), and every finding re-read the head file for its refs and level.
+
+    def test_red_reference_flood_is_capped_per_finding(self):
+        trailers = "".join("Vagaris-Approval: ap-%04d\n" % i for i in range(3000))
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n" * 250},
+                              message="test: park b\n\n" + trailers)
+        findings, incomplete, _ = self.repo.scan(head)
+        self.assertEqual((len(findings), incomplete), (250, []))
+        listed = findings[:classify.WEAKENING_MAX_LISTED]
+        self.assertEqual(listed[0]["refs"], ["approval `ap-%04d`" % i for i in range(classify.WEAKENING_MAX_REFS)]
+                         + ["and %d more" % (3000 - classify.WEAKENING_MAX_REFS)])
+        self.assertTrue(all(f["refs"] == listed[0]["refs"] for f in listed))
+        # Findings past the listing are counted, never printed, so nothing is built for them.
+        self.assertTrue(all(f["refs"] == [] for f in findings[classify.WEAKENING_MAX_LISTED:]))
+        code, out = self.repo.integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("references approval `ap-0000`, approval `ap-0001`, approval `ap-0002`, approval `ap-0003`, "
+                      "approval `ap-0004`, and 2995 more (unverified)", out)
+        self.assertLess(len(out), 100000)
+
+    def test_red_long_head_line_near_a_finding_is_not_read(self):
+        # Line 1 is not in the diff (unified=1), but it is one of the three lines read for inline markers.
+        marks = " ".join("// vagaris-approval: ap-%05d" % i for i in range(3000))
+        git(self.repo.d, "checkout", "-q", "main")
+        self.repo.write({"src/long.test.ts": marks + "\nconst x = 1\nconst y = 2\n"})
+        git(self.repo.d, "add", "-A")
+        git(self.repo.d, "commit", "-q", "-m", "long base")
+        base, self.repo.base = self.repo.base, git(self.repo.d, "rev-parse", "HEAD")
+        try:
+            head = self.repo.case({"src/long.test.ts": marks + "\nconst x = 1\n" + "it.skip(" * 499 + "\n"})
+            findings, incomplete, _ = self.repo.scan(head)
+        finally:
+            self.repo.base = base
+        self.assertEqual(len(findings), 499)
+        self.assertEqual({tuple(f["refs"]) for f in findings[:classify.WEAKENING_MAX_LISTED]}, {()})
+        self.assertEqual(incomplete, ["`src/long.test.ts`: a line over %d chars next to a finding was not read for "
+                                      "references" % classify.WEAKENING_MAX_LINE])
+
+    def test_red_continue_on_error_flood_stays_fast(self):
+        # 20k added continue-on-error lines at one indent: walking up from each was quadratic (10k lines: 7 s).
+        wf = "on: push\njobs:\n  a:\n    runs-on: x\n" + "    continue-on-error: true\n" * 20000
+        head = self.repo.case({".github/workflows/coe.yml": wf})
+        started = time.monotonic()
+        findings, incomplete, _ = self.repo.scan(head)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual((len(findings), incomplete), (20000, []))
+        listed = findings[:classify.WEAKENING_MAX_LISTED]
+        self.assertTrue(all(f["detail"].startswith("adds `continue-on-error: true` on job `a`;") for f in listed))
+        # Past the listing nothing is printed, so nothing is enriched.
+        self.assertEqual({f["detail"] for f in findings[classify.WEAKENING_MAX_LISTED:]},
+                         {"adds `continue-on-error: true`"})
+
     def test_file_cap_is_incomplete(self):
         head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n", "src/d.test.ts": "it('d', () => {})\n"})
         with mock.patch.object(classify, "WEAKENING_MAX_FILES", 1):
@@ -736,6 +791,15 @@ class PredicateUnitTests(unittest.TestCase):
         self.assertEqual(classify.coe_level(lines, 3), "job `build`")
         self.assertEqual(classify.coe_level(lines, 6), "step")
         self.assertEqual(classify.coe_level(lines, 7), "step")
+
+    def test_coe_level_walk_is_bounded(self):
+        lines = ["jobs:", "  build:"] + ["    x: 1"] * 50 + ["    continue-on-error: true"]
+        self.assertEqual(classify.coe_level(lines, 52), "job `build`")
+        with mock.patch.object(classify, "WEAKENING_MAX_WALK", 40):
+            self.assertEqual(classify.coe_level(lines, 52), "unknown")
+        # A head-side line over the line cap is never read; the level is unknown rather than guessed past it.
+        lines[30] = "    y: " + "z" * classify.WEAKENING_MAX_LINE
+        self.assertEqual(classify.coe_level(lines, 52), "unknown")
 
     def test_is_comment(self):
         for line, want in (("// it.skip('a')", True), ("  # continue-on-error: true", True), ("/* it.skip('d') */", True),

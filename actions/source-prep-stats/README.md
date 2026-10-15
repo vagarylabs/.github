@@ -27,14 +27,15 @@ Optional inputs:
 - **Unknown stays unknown.** A value that was not measured is `null`, and `unknown` says why. `0` always means a measured zero, such as "no lazy fetch ran" or "nothing existed before a cold checkout".
   - Attribution fields are `null` when the runner does not provide them.
   - A directory that cannot be read (under `.git`, or the pnpm store) makes that size `null` with the reason, never a smaller or zero total. A "before" value that was not read is never taken as zero. A checkout path that cannot be read is an unknown repository, never "no repository": that would turn a warm checkout into a cold one with every object new.
-  - `sparse_*` fields are `null` when `sparse` is `false`, because they don't apply.
-  - `filter` is `null` when `partial` is `false`.
+  - A git config read that fails (an error exit, a killed git, a git that did not start) makes its fact `null` with the reason, never the unset default. Only an unset key, which `git config` answers with exit 1, reads as `false`. A failed `partial` or `sparse` read therefore makes `completeness` `unknown`, never `complete`.
+  - `sparse_*` fields are `null` when `sparse` is `false`, because they don't apply. When `sparse` is unknown they are `null` and listed in `unknown`.
+  - `filter` is `null` when `partial` is `false`. When `partial` is unknown it is `null` and listed in `unknown`.
 - **Every read is bounded.** One step's reads (trace2 files, git output, the object listing, the size walks and this action's own state files) share one 120 s deadline, a 256 MiB byte budget and a 4 million event budget (trace events and directory entries). A git command that outlasts the deadline is killed with its process group. Whatever runs out is `null` with the reason, never a partial count, a crash or a hang. The cheap facts are read first and the size walks last, so a slow walk costs only the sizes.
   - `walk-budget-seconds` further limits the size walks. It must be a finite number of seconds >= 0; `inf`, `NaN` or a negative value is refused with a warning and the default (20) used.
   - trace2 input is capped at 20,000 files, 20,000 git processes and 1 MiB per line; a longer line, or a process id nested deeper than 32 levels, is a bad line. Summarizing the trace is linear in its processes and runs under the same deadline.
 - **A truncated tree is never complete.**
   - `completeness` is `complete` only when the tree is not shallow, not partial (filtered) and not sparse, and when submodules were fetched if the repository has them.
-  - If any of those facts is unknown, `completeness` is `unknown`.
+  - If any of those facts is unknown, `completeness` is `unknown`. A `.gitmodules` that cannot be read (as opposed to one that is absent) is unknown, unless submodules were fetched.
   - Partial and sparse are recorded separately. `actions/checkout` turns every sparse checkout into a `blob:none` partial clone, so a sparse checkout reports both.
 - **Raw traces never leave the runner.**
   - git trace2 events carry argv, remote URLs and error text. They are written to a `0700` directory under `RUNNER_TEMP`, reduced to allow-listed counts, and deleted. The deletion runs in a `finally`, so a trace that cannot be parsed, any other failure in the step, or a SIGTERM delivered to the step's Python process still removes it, and a git the step started is killed. Whether a job cancellation delivers that signal to Python, rather than only to the step's shell or as a SIGKILL, depends on the runner. Otherwise the raw trace is parsed and deleted within the step's 120 s read deadline, and the runner's cleanup of `RUNNER_TEMP` is the backstop. A malformed event (a field of the wrong JSON type, a line nested too deep to parse, a time that is not a finite number >= 0, a counter that is not a non-negative integer) is counted in `measurement.trace.bad_lines`; it never stops the step, and its value is never published. The record is strict JSON: it never holds `NaN` or `Infinity`.
@@ -79,12 +80,13 @@ Both schemas are drafts. Their canonical home is `vagary-core` `contracts/delive
 python3 -m unittest discover -s actions/source-prep-stats -p 'test_*.py' -v
 ```
 
-- `test_trace2.py` pins the trace reading on real, sanitized git traces in `fixtures/trace2` and on synthetic edge cases. Regenerate the fixtures with `fixtures/make_trace2_fixtures.py`.
+- `test_trace2.py` pins the trace reading on real, sanitized git traces in `fixtures/trace2` and on synthetic edge cases. Regenerate the fixtures with `fixtures/make_trace2_fixtures.py`. It bounds the summary's work by counting its reads of process fields and its argv hash and equality tests, never by wall-clock time, so runner load cannot fail it; the wall-clock time is printed as a report and gates nothing.
 - `test_hermetic.py` runs a local smart-HTTP git server with a 429 injector. It drives the same git sequence as `actions/checkout`, through the action's own entry points. It checks that:
   - bytes match the server's pack within 5%;
   - the injector's 429 counts as one throttle hit and one retry;
   - a depth-0 clone and a `blob:none` clone report different `filter` and `partial`;
   - shallow and sparse are each reported as incomplete;
+  - a git config read that fails is unknown, never `false`, while an unset key is a measured `false`;
   - a warm re-fetch counts only new objects;
   - nulls appear where nothing was measured;
   - every document validates against the schemas.

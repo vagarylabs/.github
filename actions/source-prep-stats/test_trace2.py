@@ -403,29 +403,143 @@ class ReadBudgetTests(unittest.TestCase):
         self.assertIsNone(s)
         self.assertIn("deadline", reason)
 
-    def test_many_distinct_failed_attempts_are_summarized_in_linear_time(self):
-        """20,000 failed fetches with distinct argv, in one 3 MB file (well inside the byte and event budgets).
-        The pairwise retry scan took 103 s on a laptop here (hours at the event budget); one pass takes < 1 s."""
-        n = getattr(srcstats, "MAX_PROCESSES", 20000)
+    def test_a_non_finite_walk_budget_still_has_a_finite_deadline(self):
+        for value in (float("inf"), float("nan"), -1.0):
+            with self.subTest(value=value):
+                self.assertTrue(math.isfinite(srcstats.Budget(value).deadline))
+
+
+class OpsExceeded(BaseException):
+    """Past the operation bound. A BaseException, so the summary's own `except Exception` cannot turn it into an
+    ordinary unknown transfer and hide it."""
+
+
+class SummaryOps:
+    """Counts the summary's work as a number that does not depend on how loaded the runner is: every read of a
+    process's fields (p[key], p.get) and every hash and equality test on an argv element (what the retry scan's
+    set does). A pairwise loop over the processes that reads a field or compares argv on each inner step shows
+    here. Past `limit` it raises OpsExceeded, so such a scan fails at the bound instead of running for minutes.
+    Not seen: C-level work on plain values derived from the fields (a joined string in a list), which only the
+    wall-clock report below would show."""
+
+    def __init__(self, limit):
+        self.count, self.limit = 0, limit
+        ops = self
+
+        class Counted(str):
+            __slots__ = ()
+
+            def __hash__(self):
+                ops.tick()
+                return str.__hash__(self)
+
+            def __eq__(self, other):
+                ops.tick()
+                return str.__eq__(self, other)
+
+            def __ne__(self, other):
+                ops.tick()
+                return str.__ne__(self, other)
+
+        class Fields(dict):
+            __slots__ = ()
+
+            def __getitem__(self, key):
+                ops.tick()
+                return dict.__getitem__(self, key)
+
+            def get(self, key, default=None):
+                ops.tick()
+                return dict.get(self, key, default)
+
+        self.counted, self.fields = Counted, Fields
+
+    def tick(self):
+        self.count += 1
+        if self.count > self.limit:
+            raise OpsExceeded(self.count)
+
+    def patch(self):
+        """read_trace, each process a counted dict and its every argv element counted (equal values)."""
+        real = srcstats.read_trace
+
+        def read_trace(trace_dir, budget):
+            procs, bad_lines = real(trace_dir, budget)
+            for sid, p in procs.items():
+                p["argv"] = [self.counted(a) for a in p["argv"]]
+                procs[sid] = self.fields(p)
+            return procs, bad_lines
+
+        return mock.patch.object(srcstats, "read_trace", read_trace)
+
+
+class ListSet(list):
+    """A "set" whose membership test scans every element: planted, it turns the one-pass retry scan quadratic."""
+    add = list.append
+
+
+class SummaryWorkTests(unittest.TestCase):
+    """The summary's work is bounded by counting operations, never by a stopwatch: a required test must not depend
+    on runner load. The production deadline (Budget, charged by the summary) is pinned separately above."""
+
+    # The summary makes 26 counted operations per attempt (CPython 3.11: 16 field reads, 10 argv hash/equality
+    # tests; fewer argv hashes where CPython caches tuple hashes). A loop over the earlier or later attempts makes
+    # at least one per inner step, so n/2 per attempt on average: past this bound from a few hundred attempts on.
+    OPS_PER_ATTEMPT = 100
+    SIZES = (2000, getattr(srcstats, "MAX_PROCESSES", 20000))
+
+    def setUp(self):
+        self.t = Trace()
+
+    def tearDown(self):
+        self.t.close()
+
+    def failed_attempts(self, n):
+        """n failed fetches with distinct argv in one file (20,000 is 3 MB: inside the byte and event budgets)."""
         with open(os.path.join(self.t.dir, "many"), "w") as fh:
             for i in range(n):
                 sid = "%s%06d" % (ROOT, i)
                 fh.write(json.dumps({"event": "start", "sid": sid, "argv": ["git", "fetch", "origin", str(i)],
                                      "time": "t"}) + "\n")
                 fh.write(json.dumps({"event": "cmd_name", "sid": sid, "name": "fetch", "hierarchy": "fetch"}) + "\n")
-        os.remove(os.path.join(self.t.dir, "0001"))
-        os.remove(os.path.join(self.t.dir, "0002"))
+
+    def counted_summary(self, n):
+        self.failed_attempts(n)
+        ops = SummaryOps(self.OPS_PER_ATTEMPT * n)
+        with ops.patch():
+            s, reason = srcstats.summarize_trace(self.t.dir)
+        return s, reason, ops
+
+    def test_the_retry_scan_is_linear_in_the_attempts(self):
+        for n in self.SIZES:
+            with self.subTest(attempts=n):
+                try:
+                    s, reason, ops = self.counted_summary(n)
+                except OpsExceeded:
+                    self.fail("more than %d counted operations per attempt for %d attempts: the summary is not "
+                              "linear in the attempts" % (self.OPS_PER_ATTEMPT, n))
+                self.assertIsNotNone(s, reason)
+                self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"]), (n, n, 0))
+                self.assertGreaterEqual(ops.count, n, "positive control: the counter sees each attempt's work")
+                self.assertLessEqual(ops.count, self.OPS_PER_ATTEMPT * n)
+
+    def test_positive_control_a_planted_quadratic_scan_breaks_the_bound(self):
+        """The same bound, with the retry scan's set swapped for a list (a linear membership test per attempt)."""
+        n = self.SIZES[0]
+        with mock.patch.object(srcstats, "set", ListSet, create=True), self.assertRaises(OpsExceeded):
+            self.counted_summary(n)
+
+    def test_report_the_summary_wall_clock_without_gating_on_it(self):
+        """A report, not a gate: the time depends on the runner, so only the counts are asserted. (The pairwise
+        retry scan took 103 s on a laptop at 20,000 attempts; one pass takes under 1 s.)"""
+        n = self.SIZES[-1]
+        self.failed_attempts(n)
         start = time.monotonic()
         s, reason = srcstats.summarize_trace(self.t.dir)
         took = time.monotonic() - start
         self.assertIsNotNone(s, reason)
         self.assertEqual((s["fetch_attempts"], s["failed_fetch_attempts"], s["retries"]), (n, n, 0))
-        self.assertLess(took, 10, "the retry count is not linear in the attempts")
-
-    def test_a_non_finite_walk_budget_still_has_a_finite_deadline(self):
-        for value in (float("inf"), float("nan"), -1.0):
-            with self.subTest(value=value):
-                self.assertTrue(math.isfinite(srcstats.Budget(value).deadline))
+        sys.stderr.write("\nsource-prep-stats perf report (not gating): %d attempts summarized in %.3f s\n" % (n, took))
 
 
 class AllowListTests(unittest.TestCase):
@@ -485,9 +599,13 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(srcstats.completeness("success", shape, {"submodules": "recursive"})[0], "complete")
 
     def test_unknown_facts_never_round_up_to_complete(self):
-        for key in ("shallow", "partial", "sparse", "files_skipped"):
+        for key in ("shallow", "partial", "sparse", "files_skipped", "has_submodules"):
             with self.subTest(key):
                 self.assertEqual(srcstats.completeness("success", dict(self.BASE, **{key: None}), {})[0], "unknown")
+
+    def test_unknown_submodules_do_not_matter_once_submodules_were_fetched(self):
+        shape = dict(self.BASE, has_submodules=None)
+        self.assertEqual(srcstats.completeness("success", shape, {"submodules": "recursive"}), ("complete", []))
 
     def test_failed_checkout_is_incomplete(self):
         self.assertEqual(srcstats.completeness("failure", self.BASE, {}), ("incomplete", ["checkout-failure"]))

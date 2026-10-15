@@ -148,6 +148,25 @@ def stat_refused(*paths):
     return stack
 
 
+PROMISOR_RE = r"^remote\..*\.promisor$"
+# A config read that failed, by how it failed: git exited with an error, was killed, or never started.
+FAILED_READS = (128, -9, None)
+
+
+def config_read_fails(key, code):
+    """Every `git config` read naming key (an exact argv element: core.sparseCheckout is a prefix of
+    core.sparseCheckoutCone) ends with code, or does not start when code is None; every other git call runs.
+    Only exit 1 means "not set": a read that failed is a different answer."""
+    real = srcstats.run_bounded
+
+    def run_bounded(argv, env, budget):
+        if "config" in argv and key in argv:
+            return (None, None) if code is None else (code, b"")
+        return real(argv, env, budget)
+
+    return mock.patch.object(srcstats, "run_bounded", run_bounded)
+
+
 def write_trace(trace_dir, name, events, tail=""):
     with open(os.path.join(trace_dir, name), "w") as fh:
         fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
@@ -549,6 +568,123 @@ class HermeticTest(unittest.TestCase):
         self.assertEqual(r["requested"]["fetch_depth"], 1)
         self.assertTrue(r["requested"]["sparse_checkout"])
 
+    def after_with_failed_read(self, path, key, code):
+        with config_read_fails(key, code):
+            out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH=path, SPS_OUTCOME="success")
+        record = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        return record
+
+    def test_unset_partial_and_sparse_keys_are_a_measured_false(self):
+        r = self.job.prepare(self.url, "unset-keys")
+        dest = os.path.join(self.job.ws, "unset-keys")
+        # positive control: on this checkout each key is really unset, which `git config` answers with exit 1
+        for args in (["--get", "extensions.partialclone"], ["--get-regexp", PROMISOR_RE],
+                     ["--bool", "--get", "core.sparseCheckout"]):
+            self.assertEqual(git("-C", dest, "config", *args, check=False).returncode, 1, args)
+        self.assertEqual((r["partial"], r["filter"], r["sparse"], r["sparse_cone"]), (False, None, False, None))
+        for field in ("partial", "filter", "sparse", "sparse_cone", "sparse_patterns"):
+            self.assertNotIn(field, r["unknown"])
+        self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("complete", []))
+        git("-C", dest, "config", "core.sparseCheckout", "false")  # set to false: the same answer
+        out = self.job.step("after", SPS_ID="", SPS_PATH="unset-keys", SPS_OUTCOME="success")
+        again = json.loads(out["record"])
+        self.assertEqual((again["sparse"], again["completeness"]), (False, "complete"))
+        self.assertNotIn("sparse", again["unknown"])
+
+    def test_a_failed_partial_or_sparse_read_is_unknown_never_false(self):
+        """A config read that failed (an error exit, a kill, git not starting) is unknown with its reason, and
+        the tree is then never complete: only exit 1 says the key is unset."""
+        r = self.job.prepare(self.url, "failed-read")
+        self.assertEqual((r["partial"], r["sparse"], r["completeness"]), (False, False, "complete"),
+                         "positive control: unmocked, the same checkout is measured complete")
+        cases = (("extensions.partialclone", "partial", ("filter",)), (PROMISOR_RE, "partial", ("filter",)),
+                 ("core.sparseCheckout", "sparse", ("sparse_cone", "sparse_patterns")))
+        for key, field, dependent in cases:
+            for code in FAILED_READS:
+                with self.subTest(key=key, code=code):
+                    record = self.after_with_failed_read("failed-read", key, code)
+                    self.assertNotEqual(record["completeness"], "complete", "an unread fact rounded up")
+                    self.assertEqual(record["completeness"], "unknown")
+                    self.assertIsNone(record[field])
+                    self.assertIn("failed", record["unknown"].get(field, ""))
+                    for other in dependent:  # not applicable only when the parent is false, not unknown
+                        self.assertIn(other, record["unknown"])
+
+    def test_a_failed_filter_or_cone_read_is_unknown_never_a_default(self):
+        self.job.prepare(self.url, "failed-filter", filt="blob:none")
+        self.job.prepare(self.url, "failed-cone", depth=1, sparse=["a"])
+        promisor = git("-C", os.path.join(self.job.ws, "failed-filter"), "config", "--get", "remote.origin.promisor")
+        self.assertEqual(promisor.stdout.strip(), b"true", "positive control: the blobless checkout has a promisor")
+        for code in FAILED_READS:
+            with self.subTest(read="extensions.partialclone, promisor found", code=code):
+                r = self.after_with_failed_read("failed-filter", "extensions.partialclone", code)
+                self.assertEqual((r["partial"], r["filter"]), (True, "blob:none"), "a promisor found is partial")
+                self.assertNotIn("partial", r["unknown"])
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
+            with self.subTest(read="filter", code=code):
+                r = self.after_with_failed_read("failed-filter", "remote.origin.partialclonefilter", code)
+                self.assertEqual((r["partial"], r["filter"]), (True, None))
+                self.assertIn("failed", r["unknown"].get("filter", ""))
+                self.assertNotIn("origin", r["unknown"]["filter"], "the remote name is never published")
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
+            with self.subTest(read="cone", code=code):
+                r = self.after_with_failed_read("failed-cone", "core.sparseCheckoutCone", code)
+                self.assertEqual((r["sparse"], r["sparse_cone"]), (True, None))
+                self.assertIn("failed", r["unknown"].get("sparse_cone", ""))
+                self.assertGreaterEqual(r["sparse_patterns"], 1, "the patterns are still read")
+                self.assertEqual(r["completeness"], "incomplete")
+
+    def test_a_promisor_git_reads_as_true_is_partial_whatever_its_spelling(self):
+        """Without extensions.partialclone, the promisor remote is found by remote.*.promisor. git takes any
+        boolean spelling (yes, on, 1) and any remote name; a literal "true" match and a whitespace split read such
+        a promisor as "not partial", and the tree was published complete."""
+        self.job.prepare(self.url, "promisor-spelling")
+        dest = os.path.join(self.job.ws, "promisor-spelling")
+        self.assertEqual(git("-C", dest, "config", "--get", "extensions.partialclone", check=False).returncode, 1,
+                         "positive control: the fallback read is the one that decides")
+        for key, value in (("remote.origin.promisor", "yes"), ("remote.origin.promisor", "1"),
+                           ("remote.a b.promisor", "true")):
+            with self.subTest(key=key, value=value):
+                git("-C", dest, "config", key, value)
+                try:
+                    out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="promisor-spelling", SPS_OUTCOME="success")
+                finally:
+                    git("-C", dest, "config", "--unset", key)
+                r = json.loads(out["record"])
+                self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+                self.assertIs(r["partial"], True)
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
+        with self.subTest("not a boolean"):
+            git("-C", dest, "config", "remote.origin.promisor", "maybe")
+            try:
+                out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="promisor-spelling", SPS_OUTCOME="success")
+            finally:
+                git("-C", dest, "config", "--unset", "remote.origin.promisor")
+            r = json.loads(out["record"])
+            self.assertIsNone(r["partial"])
+            self.assertIn("failed", r["unknown"].get("partial", ""))
+            self.assertEqual(r["completeness"], "unknown")
+
+    def test_a_gitmodules_that_cannot_be_statted_is_unknown_never_no_submodules(self):
+        """os.path.isfile answers False for a .gitmodules it may not stat, so a tree whose submodules were not
+        fetched was published complete."""
+        self.job.prepare(self.url, "lockedmodules")
+        dest = os.path.join(self.job.ws, "lockedmodules")
+        with open(os.path.join(dest, ".gitmodules"), "w") as fh:
+            fh.write('[submodule "sub"]\n\tpath = sub\n\turl = ../sub.git\n')
+        out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="lockedmodules", SPS_OUTCOME="success")
+        r = json.loads(out["record"])
+        self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["submodules-not-fetched"]),
+                         "positive control: readable, the same .gitmodules makes the tree incomplete")
+        with stat_refused(os.path.join(dest, ".gitmodules")):
+            out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="lockedmodules", SPS_OUTCOME="success")
+        r = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertNotEqual(r["completeness"], "complete", "an unread fact rounded up")
+        self.assertEqual(r["completeness"], "unknown")
+        self.assertIn("could not be read", r["unknown"].get("has_submodules", ""))
+
     def test_warm_refetch_counts_only_the_new_objects(self):
         first = self.job.prepare(self.url, "warm")
         extra = os.path.join(self.tmp, "warm-work")
@@ -593,18 +729,32 @@ class HermeticTest(unittest.TestCase):
         self.assertIn("transfer", r["unknown"], "no git process ran, so transfer is unknown, not zero")
 
     def test_checkout_seconds_exclude_the_measurement_walks(self):
-        """checkout.seconds is the checkout, not the snapshots around it (seconds of walking on a large warm .git)."""
+        """checkout.seconds is the checkout, not the snapshots around it (seconds of walking on a large warm .git).
+        Each snapshot moves the module's wall clock on by 1000 s instead of sleeping, so a walk counted as
+        checkout time misses the bound by 500 s, which no load on the runner can make up."""
         real = srcstats.snapshot
 
+        class Clock:  # srcstats.time, with time() SKEW seconds ahead; everything else is the real module
+            skew = 0.0
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+            def time(self):
+                return time.time() + self.skew
+
+        clock = Clock()
+
         def slow(*args, **kwargs):
-            time.sleep(1.0)
+            clock.skew += 1000.0
             return real(*args, **kwargs)
 
         def run(cmd, **extra):  # in process, so the slow snapshot is the one the action's code calls
             open(self.job.files["GITHUB_OUTPUT"], "w").close()
             printed = io.StringIO()
             with mock.patch.dict(os.environ, self.job.env(**extra), clear=True), \
-                    mock.patch.object(srcstats, "snapshot", slow), contextlib.redirect_stdout(printed):
+                    mock.patch.object(srcstats, "snapshot", slow), mock.patch.object(srcstats, "time", clock), \
+                    contextlib.redirect_stdout(printed):
                 self.assertEqual(srcstats.main([cmd]), 0)
             self.assertNotIn("::warning::", printed.getvalue())
             with open(self.job.files["GITHUB_OUTPUT"]) as fh:
@@ -616,8 +766,9 @@ class HermeticTest(unittest.TestCase):
         took = time.monotonic() - start
         a = run("after", SPS_ID=b["id"], SPS_PATH="timed", SPS_OUTCOME=outcome)
         seconds = json.loads(a["record"])["checkout"]["seconds"]
+        self.assertEqual(clock.skew, 2000.0, "positive control: both steps' snapshots moved the clock")
         self.assertGreater(seconds, 0)
-        self.assertLess(seconds, took + 0.5, "a 1 s snapshot walk was counted as checkout time")
+        self.assertLess(seconds, took + 500, "a 1000 s snapshot walk was counted as checkout time")
 
     def test_exhausted_walk_budget_is_unknown_not_partial(self):
         r = self.job.prepare(self.url, "budget", SPS_WALK_BUDGET="0")

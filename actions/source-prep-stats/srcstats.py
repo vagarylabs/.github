@@ -565,14 +565,45 @@ def run_bounded(argv, env, budget):
     return code, b"".join(chunks)
 
 
-def git(path, budget, *args):
-    """stdout of `git -C path args` confined to path (no discovery into a parent repo), or None when it fails.
-    Raises BudgetExhausted when the read budget runs out."""
+def _git_run(path, budget, *args):
+    """(exit code, stdout) of `git -C path args` confined to path (no discovery into a parent repo); the code is
+    None when git cannot start. Raises BudgetExhausted when the read budget runs out."""
     env = _git_env()
     env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.abspath(path))
     code, out = run_bounded(["git", "-c", "safe.directory=" + os.path.abspath(path), "-C", path] + list(args), env,
                             budget)
-    return out.decode("utf-8", "replace") if code == 0 else None
+    return code, (out or b"").decode("utf-8", "replace")
+
+
+def git(path, budget, *args):
+    """stdout of `git -C path args`, or None when it fails. Raises BudgetExhausted when the read budget runs out."""
+    code, out = _git_run(path, budget, *args)
+    return out if code == 0 else None
+
+
+def git_config(path, budget, label, *args):
+    """One `git config` read: (value, None) when the key is set, (None, None) when it is not, (None, reason) when
+    the read failed. Only exit 1 means "not set"; any other exit, a kill or git not starting is a failed read,
+    never an unset key. git also exits 1 for an invalid key: the keys read here are fixed except the remote name in
+    remote.<promisor>.partialclonefilter, and that read only happens once the tree is already partial. label names
+    the key in the reason, which is published: never a name read from the repository's config."""
+    code, out = _git_run(path, budget, "config", *args)
+    if code == 0:
+        return out.strip(), None
+    if code == 1:
+        return None, None
+    return None, "git config read of %s failed (%s)" % (
+        label, "git did not start" if code is None else "exit %d" % code)
+
+
+def git_config_bool(path, budget, key):
+    """(True | False, None) for a boolean key, unset being False; (None, reason) when the read failed."""
+    value, reason = git_config(path, budget, key, "--bool", "--get", key)
+    if reason:
+        return None, reason
+    if value in (None, "true", "false"):
+        return value == "true", None
+    return None, "git config read of %s gave no boolean" % key
 
 
 def git_version(budget):
@@ -667,22 +698,38 @@ def _tree_shape(path, budget):
             unknown["depth"] = "git rev-list --count HEAD failed"
     else:
         shape["depth"] = "full" if shape["shallow"] is False else None
-    remote = (git(path, budget, "config", "--get", "extensions.partialclone") or "").strip()
+    # A config read that failed leaves its fact unknown (with the reason), never the unset default: a partial or
+    # sparse tree read as "not partial" or "not sparse" would be published complete.
+    remote, reason = git_config(path, budget, "extensions.partialclone", "--get", "extensions.partialclone")
     if not remote:
-        promisors = git(path, budget, "config", "--get-regexp", r"^remote\..*\.promisor$") or ""
-        remote = next((l.split()[0][len("remote."):-len(".promisor")] for l in promisors.splitlines()
-                       if l.split()[-1:] == ["true"]), "")
-    shape["partial"] = bool(remote)
-    raw_filter = ((git(path, budget, "config", "--get", "remote.%s.partialclonefilter" % remote) or "").strip()
-                  if remote else "")
-    shape["filter"] = filter_spec(raw_filter) if raw_filter else None
-    sparse = (git(path, budget, "config", "--bool", "--get", "core.sparseCheckout") or "false").strip() == "true"
+        # --bool: git's own reading (yes, on, 1 are true; a value that is no boolean fails the read). -z: one
+        # "<key>\n<value>\0" per entry, so a remote name may hold any character, a space included.
+        promisors, promisor_reason = git_config(path, budget, "remote.*.promisor",
+                                                "--bool", "-z", "--get-regexp", r"^remote\..*\.promisor$")
+        remote = next((key[len("remote."):-len(".promisor")] for key, _, value in
+                       (entry.partition("\n") for entry in (promisors or "").split("\0")) if value == "true"), "")
+        reason = None if remote else reason or promisor_reason  # a promisor found is partial, whatever else failed
+    shape["partial"] = None if reason else bool(remote)
+    shape["filter"] = None
+    if reason:
+        unknown["partial"] = unknown["filter"] = reason
+    elif remote:
+        raw_filter, reason = git_config(path, budget, "remote.<promisor>.partialclonefilter",
+                                        "--get", "remote.%s.partialclonefilter" % remote)
+        if reason:
+            unknown["filter"] = reason
+        elif raw_filter:
+            shape["filter"] = filter_spec(raw_filter)
+    sparse, reason = git_config_bool(path, budget, "core.sparseCheckout")
     shape["sparse"] = sparse
     shape["sparse_cone"] = None
     shape["sparse_patterns"] = shape["sparse_patterns_sha256"] = None
+    if reason:
+        unknown["sparse"] = unknown["sparse_cone"] = unknown["sparse_patterns"] = reason
     if sparse:
-        cone = git(path, budget, "config", "--bool", "--get", "core.sparseCheckoutCone")
-        shape["sparse_cone"] = (cone or "").strip() == "true"
+        shape["sparse_cone"], reason = git_config_bool(path, budget, "core.sparseCheckoutCone")
+        if reason:
+            unknown["sparse_cone"] = reason
         rel = (git(path, budget, "rev-parse", "--git-path", "info/sparse-checkout") or "").strip()
         pfile = rel if os.path.isabs(rel) else os.path.join(path, rel)
         try:
@@ -708,7 +755,13 @@ def _tree_shape(path, budget):
         tags = [entry[:1] for entry in listing.split("\0") if entry]
         shape["files_skipped"] = tags.count("S")
         shape["files_materialised"] = len(tags) - shape["files_skipped"]
-    shape["has_submodules"] = os.path.isfile(os.path.join(path, ".gitmodules"))
+    try:  # not os.path.isfile: it answers False for a path it may not stat, which read as "no submodules"
+        shape["has_submodules"] = stat.S_ISREG(os.stat(os.path.join(path, ".gitmodules")).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        shape["has_submodules"] = False
+    except OSError as exc:
+        shape["has_submodules"] = None
+        unknown["has_submodules"] = _unreadable(".gitmodules", exc)
     head = (git(path, budget, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
     shape["commit"] = head if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) else None
     return shape, unknown
@@ -719,6 +772,7 @@ def completeness(outcome, shape, requested):
     if not shape:
         return "unknown", []
     reasons = []
+    submodules_skipped = str(requested.get("submodules") or "false").lower() == "false"
     if outcome not in (None, "success"):
         reasons.append("checkout-" + str(outcome))
     if shape.get("shallow") is True:
@@ -727,11 +781,12 @@ def completeness(outcome, shape, requested):
         reasons.append("partial")
     if shape.get("sparse") is True or (shape.get("files_skipped") or 0) > 0:
         reasons.append("sparse")
-    if shape.get("has_submodules") and str(requested.get("submodules") or "false").lower() == "false":
+    if shape.get("has_submodules") and submodules_skipped:
         reasons.append("submodules-not-fetched")
     if reasons:
         return "incomplete", reasons
-    if None in (shape.get("shallow"), shape.get("partial"), shape.get("sparse"), shape.get("files_skipped")):
+    if None in (shape.get("shallow"), shape.get("partial"), shape.get("sparse"), shape.get("files_skipped")) \
+            or (submodules_skipped and shape.get("has_submodules") is None):
         return "unknown", []
     return "complete", []
 

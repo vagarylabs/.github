@@ -55,6 +55,13 @@ BASE = {
     "pkg/test_util.py": "def test_util():\n    assert True\n",
     "pyproject.toml": "[tool.coverage.report]\nfail_under = 90\n",
     "README.md": "# r\n",
+    # vagary-core's convention: node --test runs services/<svc>/test/*.mjs, no .test. infix.
+    "services/identity/test/notification-email-acceptance.mjs": (
+        "import test from 'node:test'\n"
+        "import assert from 'node:assert/strict'\n"
+        "test('sends the acceptance email', async () => {\n"
+        "  assert.equal(await send(), 'sent')\n"
+        "})\n"),
 }
 
 # The weakening text, as it would appear in a doc that explains the guard.
@@ -319,6 +326,12 @@ class WeakeningCases(unittest.TestCase):
         self.assertEqual(self.findings(moves=[("tests/test_x.py", "tests/unit/test_x.py")]), [])
         self.assertEqual(self.findings({"src/b.test.ts": None, "src/b.spec.ts": BASE["src/b.test.ts"] + "// v2\n"}), [])
 
+    def test_red_fleet_test_directory_file_deleted(self):
+        # Codex review of 698cf202: a test under test/ with no .test. infix (node --test's default glob) was missed.
+        path = "services/identity/test/notification-email-acceptance.mjs"
+        hit = self.assertFlagged({path: None}, "test-deleted", "deletes a test file with no successor", path=path)[0]
+        self.assertIsNone(hit["line"])
+
     def test_deleted_test_notes_a_deleted_subject(self):
         # A non-test file of the same stem is not a successor.
         got = self.findings({"pkg/test_util.py": None, "pkg/util.py": "x = 1\n"})
@@ -545,6 +558,34 @@ class PredicateUnitTests(unittest.TestCase):
         for p in ("README.md", "docs/ci/retries.md", "CHANGELOG.mdx", "notes.txt", "tests/README.md"):
             with self.subTest(path=p):
                 self.assertEqual(classify.path_scopes(p), set())
+
+    def test_fleet_test_path_conventions(self):
+        # Fleet paths (git ls-files, 2026-10-15) where commented, plus each runner's default forms; negatives
+        # are look-alikes that are not tests (the commented ones exist in the fleet).
+        for path in ("services/identity/test/notification-email-acceptance.mjs",   # vagary-core, node --test
+                     "packages/identity-client/test/live-contract.mts",            # vagary-core
+                     "e2e/voice/run.mjs",                                          # vagary-core e2e runner
+                     "api-service/test/voice-activation-pg.cjs",                   # vagary-voice
+                     "widget/test/call-sdk-barge-in.cjs",                          # vagary-voice
+                     "voice-gateway/test/voice_gateway/audit_logger_test.exs",     # vagary-voice ExUnit
+                     "server/src/__tests__/deep/x.tsx",
+                     "dashboard/src/a.test.tsx", "frontend/src/b.spec.jsx", "e2e/c.e2e.ts", "lib/d.test.mjs",
+                     "roles/identity_orphan_drift/files/vagaris-ownerless-orgs-check.test.sh",  # vps-ansible
+                     "roles/observability/files/prometheus-rules/tests/build-cell-monitor.test.yml",  # promtool
+                     "cmd/x_test.go", "pkg/y_test.py", "lib/z_test.mjs", "tests/test_x.py", "pkg/test_util.py",
+                     "scripts/test-ci-hosted-routing.py", "tests/run.sh", "t/a.bats"):
+            with self.subTest(path=path):
+                self.assertTrue(classify.is_test_file(path))
+        for path in ("server/src/adapters/http/test.ts",            # vagris adapter code named test.ts
+                     "voice-gateway/config/test.exs",               # vagary-voice Elixir test-env config
+                     "server/tsconfig.test.json",                   # vagris
+                     "api-service/test-utils/database-setup.js",    # vagary-voice helpers outside a test dir
+                     "api-service/test-setup/mocks/redis.js",       # vagary-voice
+                     "docker-compose.test.yml", "src/__fixtures__/a.test.ts", "test/fixtures/a.mjs",
+                     "tests/__init__.py", "tests/README.md", "docs/specs/x.md", "scripts/ci-test-pg.sh",
+                     "src/contest.ts", "src/latest.mjs"):
+            with self.subTest(path=path):
+                self.assertFalse(classify.is_test_file(path))
 
     def test_fixtures_and_snapshots_are_not_tests(self):
         self.assertFalse(classify.is_test_file("src/__fixtures__/a.test.ts"))

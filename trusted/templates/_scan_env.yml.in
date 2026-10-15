@@ -1,0 +1,8 @@
+      - name: Export the scan scope for the result record
+        env:
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+          MB: ${{ steps.mb.outputs.merge_base }}
+        run: |
+          set -euo pipefail
+          { echo "SCAN_BASE=$BASE"; echo "SCAN_HEAD=$HEAD_SHA"; echo "SCAN_MERGE_BASE=$MB"; } >> "$GITHUB_ENV"

@@ -71,5 +71,21 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: trusted ruleset workflows (manifest, classifier, render drift, invariants)
+      # The pinned trufflehog lets test_scanstate prove, with the real binary, that a verifier outage is
+      # UNAVAILABLE (and that the old --only-verified invocation read it as a pass).
+      - name: Fetch the pinned trufflehog for the verifier-outage test
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(awk '$1 == "trufflehog" && $2 == "3.97.0" { print }' release-assets.lock)
+          [ "${#pins[@]}" -eq 1 ] || { echo "Expected one locked trufflehog 3.97.0 asset" >&2; exit 1; }
+          read -r ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256 extra <<< "${pins[0]}"
+          [ -z "$extra" ] || { echo "Malformed trufflehog lock entry" >&2; exit 1; }
+          export ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256
+          export ASSET_DEST="$RUNNER_TEMP/trufflehog.tar.gz"
+          export RUNNER_TOOL_CACHE="$RUNNER_TEMP/trufflehog-cache"
+          bash actions/fetch-release-asset/fetch.sh
+          mkdir -p "$RUNNER_TEMP/trufflehog-bin"
+          tar -xzf "$ASSET_DEST" -C "$RUNNER_TEMP/trufflehog-bin" trufflehog
+          echo "TRUFFLEHOG_BIN=$RUNNER_TEMP/trufflehog-bin/trufflehog" >> "$GITHUB_ENV"
+      - name: trusted ruleset workflows (manifest, classifier, scan states, render drift, invariants)
         run: python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v

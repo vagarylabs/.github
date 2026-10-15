@@ -1,0 +1,12 @@
+      # Every step below reports into one recorder; the final gate step merges what was recorded, and a check
+      # it expects but nobody recorded (a failed or skipped step) is UNAVAILABLE, never a pass.
+      - name: Install the scan-state recorder (inline copy of trusted/scanstate.py)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d" "$RUNNER_TEMP/scan-records"
+          cat > "$d/scanstate.py" <<'TRUSTED_SCANSTATE_PY'
+          {{INLINE:trusted/scanstate.py}}
+          TRUSTED_SCANSTATE_PY
+          python3 -I "$d/scanstate.py" --help > /dev/null
+          python3 --version

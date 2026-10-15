@@ -1,0 +1,45 @@
+      - name: Resolve the scan range (full branch range on a new branch or force-push; never one commit)
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          lower=""
+          readable() { [ -n "$1" ] && [ "$1" != "$zero" ] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
+          if [ "$EVENT" = pull_request ]; then
+            head="$PR_HEAD"
+            lower="$(git merge-base "$PR_BASE" "$PR_HEAD" 2>/dev/null || true)"
+            how="pull request: merge-base(base, head)..head"
+          else
+            head="$PUSH_AFTER"
+            # After a force-push the old head is on no branch, so the clone may lack it; ask for it by SHA.
+            if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "$zero" ] && ! readable "$PUSH_BEFORE"; then
+              git fetch --no-tags --quiet origin "$PUSH_BEFORE" 2>/dev/null || true
+            fi
+            if readable "$PUSH_BEFORE" && git merge-base --is-ancestor "$PUSH_BEFORE" "$head"; then
+              lower="$PUSH_BEFORE"
+              how="push: before..after"
+            else
+              # New branch, force-push, or an unreadable before: the whole branch range against the default branch.
+              lower="$(git merge-base "origin/$DEFAULT_BRANCH" "$head" 2>/dev/null || true)"
+              how="push (new branch or force-push): merge-base(origin/$DEFAULT_BRANCH, after)..after"
+              if [ "$lower" = "$head" ]; then
+                # The pushed commit is on the default branch itself: only the old head can bound the range.
+                lower=""
+                if readable "$PUSH_BEFORE"; then
+                  lower="$(git merge-base "$PUSH_BEFORE" "$head" 2>/dev/null || true)"
+                  how="force-push to $DEFAULT_BRANCH: merge-base(before, after)..after"
+                fi
+              fi
+            fi
+          fi
+          commits=0
+          if [ -n "$lower" ]; then commits="$(git rev-list --count "${lower}..${head}")"; fi
+          echo "scan range: ${lower:-unresolved}..${head} = $commits commit(s) [$how]"
+          { echo "lower=$lower"; echo "head=$head"; echo "commits=$commits"; } >> "$GITHUB_OUTPUT"

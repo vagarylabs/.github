@@ -1,0 +1,624 @@
+#!/usr/bin/env python3
+"""Scan result states for the Vagary Labs scan workflows (ledger C9). Stdlib only, Python >= 3.8.
+
+Every scanner job ends in exactly ONE state:
+  PASSED                the scanner ran to completion over the full declared scope; nothing at threshold.
+  FINDINGS              it ran and found something at threshold. Blocks.
+  UNAVAILABLE           it did not run to completion, or the scope was not covered (tool fetch failed,
+                        empty or unresolvable range, verifier unreachable, scanner error). Blocks, like FINDINGS.
+  NOT_APPLICABLE        a recorded, printed predicate says this change has nothing for the scanner.
+  AUTHORIZED_EXCEPTION  a finding or unavailability is waived by an unexpired, approved register entry.
+A gate passes only on PASSED, NOT_APPLICABLE or AUTHORIZED_EXCEPTION. A scanner listed in REPORT_ONLY
+records its state the same way but never fails the job.
+
+This file is the single source. Workflows carry a byte-identical inline copy (a heredoc rendered by
+trusted/render.py), because a ruleset workflow must not read code from the repository it judges.
+
+Each step appends one record (one check) to <records>/<scanner>.jsonl; `gate` merges them. A check that
+`gate --expect` names but nobody recorded is UNAVAILABLE: a skipped or failed step can never read as a pass.
+
+Nothing here prints a secret: findings are reported as rule, path, line and commit only.
+"""
+import argparse
+import collections
+import datetime
+import hashlib
+import json
+import os
+import re
+import sys
+
+STATES = ("PASSED", "FINDINGS", "UNAVAILABLE", "NOT_APPLICABLE", "AUTHORIZED_EXCEPTION")
+PASSING = ("PASSED", "NOT_APPLICABLE", "AUTHORIZED_EXCEPTION")
+# Lower is worse. A job's state is the worst of its checks.
+RANK = {"FINDINGS": 0, "UNAVAILABLE": 1, "AUTHORIZED_EXCEPTION": 2, "PASSED": 3, "NOT_APPLICABLE": 4}
+
+# REPORT-ONLY scanners record a state but never fail the job. Flip one to False (and bump the ruleset pin)
+# only when the criterion in trusted/README.md ("Report-only to required") is met for it.
+REPORT_ONLY = {"gitleaks": False, "trufflehog": False, "semgrep": True, "sca": True}
+
+GITLEAKS_FINDINGS_RC = 42   # passed as --exit-code, so a gitleaks ERROR (exit 1) cannot read as findings
+SEMGREP_THRESHOLD = ("ERROR", "WARNING")
+MAX_LISTED = 50
+EXPIRY_MAX_DAYS = 90
+SCHEMA = "vagarylabs.scan-result/v1"
+
+
+def die(msg):
+    raise SystemExit("scanstate: " + msg)
+
+
+# --- records ---------------------------------------------------------------------------------
+
+def records_dir(arg=None):
+    d = arg or os.environ.get("SCAN_RECORDS") or os.path.join(os.environ.get("RUNNER_TEMP") or ".", "scan-records")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def make_check(check, state, reason, counts=None, items=None, tool=None, scope=None):
+    if state not in STATES:
+        die("unknown state %r" % state)
+    return {"check": check, "state": state, "reason": reason, "counts": counts or {},
+            "items": (items or [])[:MAX_LISTED], "items_total": len(items or []),
+            "tool": tool or {}, "scope": scope or ""}
+
+
+def append(rdir, scanner, rec):
+    with open(os.path.join(rdir, scanner + ".jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, sort_keys=True) + "\n")
+
+
+def load(rdir, scanner):
+    path = os.path.join(rdir, scanner + ".jsonl")
+    out = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    out.append(json.loads(line))
+    return out
+
+
+def merge(records, expect):
+    """(state, reason, checks). Missing expected checks are UNAVAILABLE; no record at all is UNAVAILABLE."""
+    checks = list(records)
+    seen = {r["check"] for r in checks}
+    for name in expect:
+        if name not in seen:
+            checks.append(make_check(name, "UNAVAILABLE",
+                                     "no result recorded for check '%s': a step before it failed or was skipped" % name))
+    if not checks:
+        checks.append(make_check("scan", "UNAVAILABLE", "no result recorded: the scanner never reported"))
+    worst = min(checks, key=lambda r: RANK[r["state"]])
+    return worst["state"], worst["reason"], checks
+
+
+def gate_exit(scanner, state, report_only=None):
+    ro = REPORT_ONLY.get(scanner, False) if report_only is None else report_only
+    if ro:
+        return 0
+    return 0 if state in PASSING else 1
+
+
+# --- gitleaks --------------------------------------------------------------------------------
+
+def classify_gitleaks(rc, report_text, commits, scope, tool=None):
+    if commits is not None and commits <= 0:
+        return make_check("scan", "UNAVAILABLE", "empty scan range %s: nothing was scanned" % scope, tool=tool, scope=scope)
+    if rc not in (0, GITLEAKS_FINDINGS_RC):
+        return make_check("scan", "UNAVAILABLE", "gitleaks exited %d (an error, not a finding)" % rc, tool=tool, scope=scope)
+    try:
+        rows = json.loads(report_text) if report_text is not None else None
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        return make_check("scan", "UNAVAILABLE", "gitleaks report missing or unreadable; completeness not proven",
+                          tool=tool, scope=scope)
+    items = [{"rule": r.get("RuleID"), "path": r.get("File"), "line": r.get("StartLine"),
+              "commit": (r.get("Commit") or "")[:12]} for r in rows if isinstance(r, dict)]
+    if rc == GITLEAKS_FINDINGS_RC or items:
+        if not items:
+            return make_check("scan", "UNAVAILABLE", "gitleaks signalled findings but its report lists none",
+                              tool=tool, scope=scope)
+        return make_check("scan", "FINDINGS", "%d gitleaks finding(s) in %s" % (len(items), scope),
+                          {"findings": len(items)}, items, tool, scope)
+    return make_check("scan", "PASSED", "gitleaks scanned %s: no findings" % scope,
+                      {"findings": 0, "commits": commits if commits is not None else -1}, tool=tool, scope=scope)
+
+
+# --- trufflehog ------------------------------------------------------------------------------
+
+def _cause(err):
+    e = (err or "").lower()
+    for key, words in (("connection-refused", ("connection refused",)),
+                       ("timeout", ("timeout", "deadline exceeded", "timed out")),
+                       ("dns", ("no such host", "lookup ", "server misbehaving")),
+                       ("tls", ("tls", "x509", "certificate")),
+                       ("proxy", ("proxyconnect", "proxy")),
+                       ("http-status", ("status code", "unexpected http", "unexpected response", "429", "5xx"))):
+        if any(w in e for w in words):
+            return key
+    return "other"
+
+
+def _thog_location(r):
+    meta = ((r.get("SourceMetadata") or {}).get("Data") or {})
+    git = meta.get("Git") or meta.get("Filesystem") or {}
+    return git.get("file"), git.get("line"), (git.get("commit") or "")[:12]
+
+
+def classify_trufflehog(rc, results_text, commits, scope, tool=None):
+    """Input is trufflehog --json --results=verified,unknown output. A verified result is a live credential
+    (FINDINGS). An unknown result means verification was attempted and errored, e.g. the provider was
+    unreachable: that candidate was NOT cleared, so the scan is UNAVAILABLE, never PASSED."""
+    if commits is not None and commits <= 0:
+        return make_check("scan", "UNAVAILABLE", "empty scan range %s: nothing was scanned" % scope, tool=tool, scope=scope)
+    if rc != 0:
+        return make_check("scan", "UNAVAILABLE", "trufflehog exited %d (scan error)" % rc, tool=tool, scope=scope)
+    if results_text is None:
+        return make_check("scan", "UNAVAILABLE", "trufflehog output missing", tool=tool, scope=scope)
+    verified, unknown = [], []
+    for n, line in enumerate(results_text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            return make_check("scan", "UNAVAILABLE", "trufflehog output line %d is not JSON" % n, tool=tool, scope=scope)
+        if not isinstance(r, dict):
+            return make_check("scan", "UNAVAILABLE", "trufflehog output line %d is not an object" % n, tool=tool, scope=scope)
+        path, ln, commit = _thog_location(r)
+        item = {"rule": r.get("DetectorName"), "path": path, "line": ln, "commit": commit}
+        if r.get("Verified") is True:
+            verified.append(item)
+        elif r.get("VerificationError"):
+            item["cause"] = _cause(r.get("VerificationError"))
+            unknown.append(item)
+    counts = {"verified": len(verified), "verification_errors": len(unknown)}
+    if verified:
+        return make_check("scan", "FINDINGS", "%d verified live credential(s) in %s" % (len(verified), scope),
+                          counts, verified + unknown, tool, scope)
+    if unknown:
+        causes = sorted({i["cause"] for i in unknown})
+        dets = sorted({str(i["rule"]) for i in unknown})
+        return make_check("scan", "UNAVAILABLE",
+                          "verification could not complete for %d candidate(s) (detectors %s; cause %s); "
+                          "they are not cleared" % (len(unknown), ", ".join(dets), ", ".join(causes)),
+                          counts, unknown, tool, scope)
+    return make_check("scan", "PASSED", "trufflehog scanned %s: no verified or unverifiable candidate" % scope,
+                      counts, tool=tool, scope=scope)
+
+
+# --- semgrep ---------------------------------------------------------------------------------
+
+def _semgrep_keys(doc, root):
+    keys = collections.Counter()
+    items = []
+    for r in doc.get("results") or []:
+        sev = ((r.get("extra") or {}).get("severity") or "").upper()
+        if sev not in SEMGREP_THRESHOLD:
+            continue
+        path = r.get("path") or ""
+        start = (r.get("start") or {}).get("line") or 0
+        end = (r.get("end") or {}).get("line") or start
+        text = ""
+        try:
+            with open(os.path.join(root, path), encoding="utf-8", errors="replace") as fh:
+                text = "".join(fh.readlines()[max(start - 1, 0):end])
+        except OSError:
+            pass
+        digest = hashlib.sha256(re.sub(r"\s+", " ", text).strip().encode()).hexdigest()
+        key = (r.get("check_id"), path, digest)
+        keys[key] += 1
+        items.append((key, {"rule": r.get("check_id"), "path": path, "line": start, "severity": sev}))
+    return keys, items
+
+
+def classify_semgrep(rc, head_text, base_text, rules, head_root, base_root, scope, tool=None):
+    """Findings at or above SEMGREP_THRESHOLD in the PR's changed files that the same files at the
+    merge-base do not already carry (matched by rule, path and normalised matched text)."""
+    if rules <= 0:
+        return make_check("scan", "UNAVAILABLE", "no semgrep rules loaded", tool=tool, scope=scope)
+    if rc != 0:
+        return make_check("scan", "UNAVAILABLE", "semgrep exited %d" % rc, tool=tool, scope=scope)
+    try:
+        head = json.loads(head_text)
+        base = json.loads(base_text) if base_text else {"results": [], "errors": []}
+    except (TypeError, ValueError):
+        return make_check("scan", "UNAVAILABLE", "semgrep JSON missing or unreadable", tool=tool, scope=scope)
+    errors = (head.get("errors") or []) + (base.get("errors") or [])
+    if errors:
+        kinds = collections.Counter(str(e.get("type") if not isinstance(e.get("type"), list) else e["type"][0])
+                                    for e in errors)
+        return make_check("scan", "UNAVAILABLE", "semgrep reported %d error(s): %s; the scope is not fully covered"
+                          % (len(errors), ", ".join("%s=%d" % kv for kv in sorted(kinds.items()))),
+                          {"errors": len(errors)}, tool=tool, scope=scope)
+    hk, hitems = _semgrep_keys(head, head_root)
+    bk, _ = _semgrep_keys(base, base_root)
+    new = hk - bk
+    items, budget = [], collections.Counter(new)
+    for key, item in hitems:
+        if budget[key] > 0:
+            budget[key] -= 1
+            items.append(item)
+    counts = {"rules": rules, "head_findings": sum(hk.values()), "base_findings": sum(bk.values()),
+              "new_findings": len(items)}
+    if items:
+        return make_check("scan", "FINDINGS", "%d new semgrep finding(s) at %s in %s"
+                          % (len(items), "/".join(SEMGREP_THRESHOLD), scope), counts, items, tool, scope)
+    return make_check("scan", "PASSED", "semgrep: no new finding at %s in %s" % ("/".join(SEMGREP_THRESHOLD), scope),
+                      counts, tool=tool, scope=scope)
+
+
+# --- SCA (osv-scanner) -----------------------------------------------------------------------
+
+OSV_OK = (0, 1)        # 0 clean, 1 vulnerabilities found
+OSV_NO_PACKAGES = 128  # treated as an empty set: the lockfile exists and lists nothing
+# 129 API failed, 130 invalid config, 127 any other error: all UNAVAILABLE (osv-scanner v2.7.0 run.go).
+
+
+def _rel(src, root):
+    for r in {root, os.path.realpath(root)} if root else ():
+        r = r.rstrip("/") + "/"
+        for s in (src, "/" + src.lstrip("/")):
+            if s.startswith(r):
+                return s[len(r):]
+    return src
+
+
+OSV_ERROR_LINE = re.compile(r"^\s*(error|fatal)\b", re.I | re.M)
+
+
+def _osv_keys(doc, root):
+    keys = {}
+    for res in (doc or {}).get("results") or []:
+        src = _rel((res.get("source") or {}).get("path") or "", root)
+        for p in res.get("packages") or []:
+            pkg = p.get("package") or {}
+            sev = {}
+            for g in p.get("groups") or []:
+                for vid in g.get("ids") or []:
+                    sev[vid] = g.get("max_severity") or ""
+            for v in p.get("vulnerabilities") or []:
+                key = (src, pkg.get("ecosystem"), pkg.get("name"), v.get("id"))
+                keys[key] = {"rule": v.get("id"), "path": src, "package": "%s@%s" % (pkg.get("name"), pkg.get("version")),
+                             "ecosystem": pkg.get("ecosystem"), "severity": sev.get(v.get("id"), "")}
+    return keys
+
+
+def classify_sca(rc_head, head_text, rc_base, base_text, head_root, base_root, scope, tool=None,
+                 head_err=None, base_err=None):
+    """Advisories on the changed lockfiles at head that the same lockfiles at the merge-base do not carry.
+    osv-scanner can log an extraction error and still exit 1 on the packages it did read: that is a partial
+    scope, so an error line on stderr is UNAVAILABLE as well."""
+    for side, rc, err in (("head", rc_head, head_err), ("base", rc_base, base_err)):
+        if rc is None:
+            continue
+        if rc not in OSV_OK and rc != OSV_NO_PACKAGES:
+            why = {124: "timed out", 129: "advisory API unreachable", 130: "invalid config"}.get(rc, "scanner error")
+            return make_check("scan", "UNAVAILABLE", "osv-scanner (%s) exited %d: %s" % (side, rc, why), tool=tool, scope=scope)
+        if err and OSV_ERROR_LINE.search(err):
+            n = len(OSV_ERROR_LINE.findall(err))
+            return make_check("scan", "UNAVAILABLE", "osv-scanner (%s) logged %d error line(s) (e.g. a lockfile it could "
+                              "not extract or resolve): the scope is only partly covered" % (side, n), tool=tool, scope=scope)
+    try:
+        head = json.loads(head_text) if rc_head in OSV_OK else {"results": []}
+        base = json.loads(base_text) if rc_base in OSV_OK else {"results": []}
+    except (TypeError, ValueError):
+        return make_check("scan", "UNAVAILABLE", "osv-scanner JSON missing or unreadable", tool=tool, scope=scope)
+    hk, bk = _osv_keys(head, head_root), _osv_keys(base, base_root)
+    new = [hk[k] for k in sorted(set(hk) - set(bk), key=lambda k: tuple(str(x) for x in k))]
+    counts = {"head_vulns": len(hk), "base_vulns": len(bk), "new_vulns": len(new)}
+    if new:
+        return make_check("scan", "FINDINGS", "%d advisory(ies) introduced by the changed lockfiles in %s"
+                          % (len(new), scope), counts, new, tool, scope)
+    return make_check("scan", "PASSED", "no advisory introduced by the changed lockfiles in %s" % scope,
+                      counts, tool=tool, scope=scope)
+
+
+LOCKFILES = ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock",
+             "requirements.txt", "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock", "go.mod",
+             "Cargo.lock", "Gemfile.lock", "composer.lock", "pom.xml", "gradle.lockfile", "mix.lock",
+             "pubspec.lock", "renv.lock", "packages.lock.json", "conan.lock")
+
+
+def is_lockfile(path):
+    base = path.rsplit("/", 1)[-1]
+    return base in LOCKFILES or bool(re.match(r"^requirements[-_.\w]*\.txt$", base))
+
+
+# --- trivy (for repo image workflows that adopt this file) ----------------------------------------
+
+TRIVY_FINDINGS_RC = 42  # the caller passes --exit-code 42: trivy also exits 1 on its own errors
+
+
+def classify_trivy(rc, image, tool=None):
+    if rc == 0:
+        return make_check("scan", "PASSED", "trivy: no finding at threshold in %s" % image, tool=tool, scope=image)
+    if rc == TRIVY_FINDINGS_RC:
+        return make_check("scan", "FINDINGS", "trivy reported findings at threshold in %s" % image, tool=tool, scope=image)
+    return make_check("scan", "UNAVAILABLE", "trivy exited %d: an error (DB download, timeout or scan failure), "
+                      "not a finding" % rc, tool=tool, scope=image)
+
+
+# --- allowlist / exception entries -----------------------------------------------------------
+
+TABLE = re.compile(r"^\s*\[\[?\s*([A-Za-z0-9_.\-]+)\s*\]\]?\s*(#.*)?$")
+ALLOWLIST_TABLES = ("allowlist", "allowlists", "rules.allowlist", "rules.allowlists")
+KEY = re.compile(r"^\s*(approver|expires)\s*=\s*(.+?)\s*(#.*)?$")
+IGNORE_META = re.compile(r'^#\s*exception:\s*approver\s*=\s*"([^"]+)"\s+expires\s*=\s*(\d{4}-\d{2}-\d{2})\s*$')
+DATE = re.compile(r'^"?(\d{4}-\d{2}-\d{2})"?$')
+
+
+def _check_entry(label, approver, expires, today, problems):
+    if not approver:
+        problems.append("%s: no approver" % label)
+    if not expires:
+        problems.append("%s: no expires date" % label)
+        return
+    try:
+        exp = datetime.date.fromisoformat(expires)
+    except ValueError:
+        problems.append("%s: expires %r is not a YYYY-MM-DD date" % (label, expires))
+        return
+    if exp < today:
+        problems.append("%s: EXPIRED on %s (UTC); renew with a fresh approval or remove the entry" % (label, exp))
+    elif (exp - today).days > EXPIRY_MAX_DAYS:
+        problems.append("%s: expires %s is more than %d days after %s (UTC)" % (label, exp, EXPIRY_MAX_DAYS, today))
+
+
+def check_gitleaks_toml(text, today):
+    """Every [allowlist]/[[allowlists]]/[rules.allowlist]/[[rules.allowlists]] table must carry
+    approver = "<who>" and expires = YYYY-MM-DD (UTC, at most EXPIRY_MAX_DAYS ahead). -> (entries, problems)."""
+    problems, entries, cur = [], 0, None
+
+    def close(c):
+        if c is not None:
+            _check_entry(".gitleaks.toml:%d [%s]" % (c["line"], c["name"]), c.get("approver"), c.get("expires"),
+                         today, problems)
+
+    for n, line in enumerate((text or "").splitlines(), 1):
+        m = TABLE.match(line)
+        if m:
+            close(cur)
+            cur = None
+            if m.group(1) in ALLOWLIST_TABLES:
+                entries += 1
+                cur = {"line": n, "name": m.group(1)}
+            continue
+        if cur is None:
+            continue
+        k = KEY.match(line)
+        if k:
+            val = k.group(2)
+            if k.group(1) == "approver":
+                sm = re.match(r'^"([^"]*)"$', val) or re.match(r"^'([^']*)'$", val)
+                cur["approver"] = sm.group(1).strip() if sm else ""
+            else:
+                dm = DATE.match(val)
+                cur["expires"] = dm.group(1) if dm else val
+    close(cur)
+    return entries, problems
+
+
+def check_gitleaksignore(text, today):
+    """Each fingerprint line must sit under a `# exception: approver="<who>" expires=YYYY-MM-DD` line in the
+    same paragraph (no blank line between). -> (entries, problems)."""
+    problems, entries, meta = [], 0, None
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            meta = None
+            continue
+        if line.startswith("#"):
+            m = IGNORE_META.match(line)
+            if m:
+                meta = (m.group(1).strip(), m.group(2))
+            elif line.lower().startswith("# exception:"):
+                problems.append(".gitleaksignore:%d: malformed exception line" % n)
+            continue
+        entries += 1
+        label = ".gitleaksignore:%d" % n
+        if meta is None:
+            problems.append("%s: fingerprint has no `# exception: approver=... expires=...` line above it" % label)
+        else:
+            _check_entry(label, meta[0], meta[1], today, problems)
+    return entries, problems
+
+
+def classify_exceptions(toml_text, ignore_text, today):
+    te, tp = check_gitleaks_toml(toml_text, today)
+    ie, ip = check_gitleaksignore(ignore_text, today)
+    problems = tp + ip
+    counts = {"allowlist_tables": te, "ignore_fingerprints": ie, "invalid": len(problems)}
+    items = [{"rule": "exception-register", "path": p.split(":", 1)[0], "line": None, "detail": p} for p in problems]
+    if problems:
+        return make_check("exceptions", "FINDINGS", "%d allowlist entr(y/ies) invalid or expired: %s"
+                          % (len(problems), "; ".join(problems[:5])), counts, items)
+    return make_check("exceptions", "PASSED", "%d allowlist table(s) and %d ignore fingerprint(s), all approved and "
+                      "unexpired as of %s (UTC)" % (te, ie, today), counts)
+
+
+# --- output ----------------------------------------------------------------------------------
+
+def result_doc(scanner, state, reason, checks, report_only):
+    env = os.environ.get
+    return {
+        "schema": SCHEMA, "scanner": scanner, "state": state, "reason": reason,
+        "mode": "report-only" if report_only else "blocking",
+        "gate": "report-only" if report_only else ("pass" if state in PASSING else "fail"),
+        "repository": env("GITHUB_REPOSITORY"), "event": env("GITHUB_EVENT_NAME"),
+        "run_id": env("GITHUB_RUN_ID"), "run_attempt": env("GITHUB_RUN_ATTEMPT"), "job": env("GITHUB_JOB"),
+        "base": env("SCAN_BASE"), "head": env("SCAN_HEAD"), "merge_base": env("SCAN_MERGE_BASE"),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at_basis": "runner clock, UTC",
+        "checks": checks,
+    }
+
+
+def summary_lines(doc):
+    lines = ["### %s: **%s** (%s)" % (doc["scanner"], doc["state"], doc["mode"]), "",
+             "| check | state | scope | reason |", "|---|---|---|---|"]
+    for c in doc["checks"]:
+        lines.append("| %s | %s | `%s` | %s |" % (c["check"], c["state"], c.get("scope") or "",
+                                                   c["reason"].replace("|", "/")))
+    listed = [i for c in doc["checks"] for i in c.get("items") or []]
+    if listed:
+        lines += ["", "| rule | path | line | detail |", "|---|---|---|---|"]
+        for i in listed[:MAX_LISTED]:
+            lines.append("| %s | `%s` | %s | %s |" % (i.get("rule"), i.get("path"), i.get("line"),
+                                                      i.get("detail") or i.get("cause") or i.get("severity") or ""))
+    return lines
+
+
+def emit(scanner, doc, out_dir):
+    path = os.path.join(out_dir, "scan-result-%s.json" % scanner)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    text = "\n".join(summary_lines(doc)) + "\n"
+    sp = os.environ.get("GITHUB_STEP_SUMMARY")
+    if sp:
+        with open(sp, "a", encoding="utf-8") as fh:
+            fh.write(text)
+    gp = os.environ.get("GITHUB_OUTPUT")
+    if gp:
+        with open(gp, "a", encoding="utf-8") as fh:
+            fh.write("state=%s\n" % doc["state"])
+    sys.stdout.write(text)
+    level = "notice" if doc["state"] in PASSING or doc["mode"] == "report-only" else "error"
+    print("::%s title=%s %s (%s)::%s" % (level, scanner, doc["state"], doc["mode"], doc["reason"].replace("\n", " ")))
+    return path
+
+
+# --- CLI -------------------------------------------------------------------------------------
+
+def _read(path):
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _tool(a):
+    return {k: v for k, v in (("name", getattr(a, "tool_name", None)), ("version", a.tool_version),
+                              ("sha256", a.tool_sha256)) if v}
+
+
+def _int(v):
+    return None if v in (None, "") else int(v)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="scanstate")
+    ap.add_argument("--records", default=None)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p, tool=True):
+        p.add_argument("--scope", default="")
+        if tool:
+            p.add_argument("--tool-name")
+            p.add_argument("--tool-version")
+            p.add_argument("--tool-sha256")
+
+    p = sub.add_parser("record")
+    p.add_argument("--scanner", required=True)
+    p.add_argument("--check", required=True)
+    p.add_argument("--state", required=True, choices=STATES)
+    p.add_argument("--reason", required=True)
+    common(p, tool=False)
+
+    p = sub.add_parser("gitleaks")
+    p.add_argument("--rc", type=int, required=True)
+    p.add_argument("--report")
+    p.add_argument("--commits", type=int)
+    common(p)
+
+    p = sub.add_parser("trufflehog")
+    p.add_argument("--rc", type=int, required=True)
+    p.add_argument("--results")
+    p.add_argument("--commits", type=int)
+    common(p)
+
+    p = sub.add_parser("semgrep")
+    p.add_argument("--rc", type=int, required=True)
+    p.add_argument("--head", required=True)
+    p.add_argument("--base")
+    p.add_argument("--head-root", required=True)
+    p.add_argument("--base-root", default="")
+    p.add_argument("--rules", type=int, required=True)
+    common(p)
+
+    p = sub.add_parser("sca")
+    p.add_argument("--rc-head", default="")
+    p.add_argument("--head")
+    p.add_argument("--rc-base", default="")
+    p.add_argument("--base")
+    p.add_argument("--head-root", default="")
+    p.add_argument("--base-root", default="")
+    p.add_argument("--head-err")
+    p.add_argument("--base-err")
+    common(p)
+
+    p = sub.add_parser("trivy")
+    p.add_argument("--rc", type=int, required=True)
+    p.add_argument("--image", required=True)
+    common(p)
+
+    p = sub.add_parser("exceptions")
+    p.add_argument("--gitleaks-toml")
+    p.add_argument("--gitleaksignore")
+    p.add_argument("--today", help="YYYY-MM-DD, UTC; default: today's UTC date")
+
+    p = sub.add_parser("is-lockfile")
+    p.add_argument("paths", nargs="*")
+
+    p = sub.add_parser("gate")
+    p.add_argument("--scanner", required=True)
+    p.add_argument("--expect", default="", help="comma-separated checks that must have been recorded")
+    p.add_argument("--out", default=None, help="directory for scan-result-<scanner>.json")
+
+    a = ap.parse_args(argv)
+    if a.cmd == "is-lockfile":
+        for path in a.paths or sys.stdin.read().split("\n"):
+            if path and is_lockfile(path):
+                print(path)
+        return 0
+
+    rdir = records_dir(a.records)
+    if a.cmd == "gate":
+        state, reason, checks = merge(load(rdir, a.scanner), [x for x in a.expect.split(",") if x])
+        ro = REPORT_ONLY.get(a.scanner, False)
+        emit(a.scanner, result_doc(a.scanner, state, reason, checks, ro), a.out or rdir)
+        return gate_exit(a.scanner, state)
+
+    if a.cmd == "record":
+        rec, scanner = make_check(a.check, a.state, a.reason, scope=a.scope), a.scanner
+    elif a.cmd == "gitleaks":
+        rec, scanner = classify_gitleaks(a.rc, _read(a.report), a.commits, a.scope, _tool(a)), "gitleaks"
+    elif a.cmd == "trufflehog":
+        rec, scanner = classify_trufflehog(a.rc, _read(a.results), a.commits, a.scope, _tool(a)), "trufflehog"
+    elif a.cmd == "semgrep":
+        rec, scanner = classify_semgrep(a.rc, _read(a.head), _read(a.base), a.rules, a.head_root, a.base_root,
+                                        a.scope, _tool(a)), "semgrep"
+    elif a.cmd == "sca":
+        rec, scanner = classify_sca(_int(a.rc_head), _read(a.head), _int(a.rc_base), _read(a.base),
+                                    a.head_root, a.base_root, a.scope, _tool(a), _read(a.head_err),
+                                    _read(a.base_err)), "sca"
+    elif a.cmd == "trivy":
+        rec, scanner = classify_trivy(a.rc, a.image, _tool(a)), "trivy"
+    else:  # exceptions
+        today = (datetime.date.fromisoformat(a.today) if a.today
+                 else datetime.datetime.now(datetime.timezone.utc).date())
+        rec, scanner = classify_exceptions(_read(a.gitleaks_toml), _read(a.gitleaksignore), today), "gitleaks"
+    append(rdir, scanner, rec)
+    print("%s/%s: %s: %s" % (scanner, rec["check"], rec["state"], rec["reason"]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

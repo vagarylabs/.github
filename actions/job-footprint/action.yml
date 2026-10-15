@@ -26,13 +26,16 @@ runs:
         peak=$(cat "$cg/memory.peak" 2>/dev/null || echo "")
         usec=$(awk '$1=="usage_usec"{print $2}' "$cg/cpu.stat" 2>/dev/null || echo "")
         max=$(cat "$cg/memory.max" 2>/dev/null || echo "")
-        cpus=$(awk '{print $1/$2}' "$cg/cpu.max" 2>/dev/null || echo "")
+        # cpu.max is "<quota> <period>" or "max <period>": unlimited is "max", never 0.
+        cpus=$(awk '$1 == "max" { print "max"; exit } $2 > 0 { print $1 / $2 }' "$cg/cpu.max" 2>/dev/null || echo "")
         if [ -z "$peak" ]; then
           echo "job-footprint: no cgroup v2 memory.peak readable here (runner $RUNNER_NAME, $(uname -sm)); nothing measured"
           exit 0
         fi
-        peak_mib=$((peak / 1048576)); cpu_s=$(( ${usec:-0} / 1000000 ))
+        # An unreadable cpu.stat is unmeasured: the output stays empty and the line says "?", never 0.
+        peak_mib=$((peak / 1048576)); cpu_s=""
+        [ -z "$usec" ] || cpu_s=$((usec / 1000000))
         scope="cgroup $cg (the job alone only on an ephemeral one-job container)"
         { echo "peak_mib=$peak_mib"; echo "cpu_seconds=$cpu_s"; } >> "$GITHUB_OUTPUT"
-        line="job-footprint: ${GITHUB_JOB} peak ${peak_mib} MiB, cpu ${cpu_s} s, limit mem ${max} cpus ${cpus:-?}, runner ${RUNNER_NAME} $(uname -m), ${scope}"
+        line="job-footprint: ${GITHUB_JOB} peak ${peak_mib} MiB, cpu ${cpu_s:-?} s, limit mem ${max} cpus ${cpus:-?}, runner ${RUNNER_NAME} $(uname -m), ${scope}"
         echo "$line"; echo "$line" >> "$GITHUB_STEP_SUMMARY"

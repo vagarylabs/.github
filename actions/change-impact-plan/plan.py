@@ -55,6 +55,7 @@ import http.client
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -160,26 +161,130 @@ class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
         return None  # never follow a provider-supplied location
 
 
-def https_transport(url: str, headers: dict, timeout: float, max_bytes: int) -> tuple[int, dict, bytes]:
-    """One bounded GET. Returns (status, headers, body); a body over max_bytes comes back as max_bytes+1 bytes.
-    `timeout` bounds the WHOLE request, not each socket read: a slow-dripping body raises TimeoutError."""
-    deadline = time.monotonic() + timeout
-    opener = urllib.request.build_opener(_RefuseRedirect)
-    request = urllib.request.Request(url, headers=headers, method="GET")
+PROVIDER_HEADER_BYTES = 65536
+PROVIDER_REAP_SECONDS = 1
+
+
+def _provider_http_worker():
+    """One isolated urllib request. Credentials arrive only on the private stdin pipe.
+
+    The parent owns the absolute deadline, including DNS/connect/TLS/HTTP headers.
+    Socket timeouts here are an additional inactivity bound, not that deadline.
+    """
     try:
-        with opener.open(request, timeout=timeout) as response:
-            chunks, size = [], 0
-            while size <= max_bytes:
-                chunk = response.read1(min(65536, max_bytes + 1 - size))
-                if time.monotonic() > deadline:
-                    raise TimeoutError("provider request deadline exceeded")
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                size += len(chunk)
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, b"".join(chunks)
-    except urllib.error.HTTPError as error:
-        return error.code, {k.lower(): v for k, v in (error.headers or {}).items()}, b""
+        raw = sys.stdin.buffer.read(PROVIDER_HEADER_BYTES + 1)
+        if len(raw) > PROVIDER_HEADER_BYTES:
+            raise ValueError("request too large")
+        url, headers, timeout, max_bytes = json.loads(raw)
+        if not isinstance(url, str) or not isinstance(headers, dict) or type(max_bytes) is not int \
+                or not 0 <= max_bytes <= PROVIDER_MAX_BYTES or not 0 < timeout <= PROVIDER_TIMEOUT_SECONDS:
+            raise ValueError("invalid request")
+        opener = urllib.request.build_opener(_RefuseRedirect)
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        body = b""
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                chunks, size = [], 0
+                while size <= max_bytes:
+                    chunk = response.read1(min(65536, max_bytes + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                status, response_headers, body = response.status, dict(response.headers), b"".join(chunks)
+        except urllib.error.HTTPError as error:
+            try:
+                status, response_headers = error.code, dict(error.headers or {})
+            finally:
+                error.close()
+        metadata = json.dumps([status, {k.lower(): v for k, v in response_headers.items()}]).encode()
+        if len(metadata) > PROVIDER_HEADER_BYTES:
+            raise ValueError("response headers too large")
+        sys.stdout.buffer.write(metadata + b"\n" + body)
+        sys.stdout.buffer.flush()
+        return 0
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        # No URL, token, provider response or exception text goes to logs.
+        return 2
+
+
+def https_transport(url: str, headers: dict, timeout: float, max_bytes: int) -> tuple[int, dict, bytes]:
+    """One cancellable GET; parent deadline covers process startup and every HTTP phase.
+
+    POSIX runner transport (selectors on pipes). A body over the cap returns
+    max_bytes+1 bytes. Catchable exceptions/interruptions kill and reap the owned
+    worker. Abrupt parent termination requires runner process-group cleanup.
+    """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= PROVIDER_TIMEOUT_SECONDS \
+            or type(max_bytes) is not int or not 0 <= max_bytes <= PROVIDER_MAX_BYTES:
+        raise ValueError("invalid provider bounds")
+    deadline = time.monotonic() + timeout
+    payload = json.dumps([url, headers, timeout, max_bytes]).encode()
+    if len(payload) > PROVIDER_HEADER_BYTES:
+        raise ValueError("provider request headers too large")
+    env = {key: value for key, value in os.environ.items() if key not in ("GH_TOKEN", "GITHUB_TOKEN")}
+    selector = selectors.DefaultSelector()
+    worker = None
+    try:
+        worker = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--provider-http-worker"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        output, sent = bytearray(), 0
+        bound = PROVIDER_HEADER_BYTES + 1 + max_bytes + 1
+        os.set_blocking(worker.stdin.fileno(), False)
+        os.set_blocking(worker.stdout.fileno(), False)
+        selector.register(worker.stdin, selectors.EVENT_WRITE)
+        selector.register(worker.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("provider request deadline exceeded")
+            for key, _ in selector.select(left):
+                if key.fileobj is worker.stdin:
+                    try:
+                        sent += os.write(worker.stdin.fileno(), payload[sent:sent + 4096])
+                    except BrokenPipeError:
+                        raise ValueError("provider worker unavailable") from None
+                    if sent == len(payload):
+                        selector.unregister(worker.stdin)
+                        worker.stdin.close()
+                else:
+                    chunk = os.read(worker.stdout.fileno(), min(65536, bound + 1 - len(output)))
+                    if not chunk:
+                        selector.unregister(worker.stdout)
+                    else:
+                        output.extend(chunk)
+                        if len(output) > bound:
+                            raise ValueError("provider response exceeded bound")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("provider request deadline exceeded")
+        try:
+            result = worker.wait(timeout=left)
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("provider request deadline exceeded") from None
+        if result:
+            raise ValueError("provider request unavailable")
+        metadata, separator, body = bytes(output).partition(b"\n")
+        if not separator or len(metadata) > PROVIDER_HEADER_BYTES or len(body) > max_bytes + 1:
+            raise ValueError("invalid provider response framing")
+        status, response_headers = json.loads(metadata)
+        if type(status) is not int or not isinstance(response_headers, dict):
+            raise ValueError("invalid provider response framing")
+        return status, response_headers, body
+    finally:
+        try:
+            selector.close()
+        finally:
+            if worker is not None:
+                if worker.poll() is None:
+                    worker.kill()
+                try:
+                    worker.wait(timeout=PROVIDER_REAP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    raise OSError("provider worker reap unavailable") from None
+                finally:
+                    worker.stdin.close()
+                    worker.stdout.close()
 
 
 def _comparison_matches(body: dict, base: str, head: str) -> bool:
@@ -274,7 +379,7 @@ def provider_compare(repository: str, base: str, head: str, *, token: str, api_u
         name = row.get("filename") if isinstance(row, dict) else None
         previous = row.get("previous_filename") if isinstance(row, dict) else None
         if not isinstance(name, str) or not SAFE_PATH.fullmatch(name) or name in seen \
-                or row.get("status") not in PROVIDER_FILE_STATUSES \
+                or not isinstance(row.get("status"), str) or row["status"] not in PROVIDER_FILE_STATUSES \
                 or (previous is not None and (not isinstance(previous, str) or not SAFE_PATH.fullmatch(previous))) \
                 or (row.get("status") == "renamed" and (previous is None or previous == name)):
             result["reason"] = "provider_malformed"
@@ -1291,4 +1396,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_provider_http_worker() if sys.argv[1:] == ["--provider-http-worker"] else main())

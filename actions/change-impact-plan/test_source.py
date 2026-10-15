@@ -18,6 +18,7 @@ from pathlib import Path
 import random
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -340,6 +341,15 @@ class ProviderWitness(SourceFixture):
         self.assertIn("provider_token_unavailable", rec["source_answer_meta"]["reason_codes"])
         self.assertEqual(rec["mode"], "full")
 
+    def test_nonstring_file_status_is_malformed_and_preserves_full_obligations(self):
+        full = self.full_obligations(["ui/a.ts"])
+        for status in ([], {}, ["modified"], None, True, 1):
+            with self.subTest(status=status):
+                rec, _ = self.witness(body=self.compare_body(files=[{"filename": "ui/a.ts", "status": status}]))
+                self.assertEqual(rec["mode"], "full")
+                self.assertEqual(self.obligations(rec), full)
+                self.assertIn("provider_malformed", rec["source_answer_meta"]["reason_codes"])
+
     def test_renamed_paths_include_the_origin_like_a_no_renames_diff(self):
         result = P.provider_compare("fixture/repo", self.base, self.candidate, token=TOKEN, api_url="https://api.github.com",
                                     transport=self.transport(body=self.compare_body(files=[
@@ -471,6 +481,121 @@ class RealTransport(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             P.https_transport(url + "/compare", {}, 0.5, 1024)
         self.assertLess(time.monotonic() - started, 2.0)
+
+    def tracked_worker(self, injected_code=None):
+        real, workers = subprocess.Popen, []
+        def create(argv, **kwargs):
+            self.assertNotIn(TOKEN, repr(argv))
+            self.assertNotIn("GH_TOKEN", kwargs["env"])
+            self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
+            self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
+            if injected_code:
+                code = ("import importlib.util,sys,socket,ssl,time; "
+                        f"spec=importlib.util.spec_from_file_location('worker',{str(Path(P.__file__).resolve())!r}); "
+                        "p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p); "
+                        + injected_code + "; sys.exit(p._provider_http_worker())")
+                argv = [sys.executable, "-I", "-c", code]
+            worker = real(argv, **kwargs)
+            workers.append(worker)
+            return worker
+        return create, workers
+
+    def test_deadline_cancels_and_reaps_dns_connect_and_tls_workers(self):
+        url = self.serve(self.handler(200, b"{}"))
+        phases = {
+            "DNS": "socket.getaddrinfo=lambda *a,**k: time.sleep(5)",
+            "connect": "socket.create_connection=lambda *a,**k: time.sleep(5)",
+            "TLS": "ssl.SSLContext.wrap_socket=lambda *a,**k: time.sleep(5)",
+        }
+        for phase, code in phases.items():
+            with self.subTest(phase=phase):
+                create, workers = self.tracked_worker(code)
+                with patch.dict(os.environ, {"GH_TOKEN": TOKEN, "GITHUB_TOKEN": TOKEN}), patch.object(P.subprocess, "Popen", create):
+                    with self.assertRaises(TimeoutError):
+                        P.https_transport(url.replace("http:", "https:") if phase == "TLS" else url,
+                                          {"Authorization": "Bearer " + TOKEN}, 0.3, 1024)
+                self.assertEqual(len(workers), 1)
+                self.assertLess(workers[0].returncode, 0, "deadline must kill, not leave request work alive")
+                self.assertIsNotNone(workers[0].poll())
+                self.assertTrue(workers[0].stdin.closed and workers[0].stdout.closed)
+
+    def test_status_and_headers_cannot_extend_absolute_deadline(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                try:
+                    # Each byte arrives before the socket inactivity timer, but the status is incomplete.
+                    for byte in b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}":
+                        self.wfile.write(bytes([byte])); self.wfile.flush(); time.sleep(0.03)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            def log_message(self, *args):
+                pass
+        url = self.serve(Handler)
+        create, workers = self.tracked_worker()
+        with patch.object(P.subprocess, "Popen", create), self.assertRaises(TimeoutError):
+            P.https_transport(url, {}, 0.1, 1024)
+        self.assertEqual(len(workers), 1)
+        self.assertLess(workers[0].returncode, 0)
+
+    def test_worker_failure_does_not_reflect_credentials_or_provider_error(self):
+        create, workers = self.tracked_worker("socket.getaddrinfo=lambda *a,**k: (_ for _ in ()).throw(OSError('" + TOKEN + "'))")
+        with patch.object(P.subprocess, "Popen", create), self.assertRaises(ValueError) as caught:
+            P.https_transport("http://127.0.0.1:1", {"Authorization": "Bearer " + TOKEN}, 5, 1024)
+        self.assertNotIn(TOKEN, str(caught.exception))
+        self.assertEqual(workers[0].returncode, 2)
+
+    def test_supervisor_bounds_child_output_and_reaps_on_interruption(self):
+        real, workers = subprocess.Popen, []
+        def oversized(argv, **kwargs):
+            proc = real([sys.executable, "-I", "-c", "import sys;sys.stdin.buffer.read();sys.stdout.buffer.write(b'x'*200000)"], **kwargs)
+            workers.append(proc)
+            return proc
+        with patch.object(P.subprocess, "Popen", oversized), self.assertRaises(ValueError):
+            P.https_transport("http://127.0.0.1:1", {}, 5, 10)
+        self.assertIsNotNone(workers[0].poll())
+        self.assertTrue(workers[0].stdin.closed and workers[0].stdout.closed)
+
+    def test_interruption_kills_and_reaps_the_owned_worker(self):
+        create, workers = self.tracked_worker("socket.create_connection=lambda *a,**k: time.sleep(5)")
+        with patch.object(P.subprocess, "Popen", create), \
+                patch.object(P.selectors.DefaultSelector, "select", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            P.https_transport("http://127.0.0.1:1", {}, 5, 1024)
+        self.assertEqual(len(workers), 1)
+        self.assertIsNotNone(workers[0].poll())
+        self.assertTrue(workers[0].stdin.closed and workers[0].stdout.closed)
+
+    def test_selector_constructor_failure_starts_no_worker(self):
+        with patch.object(P.selectors, "DefaultSelector", side_effect=OSError("fixture selector failure")), \
+                patch.object(P.subprocess, "Popen", side_effect=AssertionError("worker must not start")), \
+                self.assertRaises(OSError):
+            P.https_transport("http://127.0.0.1:1", {}, 5, 1024)
+
+    def test_spawn_failure_closes_preallocated_selector(self):
+        selector = P.selectors.DefaultSelector()
+        with patch.object(P.selectors, "DefaultSelector", return_value=selector), \
+                patch.object(P.subprocess, "Popen", side_effect=OSError("fixture spawn failure")), \
+                self.assertRaises(OSError):
+            P.https_transport("http://127.0.0.1:1", {}, 5, 1024)
+        self.assertFalse(selector.get_map())
+
+    def test_postspawn_registration_failure_reaps_real_worker(self):
+        create, workers = self.tracked_worker()
+        with patch.object(P.subprocess, "Popen", create), \
+                patch.object(P.selectors.DefaultSelector, "register", side_effect=OSError("fixture register failure")), \
+                self.assertRaises(OSError):
+            P.https_transport("http://127.0.0.1:1", {}, 5, 1024)
+        self.assertEqual(len(workers), 1)
+        self.assertIsNotNone(workers[0].poll())
+        self.assertTrue(workers[0].stdin.closed and workers[0].stdout.closed)
+
+    def test_invalid_request_bounds_do_not_start_worker(self):
+        for timeout, limit in [(0, 1), (float('nan'), 1), (True, 1), (16, 1), (1, -1), (1, P.PROVIDER_MAX_BYTES + 1)]:
+            with patch.object(P.subprocess, "Popen", side_effect=AssertionError("worker started")), self.assertRaises(ValueError):
+                P.https_transport("http://127.0.0.1:1", {}, timeout, limit)
+        with patch.object(P.subprocess, "Popen", side_effect=AssertionError("worker started")), self.assertRaises(ValueError):
+            P.https_transport("http://127.0.0.1:1", {"Authorization": "x" * 70000}, 1, 1)
+
 
 
 class ContractShape(SourceFixture):

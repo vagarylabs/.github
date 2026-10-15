@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -241,6 +242,25 @@ class WeakeningCases(unittest.TestCase):
                                    "raises bound `toBeLessThan` 200 -> 500",
                                    "removes `expect.hasAssertions`"])
 
+    def test_red_budget_constant_raised_but_not_other_constants(self):
+        t = BASE["src/b.test.ts"] + "const LATENCY_BUDGET_MS = 200\nconst limit = 5\nconst cfg = { renderBudget: 16 }\n"
+        base_case = self.repo.case({"src/b.test.ts": t})
+        head_text = (BASE["src/b.test.ts"] + "const LATENCY_BUDGET_MS = 2_000\nconst limit = 50\n"
+                     "const cfg = { renderBudget: 33 }\n")
+        git(self.repo.d, "checkout", "-q", "-b", "budget-head", base_case)
+        pathlib.Path(self.repo.d, "src/b.test.ts").write_text(head_text)
+        git(self.repo.d, "commit", "-q", "-am", "raise")
+        head = git(self.repo.d, "rev-parse", "HEAD")
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.repo.d)
+            got, incomplete, _ = classify.weakening_scan(base_case, head)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(incomplete, [])
+        self.assertEqual(sorted(f["detail"] for f in got),
+                         ["raises budget `LATENCY_BUDGET_MS` 200 -> 2000", "raises budget `renderBudget` 16 -> 33"])
+
     # --- controls: never flagged --------------------------------------------------------------
 
     def test_control_same_text_in_markdown(self):
@@ -286,6 +306,34 @@ class WeakeningCases(unittest.TestCase):
         got = self.findings({"src/c.test.ts": None, "src/c.ts": None})
         self.assertEqual([(f["rule"], f["path"]) for f in got], [("test-deleted", "src/c.test.ts")])
         self.assertIn("(a source file of the same stem is deleted too)", got[0]["detail"])
+
+    def test_one_combined_diff_matches_per_file_diffs(self):
+        wf = edit(BASE[".github/workflows/ci.yml"], "- run: npm test\n", "- run: npm test || true\n")
+        cfg = edit(BASE["vitest.config.ts"], "lines: 80", "lines: 60")
+        head = self.repo.case({".github/workflows/ci.yml": wf, "vitest.config.ts": cfg,
+                               "src/b.test.ts": "it.skip('b', () => {})\n", "src/\u00fcn\u00ef.test.ts": "it.only('u')\n",
+                               'src/q"uote.test.ts': "it.todo('q')\n"},
+                              moves=[("src/moved.test.ts", "src/renamed.test.ts")])
+        combined, _, _ = self.repo.scan(head)
+        with mock.patch.object(classify, "file_patches", return_value={}):
+            per_file, _, _ = self.repo.scan(head)
+        key = lambda f: (f["path"], f["line"] or 0, f["detail"])
+        self.assertEqual(sorted(combined, key=key), sorted(per_file, key=key))
+        # A path git quotes in its header (always for '"'; non-ASCII too under the default core.quotePath)
+        # takes the per-file fallback and is still scanned.
+        got = [(f["path"], f["detail"]) for f in combined]
+        self.assertIn(('src/q"uote.test.ts', "adds `it.todo`"), got)
+        self.assertIn(("src/\u00fcn\u00ef.test.ts", "adds `it.only`"), got)
+        self.assertEqual(len(combined), 5, combined)
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.repo.d)
+            rows = [r for r in classify.name_status_renames(self.repo.base, head)]
+            bound = classify.file_patches(self.repo.base, head, rows)
+        finally:
+            os.chdir(cwd)
+        self.assertIn(("src/moved.test.ts", "src/renamed.test.ts"), bound)
+        self.assertNotIn(('src/q"uote.test.ts', 'src/q"uote.test.ts'), bound)
 
     # --- references are listed, never honoured --------------------------------------------------
 
@@ -350,6 +398,55 @@ class IntegrityReportTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("- INCOMPLETE: `src/b.test.ts`: diff larger than 10 bytes, not scanned", out)
         self.assertNotIn("No test-weakening pattern added", out)
+
+    def test_hostile_long_line_is_bounded_and_incomplete(self):
+        # One ~1 MB minified-style line: before the cap, two predicates were quadratic on it (red proof:
+        # 96k chars took 11.7 s on fl4-v1's first draft, extrapolating past the job's 10-minute timeout).
+        head = self.repo.case({"e2e/min.test.js": "it(a,{x:1});" * 85000 + "\n"})
+        started = time.monotonic()
+        code, out = self.repo.integrity(head)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: `e2e/min.test.js`: 1 changed lines over 4000 chars not scanned", out)
+        self.assertNotIn("No test-weakening pattern added", out)
+
+    def test_adversarial_lines_under_the_cap_stay_fast(self):
+        n = classify.WEAKENING_MAX_LINE // 13
+        lines = ["it(a,{x:1});" * n, "aBudget" * (n * 2), "x || " * (n * 2), "'\"" * (n * 5),
+                 "test.describe.configure({" * (n // 2), "continue-on-error: " + " " * (n * 12) + "x"]
+        files = {"e2e/adv.test.js": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
+                 "scripts/adv.sh": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
+                 ".github/workflows/adv.yml": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n"}
+        head = self.repo.case(files)
+        started = time.monotonic()
+        findings, incomplete, _ = self.repo.scan(head)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(incomplete, [])
+
+    def test_scan_deadline_is_incomplete(self):
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n"})
+        with mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", -1):
+            code, out = self.repo.integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: the -1s scan budget ran out after 0 of 1 files in scope", out)
+        self.assertNotIn("No test-weakening pattern added", out)
+
+    def test_file_cap_is_incomplete(self):
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n", "src/d.test.ts": "it('d', () => {})\n"})
+        with mock.patch.object(classify, "WEAKENING_MAX_FILES", 1):
+            code, out = self.repo.integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: 2 files in scope; only the first 1 were scanned", out)
+
+    def test_annotations_leave_room_for_the_pointers(self):
+        head = self.repo.case({"src/b.test.ts": "".join("it.skip('b%d', () => {})\n" % i for i in range(12))})
+        with mock.patch.object(classify, "WEAKENING_MAX_PATCH_BYTES", 10 ** 7):
+            code, out = self.repo.integrity(head)
+        self.assertEqual(code, 0, out)
+        warnings = [l for l in out.splitlines() if l.startswith("::warning")]
+        self.assertEqual(len([l for l in warnings if l.startswith("::warning file=")]), 8)
+        self.assertIn("::warning title=test weakening (FL-4)::4 more findings in the job summary", warnings)
+        self.assertLessEqual(len(warnings), 10)
 
     def test_integrity_errors_still_win(self):
         self.assertEqual(self.repo.integrity("f" * 40)[0], 2)

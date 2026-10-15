@@ -104,12 +104,14 @@ jobs:
           """
           import argparse
           import ast
+          import bisect
           import fnmatch
           import json
           import os
           import re
           import subprocess
           import sys
+          import time
 
           SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -279,8 +281,10 @@ jobs:
           WEAKENING_EFFECT = "ci-policy:test-weakening"
           WEAKENING_MAX_FILES = 3000
           WEAKENING_MAX_PATCH_BYTES = 2000000
+          WEAKENING_MAX_LINE = 4000          # longer lines (minified or generated) are not regex-scanned: INCOMPLETE
+          WEAKENING_DEADLINE_SECONDS = 120   # the whole scan; the job's own timeout is 10 minutes
           WEAKENING_MAX_LISTED = 200
-          WEAKENING_MAX_ANNOTATIONS = 10
+          WEAKENING_MAX_ANNOTATIONS = 8      # GitHub keeps 10 warnings per step: 2 stay free for the pointers below
 
           _JS_EXT = re.compile(r"\.(?:[cm]?[jt]sx?|vue|svelte)$")
           _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|__tests__|e2e|specs?)/")
@@ -405,12 +409,10 @@ jobs:
 
           def swallowed_runner(line):
               """The test or check command whose failure a `|| true`-style tail swallows, or None."""
+              sep_ends = [s.end() for s in _SEGMENT_SEP.finditer(line)]  # one pass: segments stay linear in the line
               for m in _SWALLOW.finditer(line):
-                  before = line[: m.start()]
-                  cut = 0
-                  for sep in _SEGMENT_SEP.finditer(before):
-                      cut = sep.end()
-                  segment = before[cut:]
+                  i = bisect.bisect_right(sep_ends, m.start()) - 1
+                  segment = line[(sep_ends[i] if i >= 0 else 0): m.start()]
                   for element in segment.split("|"):
                       starts = [0] + [x.end() for x in re.finditer(r"[\"']|\brun:\s*", element)]
                       for st in starts:
@@ -447,9 +449,10 @@ jobs:
           NUMERIC_RULES = [
               ("test-retry", "retry", "js-test-config", r"\b(?P<k>retry|retries)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
               ("test-retry", "retry", "js-testlike",
-               r"\.configure\s*\(\s*\{[^}\n]*\b(?P<k>retries)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
+               r"\.configure\s*\(\s*\{[^{}\n]*?\b(?P<k>retries)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
               ("test-retry", "retry", "js-testlike",
-               r"(?<![\w$.])(?:it|test|describe|suite|bench)\b[^\n]*?\{[^}\n]*?\b(?P<k>retry)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
+               r"(?<![\w$.])(?:it|test|describe|suite|bench)(?:\.\w+)*\s*\(\s*(?:'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`|\w+)"
+               r"\s*,\s*\{[^{}\n]*?\b(?P<k>retry)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
               ("test-retry", "retry", "js-testlike",
                r"\b(?:this|jest)\.(?P<k>retries|retryTimes)\s*\(\s*(?P<v>[^,)\n]+)", "up", 0),
               ("test-retry", "retry", "shell",
@@ -481,8 +484,10 @@ jobs:
                r"\.(?P<k>toBeLessThan|toBeLessThanOrEqual)\s*\(\s*(?P<v>[^,)\n]+)", "up", None),
               ("budget-loosened", "bound", "js-testlike",
                r"\.(?P<k>toBeGreaterThan|toBeGreaterThanOrEqual)\s*\(\s*(?P<v>[^,)\n]+)", "down", None),
+              # Any identifier, kept only when it names a budget (numeric_findings): one bounded identifier per word
+              # start keeps the match linear, where a "...budget..." pattern backtracks quadratically inside a long word.
               ("budget-loosened", "budget", "testlike-any",
-               r"\b(?P<k>[A-Za-z0-9_]*[Bb][Uu][Dd][Gg][Ee][Tt][A-Za-z0-9_]*)\s*[:=]\s*(?P<v>[^,;}\n]+)", "up", None),
+               r"(?<![A-Za-z0-9_])(?P<k>[A-Za-z0-9_]+)\s*[:=]\s*(?P<v>[^,;{}\n]+)", "up", None),
           ]
           NUMERIC_RULES = [(r, f, s, re.compile(x), d, a) for r, f, s, x, d, a in NUMERIC_RULES]
 
@@ -528,10 +533,37 @@ jobs:
               return out
 
 
+          _DIFF_ARGS = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "-M", "--unified=1")
+
+
           def file_patch(mb, head, old, new):
               paths = [":(literal)" + p for p in sorted({old, new})]
-              return git("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "-M", "--unified=1",
-                         mb, head, "--", *paths)
+              return git(*(_DIFF_ARGS + (mb, head, "--") + tuple(paths)))
+
+
+          def file_patches(mb, head, rows):
+              """{(old, new): patch} from ONE git diff over every row's paths (one process, not one per file).
+
+              A section is bound to a row only by its exact expected header, so a path git quotes (control or
+              non-ASCII bytes) or a rename paired differently inside the narrower pathspec is simply absent here,
+              and the caller diffs that row on its own.
+              """
+              paths = sorted({p for _, old, new in rows for p in (old, new)})
+              if not paths:
+                  return {}
+              text = git(*(_DIFF_ARGS + (mb, head, "--") + tuple(":(literal)" + p for p in paths)))
+              sections, cur = {}, None
+              for line in text.split("\n"):
+                  if line.startswith("diff --git "):
+                      cur = sections.setdefault(line, [])
+                  if cur is not None:
+                      cur.append(line)
+              out = {}
+              for _, old, new in rows:
+                  sec = sections.get("diff --git a/%s b/%s" % (old, new))
+                  if sec is not None:
+                      out[(old, new)] = "\n".join(sec)
+              return out
 
 
           def parse_patch(patch):
@@ -619,11 +651,13 @@ jobs:
                   for _, t in removed:
                       if not is_comment(t):
                           for m in rx.finditer(t):
-                              olds.setdefault(m.group("k"), []).append(parse_num(m.group("v")))
+                              if family != "budget" or "budget" in m.group("k").lower():
+                                  olds.setdefault(m.group("k"), []).append(parse_num(m.group("v")))
                   for n, t in added:
                       if not is_comment(t):
                           for m in rx.finditer(t):
-                              news.setdefault(m.group("k"), []).append((n, parse_num(m.group("v"))))
+                              if family != "budget" or "budget" in m.group("k").lower():
+                                  news.setdefault(m.group("k"), []).append((n, parse_num(m.group("v"))))
                   for k in sorted(set(olds) | set(news)):
                       ov, nv = olds.get(k, []), news.get(k, [])
                       key = safe_key(k)
@@ -729,24 +763,39 @@ jobs:
               status_rows = name_status_renames(mb, head)
               findings = deleted_test_findings(status_rows)
               incomplete = []
-              in_scope = 0
               heads = {}
+              deadline = time.monotonic() + WEAKENING_DEADLINE_SECONDS
+              scoped = []
               for st, old, new in status_rows:
                   if st == "D" and is_test_file(old):
                       continue
                   path = old if st == "D" else new
                   scopes = path_scopes(path)
-                  if not scopes:
-                      continue
-                  in_scope += 1
-                  if in_scope > WEAKENING_MAX_FILES:
-                      incomplete.append("more than %d files in scope; the rest were not scanned" % WEAKENING_MAX_FILES)
+                  if scopes:
+                      scoped.append((st, old, new, path, scopes))
+              in_scope = len(scoped)
+              if in_scope > WEAKENING_MAX_FILES:
+                  incomplete.append("%d files in scope; only the first %d were scanned" % (in_scope, WEAKENING_MAX_FILES))
+                  scoped = scoped[:WEAKENING_MAX_FILES]
+              patches = file_patches(mb, head, [(st, old, new) for st, old, new, _, _ in scoped])
+              for done, (st, old, new, path, scopes) in enumerate(scoped):
+                  if time.monotonic() > deadline:
+                      incomplete.append("the %ds scan budget ran out after %d of %d files in scope; the rest were not scanned"
+                                        % (WEAKENING_DEADLINE_SECONDS, done, in_scope))
                       break
-                  patch = file_patch(mb, head, old, new)
+                  patch = patches.get((old, new))
+                  if patch is None:
+                      patch = file_patch(mb, head, old, new)
                   if len(patch) > WEAKENING_MAX_PATCH_BYTES:
                       incomplete.append("%s: diff larger than %d bytes, not scanned" % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
                       continue
                   added, removed, first = parse_patch(patch)
+                  # Regex cost grows with line length; a line past the cap is not matched, and the PR is told so.
+                  too_long = sum(1 for _, t in added + removed if len(t) > WEAKENING_MAX_LINE)
+                  if too_long:
+                      incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
+                      added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
+                      removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
                   got = token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
                   if got and st != "D":
                       heads[path] = (blob(head, path) or "").split("\n")

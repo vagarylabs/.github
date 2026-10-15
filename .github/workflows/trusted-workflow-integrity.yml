@@ -733,34 +733,53 @@ jobs:
               return out
 
 
+          WEAKENING_MAX_CANDIDATES = 3
+
+
+          def _test_stem(p):
+              b = p.rsplit("/", 1)[-1]
+              b = re.sub(r"\.(?:test|spec|e2e)(?=\.)", "", b)
+              b = re.sub(r"^test[_-]|_test(?=\.)", "", b)
+              return b.rsplit(".", 1)[0]
+
+
           def deleted_test_findings(status_rows):
-              """A test file deleted, or renamed to a non-test path (b.test.ts.bak, tests/fixtures/), with no successor:
-              no test rename target and no added test file of the same stem."""
-              def stem(p):
-                  b = p.rsplit("/", 1)[-1]
-                  b = re.sub(r"\.(?:test|spec|e2e)(?=\.)", "", b)
-                  b = re.sub(r"^test[_-]|_test(?=\.)", "", b)
-                  return b.rsplit(".", 1)[0]
-              successors = set()
+              """A test file deleted, or renamed to a non-test path (b.test.ts.bak, tests/fixtures/), is reported.
+
+              Only a rename git pairs by CONTENT to another test path is a move, and that never reaches this list as a
+              deletion. A test added elsewhere under the same file name or stem proves nothing about the deleted cases
+              (critical/a.test.ts is not replaced by an unrelated unrelated/a.test.ts), so it is listed with the finding as
+              an unverified successor candidate and never clears it.
+              """
+              candidates = {}
               for st, old, new in status_rows:
                   if st in ("A", "R", "C") and is_test_file(new):
-                      successors.add(new.rsplit("/", 1)[-1])
-                      successors.add(stem(new))
-              deleted_sources = {stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
+                      for key in {new.rsplit("/", 1)[-1], _test_stem(new)}:
+                          candidates.setdefault(key, []).append(new)
+              deleted_sources = {_test_stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
               out = []
               for st, old, new in status_rows:
                   if not is_test_file(old):
                       continue
                   if st == "D":
-                      detail = "deletes a test file with no successor"
+                      detail = "deletes a test file"
                   elif st == "R" and not is_test_file(new):
                       # git -M reports a test moved out of the runner's reach as a rename, not a deletion.
-                      detail = "renames a test file to the non-test path %s with no successor" % md_code(new)
+                      detail = "renames a test file to the non-test path %s" % md_code(new)
                   else:
                       continue
-                  if old.rsplit("/", 1)[-1] in successors or stem(old) in successors:
-                      continue
-                  if stem(old) in deleted_sources:
+                  names = []
+                  for key in (old.rsplit("/", 1)[-1], _test_stem(old)):
+                      names += [p for p in candidates.get(key, []) if p not in names]
+                  if names:
+                      listed = ", ".join(md_code(p) for p in names[:WEAKENING_MAX_CANDIDATES])
+                      if len(names) > WEAKENING_MAX_CANDIDATES:
+                          listed += " and %d more" % (len(names) - WEAKENING_MAX_CANDIDATES)
+                      detail += ("; unverified successor candidate by name only: %s (git does not pair it by content, so the "
+                                 "deleted cases may not run)" % listed)
+                  else:
+                      detail += " with no successor"
+                  if _test_stem(old) in deleted_sources:
                       detail += " (a source file of the same stem is deleted too)"
                   out.append(_finding("test-deleted", old, None, detail))
               return out

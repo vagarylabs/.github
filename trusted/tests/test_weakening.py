@@ -62,6 +62,11 @@ BASE = {
         "test('sends the acceptance email', async () => {\n"
         "  assert.equal(await send(), 'sent')\n"
         "})\n"),
+    "critical/a.test.ts": (
+        "import { charge } from '../src/billing'\n"
+        "it('refuses a negative charge', () => {\n"
+        "  expect(() => charge(-1)).toThrow()\n"
+        "})\n"),
 }
 
 # The weakening text, as it would appear in a doc that explains the guard.
@@ -331,6 +336,30 @@ class WeakeningCases(unittest.TestCase):
         path = "services/identity/test/notification-email-acceptance.mjs"
         hit = self.assertFlagged({path: None}, "test-deleted", "deletes a test file with no successor", path=path)[0]
         self.assertIsNone(hit["line"])
+
+    def test_red_same_name_elsewhere_is_an_unverified_candidate_not_a_successor(self):
+        # Codex review of 698cf202: deleting critical/a.test.ts was excused by an unrelated added unrelated/a.test.ts.
+        hit = self.assertFlagged({"critical/a.test.ts": None,
+                                  "unrelated/a.test.ts": "it('renders the banner', () => {\n"
+                                                         "  expect(banner()).toBeTruthy()\n})\n"},
+                                 "test-deleted", "deletes a test file", path="critical/a.test.ts")[0]
+        self.assertIn("unverified successor candidate by name only: `unrelated/a.test.ts`", hit["detail"])
+        self.assertNotIn("no successor", hit["detail"])
+
+    def test_control_content_paired_move_is_not_a_deletion(self):
+        # git pairs the file by content (R100): the same test moved, so nothing is reported.
+        self.assertEqual(self.findings(moves=[("critical/a.test.ts", "unrelated/a.test.ts")]), [])
+
+    def test_name_and_stem_candidates_are_listed_and_capped(self):
+        rows = [("D", "critical/a.test.ts", "critical/a.test.ts"), ("A", "other/a.spec.ts", "other/a.spec.ts")]
+        rows += [("A", "x%d/a.test.ts" % i, "x%d/a.test.ts" % i) for i in range(4)]
+        got = classify.deleted_test_findings(rows)
+        self.assertEqual([f["path"] for f in got], ["critical/a.test.ts"])
+        self.assertIn("unverified successor candidate by name only: `x0/a.test.ts`, `x1/a.test.ts`, `x2/a.test.ts`"
+                      " and 2 more", got[0]["detail"])
+        # A stem match (a.spec.ts for a.test.ts) is a candidate too, never a successor.
+        got = classify.deleted_test_findings(rows[:2])
+        self.assertIn("candidate by name only: `other/a.spec.ts`", got[0]["detail"])
 
     def test_deleted_test_notes_a_deleted_subject(self):
         # A non-test file of the same stem is not a successor.

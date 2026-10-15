@@ -748,6 +748,79 @@ class HermeticTest(unittest.TestCase):
         self.assertIsNone(r["producer"]["git_version"])
         self.assertEqual(r["completeness"], "unknown")
 
+    def run_driver(self, body, wait=None, **extra):
+        """srcstats.main(["after"]) in a child Python after `body` (patches), as the composite step runs it.
+        wait(proc) runs while it is alive. Returns its exit code."""
+        driver = os.path.join(self.job.root, "driver.py")
+        with open(driver, "w") as fh:
+            fh.write("import os, signal, sys\nsys.path.insert(0, %r)\nimport srcstats\n%s\n"
+                     "sys.exit(srcstats.main(['after']))\n" % (HERE, body))
+        proc = subprocess.Popen([sys.executable, driver], env=self.job.env(**extra), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            if wait:
+                wait(proc)
+            return proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_a_terminated_after_step_still_deletes_the_raw_trace(self):
+        """A cancelled or timed-out job sends the step SIGTERM. Python's default action exits without running
+        finally blocks, which left the raw trace (and its planted URL) in RUNNER_TEMP."""
+        b = self.job.step("before", SPS_PATH="sigterm")
+        outcome = self.job.checkout(self.url, "sigterm", trace=b["trace_dir"])
+        write_trace(b["trace_dir"], "0000-planted", planted_events("planted-sid"))
+        code = self.run_driver(
+            "def parse(*args, **kwargs):\n    os.kill(os.getpid(), signal.SIGTERM)\n    return None, 'unreached'\n"
+            "srcstats.summarize_trace = parse",
+            SPS_ID=b["id"], SPS_PATH="sigterm", SPS_OUTCOME=outcome)
+        self.assertIn(code, (143, -15), "positive control: the step was terminated mid-parse")
+        self.assertFalse(os.path.exists(b["trace_dir"]), "raw trace deleted on the SIGTERM path")
+        self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
+
+    def test_a_terminated_step_leaves_no_git_running(self):
+        """git runs in its own session, so killing the step's process group does not reach it. SIGTERM during
+        a git read must kill it before the step exits."""
+        fakebin = os.path.join(self.job.root, "fakebin")
+        os.makedirs(fakebin)
+        pidfile = os.path.join(self.job.root, "git.pid")
+        with open(os.path.join(fakebin, "git"), "w") as fh:
+            fh.write("#!/bin/sh\necho $$ > %s\nexec sleep 30\n" % pidfile)
+        os.chmod(os.path.join(fakebin, "git"), 0o755)
+        os.makedirs(os.path.join(self.job.ws, "orphan", ".git"))
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        def terminate_when_git_runs(proc):
+            for _ in range(200):
+                if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(os.path.exists(pidfile), "positive control: the step started git")
+            proc.send_signal(15)
+
+        pid = None
+        try:
+            code = self.run_driver("", wait=terminate_when_git_runs, SPS_ID="", SPS_PATH="orphan",
+                                   SPS_OUTCOME="success", PATH=fakebin + os.pathsep + os.environ.get("PATH", ""))
+            pid = int(read(pidfile))
+            self.assertIn(code, (143, -15))
+            for _ in range(40):  # reaped by init once the step is gone: allow a moment
+                if not alive(pid):
+                    break
+                time.sleep(0.05)
+            self.assertFalse(alive(pid), "git outlived the terminated step")
+        finally:
+            if pid and alive(pid):
+                os.kill(pid, 9)
+
     def test_a_spent_byte_budget_leaves_every_later_read_unknown(self):
         """Past the shared byte budget (patched to 2000 bytes; the checkout's trace alone is larger), the trace
         and every git read after it are unknown, and the record is still written."""

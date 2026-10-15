@@ -536,9 +536,9 @@ def run_bounded(argv, env, budget):
             return
 
     reader = threading.Thread(target=pump, daemon=True)
-    reader.start()
-    reader.join(timeout)
-    try:
+    try:  # the wait is inside: a signal raised while waiting must still reach the kill below
+        reader.start()
+        reader.join(timeout)
         if reader.is_alive():
             _kill(proc)
             reader.join(5)
@@ -550,7 +550,9 @@ def run_bounded(argv, env, budget):
         except subprocess.TimeoutExpired:
             _kill(proc)
             raise budget.exhaust("a git command outlasted the step's %g s read deadline" % DEADLINE_SECONDS)
-    finally:
+    finally:  # every exit, an interrupt included: git runs in its own session, so nothing else would stop it
+        if proc.poll() is None:
+            _kill(proc)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -1191,6 +1193,12 @@ def _telemetry(args, job_trace):
     summary(line)
 
 
+def _terminated(signum, frame):
+    # Python's default SIGTERM exits without running finally blocks. A cancelled or timed-out job is sent SIGTERM;
+    # raising here unwinds through them, so the raw trace is deleted and git is killed on that path too.
+    raise SystemExit(128 + signum)
+
+
 def main(argv=None):
     env = os.environ
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1214,6 +1222,10 @@ def main(argv=None):
     if refused:
         print("::warning::source-prep-stats %s: %s" % (args.cmd, refused))
     try:
+        previous = signal.signal(signal.SIGTERM, _terminated)
+    except ValueError:  # not the main thread (an in-process caller): it keeps its own handling
+        previous = None
+    try:
         {"before": cmd_before, "after": cmd_after, "telemetry": cmd_telemetry}[args.cmd](args)
     except Exception as exc:  # measurement never fails the job
         # The job log is public on a public repository, and an exception's text can quote trace content (a URL,
@@ -1221,6 +1233,9 @@ def main(argv=None):
         where = traceback.extract_tb(exc.__traceback__)[-1:]
         print("::warning::source-prep-stats %s: %s%s (message withheld)" % (
             args.cmd, type(exc).__name__, " in %s line %d" % (where[0].name, where[0].lineno) if where else ""))
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
     return 0
 
 

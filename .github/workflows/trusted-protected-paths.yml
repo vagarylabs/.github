@@ -712,7 +712,8 @@ jobs:
 
 
           def deleted_test_findings(status_rows):
-              """A deleted test file with no successor: no rename target and no added test file of the same stem."""
+              """A test file deleted, or renamed to a non-test path (b.test.ts.bak, tests/fixtures/), with no successor:
+              no test rename target and no added test file of the same stem."""
               def stem(p):
                   b = p.rsplit("/", 1)[-1]
                   b = re.sub(r"\.(?:test|spec|e2e)(?=\.)", "", b)
@@ -725,12 +726,18 @@ jobs:
                       successors.add(stem(new))
               deleted_sources = {stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
               out = []
-              for st, old, _ in status_rows:
-                  if st != "D" or not is_test_file(old):
+              for st, old, new in status_rows:
+                  if not is_test_file(old):
+                      continue
+                  if st == "D":
+                      detail = "deletes a test file with no successor"
+                  elif st == "R" and not is_test_file(new):
+                      # git -M reports a test moved out of the runner's reach as a rename, not a deletion.
+                      detail = "renames a test file to the non-test path %s with no successor" % md_code(new)
+                  else:
                       continue
                   if old.rsplit("/", 1)[-1] in successors or stem(old) in successors:
                       continue
-                  detail = "deletes a test file with no successor"
                   if stem(old) in deleted_sources:
                       detail += " (a source file of the same stem is deleted too)"
                   out.append(_finding("test-deleted", old, None, detail))

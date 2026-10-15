@@ -224,6 +224,14 @@ class WeakeningCases(unittest.TestCase):
         hit = self.assertFlagged({"tests/test_x.py": None}, "test-deleted", "no successor")[0]
         self.assertEqual((hit["path"], hit["line"]), ("tests/test_x.py", None))
 
+    def test_red_test_renamed_out_of_the_runners_reach(self):
+        # git -M reports these as renames (R100), not deletions: the test stops running all the same.
+        for old, new in (("src/b.test.ts", "src/b.test.ts.bak"), ("tests/test_x.py", "tests/fixtures/test_x.py")):
+            with self.subTest(new=new):
+                hit = self.assertFlagged({}, "test-deleted", "renames a test file to the non-test path `%s`" % new,
+                                         path=old, moves=[(old, new)])[0]
+                self.assertIsNone(hit["line"])
+
     def test_red_timeout_raised(self):
         cfg = edit(BASE["vitest.config.ts"], "testTimeout: 5000", "testTimeout: 60_000")
         self.assertFlagged({"vitest.config.ts": cfg}, "budget-loosened", "raises timeout `testTimeout` 5000 -> 60000")

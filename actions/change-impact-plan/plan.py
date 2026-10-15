@@ -58,6 +58,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -160,12 +161,23 @@ class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def https_transport(url: str, headers: dict, timeout: float, max_bytes: int) -> tuple[int, dict, bytes]:
-    """One bounded GET. Returns (status, headers, body); a body over max_bytes is returned truncated+1."""
+    """One bounded GET. Returns (status, headers, body); a body over max_bytes comes back as max_bytes+1 bytes.
+    `timeout` bounds the WHOLE request, not each socket read: a slow-dripping body raises TimeoutError."""
+    deadline = time.monotonic() + timeout
     opener = urllib.request.build_opener(_RefuseRedirect)
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with opener.open(request, timeout=timeout) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read(max_bytes + 1)
+            chunks, size = [], 0
+            while size <= max_bytes:
+                chunk = response.read1(min(65536, max_bytes + 1 - size))
+                if time.monotonic() > deadline:
+                    raise TimeoutError("provider request deadline exceeded")
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, b"".join(chunks)
     except urllib.error.HTTPError as error:
         return error.code, {k.lower(): v for k, v in (error.headers or {}).items()}, b""
 
@@ -219,6 +231,9 @@ def provider_compare(repository: str, base: str, head: str, *, token: str, api_u
     try:
         status, response_headers, body = transport(f"{api_url}/repos/{repository}/compare/{base}...{head}?per_page=100",
                                                    headers, PROVIDER_TIMEOUT_SECONDS, PROVIDER_MAX_BYTES)
+    except TimeoutError:
+        result["reason"] = "provider_deadline"
+        return result
     except (OSError, ValueError, http.client.HTTPException):
         return result
     response_headers = {str(k).lower(): v for k, v in (response_headers or {}).items()}

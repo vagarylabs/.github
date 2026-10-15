@@ -8,6 +8,9 @@ private repository and is not copied here.
 """
 import contextlib
 import hashlib
+import http.server
+import threading
+import time
 import io
 import json
 import os
@@ -379,6 +382,68 @@ class ProviderWitness(SourceFixture):
             self.assertEqual(self.obligations(rec), full)
             expected = "provider_mismatch" if files < P.PROVIDER_FILE_CEILING else "provider_file_ceiling"
             self.assertIn(expected, rec["source_answer_meta"]["reason_codes"])
+
+
+class RealTransport(unittest.TestCase):
+    """The stdlib transport itself, against a localhost server: no redirect, byte cap, whole-request deadline."""
+
+    def serve(self, handler):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def handler(self, status, body=b"", headers=None, drip=0.0):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(status)
+                for key, value in (headers or {}).items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    for index in range(0, len(body), 1 if drip else len(body) or 1):
+                        self.wfile.write(body[index:index + (1 if drip else len(body))])
+                        self.wfile.flush()
+                        if drip:
+                            time.sleep(drip)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+        return Handler
+
+    def test_redirect_is_not_followed(self):
+        target = self.serve(self.handler(200, b"followed " + PLANTED.encode()))
+        base = self.serve(self.handler(302, b"", {"Location": target + "/elsewhere"}))
+        status, _, body = P.https_transport(base + "/compare", {}, 5, 1024)
+        self.assertEqual((status, body), (302, b""))
+
+    def test_body_over_the_cap_returns_exactly_cap_plus_one(self):
+        url = self.serve(self.handler(200, b"x" * 5000))
+        status, _, body = P.https_transport(url + "/compare", {}, 5, 1000)
+        self.assertEqual((status, len(body)), (200, 1001))
+        status, _, body = P.https_transport(url + "/compare", {}, 5, 10000)
+        self.assertEqual(len(body), 5000)
+
+    def test_throttle_status_and_headers_come_back_without_a_body(self):
+        url = self.serve(self.handler(429, PLANTED.encode(), {"Retry-After": "60"}))
+        status, headers, body = P.https_transport(url + "/compare", {}, 5, 1024)
+        self.assertEqual((status, headers.get("retry-after"), body), (429, "60", b""))
+
+    def test_slow_drip_exceeds_the_whole_request_deadline(self):
+        url = self.serve(self.handler(200, b"0123456789", drip=0.15))
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            P.https_transport(url + "/compare", {}, 0.5, 1024)
+        self.assertLess(time.monotonic() - started, 1.2)
+        result = P.provider_compare("fixture/repo", "a" * 40, "b" * 40, token=TOKEN, api_url="https://api.github.com",
+                                    transport=lambda *args: P.https_transport(url + "/compare", {}, 0.5, 1024))
+        self.assertEqual((result["status"], result["reason"]), ("unknown", "provider_deadline"))
 
 
 class ContractShape(SourceFixture):

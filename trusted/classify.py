@@ -22,8 +22,10 @@ import fnmatch
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
+import tempfile
 import time
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -179,7 +181,7 @@ def changed_paths(mb, head):
 
 # --- FL-4: test-weakening predicates (report-only) -------------------------------------------
 #
-# Effect predicates over the +/- lines of the PR's diff, read as data through `git diff`/`git show`.
+# Effect predicates over the +/- lines of the PR's diff, read as data through `git diff` and `git cat-file`.
 # Every rule is scoped by a positive file-type allow-list, so a doc that quotes a pattern is never
 # scanned. Token rules count NET-NEW matches: an added line identical (whitespace aside) to a removed
 # line in the same file is a move, and a rule's added matches are offset by its removed matches.
@@ -189,13 +191,22 @@ def changed_paths(mb, head):
 # the same as a commit trailer, is LISTED with the finding and never clears it: no quarantine or approval
 # verifier exists yet. Whether a workflow job backs a required check is not readable with this job's
 # token, so continue-on-error is reported on every job and step.
+#
+# The PR decides how much git prints (a huge file, thousands of paths, a long commit message), so every git read
+# of the scan runs against ONE budget (ScanBudget): wall time to a single deadline and a total of bytes read
+# from git. Bytes are counted before they are kept, a file whose blob is over WEAKENING_MAX_BLOB_BYTES is never
+# diffed (git would load it whole), and git is killed at a limit. Running out is INCOMPLETE, never a clean pass.
 
 WEAKENING_VERSION = "fl4-v1"
 WEAKENING_EFFECT = "ci-policy:test-weakening"
 WEAKENING_MAX_FILES = 3000
-WEAKENING_MAX_PATCH_BYTES = 2000000
+WEAKENING_MAX_PATCH_BYTES = 2000000     # one file's diff; a larger one is dropped as it streams: INCOMPLETE
+WEAKENING_MAX_BLOB_BYTES = 8000000      # either side of a file larger than this is not diffed: INCOMPLETE
+WEAKENING_MAX_TOTAL_BYTES = 32000000    # everything the scan reads from git, kept or skipped
+WEAKENING_MAX_CENSUS_BYTES = 4000000    # the changed-file list (about 30k files)
+WEAKENING_MAX_TRAILER_BYTES = 1000000   # commit messages read for trailer references
 WEAKENING_MAX_LINE = 4000          # longer lines (minified or generated) are not regex-scanned: INCOMPLETE
-WEAKENING_DEADLINE_SECONDS = 120   # the whole scan; the job's own timeout is 10 minutes
+WEAKENING_DEADLINE_SECONDS = 120   # the whole scan, every git call included; the job's own timeout is 10 minutes
 WEAKENING_MAX_LISTED = 200
 WEAKENING_MAX_ANNOTATIONS = 8      # GitHub keeps 10 warnings per step: 2 stay free for the pointers below
 
@@ -480,54 +491,198 @@ def safe_key(k):
     return re.sub(r"[^A-Za-z0-9_.:-]", "", k)[:64]
 
 
-# Diff reading ------------------------------------------------------------------------------
+# Bounded git reads -------------------------------------------------------------------------
 
-def name_status_renames(mb, head):
-    """[(status letter, old path, new path)] with rename detection; old == new except for R and C."""
-    fields = [f for f in git("diff", "--name-status", "-z", "-M", mb, head).split("\0")]
-    out, i = [], 0
-    while i < len(fields) and fields[i]:
-        st = fields[i]
-        if st[:1] in ("R", "C"):
-            out.append((st[:1], fields[i + 1], fields[i + 2]))
-            i += 3
-        else:
-            out.append((st[:1], fields[i + 1], fields[i + 1]))
-            i += 2
-    return out
+class ScanBudget:
+    """What the FL-4 scan may still spend: wall time to one deadline, and bytes read from git."""
+
+    def __init__(self, seconds, max_bytes):
+        self.deadline = time.monotonic() + seconds
+        self.bytes_left = max_bytes
+
+    def time_left(self):
+        return self.deadline - time.monotonic()
+
+
+class Exhausted(Exception):
+    """A git read stopped at a limit: "time" or "bytes" (the scan's budget), or "cap" (that call's own limit).
+    partial holds what was read before the stop."""
+
+    def __init__(self, kind, partial=b""):
+        Exception.__init__(self, kind)
+        self.kind = kind
+        self.partial = partial
+
+
+_READ_CHUNK = 65536
+
+
+def git_chunks(budget, args, cap=None, stdin=None):
+    """Yield git's stdout in chunks; raise Exhausted at the deadline, the byte budget or cap, and kill git.
+
+    One byte past a limit is the most ever read and it is never kept, so memory follows the limit, not the PR.
+    A git that fails raises IntegrityError. stderr goes to a file, so an undrained pipe cannot stall git.
+    """
+    if budget.time_left() <= 0:
+        raise Exhausted("time")
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(("git",) + tuple(args), stdout=subprocess.PIPE, stderr=err,
+                                stdin=subprocess.DEVNULL if stdin is None else stdin)
+        sel = selectors.DefaultSelector()
+        try:
+            sel.register(proc.stdout, selectors.EVENT_READ)
+            taken = 0
+            while True:
+                left = budget.time_left()
+                if left <= 0:
+                    raise Exhausted("time")
+                if not sel.select(left):
+                    continue
+                cap_left = None if cap is None else cap - taken
+                room = budget.bytes_left if cap_left is None else min(budget.bytes_left, cap_left)
+                data = os.read(proc.stdout.fileno(), max(1, min(_READ_CHUNK, room)))
+                if not data:
+                    break
+                if len(data) > room:
+                    raise Exhausted("cap" if cap_left is not None and cap_left <= budget.bytes_left else "bytes")
+                taken += len(data)
+                budget.bytes_left -= len(data)
+                yield data
+            try:
+                code = proc.wait(timeout=max(budget.time_left(), 0.5))
+            except subprocess.TimeoutExpired:
+                raise Exhausted("time")
+            if code != 0:
+                err.seek(0)
+                raise IntegrityError("git %s failed: %s" % (args[0], err.read(2000).decode("utf-8", "replace").strip()))
+        finally:
+            sel.close()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            proc.stdout.close()
+
+
+def git_read(budget, args, cap=None, stdin=None):
+    """git's whole stdout as bytes under the same limits; an Exhausted carries what was read before the stop."""
+    parts = []
+    try:
+        for chunk in git_chunks(budget, args, cap, stdin):
+            parts.append(chunk)
+    except Exhausted as exc:
+        exc.partial = b"".join(parts)
+        raise
+    return b"".join(parts)
+
+
+_NULL_SHA = "0" * 40
+
+
+def census(budget, mb, head):
+    """([(status, old path, new path, old blob, new blob)], stop kind or None): the changed files with rename
+    detection, old == new except for R and C. On a stop the complete records read before it are returned."""
+    stop = None
+    try:
+        raw = git_read(budget, ("diff", "--raw", "--no-abbrev", "-z", "-M", mb, head), WEAKENING_MAX_CENSUS_BYTES)
+    except Exhausted as exc:
+        raw, stop = exc.partial, exc.kind
+    fields = raw.split(b"\0")
+    if stop:
+        fields = fields[:-1]  # the last field may be cut short
+    rows, i = [], 0
+    while i < len(fields) and fields[i].startswith(b":"):
+        meta = fields[i].decode("ascii").split()  # :<old mode> <new mode> <old blob> <new blob> <status>
+        st = meta[4][:1]
+        n = 3 if st in ("R", "C") else 2
+        if i + n > len(fields):
+            break
+        rows.append((st, fields[i + 1].decode("utf-8"), fields[i + n - 1].decode("utf-8"), meta[2], meta[3]))
+        i += n
+    return rows, stop
+
+
+def blob_sizes(budget, shas):
+    """{blob: size} for the blobs among shas (a submodule commit is absent), from one git cat-file process whose
+    input is a file, so no pipe can deadlock."""
+    want = sorted({s for s in shas if s != _NULL_SHA})
+    if not want:
+        return {}
+    with tempfile.TemporaryFile() as fh:
+        fh.write(("\n".join(want) + "\n").encode("ascii"))
+        fh.flush()
+        fh.seek(0)
+        raw = git_read(budget, ("cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"),
+                       120 * len(want), fh)
+    sizes = {}
+    for line in raw.decode("ascii", "replace").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] == "blob" and parts[2].isdigit():
+            sizes[parts[0]] = int(parts[2])
+    return sizes
 
 
 _DIFF_ARGS = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "-M", "--unified=1")
+_SECTION = b"\ndiff --git "
 
 
-def file_patch(mb, head, old, new):
-    paths = [":(literal)" + p for p in sorted({old, new})]
-    return git(*(_DIFF_ARGS + (mb, head, "--") + tuple(paths)))
+def diff_args(mb, head, paths):
+    return _DIFF_ARGS + (mb, head, "--") + tuple(":(literal)" + p for p in sorted(paths))
 
 
-def file_patches(mb, head, rows):
-    """{(old, new): patch} from ONE git diff over every row's paths (one process, not one per file).
+def _first_line(buf):
+    j = buf.find(b"\n")
+    return bytes(buf[: j if 0 <= j < 8192 else 8192]).decode("utf-8", "replace")
 
-    A section is bound to a row only by its exact expected header, so a path git quotes (control or
-    non-ASCII bytes) or a rename paired differently inside the narrower pathspec is simply absent here,
-    and the caller diffs that row on its own.
+
+def _section(data, dropped, cap):
+    if dropped is not None:
+        return dropped, None
+    if len(data) > cap:
+        return _first_line(data), None
+    return _first_line(data), bytes(data).decode("utf-8", "replace")
+
+
+def patch_sections(chunks, cap):
+    """Split a streamed `git diff` into (header line, patch text, or None for a section over cap bytes).
+
+    Every diff body line starts with ' ', '+', '-', '@' or a backslash, so a line starting `diff --git ` is a
+    header. An over-cap section is dropped as it streams: memory stays under cap plus one chunk.
     """
-    paths = sorted({p for _, old, new in rows for p in (old, new)})
-    if not paths:
-        return {}
-    text = git(*(_DIFF_ARGS + (mb, head, "--") + tuple(":(literal)" + p for p in paths)))
-    sections, cur = {}, None
-    for line in text.split("\n"):
-        if line.startswith("diff --git "):
-            cur = sections.setdefault(line, [])
-        if cur is not None:
-            cur.append(line)
-    out = {}
-    for _, old, new in rows:
-        sec = sections.get("diff --git a/%s b/%s" % (old, new))
-        if sec is not None:
-            out[(old, new)] = "\n".join(sec)
-    return out
+    keep = len(_SECTION) - 1
+    buf, dropped, start = bytearray(), None, 0
+    for chunk in chunks:
+        buf += chunk
+        while True:
+            i = buf.find(_SECTION, start)
+            if i < 0:
+                break
+            yield _section(buf[: i + 1], dropped, cap)
+            del buf[: i + 1]
+            dropped, start = None, 0
+        if dropped is None and len(buf) > cap:
+            dropped = _first_line(buf)
+        if dropped is not None:
+            del buf[: max(len(buf) - keep, 0)]
+        start = max(len(buf) - keep, 0)
+    if buf or dropped is not None:
+        yield _section(buf, dropped, cap)
+
+
+_PATHSPEC_BYTES = 65536  # one git call's pathspec, far under the OS argument limit
+
+
+def pathspec_batches(items):
+    """items [(key, paths)] grouped so one call's pathspec stays under _PATHSPEC_BYTES; an item is never split."""
+    batch, size = [], 0
+    for key, paths in items:
+        n = sum(len(p.encode("utf-8")) + 11 for p in paths)
+        if batch and size + n > _PATHSPEC_BYTES:
+            yield batch
+            batch, size = [], 0
+        batch.append((key, paths))
+        size += n
+    if batch:
+        yield batch
 
 
 def parse_patch(patch):
@@ -736,10 +891,24 @@ def inline_refs(lines, line_no):
     return refs
 
 
-def trailer_refs(mb, head):
-    text = git("log", "--format=%B", "-n", "500", "%s..%s" % (mb, head))
+def _stop_reason(kind):
+    if kind == "time":
+        return "the %ds scan budget ran out" % WEAKENING_DEADLINE_SECONDS
+    return "the %d-byte read budget ran out" % WEAKENING_MAX_TOTAL_BYTES
+
+
+def trailer_refs(budget, mb, head, incomplete):
+    """Quarantine and approval trailers of the PR's commits (the newest 500), read under WEAKENING_MAX_TRAILER_BYTES."""
+    try:
+        raw = git_read(budget, ("log", "--format=%B", "-n", "500", "%s..%s" % (mb, head)), WEAKENING_MAX_TRAILER_BYTES)
+    except Exhausted as exc:
+        # The last line may be cut short, and a cut-off id would still match as a shorter, wrong one.
+        raw = exc.partial[: exc.partial.rfind(b"\n") + 1]
+        incomplete.append("commit messages past %d bytes were not read for references" % WEAKENING_MAX_TRAILER_BYTES
+                          if exc.kind == "cap" else
+                          "%s while reading commit messages; later references are not listed" % _stop_reason(exc.kind))
     refs = []
-    for line in text.splitlines():
+    for line in raw.decode("utf-8", "replace").splitlines():
         m = re.match(r"^\s*vagaris-(quarantine|approval)\s*:\s*([A-Za-z0-9][A-Za-z0-9._/#-]{1,63})\s*$", line, re.I)
         if m:
             ref = "%s `%s`" % (m.group(1).lower(), m.group(2))
@@ -748,57 +917,123 @@ def trailer_refs(mb, head):
     return refs
 
 
+def head_lines(budget, sha):
+    """The head-side file's lines (for the job/step level and inline markers), or None when it cannot be read."""
+    try:
+        return git_read(budget, ("cat-file", "blob", sha), WEAKENING_MAX_BLOB_BYTES).decode("utf-8", "replace").split("\n")
+    except (Exhausted, IntegrityError):
+        return None
+
+
+def scan_file(budget, row, patch, incomplete):
+    """Findings for one in-scope file from its patch text (None: the diff was over WEAKENING_MAX_PATCH_BYTES)."""
+    st, _, _, path, scopes, _, new_sha = row
+    if patch is None:
+        incomplete.append("%s: diff larger than %d bytes, not scanned" % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
+        return []
+    added, removed, first = parse_patch(patch)
+    # Regex cost grows with line length; a line past the cap is not matched, and the PR is told so.
+    too_long = sum(1 for _, t in added + removed if len(t) > WEAKENING_MAX_LINE)
+    if too_long:
+        incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
+        added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
+        removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
+    got = token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
+    if not got or st == "D":
+        return got
+    lines = head_lines(budget, new_sha)
+    if lines is None:
+        incomplete.append("%s: the head file was not read within the budget; inline references and the job or "
+                          "step of a continue-on-error are not listed" % md_code(path))
+        return got
+    for f in got:
+        if f["rule"] == "continue-on-error" and f["line"] and f["line"] <= len(lines):
+            f["detail"] += " on %s; whether it backs a required check is not readable here" % coe_level(
+                lines, f["line"] - 1)
+        if f["line"]:
+            f["refs"] += inline_refs(lines, f["line"])
+    return got
+
+
+def scan_patches(budget, mb, head, scoped, todo, results, incomplete):
+    """Fill results[i] for every i in todo; the budget's stop kind, or None when every file was read.
+
+    The files are read from ONE streamed git diff (per pathspec batch), and a section is bound to its file only by
+    its exact expected header. A path git quotes (control or non-ASCII bytes) or a rename paired differently in
+    the narrower pathspec is not bound, and that file is diffed on its own afterwards.
+    """
+    want = {}
+    for i in todo:
+        want.setdefault("diff --git a/%s b/%s" % (scoped[i][1], scoped[i][2]), i)
+    try:
+        for batch in pathspec_batches([(i, {scoped[i][1], scoped[i][2]}) for i in todo]):
+            chunks = git_chunks(budget, diff_args(mb, head, {p for _, ps in batch for p in ps}))
+            for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
+                i = want.get(header)
+                if i is not None and i not in results:
+                    results[i] = scan_file(budget, scoped[i], patch, incomplete)
+        for i in todo:
+            if i in results:
+                continue
+            try:
+                patch = git_read(budget, diff_args(mb, head, {scoped[i][1], scoped[i][2]}),
+                                 WEAKENING_MAX_PATCH_BYTES).decode("utf-8", "replace")
+            except Exhausted as exc:
+                if exc.kind != "cap":
+                    raise
+                patch = None
+            results[i] = scan_file(budget, scoped[i], patch, incomplete)
+    except Exhausted as exc:
+        return exc.kind
+    return None
+
+
 def weakening_scan(mb, head):
-    """(findings, incomplete reasons, files in scope). Raises only through git(); the caller contains it."""
-    status_rows = name_status_renames(mb, head)
-    findings = deleted_test_findings(status_rows)
+    """(findings, incomplete reasons, files in scope). Every git read is bounded by one ScanBudget; a git failure or
+    an undecodable path raises, and the caller reports that as INCOMPLETE."""
+    budget = ScanBudget(WEAKENING_DEADLINE_SECONDS, WEAKENING_MAX_TOTAL_BYTES)
     incomplete = []
-    heads = {}
-    deadline = time.monotonic() + WEAKENING_DEADLINE_SECONDS
+    rows, listing_stop = census(budget, mb, head)
+    if listing_stop == "cap":
+        incomplete.append("the changed-file list is longer than %d bytes; only the first %d files were listed and "
+                          "scanned" % (WEAKENING_MAX_CENSUS_BYTES, len(rows)))
+    elif listing_stop:
+        incomplete.append("%s while listing the changed files; only the %d listed were scanned"
+                          % (_stop_reason(listing_stop), len(rows)))
+    findings = deleted_test_findings([(st, old, new) for st, old, new, _, _ in rows])
     scoped = []
-    for st, old, new in status_rows:
+    for st, old, new, old_sha, new_sha in rows:
         if st == "D" and is_test_file(old):
             continue
         path = old if st == "D" else new
         scopes = path_scopes(path)
         if scopes:
-            scoped.append((st, old, new, path, scopes))
+            scoped.append((st, old, new, path, scopes, old_sha, new_sha))
     in_scope = len(scoped)
     if in_scope > WEAKENING_MAX_FILES:
         incomplete.append("%d files in scope; only the first %d were scanned" % (in_scope, WEAKENING_MAX_FILES))
         scoped = scoped[:WEAKENING_MAX_FILES]
-    patches = file_patches(mb, head, [(st, old, new) for st, old, new, _, _ in scoped])
-    for done, (st, old, new, path, scopes) in enumerate(scoped):
-        if time.monotonic() > deadline:
-            incomplete.append("the %ds scan budget ran out after %d of %d files in scope; the rest were not scanned"
-                              % (WEAKENING_DEADLINE_SECONDS, done, in_scope))
-            break
-        patch = patches.get((old, new))
-        if patch is None:
-            patch = file_patch(mb, head, old, new)
-        if len(patch) > WEAKENING_MAX_PATCH_BYTES:
-            incomplete.append("%s: diff larger than %d bytes, not scanned" % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
-            continue
-        added, removed, first = parse_patch(patch)
-        # Regex cost grows with line length; a line past the cap is not matched, and the PR is told so.
-        too_long = sum(1 for _, t in added + removed if len(t) > WEAKENING_MAX_LINE)
-        if too_long:
-            incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
-            added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
-            removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
-        got = token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
-        if got and st != "D":
-            heads[path] = (blob(head, path) or "").split("\n")
-        for f in got:
-            if f["rule"] == "continue-on-error" and f["line"]:
-                lines = heads.get(path, [])
-                if f["line"] <= len(lines):
-                    f["detail"] += " on %s; whether it backs a required check is not readable here" % coe_level(
-                        lines, f["line"] - 1)
-            if f["line"] and path in heads:
-                f["refs"] += inline_refs(heads[path], f["line"])
-        findings += got
-    pr_refs = trailer_refs(mb, head) if findings else []
+    results = {}
+    try:
+        sizes = blob_sizes(budget, [sha for row in scoped for sha in row[5:7]])
+    except Exhausted as exc:
+        stop = exc.kind
+    else:
+        todo = []
+        for i, row in enumerate(scoped):
+            if max(sizes.get(row[5], 0), sizes.get(row[6], 0)) > WEAKENING_MAX_BLOB_BYTES:
+                incomplete.append("%s: file larger than %d bytes, not diffed or scanned"
+                                  % (md_code(row[3]), WEAKENING_MAX_BLOB_BYTES))
+                results[i] = []
+            else:
+                todo.append(i)
+        stop = scan_patches(budget, mb, head, scoped, todo, results, incomplete)
+    if stop:
+        incomplete.append("%s after %d of %d files in scope; the rest were not scanned"
+                          % (_stop_reason(stop), len(results), in_scope))
+    for i in sorted(results):
+        findings += results[i]
+    pr_refs = trailer_refs(budget, mb, head, incomplete) if findings else []
     for f in findings:
         f["refs"] += [r for r in pr_refs if r not in f["refs"]]
     return findings, incomplete, in_scope

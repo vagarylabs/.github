@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -68,6 +69,9 @@ BASE = {
         "  expect(() => charge(-1)).toThrow()\n"
         "})\n"),
 }
+
+# ~3 MB of short test lines: larger than every byte cap the budget tests patch in, small enough for CI.
+HUGE = "it('x', () => {})\n" * 170000
 
 # The weakening text, as it would appear in a doc that explains the guard.
 DOC = "\n".join([
@@ -379,7 +383,8 @@ class WeakeningCases(unittest.TestCase):
                                'src/q"uote.test.ts': "it.todo('q')\n"},
                               moves=[("src/moved.test.ts", "src/renamed.test.ts")])
         combined, _, _ = self.repo.scan(head)
-        with mock.patch.object(classify, "file_patches", return_value={}):
+        # No section bound from the combined diff: every file takes the per-file fallback.
+        with mock.patch.object(classify, "patch_sections", lambda chunks, cap: iter(())):
             per_file, _, _ = self.repo.scan(head)
         key = lambda f: (f["path"], f["line"] or 0, f["detail"])
         self.assertEqual(sorted(combined, key=key), sorted(per_file, key=key))
@@ -392,12 +397,30 @@ class WeakeningCases(unittest.TestCase):
         cwd = os.getcwd()
         try:
             os.chdir(self.repo.d)
-            rows = [r for r in classify.name_status_renames(self.repo.base, head)]
-            bound = classify.file_patches(self.repo.base, head, rows)
+            budget = classify.ScanBudget(60, 10 ** 7)
+            rows, stop = classify.census(budget, self.repo.base, head)
+            paths = {p for _, old, new, _, _ in rows for p in (old, new)}
+            headers = [h for h, _ in classify.patch_sections(
+                classify.git_chunks(budget, classify.diff_args(self.repo.base, head, paths)), 10 ** 6)]
         finally:
             os.chdir(cwd)
-        self.assertIn(("src/moved.test.ts", "src/renamed.test.ts"), bound)
-        self.assertNotIn(('src/q"uote.test.ts', 'src/q"uote.test.ts'), bound)
+        self.assertIsNone(stop)
+        self.assertIn(("R", "src/moved.test.ts", "src/renamed.test.ts"), [r[:3] for r in rows])
+        self.assertIn("diff --git a/src/moved.test.ts b/src/renamed.test.ts", headers)
+        self.assertNotIn('diff --git a/src/q"uote.test.ts b/src/q"uote.test.ts', headers)
+
+    def test_one_combined_diff_for_every_file(self):
+        # One listing and one combined diff, however many files: never one git diff per file.
+        head = self.repo.case({"src/f%d.test.ts" % i: "it.skip('f%d', () => {})\n" % i for i in range(12)})
+        real, calls = subprocess.Popen, []
+
+        def popen(args, *a, **kw):
+            calls.append(list(args[:2]))
+            return real(args, *a, **kw)
+        with mock.patch.object(subprocess, "Popen", popen):
+            findings, incomplete, in_scope = self.repo.scan(head)
+        self.assertEqual((len(findings), incomplete, in_scope), (12, [], 12))
+        self.assertEqual(calls.count(["git", "diff"]), 2, calls)
 
     # --- references are listed, never honoured --------------------------------------------------
 
@@ -496,8 +519,99 @@ class IntegrityReportTests(unittest.TestCase):
         with mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", -1):
             code, out = self.repo.integrity(head)
         self.assertEqual(code, 0, out)
-        self.assertIn("- INCOMPLETE: the -1s scan budget ran out after 0 of 1 files in scope", out)
+        # The listing runs under the budget too (it did not before), so an expired budget stops there.
+        self.assertIn("- INCOMPLETE: the -1s scan budget ran out while listing the changed files", out)
         self.assertNotIn("No test-weakening pattern added", out)
+
+    # --- the scan's time and byte budget (Codex review of 698cf202, finding 1) ------------------
+    # Red on 698cf202: it captured the whole combined diff before any per-file check, so peak memory followed the
+    # PR's size; it had no total byte budget; and its git calls had no timeout, so a slow git ran past the deadline
+    # and an empty listing read as a clean PR.
+
+    def traced_integrity(self, head):
+        tracemalloc.start()
+        try:
+            code, out = self.repo.integrity(head)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        return code, out, peak
+
+    def test_red_file_over_the_blob_cap_is_never_diffed(self):
+        head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
+        with mock.patch.object(classify, "WEAKENING_MAX_BLOB_BYTES", 1000000, create=True):
+            code, out, peak = self.traced_integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: `src/huge.test.ts`: file larger than 1000000 bytes, not diffed or scanned", out)
+        self.assertIn("- WEAKENING test-skip `src/z.test.ts:1` adds `it.skip`", out)
+        self.assertNotIn("No test-weakening pattern added", out)
+        self.assertLess(peak, 1500000)
+
+    def test_red_oversized_diff_is_dropped_as_it_streams(self):
+        # Under the blob cap, over the per-file diff cap: the section is skipped as it arrives, and the file after it
+        # in the same combined diff is still scanned.
+        head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
+        with mock.patch.object(classify, "WEAKENING_MAX_PATCH_BYTES", 100000):
+            code, out, peak = self.traced_integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: `src/huge.test.ts`: diff larger than 100000 bytes, not scanned", out)
+        self.assertIn("- WEAKENING test-skip `src/z.test.ts:1` adds `it.skip`", out)
+        self.assertLess(peak, 1500000)
+
+    def test_red_total_read_budget_is_incomplete(self):
+        head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
+        with mock.patch.object(classify, "WEAKENING_MAX_PATCH_BYTES", 10 ** 8), \
+                mock.patch.object(classify, "WEAKENING_MAX_TOTAL_BYTES", 1000000, create=True):
+            code, out, peak = self.traced_integrity(head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: the 1000000-byte read budget ran out after 0 of 2 files in scope; "
+                      "the rest were not scanned", out)
+        self.assertNotIn("No test-weakening pattern added", out)
+        self.assertLess(peak, 2500000)
+
+    @contextlib.contextmanager
+    def slow_git_diff(self, flag, seconds=8):
+        """Every `git diff` carrying flag becomes a process that prints nothing for `seconds` (the real Popen)."""
+        real = subprocess.Popen
+
+        def popen(args, *a, **kw):
+            if isinstance(args, (list, tuple)) and list(args[:2]) == ["git", "diff"] and flag in args:
+                args = [sys.executable, "-c", "import time; time.sleep(%d)" % seconds]
+            return real(args, *a, **kw)
+        with mock.patch.object(subprocess, "Popen", popen):
+            yield
+
+    def test_red_slow_listing_is_incomplete_within_the_deadline(self):
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n"})
+        started = time.monotonic()
+        with mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", 2), self.slow_git_diff("-M"):
+            code, out = self.repo.integrity(head)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("No test-weakening pattern added", out)
+        self.assertIn("- INCOMPLETE: the 2s scan budget ran out while listing the changed files", out)
+        self.assertLess(elapsed, 6)
+
+    def test_red_slow_diff_is_incomplete_within_the_deadline(self):
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n"})
+        started = time.monotonic()
+        with mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", 2), self.slow_git_diff("--unified=1"):
+            code, out = self.repo.integrity(head)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 0, out)
+        self.assertIn("- INCOMPLETE: the 2s scan budget ran out after 0 of 1 files in scope; the rest were not scanned",
+                      out)
+        self.assertLess(elapsed, 6)
+
+    def test_red_commit_messages_are_read_under_a_cap(self):
+        msg = "test: park b\n\nVagaris-Approval: ap-7f3e1234\n"
+        head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n"}, message=msg)
+        # Cut inside the trailer line: the partial line must not be read as the shorter id `ap-7f3e`.
+        cut = msg.index("ap-7f3e1234") + len("ap-7f3e")
+        with mock.patch.object(classify, "WEAKENING_MAX_TRAILER_BYTES", cut, create=True):
+            findings, incomplete, _ = self.repo.scan(head)
+        self.assertEqual([f["refs"] for f in findings], [[]])
+        self.assertEqual(incomplete, ["commit messages past %d bytes were not read for references" % cut])
 
     def test_file_cap_is_incomplete(self):
         head = self.repo.case({"src/b.test.ts": "it.skip('b', () => {})\n", "src/d.test.ts": "it('d', () => {})\n"})
@@ -521,6 +635,18 @@ class IntegrityReportTests(unittest.TestCase):
 
 
 class PredicateUnitTests(unittest.TestCase):
+    def test_patch_sections_survive_any_chunking(self):
+        # A body line `+diff --git ...` is not a header; a section over the cap is dropped, the next one is kept.
+        x = b"diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+diff --git not a header\n"
+        y = b"diff --git a/y b/y\n@@ -1 +1 @@\n-" + b"y" * 100 + b"\n+z\n"
+        z = b"diff --git a/z b/z\n@@ -0,0 +1 @@\n+q\n"
+        diff = x + y + z
+        for size in (1, 2, 3, 5, 7, 11, 13, 64, len(diff)):
+            with self.subTest(size=size):
+                got = list(classify.patch_sections(iter([diff[i:i + size] for i in range(0, len(diff), size)]), 70))
+                self.assertEqual(got, [("diff --git a/x b/x", x.decode()), ("diff --git a/y b/y", None),
+                                       ("diff --git a/z b/z", z.decode())])
+
     def test_swallowed_runner(self):
         cases = {
             "pytest -q || true": "pytest || true",

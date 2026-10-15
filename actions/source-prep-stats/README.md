@@ -26,6 +26,7 @@ Optional inputs:
 - **It never fails a job.** The measuring steps run `if: always()` with `continue-on-error`. A failed checkout still fails the job, as it would without this action.
 - **Unknown stays unknown.** A value that was not measured is `null`, and `unknown` says why. `0` always means a measured zero, such as "no lazy fetch ran" or "nothing existed before a cold checkout".
   - Attribution fields are `null` when the runner does not provide them.
+  - A directory that cannot be read (under `.git`, or the pnpm store) makes that size `null` with the reason, never a smaller or zero total. A "before" value that was not read is never taken as zero.
   - `sparse_*` fields are `null` when `sparse` is `false`, because they don't apply.
   - `filter` is `null` when `partial` is `false`.
 - **A truncated tree is never complete.**
@@ -55,7 +56,7 @@ Optional inputs:
 | `transfer.lazy_fetches`, `lazy_objects` | Promisor (partial clone) fetches during the checkout and the objects they brought. |
 | `transfer.protocol_version`, `negotiation_rounds`, `haves_sent`, `filter_effective` | The fetch negotiation summary from trace2. The two strings are allow-listed: anything else is `other`. |
 | `warm` | Whether a repository with objects was already at the path (persistent runners). |
-| `measurement.complete` | `false` when the trace was missing or damaged (a process never exited, or a line was unparseable) or a size walk ran out of time. |
+| `measurement.complete` | `false` when the trace was missing or damaged (a process never exited, or a line was unparseable), or a size could not be read (a walk ran out of time, or a directory was unreadable). |
 
 `job-telemetry.v1` (`schema/job-telemetry.v1.json`) holds the job's attribution and the cgroup footprint:
 

@@ -283,52 +283,73 @@ class Budget:
         return time.monotonic() > self.deadline
 
 
+WALK_TIMED_OUT = "walk exceeded the time budget"
+
+
+def _unreadable(what, exc):
+    return "%s could not be read (%s)" % (what, type(exc).__name__)
+
+
 def walk_bytes(root, budget, seen=None):
-    """Apparent bytes under root: regular files and symlinks, each inode once, directories 0. That is GNU
-    `du -sb` from coreutils 9.2 on (du.c usable_st_size; 8.x also added directory sizes). None when cut short."""
+    """(bytes, None) or (None, reason). Apparent bytes under root: regular files and symlinks, each inode once,
+    directories 0. That is GNU `du -sb` from coreutils 9.2 on (du.c usable_st_size; 8.x also added directory
+    sizes). A walk cut short or a directory it could not read is unknown, never a partial or zero total.
+    An entry that vanished mid-walk is no longer there to count."""
     seen = set() if seen is None else seen
     total, stack, n = 0, [root], 0
     while stack:
+        top = stack.pop()
         try:
-            entries = list(os.scandir(stack.pop()))
-        except OSError:
-            continue
-        for e in entries:
-            n += 1
-            if n % 512 == 0 and budget.exceeded():
-                budget.hit = True
-                return None
-            try:
-                if e.is_dir(follow_symlinks=False):
-                    stack.append(e.path)
-                elif e.is_file(follow_symlinks=False) or e.is_symlink():
-                    st = e.stat(follow_symlinks=False)
-                    key = (st.st_dev, st.st_ino)
-                    if key not in seen:
-                        seen.add(key)
-                        total += st.st_size
-            except OSError:
-                continue
+            with os.scandir(top) as entries:
+                for e in entries:
+                    n += 1
+                    if n % 512 == 0 and budget.exceeded():
+                        budget.hit = True
+                        return None, WALK_TIMED_OUT
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False) or e.is_symlink():
+                            st = e.stat(follow_symlinks=False)
+                            key = (st.st_dev, st.st_ino)
+                            if key not in seen:
+                                seen.add(key)
+                                total += st.st_size
+                    except FileNotFoundError:
+                        continue
+        except FileNotFoundError as exc:
+            if top == root:
+                return None, _unreadable("the directory", exc)
+        except OSError as exc:
+            return None, _unreadable("a directory in the walk", exc)
     if budget.exceeded():
         budget.hit = True
-        return None
-    return total
+        return None, WALK_TIMED_OUT
+    return total, None
 
 
 def object_files(objects_dir):
-    """Pack files {name: bytes} and loose-object bytes under .git/objects."""
+    """Pack files {name: bytes} and loose-object bytes under .git/objects, plus None; or (None, None, reason)
+    when a directory there could not be read (unknown, never an empty or zero listing)."""
     packs, loose = {}, 0
     pack_dir = os.path.join(objects_dir, "pack")
-    if os.path.isdir(pack_dir):
-        for e in os.scandir(pack_dir):
-            if e.name.endswith(".pack") and e.is_file(follow_symlinks=False):
-                packs[e.name] = e.stat(follow_symlinks=False).st_size
-    for e in os.scandir(objects_dir):
-        if len(e.name) == 2 and all(c in "0123456789abcdef" for c in e.name) and e.is_dir(follow_symlinks=False):
-            for f in os.scandir(e.path):
-                if f.is_file(follow_symlinks=False):
-                    loose += f.stat(follow_symlinks=False).st_size
-    return packs, loose
+    try:
+        if os.path.isdir(pack_dir):
+            with os.scandir(pack_dir) as entries:
+                for e in entries:
+                    if e.name.endswith(".pack") and e.is_file(follow_symlinks=False):
+                        packs[e.name] = e.stat(follow_symlinks=False).st_size
+        with os.scandir(objects_dir) as entries:
+            for e in entries:
+                if len(e.name) == 2 and all(c in "0123456789abcdef" for c in e.name) \
+                        and e.is_dir(follow_symlinks=False):
+                    with os.scandir(e.path) as files:
+                        for f in files:
+                            if f.is_file(follow_symlinks=False):
+                                loose += f.stat(follow_symlinks=False).st_size
+    except OSError as exc:
+        return None, None, _unreadable("a directory under .git/objects", exc)
+    return packs, loose, None
 
 
 # ---------------------------------------------------------------- git -------------------------------------------
@@ -381,13 +402,23 @@ def snapshot(path, budget, whole_git_dir=True):
     if not git_dir or not os.path.isdir(os.path.join(git_dir, "objects")):
         return {"repo": None}
     co = count_objects(path)
-    packs, loose = object_files(os.path.join(git_dir, "objects"))
+    unknown = {}  # field -> why it is null
+    packs, loose, reason = object_files(os.path.join(git_dir, "objects"))
+    if reason:
+        unknown["bytes"] = reason
+    objects_bytes, reason = walk_bytes(os.path.join(git_dir, "objects"), budget)
+    if reason:
+        unknown["objects_bytes"] = reason
+    git_dir_bytes = None
+    if whole_git_dir:
+        git_dir_bytes, reason = walk_bytes(git_dir, budget)
+        if reason:
+            unknown["git_dir_bytes"] = reason
     return {
         "repo": True, "git_dir": git_dir,
         "objects": (co["count"] + co["in-pack"]) if co else None,
-        "packs": packs, "loose_bytes": loose,
-        "objects_bytes": walk_bytes(os.path.join(git_dir, "objects"), budget),
-        "git_dir_bytes": walk_bytes(git_dir, budget) if whole_git_dir else None,
+        "packs": packs, "loose_bytes": loose, "objects_bytes": objects_bytes, "git_dir_bytes": git_dir_bytes,
+        "unknown": unknown,
     }
 
 
@@ -556,8 +587,8 @@ def store_snapshot(store, budget):
     store = os.path.abspath(os.path.expanduser(store))
     if not os.path.isdir(store):
         return {"path": store, "bytes": None, "reason": "store directory does not exist"}
-    size = walk_bytes(store, budget)
-    return {"path": store, "bytes": size, "reason": None if size is not None else "walk exceeded the time budget"}
+    size, reason = walk_bytes(store, budget)
+    return {"path": store, "bytes": size, "reason": reason}
 
 
 # ---------------------------------------------------------------- schema -----------------------------------------
@@ -654,21 +685,30 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
     if not after.get("repo"):
         unknown["repository"] = "no git repository at the checkout path after the checkout step"
 
+    after_unknown = after.get("unknown") or {}
+    before_unknown = {"before." + k: v for k, v in (b.get("unknown") or {}).items()}
+    unknown.update(after_unknown)
+    unknown.update(before_unknown)
     new_pack = loose_delta = objects = None
     if after.get("repo") and b.get("repo") is not None and before is not None:
-        old_packs = b.get("packs") or {}
-        new_pack = sum(size for name, size in after["packs"].items() if name not in old_packs)
-        loose_delta = after["loose_bytes"] - (b.get("loose_bytes") or 0)
-        if after.get("objects") is not None and (b.get("repo") is False or b.get("objects") is not None):
+        cold = b.get("repo") is False  # nothing existed before: the before side is a measured zero
+        # A before value that was not read is unknown: never "no packs" or "0 loose bytes", which would count
+        # every pack as new.
+        if after.get("packs") is not None and (cold or b.get("packs") is not None):
+            old_packs = b.get("packs") or {}
+            new_pack = sum(size for name, size in after["packs"].items() if name not in old_packs)
+        if after.get("loose_bytes") is not None and (cold or b.get("loose_bytes") is not None):
+            loose_delta = after["loose_bytes"] - (b.get("loose_bytes") or 0)
+        if after.get("objects") is not None and (cold or b.get("objects") is not None):
             objects = after["objects"] - (b.get("objects") or 0)
-    bytes_ = new_pack + loose_delta if new_pack is not None else None
+    bytes_ = new_pack + loose_delta if new_pack is not None and loose_delta is not None else None
     if bytes_ is None:
-        unknown.setdefault("bytes", "needs both snapshots of a repository")
+        unknown.setdefault("bytes", before_unknown.get("before.bytes") or "needs both snapshots of a repository")
     if objects is None:
         unknown.setdefault("objects", "needs git count-objects before and after")
     for key in ("objects_bytes", "git_dir_bytes"):
         if after.get("repo") and after.get(key) is None:
-            unknown[key] = "walk exceeded the time budget"
+            unknown.setdefault(key, WALK_TIMED_OUT)
 
     warm = None
     if before is not None and b.get("repo") is False:
@@ -679,6 +719,7 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
     t = transfer or {}
     trace = t.get("trace") or {}
     measured = (before is not None and transfer is not None and after.get("repo") is True and not walk_budget_hit
+                and not after_unknown and not before_unknown
                 and trace.get("unterminated") == 0 and trace.get("bad_lines") == 0)
     shape = shape or {}
     return {
@@ -862,6 +903,8 @@ def _telemetry(args, job_trace):
         same = pnpm_before is not None and pnpm_before.get("path") == now["path"]
         pnpm = {"bytes_before": bb if same else None, "bytes_after": now["bytes"],
                 "delta": (now["bytes"] - bb) if same and bb is not None and now["bytes"] is not None else None}
+        if now["bytes"] is None:
+            unknown["pnpm_store.bytes_after"] = now["reason"]
         if pnpm["delta"] is None:
             unknown["pnpm_store.delta"] = (now["reason"] or (pnpm_before or {}).get("reason")
                                            or "no before snapshot of this store (set pnpm-store-dir on source-prep-stats)")

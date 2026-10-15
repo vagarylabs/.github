@@ -108,6 +108,19 @@ def malformed_events(sid):
 DEEP = "[" * 100000 + "\n"
 
 
+def unreadable(*paths):
+    """os.scandir refuses these directories with EACCES, as for a mode-000 directory, for whoever runs the test
+    (chmod does not stop root). In-process only; git subprocesses still read them."""
+    real, refused = os.scandir, {os.path.realpath(p) for p in paths}
+
+    def scandir(path="."):
+        if isinstance(path, (str, bytes, os.PathLike)) and os.path.realpath(path) in refused:
+            raise PermissionError(13, "Permission denied", path)
+        return real(path)
+
+    return mock.patch.object(srcstats.os, "scandir", scandir)
+
+
 def write_trace(trace_dir, name, events, tail=""):
     with open(os.path.join(trace_dir, name), "w") as fh:
         fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
@@ -521,6 +534,47 @@ class HermeticTest(unittest.TestCase):
         self.assertIn("git_dir_bytes", r["unknown"])
         self.assertFalse(r["measurement"]["complete"])
         self.assertGreater(r["bytes"], 0, "pack bytes do not need the walk")
+
+    def prepare_then_after_with(self, path, patch):
+        """before and a traced checkout as subprocesses, then the after step in process under `patch`."""
+        b = self.job.step("before", SPS_PATH=path)
+        outcome = self.job.checkout(self.url, path, trace=b["trace_dir"])
+        with patch(os.path.join(self.job.ws, path, ".git")):
+            out, log = self.job.inproc("after", SPS_ID=b["id"], SPS_PATH=path, SPS_OUTCOME=outcome)
+        self.assertNotIn("::warning::", log)
+        record = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        return record
+
+    def test_an_unreadable_directory_in_git_dir_is_unknown_not_measured(self):
+        r = self.prepare_then_after_with("unreadable-logs", lambda git_dir: unreadable(os.path.join(git_dir, "logs")))
+        self.assertTrue(os.path.isdir(os.path.join(self.job.ws, "unreadable-logs", ".git", "logs")),
+                        "positive control: the refused directory exists")
+        self.assertIsNone(r["bytes_detail"]["git_dir_bytes_after"], "a total that skipped .git/logs is not a size")
+        self.assertIn("could not be read", r["unknown"]["git_dir_bytes"])
+        self.assertFalse(r["measurement"]["complete"])
+        self.assertGreater(r["bytes"], 0, "the pack listing did not need .git/logs")
+
+    def test_an_unreadable_pack_directory_is_unknown_bytes_not_a_lost_record(self):
+        r = self.prepare_then_after_with(
+            "unreadable-pack", lambda git_dir: unreadable(os.path.join(git_dir, "objects", "pack")))
+        self.assertIsNone(r["bytes"])
+        self.assertIsNone(r["bytes_detail"]["new_pack_bytes"])
+        self.assertIn("could not be read", r["unknown"]["bytes"])
+        self.assertIsNone(r["bytes_detail"]["objects_bytes_after"])
+        self.assertFalse(r["measurement"]["complete"])
+
+    def test_an_unreadable_store_is_unknown_not_zero(self):
+        store = os.path.join(self.job.root, "locked-store")
+        os.makedirs(store)
+        with open(os.path.join(store, "a"), "wb") as fh:
+            fh.write(b"x" * 1000)
+        with unreadable(store):
+            out, log = self.job.inproc("telemetry", SPS_PNPM_STORE=store)
+        doc = json.loads(read(out["path"]))
+        self.assertEqual(srcstats.validate(doc, "job-telemetry.v1.json"), [])
+        self.assertIsNone(doc["pnpm_store"]["bytes_after"], "an unreadable store is unknown, never 0 bytes")
+        self.assertIn("could not be read", doc["unknown"]["pnpm_store.bytes_after"])
 
     def test_telemetry_merges_records_footprint_lazy_fetches_and_pnpm_delta(self):
         store = os.path.join(self.job.root, "pnpm-store")

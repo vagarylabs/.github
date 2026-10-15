@@ -62,7 +62,9 @@ DOC = "\n".join([
     "it.skip('b', () => {})", "describe.todo('later')", "  retry: 2,", "  retries: process.env.CI ? 2 : 0,",
     "    continue-on-error: true", "      - run: npm test || true", "@pytest.mark.skip(reason='x')",
     "    testTimeout: 60000,", "coverage: { thresholds: { lines: 60 } }", "fail_under = 70",
-    "  expect.assertions(1)", "  expect(took).toBeLessThan(500)", "pytest --reruns 3 || true", ""])
+    "  expect.assertions(1)", "  expect(took).toBeLessThan(500)", "pytest --reruns 3 || true",
+    "      - run: python3 scripts/test-routing.py || true", "pnpm vitest run || true", "/**/ it.skip('b', () => {})",
+    "  *) npm test || true ;;", "it('slow', { timeout: 60000 }, async () => {})", ""])
 
 
 def git(cwd, *args):

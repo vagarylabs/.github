@@ -93,6 +93,21 @@ def planted_events(sid):
             {"event": "exit", "sid": sid, "code": 0, "t_abs": 0.1}]
 
 
+def malformed_events(sid):
+    """A process whose read fields have the wrong JSON types, each carrying PLANTED, and a line nested past the
+    JSON parser's depth (appended by the caller). Each used to raise inside the parse, before the raw trace
+    was deleted."""
+    return [{"event": "version", "sid": sid, "evt": "4", "exe": [PLANTED]},
+            {"event": "start", "sid": sid, "argv": "git fetch " + PLANTED, "time": {"t": PLANTED}},
+            {"event": "cmd_name", "sid": sid, "name": ["fetch", PLANTED], "hierarchy": 7},
+            {"event": "cmd_name", "sid": sid + "/x", "name": "fetch", "hierarchy": {"h": PLANTED}},
+            {"event": "data", "sid": sid, "category": "fetch", "key": "filter/effective", "value": {"v": PLANTED}},
+            {"event": "exit", "sid": sid, "code": PLANTED, "t_abs": PLANTED}]
+
+
+DEEP = "[" * 100000 + "\n"
+
+
 def write_trace(trace_dir, name, events, tail=""):
     with open(os.path.join(trace_dir, name), "w") as fh:
         fh.write("".join(json.dumps(e) + "\n" for e in events) + tail)
@@ -327,6 +342,52 @@ class HermeticTest(unittest.TestCase):
         self.assertIn("::warning::", log)
         self.assertIn("RuntimeError", log)
         self.assertNotIn(PLANTED_TOKEN, log)
+
+    def test_malformed_trace_leaves_no_raw_trace_or_secret_on_disk(self):
+        """The malformed-hierarchy path: the step still writes a record, marks the trace damaged, and leaves the
+        planted URL nowhere (no output, log, summary or file under the job, the raw trace included)."""
+        b = self.job.step("before", SPS_PATH="malformed")
+        outcome = self.job.checkout(self.url, "malformed", trace=b["trace_dir"])
+        write_trace(b["trace_dir"], "0000-planted", planted_events("planted-sid"))
+        write_trace(b["trace_dir"], "0001-malformed", malformed_events("malformed-sid"), tail=DEEP)
+        out, log = self.job.step_logged("after", SPS_ID=b["id"], SPS_PATH="malformed", SPS_OUTCOME=outcome)
+        self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
+        self.assertFalse(os.path.exists(b["trace_dir"]), "raw trace deleted")
+        self.assertNotIn("::warning::", log)
+        record = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(record, "source-prep.v1.json"), [])
+        self.assertGreaterEqual(record["measurement"]["trace"]["bad_lines"], 1)
+        self.assertFalse(record["measurement"]["complete"], "a damaged trace is not a complete measurement")
+        self.assertNotIn(PLANTED_TOKEN, log + self.job.published())
+
+    def test_a_raising_parse_still_deletes_the_raw_trace(self):
+        """Whatever raises inside the after step, the finally deletes the raw trace."""
+        b = self.job.step("before", SPS_PATH="raising")
+        outcome = self.job.checkout(self.url, "raising", trace=b["trace_dir"])
+        write_trace(b["trace_dir"], "0000-planted", planted_events("planted-sid"))
+
+        def leaky(*args, **kwargs):
+            raise RuntimeError("unable to access '%s'" % PLANTED)
+
+        with mock.patch.object(srcstats, "summarize_trace", leaky):
+            _, log = self.job.inproc("after", SPS_ID=b["id"], SPS_PATH="raising", SPS_OUTCOME=outcome)
+        self.assertIn("RuntimeError", log, "positive control: the step did raise")
+        self.assertFalse(os.path.exists(b["trace_dir"]), "raw trace deleted on the raise path")
+        self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
+        self.assertNotIn(PLANTED_TOKEN, log + self.job.published())
+
+    def test_telemetry_with_a_malformed_job_trace_leaves_no_raw_trace(self):
+        self.job.prepare(self.url, "jobtrace", trace_job=True)
+        env_lines = read(self.job.files["GITHUB_ENV"]).splitlines()
+        job_trace = [l.split("=", 1)[1] for l in env_lines if l.startswith("GIT_TRACE2_EVENT=")][0]
+        write_trace(job_trace, "0000-planted", planted_events("planted-sid"))
+        write_trace(job_trace, "0001-malformed", malformed_events("malformed-sid"), tail=DEEP)
+        out, log = self.job.step_logged("telemetry")
+        self.assertEqual(files_containing(self.job.root, PLANTED_TOKEN), [])
+        self.assertEqual(os.listdir(job_trace), [], "raw lines dropped; the directory stays for later git calls")
+        doc = json.loads(read(out["path"]))
+        self.assertEqual(srcstats.validate(doc, "job-telemetry.v1.json"), [])
+        self.assertNotIn(PLANTED_TOKEN, log + self.job.published())
 
     def test_partial_clone_filter_from_config_is_allow_listed(self):
         self.job.prepare(self.url, "cfgfilter", filt="blob:none")

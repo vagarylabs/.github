@@ -199,6 +199,45 @@ class SyntheticTests(unittest.TestCase):
         self.assertEqual((s["protocol_version"], s["filter_effective"]), ("other", "other"))
         self.assertEqual(s["throttle_hits"], 1, "the error text is still read, only never published")
 
+    def test_malformed_field_types_are_bad_lines_never_a_crash(self):
+        """A read field of the wrong JSON type, or a line nested past the parser's depth, is a damaged trace and
+        never an exception: an exception used to skip the deletion of the raw trace. Nothing of it is published."""
+        def fetch_with(kind, **fields):
+            events = proc(ROOT + "2", "fetch", "fetch", FETCH, at="2026-10-15T00:00:02Z",
+                          data=[("fetch", "filter/effective", "blob:none")])
+            for e in events:
+                if e["event"] == kind:
+                    e.update(fields)
+            return events
+
+        cases = {
+            "hierarchy is a number": fetch_with("cmd_name", hierarchy=7),
+            "hierarchy is an object": fetch_with("cmd_name", hierarchy={"h": PLANTED}),
+            "name is a list": fetch_with("cmd_name", name=["fetch", PLANTED]),
+            "argv is a number": fetch_with("start", argv=7),
+            "argv is a string": fetch_with("start", argv="git fetch " + PLANTED),
+            "argv holds an object": fetch_with("start", argv=["git", {"url": PLANTED}]),
+            "time is an object": fetch_with("start", time={"t": PLANTED}),
+            "exit code is a string": fetch_with("exit", code=PLANTED),
+            "data value is an object": fetch_with("data", value={"v": PLANTED}),
+            "exe is a list": fetch_with("version", exe=[PLANTED]),
+            "a line nested past the parser's depth": fetch_with("none") + [{"raw": "[" * 100000}],
+        }
+        for name, events in cases.items():
+            with self.subTest(name):
+                t = Trace()
+                try:
+                    t.add(proc(ROOT + "1", "fetch", "fetch", FETCH, at="2026-10-15T00:00:01Z"))
+                    raw = [e["raw"] for e in events if "raw" in e]
+                    t.add([e for e in events if "raw" not in e], raw_tail="".join(r + "\n" for r in raw))
+                    s, reason = srcstats.summarize_trace(t.dir)
+                finally:
+                    t.close()
+                self.assertIsNotNone(s, reason)
+                self.assertGreaterEqual(s["trace"]["bad_lines"], 1)
+                self.assertNotIn(PLANTED_TOKEN, json.dumps(s))
+                self.assertIn(s["filter_effective"], ("blob:none", None))
+
     def test_fetch_without_negotiation_data_is_unknown(self):
         self.t.add(proc(ROOT + "1", "fetch", "fetch", FETCH))
         s, _ = self.t.summary()

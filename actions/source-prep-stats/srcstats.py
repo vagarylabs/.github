@@ -26,6 +26,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.parse
@@ -48,6 +49,7 @@ FILTER_PART_RE = re.compile(r"blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-
                             r"object:type=(?:blob|tree|commit|tag)")
 MAX_FILTER_LEN = 512
 MAX_COMBINE_PARTS = 8
+SID_RE = re.compile(r"[0-9]{1,20}-[0-9a-f]{8}")  # the before step's run id: "<epoch ms>-<8 hex>"
 STRIP_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE")
 
@@ -90,6 +92,36 @@ def filter_spec(value, nested=False):
     return value if FILTER_PART_RE.fullmatch(value) else "other"
 
 
+# The fields read from each event kind and their JSON types. An event whose read field has another type (a
+# number for a hierarchy, a list for a name, a string for an argv) is a bad line, never a crash.
+_NUM = (int, float)
+EVENT_FIELDS = {
+    "version": {"exe": str},
+    "start": {"argv": list, "time": str},
+    "cmd_name": {"name": str, "hierarchy": str},
+    "exit": {"code": int, "t_abs": _NUM},
+    "signal": {"t_abs": _NUM},
+    "error": {"msg": str, "fmt": str},
+    "data": {"category": str, "key": str, "value": (str, int)},
+}
+MAX_SID_LEN = 1024
+
+
+def _well_formed(ev):
+    if not isinstance(ev, dict) or not isinstance(ev.get("sid"), str) or not 0 < len(ev["sid"]) <= MAX_SID_LEN:
+        return False
+    kind = ev.get("event")
+    if not isinstance(kind, str):
+        return False
+    for field, types in EVENT_FIELDS.get(kind, {}).items():
+        value = ev.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, types):
+            return False
+    return kind != "start" or all(isinstance(a, str) for a in ev.get("argv") or [])
+
+
 def read_trace(trace_dir):
     """Read a GIT_TRACE2_EVENT directory (one file per process) into per-process summaries keyed by sid."""
     procs, bad_lines = {}, 0
@@ -101,16 +133,16 @@ def read_trace(trace_dir):
             for raw in fh:
                 try:
                     ev = json.loads(raw)
-                except ValueError:
+                except (ValueError, RecursionError):  # RecursionError: a line of deeply nested brackets
                     bad_lines += 1
                     continue
-                if not isinstance(ev, dict) or not isinstance(ev.get("sid"), str):
+                if not _well_formed(ev):
                     bad_lines += 1
                     continue
                 p = procs.setdefault(ev["sid"], {
                     "sid": ev["sid"], "argv": [], "name": None, "hierarchy": "", "started": False, "exited": False,
                     "code": None, "t_abs": None, "time": None, "throttled": False, "data": [], "exe": None})
-                kind = ev.get("event")
+                kind = ev["event"]
                 if kind == "version":
                     p["exe"] = ev.get("exe")
                 elif kind == "start":
@@ -122,21 +154,29 @@ def read_trace(trace_dir):
                 elif kind == "signal" and not p["exited"]:
                     p["exited"], p["code"], p["t_abs"] = True, None, ev.get("t_abs")
                 elif kind == "error":
-                    if THROTTLE_RE.search("%s %s" % (ev.get("msg", ""), ev.get("fmt", ""))):
+                    if THROTTLE_RE.search("%s %s" % (ev.get("msg") or "", ev.get("fmt") or "")):
                         p["throttled"] = True
                 elif kind == "data":
                     p["data"].append((ev.get("category"), ev.get("key"), ev.get("value")))
                     # git >= 2.54 reports each 429 as data, including ones it retried itself (http.maxRetries)
-                    if ev.get("category") == "http" and str(ev.get("key", "")).startswith("http/429"):
+                    if ev.get("category") == "http" and (ev.get("key") or "").startswith("http/429"):
                         p["throttled"] = True
     return procs, bad_lines
 
 
 def summarize_trace(trace_dir):
-    """Allow-listed transfer aggregates from a trace2 directory, or (None, reason) when nothing was traced."""
+    """Allow-listed transfer aggregates from a trace2 directory, or (None, reason) when nothing was traced.
+
+    Never raises: a trace it cannot read is an unknown transfer, and the caller still deletes the raw files."""
     if not trace_dir or not os.path.isdir(trace_dir):
         return None, "no trace2 directory (the before step did not run)"
-    procs, bad_lines = read_trace(trace_dir)
+    try:
+        return _summarize(*read_trace(trace_dir))
+    except Exception as exc:  # the reason names the failure, never its message (it can quote the trace)
+        return None, "the trace2 output could not be read (%s)" % type(exc).__name__
+
+
+def _summarize(procs, bad_lines):
     if not procs:
         return None, "no git process wrote trace2 output (git older than 2.22, or checkout fell back to the REST API)"
     client = {sid: p for sid, p in procs.items() if not _hierarchy_is_server(p["hierarchy"])}
@@ -474,8 +514,8 @@ def _float(value, default):
 
 
 def default_state_dir():
-    return os.path.join(os.environ.get("RUNNER_TEMP") or os.path.join(os.getcwd(), ".source-prep-stats"),
-                        "source-prep-stats")
+    # Raw traces live here until parsed: under RUNNER_TEMP (emptied after every job), never the workspace.
+    return os.path.join(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(), "source-prep-stats")
 
 
 def private_dir(path):
@@ -673,11 +713,40 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
     }
 
 
+def purge_trace(trace_dir, keep_dir=False):
+    """Delete raw trace2 output (argv, URLs, error text). keep_dir empties it instead: GIT_TRACE2_EVENT may still
+    point at it. Says so, without the content, when something could not be removed."""
+    if not trace_dir or not os.path.isdir(trace_dir):
+        return
+    if keep_dir:
+        for name in os.listdir(trace_dir):
+            path = os.path.join(trace_dir, name)
+            try:
+                shutil.rmtree(path) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
+            except OSError:
+                pass
+        left = os.listdir(trace_dir)
+    else:
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        left = os.path.exists(trace_dir)
+    if left:
+        print("::warning::source-prep-stats: raw trace2 output could not be fully removed from RUNNER_TEMP")
+
+
 def cmd_after(args):
     t_end = time.time()  # the checkout ended before this step began; the parse and walks below are not its time
+    # Only an id the before step could have made names a run directory: the trace under it is deleted below.
+    sid = args.id if SID_RE.fullmatch(args.id or "") else ""
+    run_dir = os.path.join(args.state_dir, "runs", sid) if sid else None
+    trace_dir = os.path.join(run_dir, "trace") if run_dir else None
+    try:
+        _after(args, t_end, sid, run_dir, trace_dir)
+    finally:  # every path, a raise included: raw argv/URLs/error text never outlive this step
+        purge_trace(trace_dir)
+
+
+def _after(args, t_end, sid, run_dir, trace_dir):
     state = private_dir(args.state_dir)
-    sid = args.id or ""
-    run_dir = os.path.join(state, "runs", sid) if sid else None
     before = None
     if run_dir and os.path.isfile(os.path.join(run_dir, "before.json")):
         with open(os.path.join(run_dir, "before.json")) as fh:
@@ -685,10 +754,8 @@ def cmd_after(args):
     if not sid:
         sid = "%d-%s" % (int(time.time() * 1000), secrets.token_hex(4))
     path = resolve_path(args.path)
-    trace_dir = os.path.join(run_dir, "trace") if run_dir else None
     transfer, transfer_reason = summarize_trace(trace_dir)
-    if trace_dir and os.path.isdir(trace_dir):
-        shutil.rmtree(trace_dir, ignore_errors=True)  # raw argv/URLs/error text never outlive the parse
+    purge_trace(trace_dir)  # parsed: gone now, not only when the step ends
     budget = Budget(args.walk_budget)
     after = snapshot(path, budget)
     shape, shape_unknown = tree_shape(path) if after.get("repo") else ({}, {})
@@ -744,6 +811,14 @@ def footprint_from_env():
 
 
 def cmd_telemetry(args):
+    job_trace = os.path.join(args.state_dir, "job-trace")
+    try:
+        _telemetry(args, job_trace)
+    finally:  # every path, a raise included; the directory stays because GIT_TRACE2_EVENT still points at it
+        purge_trace(job_trace, keep_dir=True)
+
+
+def _telemetry(args, job_trace):
     state = private_dir(args.state_dir)
     unknown = {}
     records_dir = os.path.join(state, "records")
@@ -762,7 +837,6 @@ def cmd_telemetry(args):
     unknown.update({"footprint." + k: v for k, v in fp_unknown.items()})
 
     job_git = None
-    job_trace = os.path.join(state, "job-trace")
     if os.path.isdir(job_trace):
         summary_, reason = summarize_trace(job_trace)
         if summary_ is None:
@@ -771,11 +845,7 @@ def cmd_telemetry(args):
             job_git = {k: summary_[k] for k in ("fetch_attempts", "failed_fetch_attempts", "retries", "throttle_hits",
                                                  "lazy_fetches", "lazy_fetch_failures", "lazy_objects")}
             job_git["processes"] = summary_["trace"]["processes"]
-        for name in os.listdir(job_trace):  # parsed: drop the raw lines, keep the directory for later git calls
-            try:
-                os.remove(os.path.join(job_trace, name))
-            except OSError:
-                pass
+        purge_trace(job_trace, keep_dir=True)  # parsed: drop the raw lines, keep the directory for later git calls
     else:
         unknown["after_checkout_git"] = "not traced (source-prep-stats trace-job was not enabled)"
 

@@ -11,6 +11,12 @@
 # or ratchet constant is REPORTED (job summary + notice annotation) as a protected-path change; deciding on it
 # is trusted-protected-paths' job. Ratchet constants are compared against the base side with ast.parse (parsed,
 # never executed), not against the constants the PR's own checkout carries.
+#
+# FL-4 (report-only): the same step REPORTS test-weakening predicates over the diff's +/- lines (a test skip or
+# todo, a retry, continue-on-error, a swallowed test failure, a deleted test with no successor, a loosened
+# budget or timeout) as a job-summary section plus warning annotations. A finding never changes the exit code,
+# and a scan failure is reported as INCOMPLETE, never as clean. A quarantine or approval reference is listed and
+# never honoured until a verifier for those records exists.
 name: trusted-workflow-integrity
 
 on:
@@ -90,16 +96,22 @@ jobs:
           The PR is DATA. Every file is read with `git show <sha>:<path>`; nothing from the PR is executed or
           imported. Ratchet constants are read with ast.parse, which parses and never runs the code.
 
+          Integrity mode also REPORTS the FL-4 test-weakening predicates: content predicates over the +/- lines of
+          the PR's diff (a test skip, a retry, continue-on-error, a swallowed test failure, a deleted test with no
+          successor, a loosened budget or timeout). The report never changes the exit code; see weakening_report().
+
           Exit codes: 0 pass, 1 policy refusal (protected-paths, once fail-closed), 2 integrity error.
           """
           import argparse
           import ast
+          import bisect
           import fnmatch
           import json
           import os
           import re
           import subprocess
           import sys
+          import time
 
           SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -252,6 +264,653 @@ jobs:
               return [(out[i], out[i + 1]) for i in range(0, len(out) - 1, 2)]
 
 
+          # --- FL-4: test-weakening predicates (report-only) -------------------------------------------
+          #
+          # Effect predicates over the +/- lines of the PR's diff, read as data through `git diff`/`git show`.
+          # Every rule is scoped by a positive file-type allow-list, so a doc that quotes a pattern is never
+          # scanned. Token rules count NET-NEW matches: an added line identical (whitespace aside) to a removed
+          # line in the same file is a move, and a rule's added matches are offset by its removed matches.
+          # Numeric rules pair a key's removed and added values in file order and report only the direction that
+          # accepts more (a higher timeout, retry or upper bound; a lower coverage floor, assertion count or lower
+          # bound). A `vagaris-quarantine: <id>` or `vagaris-approval: <id>` marker on or just above the line, or
+          # the same as a commit trailer, is LISTED with the finding and never clears it: no quarantine or approval
+          # verifier exists yet. Whether a workflow job backs a required check is not readable with this job's
+          # token, so continue-on-error is reported on every job and step.
+
+          WEAKENING_VERSION = "fl4-v1"
+          WEAKENING_EFFECT = "ci-policy:test-weakening"
+          WEAKENING_MAX_FILES = 3000
+          WEAKENING_MAX_PATCH_BYTES = 2000000
+          WEAKENING_MAX_LINE = 4000          # longer lines (minified or generated) are not regex-scanned: INCOMPLETE
+          WEAKENING_DEADLINE_SECONDS = 120   # the whole scan; the job's own timeout is 10 minutes
+          WEAKENING_MAX_LISTED = 200
+          WEAKENING_MAX_ANNOTATIONS = 8      # GitHub keeps 10 warnings per step: 2 stay free for the pointers below
+
+          _JS_EXT = re.compile(r"\.(?:[cm]?[jt]sx?|vue|svelte)$")
+          _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|__tests__|e2e|specs?)/")
+          _NOT_TEST = re.compile(r"(?:^|/)(?:fixtures?|__fixtures__|__snapshots__|snapshots|testdata|__mocks__)/")
+          _TEST_FILE = re.compile(
+              r"\.(?:test|spec|e2e)\.[cm]?[jt]sx?$"
+              r"|(?:^|/)__tests__/(?:[^/]+/)*[^/]+\.[cm]?[jt]sx?$"
+              r"|(?:^|/)test_[^/]*\.py$|_test\.py$|(?:^|/)tests?/(?:[^/]+/)*[^/]+\.py$"
+              r"|(?:^|/)test-[^/]*\.(?:py|sh|bash|[cm]?[jt]s)$"
+              r"|_test\.go$|\.bats$"
+              r"|(?:^|/)tests?/(?:[^/]+/)*[^/]+\.(?:sh|bash)$")
+          _JS_TEST_CONFIG = re.compile(r"(?:^|/)(?:vitest|vite|jest|playwright)[\w.-]*\.(?:config|workspace)[\w.-]*\.[cm]?[jt]s$")
+          _PLAYWRIGHT_CONFIG = re.compile(r"(?:^|/)playwright[\w.-]*\.config[\w.-]*\.[cm]?[jt]s$")
+          _COVERAGE_RC = re.compile(r"(?:^|/)(?:package\.json|\.nycrc(?:\.json|\.ya?ml)?|\.c8rc(?:\.json|\.ya?ml)?)$")
+          _PY_TEST_CONFIG = re.compile(r"(?:^|/)(?:pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|\.coveragerc)$")
+          _PYTEST_INI = re.compile(r"(?:^|/)pytest\.ini$")
+          _WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$|(?:^|/)action\.ya?ml$")
+          _SHELL = re.compile(
+              r"\.(?:sh|bash|zsh|mk)$"
+              r"|(?:^|/)(?:Makefile|GNUmakefile|makefile|justfile|Justfile|package\.json|tox\.ini)$"
+              r"|(?:^|/)(?:Taskfile|lefthook)[\w.-]*\.ya?ml$|(?:^|/)\.pre-commit-config\.ya?ml$"
+              r"|^\.githooks/|^\.husky/")
+
+
+          def is_test_file(path):
+              if _NOT_TEST.search(path) or path.rsplit("/", 1)[-1] == "__init__.py":
+                  return False
+              return bool(_TEST_FILE.search(path))
+
+
+          def path_scopes(path):
+              """The rule scopes a path belongs to. A path in no scope is never content-scanned."""
+              s = set()
+              test = is_test_file(path)
+              js_test_config = bool(_JS_TEST_CONFIG.search(path))
+              if _JS_EXT.search(path) and not _NOT_TEST.search(path) and (test or _TEST_DIR.search(path)):
+                  s.add("js-testlike")
+              if js_test_config:
+                  s.add("js-test-config")
+              if _PLAYWRIGHT_CONFIG.search(path):
+                  s.add("playwright-config")
+              if js_test_config or _COVERAGE_RC.search(path):
+                  s.add("coverage-config")
+              if path.endswith(".py"):
+                  s.add("py")
+              if _PY_TEST_CONFIG.search(path):
+                  s.add("py-test-config")
+              if _PYTEST_INI.search(path):
+                  s.add("pytest-ini")
+              if path.endswith("_test.go"):
+                  s.add("go-test")
+              if path.endswith(".bats"):
+                  s.add("bats")
+              if _WORKFLOW.search(path):
+                  s.update(("workflow", "shell"))
+              if _SHELL.search(path):
+                  s.add("shell")
+              if test or js_test_config or "pytest-ini" in s:
+                  s.add("testlike-any")
+              return s
+
+
+          # A leading `*/` and closed `/* ... */` blocks: code after them is not a comment (`/**/ it.skip(...)`).
+          _LEADING_BLOCK_COMMENTS = re.compile(r"(?:\*/)?\s*(?:/\*.*?\*/\s*)*")
+
+
+          def is_comment(text):
+              s = text.strip()
+              if not s:
+                  return False
+              rest = s[_LEADING_BLOCK_COMMENTS.match(s).end():]
+              if not rest or rest.startswith(("#", "//", "/*", "<!--")):
+                  return True
+              # ` * text` inside a block comment; a shell case arm `*) npm test || true ;;` is code.
+              return rest == "*" or rest.startswith(("* ", "*\t", "**"))
+
+
+          # Token rules -------------------------------------------------------------------------------
+
+          _SKIP_JS = re.compile(
+              r"(?<![\w$.])(?P<tok>(?:it|test|describe|suite|context|bench)"
+              r"(?:\.(?:concurrent|sequential|shuffle|each|for|describe|serial|parallel))*"
+              r"\.(?:skip|todo|skipIf|runIf|fixme|only)"
+              r"|xit|xtest|xdescribe|xcontext|xsuite|fit|fdescribe|ftest)\b(?=\s*[.(`])")
+          _SKIP_PY = re.compile(
+              r"(?P<tok>\bpytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.(?:skip|xfail)\s*\(|"
+              r"@unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b|\bself\.skipTest\s*\(|"
+              r"\braise\s+(?:unittest\.)?SkipTest\b)")
+          _SKIP_GO = re.compile(r"\bt\.(?P<tok>Skip|SkipNow|Skipf)\s*\(")
+          _SKIP_BATS = re.compile(r"^\s*(?P<tok>skip)\b")
+          _FLAKY_PY = re.compile(r"(?P<tok>@pytest\.mark\.flaky)\b")
+          _SLOW_JS = re.compile(r"(?<![\w$.])(?P<tok>test\.slow)\s*\(")
+          _HAS_ASSERTIONS = re.compile(r"\b(?P<tok>expect\.hasAssertions)\s*\(")
+          _COE = re.compile(r"^\s*(?:-\s+)?continue-on-error\s*:\s*(?P<v>[^#]*?)\s*(?:#.*)?$")
+
+          _SWALLOW = re.compile(r"\|\|\s*(?P<s>true\b|:(?=\s|$|[;)\"'])|exit\s+0\b|echo\b|printf\b)")
+          _SEGMENT_SEP = re.compile(r"\|\||&&|;|\$\(|`|\(|\)")
+          _RUNNER = re.compile(
+              r"(?P<r>vitest|jest|mocha|ava|playwright\s+test|pytest|py\.test|tox|nox|go\s+test|cargo\s+test|bats"
+              r"|node\s+--test|deno\s+test|bun\s+test|unittest"
+              r"|(?:npm|pnpm|yarn|bun)(?:\s+(?:-r|--recursive|-w|--workspace-root|--if-present|--silent|-s"
+              r"|--filter(?:=|\s+)\S+|-F\s+\S+|-C\s+\S+|--dir(?:=|\s+)\S+))*\s+(?:run\s+)?(?:test|check)(?:[:\w.-]*)"
+              r"|turbo\s+(?:run\s+)?(?:test|check)[\w:.-]*|make\s+(?:-\S+\s+)*(?:test|check)[\w.-]*"
+              r"|ansible-lint|shellcheck|actionlint|yamllint|eslint|tsc|ruff|mypy|semgrep|gitleaks|trufflehog)\b")
+          _WRAPPERS = re.compile(
+              r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+|(?:env|sudo|time|command|exec)\s+|nice(?:\s+-n\s*-?\d+)?\s+"
+              r"|timeout\s+(?:-\S+\s+)*\S+\s+|xvfb-run\s+(?:-\S+\s+)*|npx\s+(?:--yes\s+|-y\s+)?|bunx\s+"
+              r"|pnpm\s+(?:exec|dlx)\s+|(?:pnpm|yarn)\s+(?=(?:vitest|jest|mocha|playwright|eslint|tsc)\b)"
+              r"|(?:uv|poetry|pipenv|hatch)\s+run\s+|python3?(?:\.\d+)?\s+-m\s+|(?:\./)?node_modules/\.bin/)+")
+
+
+          def safe_tok(text):
+              """A matched token reduced to a fixed character set: PR text never reaches markdown or a command."""
+              return re.sub(r"[^A-Za-z0-9_ .:@/|-]", "", " ".join(str(text).split()))[:80].strip()
+
+
+          def _tokens(rx):
+              def match(line):
+                  return [safe_tok(m.group("tok").rstrip().rstrip("(")) for m in rx.finditer(line)]
+              return match
+
+
+          def coe_tokens(line):
+              m = _COE.match(line)
+              if not m:
+                  return []
+              v = m.group("v").strip().strip("\"'").lower()
+              if v in ("false", ""):
+                  return []
+              return ["continue-on-error: true" if v == "true" else "continue-on-error: <expression>"]
+
+
+          _INTERPRETER = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|bash|sh|zsh|node|bats)$")
+          _SCRIPT_ROOT = re.compile(r"^(?:\$\{?GITHUB_WORKSPACE\}?/|\./)+")
+
+
+          def test_script(cand, command_pos):
+              """The test file that cand runs as `<interpreter> [flags] <path>` or as a bare path, or None.
+
+              The fleet mostly runs tests this way (python3 scripts/test-*.py, bash test/run-*.sh). A bare path counts
+              in command position (segment start, after `run:`) or with a ./ or $GITHUB_WORKSPACE/ prefix; after a
+              quote it is more likely an argument (git diff -- "tests/test_x.py"), so there it needs an interpreter.
+              """
+              words = cand.split(None, 6)
+              if not words:
+                  return None
+              i = 0
+              if _INTERPRETER.match(words[0].strip("\"'").rsplit("/", 1)[-1]):
+                  i = 1
+                  while i < len(words) and words[i].startswith("-"):
+                      i += 1
+                  if i >= len(words):
+                      return None
+              elif not command_pos and not _SCRIPT_ROOT.match(words[0].lstrip("\"'")):
+                  return None
+              path = _SCRIPT_ROOT.sub("", words[i].strip("\"'"))
+              return path if path and is_test_file(path) else None
+
+
+          def swallowed_runner(line):
+              """The test or check command whose failure a `|| true`-style tail swallows, or None."""
+              sep_ends = [s.end() for s in _SEGMENT_SEP.finditer(line)]  # one pass: segments stay linear in the line
+              for m in _SWALLOW.finditer(line):
+                  i = bisect.bisect_right(sep_ends, m.start()) - 1
+                  segment = line[(sep_ends[i] if i >= 0 else 0): m.start()]
+                  for element in segment.split("|"):
+                      starts = [(0, True)] + [(x.end(), x.group().startswith("run"))
+                                              for x in re.finditer(r"[\"']|\brun:\s*", element)]
+                      for st, command_pos in starts:
+                          cand = _WRAPPERS.sub("", element[st:].lstrip(" \t\"'"))
+                          r = _RUNNER.match(cand)
+                          if r:
+                              return safe_tok("%s || %s" % (r.group("r"), m.group("s")))
+                          script = test_script(cand, command_pos)
+                          if script:
+                              return safe_tok("%s || %s" % (script, m.group("s")))
+              return None
+
+
+          def swallow_tokens(line):
+              t = swallowed_runner(line)
+              return [t] if t else []
+
+
+          # (rule, scope, matcher, direction): "add" flags net-new added matches, "remove" net removed ones.
+          TOKEN_RULES = [
+              ("test-skip", "js-testlike", _tokens(_SKIP_JS), "add"),
+              ("test-skip", "py", _tokens(_SKIP_PY), "add"),
+              ("test-skip", "go-test", _tokens(_SKIP_GO), "add"),
+              ("test-skip", "bats", _tokens(_SKIP_BATS), "add"),
+              ("test-retry", "py", _tokens(_FLAKY_PY), "add"),
+              ("budget-loosened", "js-testlike", _tokens(_SLOW_JS), "add"),
+              ("budget-loosened", "js-testlike", _tokens(_HAS_ASSERTIONS), "remove"),
+              ("continue-on-error", "workflow", coe_tokens, "add"),
+              ("swallowed-failure", "shell", swallow_tokens, "add"),
+          ]
+
+          # Numeric rules -----------------------------------------------------------------------------
+          # (rule, family, scope, regex with groups k and v, direction, absent)
+          # direction "up": a higher value accepts more; "down": a lower value accepts more.
+          # absent: the baseline for an added key with no removed counterpart (0 for retries: none by default),
+          # "removal" when deleting the key loosens (a coverage floor, an assertion count), else None.
+          NUMERIC_RULES = [
+              ("test-retry", "retry", "js-test-config", r"\b(?P<k>retry|retries)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
+              ("test-retry", "retry", "js-testlike",
+               r"\.configure\s*\(\s*\{[^{}\n]*?\b(?P<k>retries)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
+              ("test-retry", "retry", "js-testlike",
+               r"(?<![\w$.])(?:it|test|describe|suite|bench)(?:\.\w+)*\s*\(\s*(?:'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`|\w+)"
+               r"\s*,\s*\{[^{}\n]*?\b(?P<k>retry)\s*:\s*(?P<v>[^,}\n]+)", "up", 0),
+              ("test-retry", "retry", "js-testlike",
+               r"\b(?:this|jest)\.(?P<k>retries|retryTimes)\s*\(\s*(?P<v>[^,)\n]+)", "up", 0),
+              ("test-retry", "retry", "shell",
+               r"\b(?:vitest|playwright|jest)\b[^\n]*?(?P<k>--retry|--retries)(?:=|\s+)(?P<v>\d+)", "up", 0),
+              ("test-retry", "retry", "shell", r"(?P<k>--reruns)(?:=|\s+)(?P<v>\d+)", "up", 0),
+              ("test-retry", "retry", "py-test-config", r"(?P<k>--reruns)(?:=|\s+)(?P<v>\d+)", "up", 0),
+              ("test-retry", "retry", "py-test-config", r"^\s*(?P<k>reruns)\s*=\s*(?P<v>\d+)", "up", 0),
+              ("budget-loosened", "timeout", "js-test-config",
+               r"\b(?P<k>testTimeout|hookTimeout|teardownTimeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
+              ("budget-loosened", "timeout", "js-testlike",
+               r"\b(?P<k>testTimeout|hookTimeout|teardownTimeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
+              ("budget-loosened", "timeout", "js-testlike",
+               r"\b(?P<k>jest\.setTimeout|this\.timeout|test\.setTimeout)\s*\(\s*(?P<v>[^,)\n]+)", "up", None),
+              # The per-test options form, it('x', { timeout: 60_000 }, ...): the same shape as the retry option above.
+              ("budget-loosened", "timeout", "js-testlike",
+               r"(?<![\w$.])(?:it|test|describe|suite|bench)(?:\.\w+)*\s*\(\s*(?:'[^'\n]*'|\"[^\"\n]*\"|`[^`\n]*`|\w+)"
+               r"\s*,\s*\{[^{}\n]*?\b(?P<k>timeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
+              ("budget-loosened", "timeout", "playwright-config", r"\b(?P<k>timeout)\s*:\s*(?P<v>[^,}\n]+)", "up", None),
+              ("budget-loosened", "timeout", "py",
+               r"@pytest\.mark\.(?P<k>timeout)\s*\(\s*(?:timeout\s*=\s*)?(?P<v>[^,)\n]+)", "up", None),
+              ("budget-loosened", "timeout", "pytest-ini", r"^\s*(?P<k>timeout)\s*=\s*(?P<v>[^\s#;]+)", "up", None),
+              ("budget-loosened", "coverage", "coverage-config",
+               r"[\"']?\b(?P<k>lines|branches|functions|statements)[\"']?\s*:\s*(?P<v>[^,}\n]+)", "down", "removal"),
+              ("budget-loosened", "coverage", "py-test-config",
+               r"\b(?P<k>fail_under|fail-under)\s*=\s*(?P<v>[^\s#;]+)", "down", "removal"),
+              ("budget-loosened", "coverage", "shell", r"(?P<k>--cov-fail-under|--fail-under)(?:=|\s+)(?P<v>[\d.]+)",
+               "down", "removal"),
+              ("budget-loosened", "coverage", "py-test-config",
+               r"(?P<k>--cov-fail-under|--fail-under)(?:=|\s+)(?P<v>[\d.]+)", "down", "removal"),
+              ("budget-loosened", "assertions", "js-testlike", r"\bexpect\.(?P<k>assertions)\s*\(\s*(?P<v>[^,)\n]+)",
+               "down", "removal"),
+              ("budget-loosened", "bound", "js-testlike",
+               r"\.(?P<k>toBeLessThan|toBeLessThanOrEqual)\s*\(\s*(?P<v>[^,)\n]+)", "up", None),
+              ("budget-loosened", "bound", "js-testlike",
+               r"\.(?P<k>toBeGreaterThan|toBeGreaterThanOrEqual)\s*\(\s*(?P<v>[^,)\n]+)", "down", None),
+              # Any identifier, kept only when it names a budget (numeric_findings): one bounded identifier per word
+              # start keeps the match linear, where a "...budget..." pattern backtracks quadratically inside a long word.
+              ("budget-loosened", "budget", "testlike-any",
+               r"(?<![A-Za-z0-9_])(?P<k>[A-Za-z0-9_]+)\s*[:=]\s*(?P<v>[^,;{}\n]+)", "up", None),
+          ]
+          NUMERIC_RULES = [(r, f, s, re.compile(x), d, a) for r, f, s, x, d, a in NUMERIC_RULES]
+
+          _NUM = r"\d[\d_]*(?:\.\d+)?"
+          _PRODUCT = re.compile(r"^%s(?:\s*\*\s*%s)*$" % (_NUM, _NUM))
+
+
+          def parse_num(raw):
+              """A literal number (products like 30 * 1000 allowed), 0 for false/null/undefined/None, else None."""
+              v = re.split(r"//|/\*|#", raw, 1)[0].strip().rstrip(",;)}]").strip().strip("\"'").strip()
+              if v.lower() in ("false", "null", "undefined", "none"):
+                  return 0.0
+              if not _PRODUCT.match(v):
+                  return None
+              out = 1.0
+              for part in v.split("*"):
+                  out *= float(part.strip().replace("_", ""))
+              return out
+
+
+          def _fmt(n):
+              return "non-literal" if n is None else ("%d" % n if n == int(n) else "%g" % n)
+
+
+          def safe_key(k):
+              return re.sub(r"[^A-Za-z0-9_.:-]", "", k)[:64]
+
+
+          # Diff reading ------------------------------------------------------------------------------
+
+          def name_status_renames(mb, head):
+              """[(status letter, old path, new path)] with rename detection; old == new except for R and C."""
+              fields = [f for f in git("diff", "--name-status", "-z", "-M", mb, head).split("\0")]
+              out, i = [], 0
+              while i < len(fields) and fields[i]:
+                  st = fields[i]
+                  if st[:1] in ("R", "C"):
+                      out.append((st[:1], fields[i + 1], fields[i + 2]))
+                      i += 3
+                  else:
+                      out.append((st[:1], fields[i + 1], fields[i + 1]))
+                      i += 2
+              return out
+
+
+          _DIFF_ARGS = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "-M", "--unified=1")
+
+
+          def file_patch(mb, head, old, new):
+              paths = [":(literal)" + p for p in sorted({old, new})]
+              return git(*(_DIFF_ARGS + (mb, head, "--") + tuple(paths)))
+
+
+          def file_patches(mb, head, rows):
+              """{(old, new): patch} from ONE git diff over every row's paths (one process, not one per file).
+
+              A section is bound to a row only by its exact expected header, so a path git quotes (control or
+              non-ASCII bytes) or a rename paired differently inside the narrower pathspec is simply absent here,
+              and the caller diffs that row on its own.
+              """
+              paths = sorted({p for _, old, new in rows for p in (old, new)})
+              if not paths:
+                  return {}
+              text = git(*(_DIFF_ARGS + (mb, head, "--") + tuple(":(literal)" + p for p in paths)))
+              sections, cur = {}, None
+              for line in text.split("\n"):
+                  if line.startswith("diff --git "):
+                      cur = sections.setdefault(line, [])
+                  if cur is not None:
+                      cur.append(line)
+              out = {}
+              for _, old, new in rows:
+                  sec = sections.get("diff --git a/%s b/%s" % (old, new))
+                  if sec is not None:
+                      out[(old, new)] = "\n".join(sec)
+              return out
+
+
+          def parse_patch(patch):
+              """(added [(new line no, text)], removed [(old line no, text)], first new-side hunk line)."""
+              added, removed, first = [], [], None
+              lines = patch.split("\n")
+              i = 0
+              hunk = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+              while i < len(lines):
+                  m = hunk.match(lines[i])
+                  i += 1
+                  if not m:
+                      continue
+                  old_no, old_left = int(m.group(1)), int(m.group(2) or 1)
+                  new_no, new_left = int(m.group(3)), int(m.group(4) or 1)
+                  if first is None:
+                      first = max(new_no, 1)
+                  while (old_left > 0 or new_left > 0) and i < len(lines):
+                      ln = lines[i]
+                      i += 1
+                      if ln.startswith("\\"):
+                          continue
+                      tag, text = ln[:1], ln[1:]
+                      if tag == "+":
+                          added.append((new_no, text))
+                          new_no += 1
+                          new_left -= 1
+                      elif tag == "-":
+                          removed.append((old_no, text))
+                          old_no += 1
+                          old_left -= 1
+                      else:
+                          old_no += 1
+                          new_no += 1
+                          old_left -= 1
+                          new_left -= 1
+              return added, removed, first
+
+
+          # Findings ----------------------------------------------------------------------------------
+
+          def _finding(rule, path, line, detail):
+              return {"rule": rule, "effect": WEAKENING_EFFECT, "path": path, "line": line, "detail": detail, "refs": []}
+
+
+          def token_findings(path, scopes, added, removed):
+              added = [(n, t) for n, t in added if not is_comment(t)]
+              removed = [t for _, t in removed if not is_comment(t)]
+              # An added line equal (whitespace aside) to a removed one is a move or re-indent: both drop out.
+              unmatched = {}
+              for t in removed:
+                  unmatched[t.strip()] = unmatched.get(t.strip(), 0) + 1
+              fresh = []
+              for n, t in added:
+                  if unmatched.get(t.strip()):
+                      unmatched[t.strip()] -= 1
+                  else:
+                      fresh.append((n, t))
+              gone = []
+              for t in removed:
+                  if unmatched.get(t.strip()):
+                      unmatched[t.strip()] -= 1
+                      gone.append(t)
+              out = []
+              for rule, scope, match, direction in TOKEN_RULES:
+                  if scope not in scopes:
+                      continue
+                  add_hits = [(n, tok) for n, t in fresh for tok in match(t)]
+                  rem_hits = [tok for t in gone for tok in match(t)]
+                  if direction == "add":
+                      for n, tok in add_hits[len(rem_hits):]:
+                          out.append(_finding(rule, path, n, "adds `%s`" % tok))
+                  else:
+                      for tok in rem_hits[len(add_hits):]:
+                          out.append(_finding(rule, path, None, "removes `%s`" % tok))
+              return out
+
+
+          def numeric_findings(path, scopes, added, removed, first_line):
+              out = []
+              for rule, family, scope, rx, direction, absent in NUMERIC_RULES:
+                  if scope not in scopes:
+                      continue
+                  olds, news = {}, {}
+                  for _, t in removed:
+                      if not is_comment(t):
+                          for m in rx.finditer(t):
+                              if family != "budget" or "budget" in m.group("k").lower():
+                                  olds.setdefault(m.group("k"), []).append(parse_num(m.group("v")))
+                  for n, t in added:
+                      if not is_comment(t):
+                          for m in rx.finditer(t):
+                              if family != "budget" or "budget" in m.group("k").lower():
+                                  news.setdefault(m.group("k"), []).append((n, parse_num(m.group("v"))))
+                  for k in sorted(set(olds) | set(news)):
+                      ov, nv = olds.get(k, []), news.get(k, [])
+                      key = safe_key(k)
+                      for i in range(max(len(ov), len(nv))):
+                          if i < len(ov) and i < len(nv):
+                              o, (n, v) = ov[i], nv[i]
+                              if v is None and o is not None and absent == 0:
+                                  out.append(_finding(rule, path, n, "changes %s `%s` from %s to a non-literal value"
+                                                      % (family, key, _fmt(o))))
+                                  continue
+                              if o is None or v is None:
+                                  continue
+                              if (direction == "up" and v > o) or (direction == "down" and v < o):
+                                  verb = "raises" if direction == "up" else "lowers"
+                                  out.append(_finding(rule, path, n, "%s %s `%s` %s -> %s" % (verb, family, key, _fmt(o), _fmt(v))))
+                          elif i < len(nv):
+                              n, v = nv[i]
+                              if absent == 0 and (v is None or v > 0):
+                                  out.append(_finding(rule, path, n, "sets %s `%s` to %s (default 0)" % (family, key, _fmt(v))))
+                          elif absent == "removal":
+                              out.append(_finding(rule, path, first_line, "removes %s `%s` (was %s)" % (family, key, _fmt(ov[i]))))
+              return out
+
+
+          def deleted_test_findings(status_rows):
+              """A test file deleted, or renamed to a non-test path (b.test.ts.bak, tests/fixtures/), with no successor:
+              no test rename target and no added test file of the same stem."""
+              def stem(p):
+                  b = p.rsplit("/", 1)[-1]
+                  b = re.sub(r"\.(?:test|spec|e2e)(?=\.)", "", b)
+                  b = re.sub(r"^test[_-]|_test(?=\.)", "", b)
+                  return b.rsplit(".", 1)[0]
+              successors = set()
+              for st, old, new in status_rows:
+                  if st in ("A", "R", "C") and is_test_file(new):
+                      successors.add(new.rsplit("/", 1)[-1])
+                      successors.add(stem(new))
+              deleted_sources = {stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
+              out = []
+              for st, old, new in status_rows:
+                  if not is_test_file(old):
+                      continue
+                  if st == "D":
+                      detail = "deletes a test file with no successor"
+                  elif st == "R" and not is_test_file(new):
+                      # git -M reports a test moved out of the runner's reach as a rename, not a deletion.
+                      detail = "renames a test file to the non-test path %s with no successor" % md_code(new)
+                  else:
+                      continue
+                  if old.rsplit("/", 1)[-1] in successors or stem(old) in successors:
+                      continue
+                  if stem(old) in deleted_sources:
+                      detail += " (a source file of the same stem is deleted too)"
+                  out.append(_finding("test-deleted", old, None, detail))
+              return out
+
+
+          def coe_level(lines, idx):
+              """'job <id>', 'step' or 'unknown' for the continue-on-error key on 0-based line idx."""
+              def indent(t):
+                  return len(t) - len(t.lstrip(" "))
+              line = lines[idx]
+              if line.lstrip().startswith("- "):
+                  return "step"
+              ind = indent(line)
+              for j in range(idx - 1, -1, -1):
+                  s = lines[j].strip()
+                  if not s or s.startswith("#") or indent(lines[j]) >= ind:
+                      continue
+                  if s.startswith("- "):
+                      return "step"
+                  m = re.match(r"^([A-Za-z0-9_.-]+|\"[^\"]+\"|'[^']+')\s*:\s*(?:#.*)?$", s)
+                  if not m:
+                      return "unknown"
+                  pi = indent(lines[j])
+                  for k in range(j - 1, -1, -1):
+                      u = lines[k].strip()
+                      if not u or u.startswith("#") or indent(lines[k]) >= pi:
+                          continue
+                      return ("job `%s`" % safe_key(m.group(1).strip("\"'"))) if re.match(r"^jobs\s*:", u) else "unknown"
+                  return "unknown"
+              return "unknown"
+
+
+          _MARKER = re.compile(r"\bvagaris-(?P<kind>quarantine|approval)\s*[:=]\s*(?P<id>[A-Za-z0-9][A-Za-z0-9._/#-]{1,63})", re.I)
+
+
+          def inline_refs(lines, line_no):
+              refs = []
+              for t in lines[max(line_no - 3, 0): line_no]:
+                  for m in _MARKER.finditer(t):
+                      refs.append("%s `%s`" % (m.group("kind").lower(), m.group("id")))
+              return refs
+
+
+          def trailer_refs(mb, head):
+              text = git("log", "--format=%B", "-n", "500", "%s..%s" % (mb, head))
+              refs = []
+              for line in text.splitlines():
+                  m = re.match(r"^\s*vagaris-(quarantine|approval)\s*:\s*([A-Za-z0-9][A-Za-z0-9._/#-]{1,63})\s*$", line, re.I)
+                  if m:
+                      ref = "%s `%s`" % (m.group(1).lower(), m.group(2))
+                      if ref not in refs:
+                          refs.append(ref)
+              return refs
+
+
+          def weakening_scan(mb, head):
+              """(findings, incomplete reasons, files in scope). Raises only through git(); the caller contains it."""
+              status_rows = name_status_renames(mb, head)
+              findings = deleted_test_findings(status_rows)
+              incomplete = []
+              heads = {}
+              deadline = time.monotonic() + WEAKENING_DEADLINE_SECONDS
+              scoped = []
+              for st, old, new in status_rows:
+                  if st == "D" and is_test_file(old):
+                      continue
+                  path = old if st == "D" else new
+                  scopes = path_scopes(path)
+                  if scopes:
+                      scoped.append((st, old, new, path, scopes))
+              in_scope = len(scoped)
+              if in_scope > WEAKENING_MAX_FILES:
+                  incomplete.append("%d files in scope; only the first %d were scanned" % (in_scope, WEAKENING_MAX_FILES))
+                  scoped = scoped[:WEAKENING_MAX_FILES]
+              patches = file_patches(mb, head, [(st, old, new) for st, old, new, _, _ in scoped])
+              for done, (st, old, new, path, scopes) in enumerate(scoped):
+                  if time.monotonic() > deadline:
+                      incomplete.append("the %ds scan budget ran out after %d of %d files in scope; the rest were not scanned"
+                                        % (WEAKENING_DEADLINE_SECONDS, done, in_scope))
+                      break
+                  patch = patches.get((old, new))
+                  if patch is None:
+                      patch = file_patch(mb, head, old, new)
+                  if len(patch) > WEAKENING_MAX_PATCH_BYTES:
+                      incomplete.append("%s: diff larger than %d bytes, not scanned" % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
+                      continue
+                  added, removed, first = parse_patch(patch)
+                  # Regex cost grows with line length; a line past the cap is not matched, and the PR is told so.
+                  too_long = sum(1 for _, t in added + removed if len(t) > WEAKENING_MAX_LINE)
+                  if too_long:
+                      incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
+                      added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
+                      removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
+                  got = token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
+                  if got and st != "D":
+                      heads[path] = (blob(head, path) or "").split("\n")
+                  for f in got:
+                      if f["rule"] == "continue-on-error" and f["line"]:
+                          lines = heads.get(path, [])
+                          if f["line"] <= len(lines):
+                              f["detail"] += " on %s; whether it backs a required check is not readable here" % coe_level(
+                                  lines, f["line"] - 1)
+                      if f["line"] and path in heads:
+                          f["refs"] += inline_refs(heads[path], f["line"])
+                  findings += got
+              pr_refs = trailer_refs(mb, head) if findings else []
+              for f in findings:
+                  f["refs"] += [r for r in pr_refs if r not in f["refs"]]
+              return findings, incomplete, in_scope
+
+
+          def md_code(text):
+              return "`%s`" % str(text).replace("`", "'").replace("\r", " ").replace("\n", " ")
+
+
+          def _cmd_data(text):
+              return str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+          def _cmd_prop(text):
+              return _cmd_data(text).replace(":", "%3A").replace(",", "%2C")
+
+
+          def weakening_report(mb, head):
+              """Summary lines for the FL-4 section, plus warning annotations. Never raises; never sets an exit code."""
+              lines = ["", "### Test-weakening predicates (FL-4 `%s`, report-only)" % WEAKENING_VERSION]
+              try:
+                  findings, incomplete, in_scope = weakening_scan(mb, head)
+              except Exception as exc:  # report-only: a scan failure is INCOMPLETE, never a pass and never a red job
+                  lines.append("- INCOMPLETE: the scan failed (%s); no weakening verdict for this PR" % type(exc).__name__)
+                  print("::warning title=test weakening (FL-4)::scan incomplete (%s)" % _cmd_data(type(exc).__name__))
+                  return lines
+              for f in findings[:WEAKENING_MAX_LISTED]:
+                  where = f["path"] if not f["line"] else "%s:%d" % (f["path"], f["line"])
+                  ref = ("references %s (unverified)" % ", ".join(f["refs"])) if f["refs"] else "no quarantine or approval reference"
+                  lines.append("- WEAKENING %s %s %s; %s" % (f["rule"], md_code(where), f["detail"], ref))
+              if len(findings) > WEAKENING_MAX_LISTED:
+                  lines.append("- ... and %d more findings" % (len(findings) - WEAKENING_MAX_LISTED))
+              for f in findings[:WEAKENING_MAX_ANNOTATIONS]:
+                  loc = "file=%s" % _cmd_prop(f["path"]) + (",line=%d" % f["line"] if f["line"] else "")
+                  print("::warning %s,title=test weakening (FL-4)::%s: %s" % (loc, f["rule"], _cmd_data(f["detail"])))
+              if len(findings) > WEAKENING_MAX_ANNOTATIONS:
+                  print("::warning title=test weakening (FL-4)::%d more findings in the job summary"
+                        % (len(findings) - WEAKENING_MAX_ANNOTATIONS))
+              for reason in incomplete:
+                  lines.append("- INCOMPLETE: %s" % reason)
+              if incomplete:
+                  print("::warning title=test weakening (FL-4)::scan incomplete; see the job summary")
+              if findings:
+                  lines.append("Reported, not enforced: a weakening is allowed only with a quarantine or approval record, "
+                               "and no verifier for either exists yet, so a reference is listed, never honoured.")
+              elif not incomplete:
+                  lines.append("No test-weakening pattern added (%d changed files in scope)." % in_scope)
+              return lines
+
+
           # --- reporting -------------------------------------------------------------------------------
 
           def summary(lines):
@@ -289,6 +948,7 @@ jobs:
                           print("::notice title=ratchet constant %s::%s %s" % (kind, rf, name))
               if len(lines) == 2:
                   lines.append("No protected workflow or ratchet change.")
+              lines += weakening_report(mb, head)
               summary(lines)
               return 0
 

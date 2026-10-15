@@ -539,8 +539,11 @@ class IntegrityReportTests(unittest.TestCase):
 
     def test_red_file_over_the_blob_cap_is_never_diffed(self):
         head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
-        with mock.patch.object(classify, "WEAKENING_MAX_BLOB_BYTES", 1000000, create=True):
+        started = time.monotonic()
+        with mock.patch.object(classify, "WEAKENING_MAX_BLOB_BYTES", 1000000, create=True), \
+                mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", 5):
             code, out, peak = self.traced_integrity(head)
+        self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(code, 0, out)
         self.assertIn("- INCOMPLETE: `src/huge.test.ts`: file larger than 1000000 bytes, not diffed or scanned", out)
         self.assertIn("- WEAKENING test-skip `src/z.test.ts:1` adds `it.skip`", out)
@@ -560,14 +563,32 @@ class IntegrityReportTests(unittest.TestCase):
 
     def test_red_total_read_budget_is_incomplete(self):
         head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
+        started = time.monotonic()
         with mock.patch.object(classify, "WEAKENING_MAX_PATCH_BYTES", 10 ** 8), \
+                mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", 5), \
                 mock.patch.object(classify, "WEAKENING_MAX_TOTAL_BYTES", 1000000, create=True):
             code, out, peak = self.traced_integrity(head)
+        elapsed = time.monotonic() - started
         self.assertEqual(code, 0, out)
+        # The BYTE budget stopped it, inside the deadline (not the clock).
         self.assertIn("- INCOMPLETE: the 1000000-byte read budget ran out after 0 of 2 files in scope; "
                       "the rest were not scanned", out)
+        self.assertNotIn("scan budget ran out", out)
         self.assertNotIn("No test-weakening pattern added", out)
         self.assertLess(peak, 2500000)
+        self.assertLess(elapsed, 5)
+
+    def test_red_changed_file_list_is_read_under_a_cap(self):
+        head = self.repo.case({"src/a1.test.ts": "it.skip('a1', () => {})\n", "src/a2.test.ts": "it.only('a2')\n"})
+        raw = subprocess.run(["git", "diff", "--raw", "--no-abbrev", "-z", "-M", self.repo.base, head],
+                             cwd=self.repo.d, check=True, capture_output=True).stdout
+        cut = raw.index(b"src/a1.test.ts\0") + len(b"src/a1.test.ts\0") + 10  # inside the second record
+        with mock.patch.object(classify, "WEAKENING_MAX_CENSUS_BYTES", cut, create=True):
+            findings, incomplete, in_scope = self.repo.scan(head)
+        self.assertEqual([(f["path"], f["detail"]) for f in findings], [("src/a1.test.ts", "adds `it.skip`")])
+        self.assertEqual(incomplete, ["the changed-file list is longer than %d bytes; only the first 1 files were "
+                                      "listed and scanned" % cut])
+        self.assertEqual(in_scope, 1)
 
     @contextlib.contextmanager
     def slow_git_diff(self, flag, seconds=8):

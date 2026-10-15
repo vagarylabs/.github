@@ -9,6 +9,8 @@ Subcommands (each exits 0: measurement must never fail a job):
 Rules the record keeps:
   - A value that was not measured is null, and "unknown" says why. 0 only ever means "measured zero".
   - A shallow, partial (filtered), sparse or submodule-less tree is "incomplete", never "complete".
+  - Every read of one invocation shares one deadline and one byte/event budget (Budget). Running out is unknown,
+    never a partial count, a crash or a hang.
   - Only allow-listed aggregates leave this module. Raw trace2 lines carry argv, remote URLs and error
     text; they stay in a 0700 directory under RUNNER_TEMP and are deleted once parsed. The two trace strings
     that are published (protocol version, effective filter) are mapped to a closed form first: anything
@@ -20,13 +22,17 @@ vagary-core contracts/delivery/v1, P7-01). Standard library only.
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import urllib.parse
@@ -43,6 +49,14 @@ PACK_HEADER_RE = re.compile(r"^--pack_header=\d+,(\d+)$")
 HTTP_429_SINCE = (2, 54)  # git >= 2.54 traces every 429 response (http/429-retry-after), retried or not
 LAZY_MARK = "fetch.negotiationAlgorithm=noop"  # promisor-remote.c runs lazy fetches as `git -c <this> fetch ... --stdin`
 DEFAULT_WALK_BUDGET = 20.0
+# One budget for every read of one invocation (trace2 files, git output, object listing, size walks). Running
+# out is unknown, never a partial count, a crash or a hang. The size walks also stop at walk-budget-seconds.
+DEADLINE_SECONDS = 120.0
+MAX_READ_BYTES = 256 << 20  # trace2 lines + git stdout + the sparse-checkout file
+MAX_EVENTS = 4000000  # trace2 events + directory entries
+MAX_TRACE_FILES = 20000
+MAX_LINE_BYTES = 1 << 20
+MAX_SPARSE_BYTES = 16 << 20
 PROTOCOL_VERSIONS = ("0", "1", "2")
 # Every published filter is one of these (or "other"). sparse:oid=<rev> keeps only its kind: the rev is free text.
 FILTER_PART_RE = re.compile(r"blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|"
@@ -122,15 +136,45 @@ def _well_formed(ev):
     return kind != "start" or all(isinstance(a, str) for a in ev.get("argv") or [])
 
 
-def read_trace(trace_dir):
-    """Read a GIT_TRACE2_EVENT directory (one file per process) into per-process summaries keyed by sid."""
+def _open_regular(path):
+    """A binary reader for path when it is a regular file (never a FIFO or device, never through a symlink)."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    return os.fdopen(fd, "rb")
+
+
+def read_trace(trace_dir, budget):
+    """Read a GIT_TRACE2_EVENT directory (one file per process) into per-process summaries keyed by sid.
+
+    Every file, line and byte is charged to the budget; raises BudgetExhausted when it runs out. A line longer
+    than MAX_LINE_BYTES is a bad line, skipped without being held in memory."""
+    names = []
+    with os.scandir(trace_dir) as entries:
+        for e in entries:
+            budget.charge(events=1)
+            if e.is_file(follow_symlinks=False):
+                if len(names) >= MAX_TRACE_FILES:  # this trace only: later reads keep their budget
+                    raise BudgetExhausted("more than %d trace2 files" % MAX_TRACE_FILES)
+                names.append(e.name)
     procs, bad_lines = {}, 0
-    for name in sorted(os.listdir(trace_dir)):
-        path = os.path.join(trace_dir, name)
-        if not os.path.isfile(path):
+    for name in sorted(names):
+        fh = _open_regular(os.path.join(trace_dir, name))
+        if fh is None:
             continue
-        with open(path, "rb") as fh:
-            for raw in fh:
+        with fh:
+            overlong = False
+            while True:
+                raw = fh.readline(MAX_LINE_BYTES + 1)
+                if not raw:
+                    break
+                budget.charge(nbytes=len(raw), events=1)
+                if overlong or len(raw) > MAX_LINE_BYTES:
+                    bad_lines += 0 if overlong else 1
+                    overlong = not raw.endswith(b"\n")  # still inside the long line until its newline
+                    continue
                 try:
                     ev = json.loads(raw)
                 except (ValueError, RecursionError):  # RecursionError: a line of deeply nested brackets
@@ -164,14 +208,17 @@ def read_trace(trace_dir):
     return procs, bad_lines
 
 
-def summarize_trace(trace_dir):
+def summarize_trace(trace_dir, budget=None):
     """Allow-listed transfer aggregates from a trace2 directory, or (None, reason) when nothing was traced.
 
-    Never raises: a trace it cannot read is an unknown transfer, and the caller still deletes the raw files."""
+    Never raises: a trace it cannot read, or one larger than the read budget, is an unknown transfer (never a
+    partial count), and the caller still deletes the raw files."""
     if not trace_dir or not os.path.isdir(trace_dir):
         return None, "no trace2 directory (the before step did not run)"
     try:
-        return _summarize(*read_trace(trace_dir))
+        return _summarize(*read_trace(trace_dir, budget or Budget(DEFAULT_WALK_BUDGET)))
+    except BudgetExhausted as exc:
+        return None, "trace2 output not read in full: %s" % exc
     except Exception as exc:  # the reason names the failure, never its message (it can quote the trace)
         return None, "the trace2 output could not be read (%s)" % type(exc).__name__
 
@@ -272,15 +319,62 @@ def _summarize(procs, bad_lines):
 
 # ---------------------------------------------------------------- filesystem --------------------------------------
 
+class BudgetExhausted(Exception):
+    """The invocation's read budget ran out: the value being read, and every read after it, is unknown."""
+
+
+class WalkTimedOut(BudgetExhausted):
+    """The size walks used up walk-budget-seconds; other reads may go on."""
+
+
+def _finite_seconds(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
 class Budget:
-    """One wall-clock deadline shared by every walk in an invocation; an exceeded walk is unknown, not partial."""
+    """One deadline, byte allowance and event allowance shared by every read of one invocation: trace2 files,
+    git output, the object listing and the size walks. The walks also stop at their own walk budget, which
+    starts with the first walk. Exhaustion raises BudgetExhausted; callers turn it into unknown."""
 
-    def __init__(self, seconds):
-        self.deadline = time.monotonic() + max(0.0, float(seconds))
-        self.hit = False  # a walk was cut short, so its total is unknown
+    def __init__(self, walk_seconds):
+        now = time.monotonic()
+        self.walk_seconds = walk_seconds if _finite_seconds(walk_seconds) else DEFAULT_WALK_BUDGET
+        self.deadline = now + DEADLINE_SECONDS
+        self.walk_deadline = None
+        self.bytes_left, self.events_left = MAX_READ_BYTES, MAX_EVENTS
+        self.exhausted = None  # why the shared budget ran out
+        self.hit = False  # a size walk was cut short, so its total is unknown
 
-    def exceeded(self):
-        return time.monotonic() > self.deadline
+    def remaining(self):
+        return self.deadline - time.monotonic()
+
+    def exhaust(self, reason):
+        if self.exhausted is None:
+            self.exhausted = reason
+        return BudgetExhausted(self.exhausted)
+
+    def charge(self, nbytes=0, events=0):
+        """Account for one read. Raises BudgetExhausted once the deadline, the bytes or the events are spent."""
+        if self.exhausted is None:
+            self.bytes_left -= nbytes
+            self.events_left -= events
+            if time.monotonic() >= self.deadline:
+                self.exhaust("the step's %g s read deadline passed" % DEADLINE_SECONDS)
+            elif self.bytes_left < 0:
+                self.exhaust("the step read more than %d bytes" % MAX_READ_BYTES)
+            elif self.events_left < 0:
+                self.exhaust("the step read more than %d trace events and directory entries" % MAX_EVENTS)
+        if self.exhausted is not None:
+            raise BudgetExhausted(self.exhausted)
+
+    def charge_walk(self):
+        """One directory entry of a size walk: the shared budget, then the walk budget."""
+        self.charge(events=1)
+        now = time.monotonic()
+        if self.walk_deadline is None:
+            self.walk_deadline = now + self.walk_seconds
+        if now >= self.walk_deadline:
+            raise WalkTimedOut(WALK_TIMED_OUT)
 
 
 WALK_TIMED_OUT = "walk exceeded the time budget"
@@ -296,55 +390,58 @@ def walk_bytes(root, budget, seen=None):
     sizes). A walk cut short or a directory it could not read is unknown, never a partial or zero total.
     An entry that vanished mid-walk is no longer there to count."""
     seen = set() if seen is None else seen
-    total, stack, n = 0, [root], 0
-    while stack:
-        top = stack.pop()
-        try:
-            with os.scandir(top) as entries:
-                for e in entries:
-                    n += 1
-                    if n % 512 == 0 and budget.exceeded():
-                        budget.hit = True
-                        return None, WALK_TIMED_OUT
-                    try:
-                        if e.is_dir(follow_symlinks=False):
-                            stack.append(e.path)
-                        elif e.is_file(follow_symlinks=False) or e.is_symlink():
-                            st = e.stat(follow_symlinks=False)
-                            key = (st.st_dev, st.st_ino)
-                            if key not in seen:
-                                seen.add(key)
-                                total += st.st_size
-                    except FileNotFoundError:
-                        continue
-        except FileNotFoundError as exc:
-            if top == root:
-                return None, _unreadable("the directory", exc)
-        except OSError as exc:
-            return None, _unreadable("a directory in the walk", exc)
-    if budget.exceeded():
+    total, stack = 0, [root]
+    try:
+        budget.charge_walk()  # a zero walk budget, or one already spent, sizes nothing
+        while stack:
+            top = stack.pop()
+            try:
+                with os.scandir(top) as entries:
+                    for e in entries:
+                        budget.charge_walk()
+                        try:
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append(e.path)
+                            elif e.is_file(follow_symlinks=False) or e.is_symlink():
+                                st = e.stat(follow_symlinks=False)
+                                key = (st.st_dev, st.st_ino)
+                                if key not in seen:
+                                    seen.add(key)
+                                    total += st.st_size
+                        except FileNotFoundError:
+                            continue
+            except FileNotFoundError as exc:
+                if top == root:
+                    return None, _unreadable("the directory", exc)
+            except OSError as exc:
+                return None, _unreadable("a directory in the walk", exc)
+    except BudgetExhausted as exc:
         budget.hit = True
-        return None, WALK_TIMED_OUT
+        return None, str(exc)
     return total, None
 
 
-def object_files(objects_dir):
+def object_files(objects_dir, budget):
     """Pack files {name: bytes} and loose-object bytes under .git/objects, plus None; or (None, None, reason)
-    when a directory there could not be read (unknown, never an empty or zero listing)."""
+    when a directory there could not be read (unknown, never an empty or zero listing). Raises
+    BudgetExhausted when the read budget runs out."""
     packs, loose = {}, 0
     pack_dir = os.path.join(objects_dir, "pack")
     try:
         if os.path.isdir(pack_dir):
             with os.scandir(pack_dir) as entries:
                 for e in entries:
+                    budget.charge(events=1)
                     if e.name.endswith(".pack") and e.is_file(follow_symlinks=False):
                         packs[e.name] = e.stat(follow_symlinks=False).st_size
         with os.scandir(objects_dir) as entries:
             for e in entries:
+                budget.charge(events=1)
                 if len(e.name) == 2 and all(c in "0123456789abcdef" for c in e.name) \
                         and e.is_dir(follow_symlinks=False):
                     with os.scandir(e.path) as files:
                         for f in files:
+                            budget.charge(events=1)
                             if f.is_file(follow_symlinks=False):
                                 loose += f.stat(follow_symlinks=False).st_size
     except OSError as exc:
@@ -361,29 +458,89 @@ def _git_env():
     return env
 
 
-def git(path, *args, timeout=60):
-    """stdout of `git -C path args` confined to path (no discovery into a parent repo), or None."""
+def _kill(proc):
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)  # its own session: git's children (pack-objects, hooks) too
+        else:
+            proc.kill()
+    except OSError:
+        pass
+
+
+def run_bounded(argv, env, budget):
+    """(exit code, stdout bytes) of argv, or (None, None) when it cannot start. It gets only what is left of the
+    budget's deadline and bytes: past either, its process group is killed and BudgetExhausted raised. stderr
+    is discarded (it can carry URLs, and a full pipe must not stall the child)."""
+    budget.charge()  # raises when the budget is already spent: nothing more is started
+    timeout = budget.remaining()
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=(os.name == "posix"))
+    except (OSError, ValueError):
+        return None, None
+    chunks, failed = [], []
+
+    def pump():
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    return
+                budget.charge(nbytes=len(chunk))
+                chunks.append(chunk)
+        except BudgetExhausted as exc:
+            failed.append(exc)
+            _kill(proc)
+        except (OSError, ValueError):
+            return
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    try:
+        if reader.is_alive():
+            _kill(proc)
+            reader.join(5)
+            raise budget.exhaust("a git command outlasted the step's %g s read deadline" % DEADLINE_SECONDS)
+        if failed:
+            raise failed[0]
+        try:
+            code = proc.wait(timeout=max(0.0, budget.remaining()) + 1)
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            raise budget.exhaust("a git command outlasted the step's %g s read deadline" % DEADLINE_SECONDS)
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        if not reader.is_alive():  # a reader still blocked in read() holds the stream; never wait on it here
+            proc.stdout.close()
+    return code, b"".join(chunks)
+
+
+def git(path, budget, *args):
+    """stdout of `git -C path args` confined to path (no discovery into a parent repo), or None when it fails.
+    Raises BudgetExhausted when the read budget runs out."""
     env = _git_env()
     env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.abspath(path))
-    try:
-        r = subprocess.run(["git", "-c", "safe.directory=" + os.path.abspath(path), "-C", path] + list(args),
-                           capture_output=True, timeout=timeout, env=env)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+    code, out = run_bounded(["git", "-c", "safe.directory=" + os.path.abspath(path), "-C", path] + list(args), env,
+                            budget)
+    return out.decode("utf-8", "replace") if code == 0 else None
 
 
-def git_version():
+def git_version(budget):
     try:
-        out = subprocess.run(["git", "version"], capture_output=True, text=True, timeout=10, env=_git_env()).stdout
-    except (OSError, subprocess.SubprocessError):
+        code, out = run_bounded(["git", "version"], _git_env(), budget)
+    except BudgetExhausted:
         return None
-    m = re.search(r"(\d+\.\d+(?:\.\d+)?)", out or "")
+    m = re.search(r"(\d+\.\d+(?:\.\d+)?)", (out or b"").decode("utf-8", "replace") if code == 0 else "")
     return m.group(1) if m else None
 
 
-def count_objects(path):
-    out = git(path, "count-objects", "-v")
+def count_objects(path, budget):
+    out = git(path, budget, "count-objects", "-v")
     if out is None:
         return None
     vals = {}
@@ -394,71 +551,106 @@ def count_objects(path):
     return vals if "count" in vals and "in-pack" in vals else None
 
 
-def snapshot(path, budget, whole_git_dir=True):
-    """The repository at path, or {'repo': False} when there is none (a cold start: zero, measured)."""
+def snapshot(path, budget, whole_git_dir=True, walk=True):
+    """The repository at path, or {'repo': False} when there is none (a cold start: zero, measured).
+    walk=False leaves the size walks to size_walks(), so they cannot starve the cheaper facts."""
     if not os.path.exists(os.path.join(path, ".git")):
         return {"repo": False}
-    git_dir = (git(path, "rev-parse", "--absolute-git-dir") or "").strip()
+    try:
+        git_dir = (git(path, budget, "rev-parse", "--absolute-git-dir") or "").strip()
+    except BudgetExhausted as exc:
+        return {"repo": None, "unknown": {"repository": str(exc)}}
     if not git_dir or not os.path.isdir(os.path.join(git_dir, "objects")):
         return {"repo": None}
-    co = count_objects(path)
     unknown = {}  # field -> why it is null
-    packs, loose, reason = object_files(os.path.join(git_dir, "objects"))
-    if reason:
-        unknown["bytes"] = reason
-    objects_bytes, reason = walk_bytes(os.path.join(git_dir, "objects"), budget)
+    snap = {"repo": True, "git_dir": git_dir, "objects": None, "packs": None, "loose_bytes": None,
+            "objects_bytes": None, "git_dir_bytes": None, "unknown": unknown}
+    try:
+        co = count_objects(path, budget)
+        snap["objects"] = (co["count"] + co["in-pack"]) if co else None
+        snap["packs"], snap["loose_bytes"], reason = object_files(os.path.join(git_dir, "objects"), budget)
+        if reason:
+            unknown["bytes"] = reason
+    except BudgetExhausted as exc:
+        unknown.setdefault("objects", str(exc))
+        unknown.setdefault("bytes", str(exc))
+    if walk:
+        size_walks(snap, budget, whole_git_dir)
+    return snap
+
+
+def size_walks(snap, budget, whole_git_dir=True):
+    """objects_bytes (and git_dir_bytes) of a snapshot, under the walk budget; None with the reason otherwise."""
+    if snap.get("repo") is not True:
+        return
+    unknown = snap["unknown"]
+    snap["objects_bytes"], reason = walk_bytes(os.path.join(snap["git_dir"], "objects"), budget)
     if reason:
         unknown["objects_bytes"] = reason
-    git_dir_bytes = None
     if whole_git_dir:
-        git_dir_bytes, reason = walk_bytes(git_dir, budget)
+        snap["git_dir_bytes"], reason = walk_bytes(snap["git_dir"], budget)
         if reason:
             unknown["git_dir_bytes"] = reason
-    return {
-        "repo": True, "git_dir": git_dir,
-        "objects": (co["count"] + co["in-pack"]) if co else None,
-        "packs": packs, "loose_bytes": loose, "objects_bytes": objects_bytes, "git_dir_bytes": git_dir_bytes,
-        "unknown": unknown,
-    }
 
 
-def tree_shape(path):
-    """Observed history/partial/sparse/materialisation facts of the checked-out repository."""
+SHAPE_FIELDS = ("shallow", "depth", "partial", "filter", "sparse", "files_materialised", "files_skipped", "commit")
+
+
+def tree_shape(path, budget):
+    """Observed history/partial/sparse/materialisation facts of the checked-out repository. All unknown when
+    the read budget runs out: a fact never defaults to "not shallow" or "not partial" for want of a read."""
+    try:
+        return _tree_shape(path, budget)
+    except BudgetExhausted as exc:
+        return {}, {field: str(exc) for field in SHAPE_FIELDS}
+
+
+def _tree_shape(path, budget):
     shape, unknown = {}, {}
-    shallow = (git(path, "rev-parse", "--is-shallow-repository") or "").strip()
+    shallow = (git(path, budget, "rev-parse", "--is-shallow-repository") or "").strip()
     shape["shallow"] = {"true": True, "false": False}.get(shallow)
     if shape["shallow"] is None:
         unknown["shallow"] = "git rev-parse --is-shallow-repository failed"
     if shape["shallow"] is True:
-        shape["depth"] = _int((git(path, "rev-list", "--count", "HEAD") or "").strip())
+        shape["depth"] = _int((git(path, budget, "rev-list", "--count", "HEAD") or "").strip())
         if shape["depth"] is None:
             unknown["depth"] = "git rev-list --count HEAD failed"
     else:
         shape["depth"] = "full" if shape["shallow"] is False else None
-    remote = (git(path, "config", "--get", "extensions.partialclone") or "").strip()
+    remote = (git(path, budget, "config", "--get", "extensions.partialclone") or "").strip()
     if not remote:
-        promisors = git(path, "config", "--get-regexp", r"^remote\..*\.promisor$") or ""
+        promisors = git(path, budget, "config", "--get-regexp", r"^remote\..*\.promisor$") or ""
         remote = next((l.split()[0][len("remote."):-len(".promisor")] for l in promisors.splitlines()
                        if l.split()[-1:] == ["true"]), "")
     shape["partial"] = bool(remote)
-    raw_filter = (git(path, "config", "--get", "remote.%s.partialclonefilter" % remote) or "").strip() if remote else ""
+    raw_filter = ((git(path, budget, "config", "--get", "remote.%s.partialclonefilter" % remote) or "").strip()
+                  if remote else "")
     shape["filter"] = filter_spec(raw_filter) if raw_filter else None
-    sparse = (git(path, "config", "--bool", "--get", "core.sparseCheckout") or "false").strip() == "true"
+    sparse = (git(path, budget, "config", "--bool", "--get", "core.sparseCheckout") or "false").strip() == "true"
     shape["sparse"] = sparse
     shape["sparse_cone"] = None
     shape["sparse_patterns"] = shape["sparse_patterns_sha256"] = None
     if sparse:
-        shape["sparse_cone"] = (git(path, "config", "--bool", "--get", "core.sparseCheckoutCone") or "").strip() == "true"
-        rel = (git(path, "rev-parse", "--git-path", "info/sparse-checkout") or "").strip()
+        cone = git(path, budget, "config", "--bool", "--get", "core.sparseCheckoutCone")
+        shape["sparse_cone"] = (cone or "").strip() == "true"
+        rel = (git(path, budget, "rev-parse", "--git-path", "info/sparse-checkout") or "").strip()
         pfile = rel if os.path.isabs(rel) else os.path.join(path, rel)
         try:
-            data = open(pfile, "rb").read()
-            shape["sparse_patterns_sha256"] = hashlib.sha256(data).hexdigest()
-            shape["sparse_patterns"] = sum(1 for l in data.decode("utf-8", "replace").splitlines()
-                                           if l.strip() and not l.lstrip().startswith("#"))
+            fh = _open_regular(pfile)
+            if fh is None:
+                raise OSError("not a regular file")
+            with fh:
+                data = fh.read(MAX_SPARSE_BYTES + 1)
+            budget.charge(nbytes=len(data))
+            if len(data) > MAX_SPARSE_BYTES:
+                unknown["sparse_patterns"] = "sparse-checkout file larger than %d bytes" % MAX_SPARSE_BYTES
+            else:
+                shape["sparse_patterns_sha256"] = hashlib.sha256(data).hexdigest()
+                shape["sparse_patterns"] = sum(1 for l in data.decode("utf-8", "replace").splitlines()
+                                               if l.strip() and not l.lstrip().startswith("#"))
         except OSError:
             unknown["sparse_patterns"] = "sparse-checkout file unreadable"
-    listing = git(path, "ls-files", "-t", "-z", timeout=120)
+    listing = git(path, budget, "ls-files", "-t", "-z")
     if listing is None:
         shape["files_materialised"] = shape["files_skipped"] = None
         unknown["files_materialised"] = "git ls-files failed"
@@ -467,7 +659,7 @@ def tree_shape(path):
         shape["files_skipped"] = tags.count("S")
         shape["files_materialised"] = len(tags) - shape["files_skipped"]
     shape["has_submodules"] = os.path.isfile(os.path.join(path, ".gitmodules"))
-    head = (git(path, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
+    head = (git(path, budget, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
     shape["commit"] = head if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) else None
     return shape, unknown
 
@@ -537,11 +729,20 @@ def rel_path(path):
         return path
 
 
-def _float(value, default):
+def walk_budget_seconds(text):
+    """(seconds, None), or (the default, why) when the input is not a finite number of seconds >= 0: inf, NaN or
+    a negative value would leave the walks unbounded or meaningless. The input itself is never echoed."""
+    text = (text or "").strip()
+    if not text:
+        return DEFAULT_WALK_BUDGET, None
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not _finite_seconds(value):
+        return DEFAULT_WALK_BUDGET, ("walk-budget-seconds must be a finite number of seconds >= 0; "
+                                     "using the default %g" % DEFAULT_WALK_BUDGET)
+    return value, None
 
 
 def default_state_dir():
@@ -675,7 +876,7 @@ def cmd_before(args):
 
 
 def build_record(sid, path, before, outcome, requested, transfer, transfer_reason, shape, shape_unknown, after,
-                 seconds, walk_budget_hit):
+                 seconds, budget_hit, producer_git_version):
     unknown = dict(shape_unknown)
     b = (before or {}).get("snapshot") or {}
     if before is None:
@@ -718,13 +919,13 @@ def build_record(sid, path, before, outcome, requested, transfer, transfer_reaso
     state, reasons = completeness(outcome, shape if after.get("repo") else None, requested)
     t = transfer or {}
     trace = t.get("trace") or {}
-    measured = (before is not None and transfer is not None and after.get("repo") is True and not walk_budget_hit
+    measured = (before is not None and transfer is not None and after.get("repo") is True and not budget_hit
                 and not after_unknown and not before_unknown
                 and trace.get("unterminated") == 0 and trace.get("bad_lines") == 0)
     shape = shape or {}
     return {
         "schema": SOURCE_PREP_SCHEMA, "schema_status": SCHEMA_STATUS, "id": sid,
-        "producer": {"name": "vagarylabs/.github actions/source-prep-stats", "git_version": git_version()},
+        "producer": {"name": "vagarylabs/.github actions/source-prep-stats", "git_version": producer_git_version},
         "attribution": attribution(),
         "subject": {"repository": os.environ.get("SPS_REQ_REPOSITORY") or None,
                     "path": rel_path(path),
@@ -795,14 +996,18 @@ def _after(args, t_end, sid, run_dir, trace_dir):
     if not sid:
         sid = "%d-%s" % (int(time.time() * 1000), secrets.token_hex(4))
     path = resolve_path(args.path)
-    transfer, transfer_reason = summarize_trace(trace_dir)
+    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
+    transfer, transfer_reason = summarize_trace(trace_dir, budget)
     purge_trace(trace_dir)  # parsed: gone now, not only when the step ends
-    budget = Budget(args.walk_budget)
-    after = snapshot(path, budget)
-    shape, shape_unknown = tree_shape(path) if after.get("repo") else ({}, {})
+    # The cheap facts first, the size walks last: a slow walk can then cost only the sizes.
+    after = snapshot(path, budget, walk=False)
+    shape, shape_unknown = tree_shape(path, budget) if after.get("repo") else ({}, {})
+    producer_git = git_version(budget)
+    size_walks(after, budget)
     seconds = round(t_end - before["t0"], 3) if before else None
     record = build_record(sid, path, before, args.outcome, requested_from_env(), transfer, transfer_reason,
-                          shape, shape_unknown, after, seconds, budget.hit)
+                          shape, shape_unknown, after, seconds, budget.hit or budget.exhausted is not None,
+                          producer_git)
     records = private_dir(os.path.join(state, "records"))
     record_path = os.path.join(records, sid + ".json")
     text = dumps(record)
@@ -877,9 +1082,10 @@ def _telemetry(args, job_trace):
     footprint, fp_unknown = footprint_from_env()
     unknown.update({"footprint." + k: v for k, v in fp_unknown.items()})
 
+    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
     job_git = None
     if os.path.isdir(job_trace):
-        summary_, reason = summarize_trace(job_trace)
+        summary_, reason = summarize_trace(job_trace, budget)
         if summary_ is None:
             unknown["after_checkout_git"] = reason
         else:
@@ -898,7 +1104,7 @@ def _telemetry(args, job_trace):
             pnpm_before = json.load(fh)
     store = args.pnpm_store or (pnpm_before or {}).get("path")
     if store:
-        now = store_snapshot(store, Budget(args.walk_budget))
+        now = store_snapshot(store, budget)
         bb = (pnpm_before or {}).get("bytes")
         same = pnpm_before is not None and pnpm_before.get("path") == now["path"]
         pnpm = {"bytes_before": bb if same else None, "bytes_after": now["bytes"],
@@ -936,8 +1142,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--state-dir", default=env.get("SPS_STATE_DIR") or default_state_dir())
-    common.add_argument("--walk-budget", type=float,
-                        default=_float(env.get("SPS_WALK_BUDGET"), DEFAULT_WALK_BUDGET))
+    common.add_argument("--walk-budget", default=env.get("SPS_WALK_BUDGET", ""))
     b = sub.add_parser("before", parents=[common])
     b.add_argument("--path", default=env.get("SPS_PATH", ""))
     b.add_argument("--pnpm-store", default=env.get("SPS_PNPM_STORE", ""))
@@ -950,6 +1155,9 @@ def main(argv=None):
     t = sub.add_parser("telemetry", parents=[common])
     t.add_argument("--pnpm-store", default=env.get("SPS_PNPM_STORE", ""))
     args = ap.parse_args(argv)
+    args.walk_budget, refused = walk_budget_seconds(args.walk_budget)
+    if refused:
+        print("::warning::source-prep-stats %s: %s" % (args.cmd, refused))
     try:
         {"before": cmd_before, "after": cmd_after, "telemetry": cmd_telemetry}[args.cmd](args)
     except Exception as exc:  # measurement never fails the job

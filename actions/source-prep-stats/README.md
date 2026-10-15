@@ -29,6 +29,9 @@ Optional inputs:
   - A directory that cannot be read (under `.git`, or the pnpm store) makes that size `null` with the reason, never a smaller or zero total. A "before" value that was not read is never taken as zero.
   - `sparse_*` fields are `null` when `sparse` is `false`, because they don't apply.
   - `filter` is `null` when `partial` is `false`.
+- **Every read is bounded.** One step's reads (trace2 files, git output, the object listing and the size walks) share one 120 s deadline, a 256 MiB byte budget and a 4 million event budget (trace events and directory entries). A git command that outlasts the deadline is killed with its process group. Whatever runs out is `null` with the reason, never a partial count, a crash or a hang. The cheap facts are read first and the size walks last, so a slow walk costs only the sizes.
+  - `walk-budget-seconds` further limits the size walks. It must be a finite number of seconds >= 0; `inf`, `NaN` or a negative value is refused with a warning and the default (20) used.
+  - trace2 input is capped at 20,000 files and 1 MiB per line; a longer line is a bad line.
 - **A truncated tree is never complete.**
   - `completeness` is `complete` only when the tree is not shallow, not partial (filtered) and not sparse, and when submodules were fetched if the repository has them.
   - If any of those facts is unknown, `completeness` is `unknown`.
@@ -56,7 +59,7 @@ Optional inputs:
 | `transfer.lazy_fetches`, `lazy_objects` | Promisor (partial clone) fetches during the checkout and the objects they brought. |
 | `transfer.protocol_version`, `negotiation_rounds`, `haves_sent`, `filter_effective` | The fetch negotiation summary from trace2. The two strings are allow-listed: anything else is `other`. |
 | `warm` | Whether a repository with objects was already at the path (persistent runners). |
-| `measurement.complete` | `false` when the trace was missing or damaged (a process never exited, or a line was unparseable), or a size could not be read (a walk ran out of time, or a directory was unreadable). |
+| `measurement.complete` | `false` when the trace was missing or damaged (a process never exited, or a line was unparseable), or a size could not be read (a walk ran out of time, or a directory was unreadable), or the step's read budget ran out. |
 
 `job-telemetry.v1` (`schema/job-telemetry.v1.json`) holds the job's attribution and the cgroup footprint:
 

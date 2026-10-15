@@ -94,7 +94,11 @@ inputs:
       retries after the checkout (useful on partial clones). Raw traces stay private and are deleted when parsed.
     default: "false"
   walk-budget-seconds:
-    description: Wall-clock budget for sizing .git (and the pnpm store). An exceeded walk is reported as unknown.
+    description: >-
+      Wall-clock budget for sizing .git (and the pnpm store), a finite number of seconds >= 0; inf, NaN or a
+      negative value is refused with a warning and the default used. An exceeded walk is reported as unknown.
+      Every read of a step (trace2, git, object listing, walks) also shares one 120 s deadline and a byte and
+      event budget; what runs out is unknown, never partial.
     default: "20"
 outputs:
   ref:

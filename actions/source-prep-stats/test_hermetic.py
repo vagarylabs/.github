@@ -6,6 +6,7 @@ against the draft schemas in schema/.
 """
 import contextlib
 import io
+import itertools
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -575,6 +577,71 @@ class HermeticTest(unittest.TestCase):
         self.assertEqual(srcstats.validate(doc, "job-telemetry.v1.json"), [])
         self.assertIsNone(doc["pnpm_store"]["bytes_after"], "an unreadable store is unknown, never 0 bytes")
         self.assertIn("could not be read", doc["unknown"]["pnpm_store.bytes_after"])
+
+    def test_a_non_finite_walk_budget_is_refused_and_the_walk_still_stops(self):
+        """walk-budget-seconds inf (or 1e400, NaN, negative) is refused with a warning and the default used. A
+        clock that runs 50 s per reading stands in for a slow walk: with an infinite budget it never ended."""
+        self.job.prepare(self.url, "budget-inf")
+        for value in ("inf", "1e400", "nan", "-1"):
+            with self.subTest(value=value):
+                ticks = itertools.count(1000.0, 50.0)
+                with mock.patch("time.monotonic", lambda: next(ticks)):
+                    out, log = self.job.inproc("after", SPS_ID="", SPS_PATH="budget-inf", SPS_OUTCOME="success",
+                                               SPS_WALK_BUDGET=value)
+                r = json.loads(out["record"])
+                self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+                self.assertIsNone(r["bytes_detail"]["git_dir_bytes_after"], "the walk was not allowed to run on")
+                self.assertFalse(r["measurement"]["complete"])
+                self.assertRegex(log, r"::warning::.*walk-budget-seconds must be a finite number")
+
+    def test_a_hung_git_cannot_outlast_the_step_deadline(self):
+        """A git that never answers is killed at the step's read deadline (patched to 2 s): every later read is
+        unknown and the record is still written. It used to wait 60 s per git command."""
+        fakebin = os.path.join(self.job.root, "fakebin")
+        os.makedirs(fakebin)
+        with open(os.path.join(fakebin, "git"), "w") as fh:
+            fh.write("#!/bin/sh\nexec sleep 30\n")  # exec: no orphan keeps the pipe open
+        os.chmod(os.path.join(fakebin, "git"), 0o755)
+        os.makedirs(os.path.join(self.job.ws, "hung", ".git"))
+        result = {}
+
+        def run():
+            with mock.patch.object(srcstats, "DEADLINE_SECONDS", 2.0, create=True):
+                result["after"] = self.job.inproc("after", SPS_ID="", SPS_PATH="hung", SPS_OUTCOME="success",
+                                                  PATH=fakebin + os.pathsep + os.environ.get("PATH", ""))
+
+        start = time.monotonic()
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(20)
+        self.assertFalse(worker.is_alive(), "the after step hung on a git that never answers")
+        self.assertLess(time.monotonic() - start, 12)
+        out, log = result["after"]
+        self.assertNotIn("::warning::", log)
+        r = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertIn("deadline", r["unknown"]["repository"])
+        self.assertIsNone(r["producer"]["git_version"])
+        self.assertEqual(r["completeness"], "unknown")
+
+    def test_a_spent_byte_budget_leaves_every_later_read_unknown(self):
+        """Past the shared byte budget (patched to 2000 bytes; the checkout's trace alone is larger), the trace
+        and every git read after it are unknown, and the record is still written."""
+        b = self.job.step("before", SPS_PATH="spent")
+        outcome = self.job.checkout(self.url, "spent", trace=b["trace_dir"])
+        traced = sum(os.path.getsize(os.path.join(b["trace_dir"], n)) for n in os.listdir(b["trace_dir"]))
+        self.assertGreater(traced, 2000, "positive control: the trace is over the patched budget")
+        with mock.patch.object(srcstats, "MAX_READ_BYTES", 2000, create=True):
+            out, log = self.job.inproc("after", SPS_ID=b["id"], SPS_PATH="spent", SPS_OUTCOME=outcome)
+        self.assertNotIn("::warning::", log)
+        r = json.loads(out["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertIsNone(r["transfer"])
+        self.assertIn("bytes", r["unknown"]["transfer"])
+        self.assertEqual(r["completeness"], "unknown", "a fact never defaults to complete for want of a read")
+        self.assertIsNone(r["shallow"])
+        self.assertFalse(r["measurement"]["complete"])
+        self.assertFalse(os.path.exists(b["trace_dir"]))
 
     def test_telemetry_merges_records_footprint_lazy_fetches_and_pnpm_delta(self):
         store = os.path.join(self.job.root, "pnpm-store")

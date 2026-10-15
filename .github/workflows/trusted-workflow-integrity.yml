@@ -310,10 +310,15 @@ jobs:
           _NOT_TEST = re.compile(r"(?:^|/)(?:fixtures?|__fixtures__|__snapshots__|snapshots|testdata|__mocks__)/")
           # The runners' own default forms plus the fleet's conventions (git ls-files across the fleet, 2026-10-15).
           _TEST_FILE = re.compile(
-              # vitest, jest, playwright, mocha: a.test.ts, b.spec.jsx, c.e2e.ts; vps-ansible's x.test.sh
-              r"\.(?:test|spec|e2e)\.(?:[cm]?[jt]sx?|py|sh|bash)$"
-              # go test, pytest, ExUnit (vagary-voice voice-gateway/test/**/*_test.exs), node --test's *_test.js
-              r"|_test\.(?:go|py|exs|[cm]?[jt]sx?)$"
+              # vitest, jest, playwright, mocha: a.test.ts, b.spec.jsx, c.e2e.ts; vps-ansible's x.test.sh and the
+              # CI-run scripts/restic-restore-test-emit.selftest.sh
+              r"\.(?:test|spec|e2e|selftest)\.(?:[cm]?[jt]sx?|py|sh|bash)$"
+              # go test, pytest, ExUnit (vagary-voice voice-gateway/test/**/*_test.exs), node --test's *_test.js,
+              # minitest (vagary-voice sdks/ruby, Rakefile test/**/*_test.rb)
+              r"|_test\.(?:go|py|exs|rb|[cm]?[jt]sx?)$"
+              # Pester's default *.Tests.ps1 (vagaris cell-broker, run by vagary-node-windows.yml); SwiftPM/XCTest
+              # Tests/<Target>Tests/*Tests.swift (vagary-core services/client-sdks/ios)
+              r"|\.Tests\.ps1$|(?:^|/)Tests/(?:[^/]+/)*[^/]+Tests?\.swift$"
               r"|(?:^|/)test_[^/]*\.py$|(?:^|/)test-[^/]*\.(?:py|sh|bash|[cm]?[jt]s)$"
               # Any code file under a test directory: node --test's default **/test/** (vagary-core runs
               # services/identity/test/*.mjs this way), jest's __tests__, e2e harnesses; python and shell suites.
@@ -901,7 +906,7 @@ jobs:
 
           def _test_stem(p):
               b = p.rsplit("/", 1)[-1]
-              b = re.sub(r"\.(?:test|spec|e2e)(?=\.)", "", b)
+              b = re.sub(r"\.(?:test|spec|e2e|selftest|Tests)(?=\.)", "", b)
               b = re.sub(r"^test[_-]|_test(?=\.)", "", b)
               return b.rsplit(".", 1)[0]
 

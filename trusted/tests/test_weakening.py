@@ -855,6 +855,10 @@ class PredicateUnitTests(unittest.TestCase):
                      "dashboard/src/a.test.tsx", "frontend/src/b.spec.jsx", "e2e/c.e2e.ts", "lib/d.test.mjs",
                      "roles/identity_orphan_drift/files/vagaris-ownerless-orgs-check.test.sh",  # vps-ansible
                      "roles/observability/files/prometheus-rules/tests/build-cell-monitor.test.yml",  # promtool
+                     "scripts/restic-restore-test-emit.selftest.sh",               # vps-ansible, run by syntax-check.yml
+                     "sdks/ruby/test/resources/webhooks_test.rb",                  # vagary-voice minitest (Codex: *_test.*)
+                     "packages/vagary-node/cell-broker/tests/broker/Tuf.Tests.ps1",  # vagaris Pester
+                     "services/client-sdks/ios/Tests/VagaryRealtimeClientTests/VagaryRealtimeClientTests.swift",  # core
                      "cmd/x_test.go", "pkg/y_test.py", "lib/z_test.mjs", "tests/test_x.py", "pkg/test_util.py",
                      "scripts/test-ci-hosted-routing.py", "tests/run.sh", "t/a.bats"):
             with self.subTest(path=path):
@@ -864,6 +868,10 @@ class PredicateUnitTests(unittest.TestCase):
                      "server/tsconfig.test.json",                   # vagris
                      "api-service/test-utils/database-setup.js",    # vagary-voice helpers outside a test dir
                      "api-service/test-setup/mocks/redis.js",       # vagary-voice
+                     "sdks/ruby/test/test_helper.rb",               # vagary-voice minitest helper, not a test file
+                     "packages/vagary-node/cell-broker/tests/broker/Invoke-BrokerTestsOnCopy.ps1",  # vagaris runner
+                     "scripts/restic-restore-test.sh",              # vps-ansible: the unit under test, not a test
+                     "services/client-sdks/ios/Sources/VagaryRealtimeClient/VoiceClient.swift",
                      "docker-compose.test.yml", "src/__fixtures__/a.test.ts", "test/fixtures/a.mjs",
                      "tests/__init__.py", "tests/README.md", "docs/specs/x.md", "scripts/ci-test-pg.sh",
                      "src/contest.ts", "src/latest.mjs"):

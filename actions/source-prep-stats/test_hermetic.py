@@ -635,6 +635,37 @@ class HermeticTest(unittest.TestCase):
                 self.assertGreaterEqual(r["sparse_patterns"], 1, "the patterns are still read")
                 self.assertEqual(r["completeness"], "incomplete")
 
+    def test_a_promisor_git_reads_as_true_is_partial_whatever_its_spelling(self):
+        """Without extensions.partialclone, the promisor remote is found by remote.*.promisor. git takes any
+        boolean spelling (yes, on, 1) and any remote name; a literal "true" match and a whitespace split read such
+        a promisor as "not partial", and the tree was published complete."""
+        self.job.prepare(self.url, "promisor-spelling")
+        dest = os.path.join(self.job.ws, "promisor-spelling")
+        self.assertEqual(git("-C", dest, "config", "--get", "extensions.partialclone", check=False).returncode, 1,
+                         "positive control: the fallback read is the one that decides")
+        for key, value in (("remote.origin.promisor", "yes"), ("remote.origin.promisor", "1"),
+                           ("remote.a b.promisor", "true")):
+            with self.subTest(key=key, value=value):
+                git("-C", dest, "config", key, value)
+                try:
+                    out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="promisor-spelling", SPS_OUTCOME="success")
+                finally:
+                    git("-C", dest, "config", "--unset", key)
+                r = json.loads(out["record"])
+                self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+                self.assertIs(r["partial"], True)
+                self.assertEqual((r["completeness"], r["incomplete_reasons"]), ("incomplete", ["partial"]))
+        with self.subTest("not a boolean"):
+            git("-C", dest, "config", "remote.origin.promisor", "maybe")
+            try:
+                out, _ = self.job.inproc("after", SPS_ID="", SPS_PATH="promisor-spelling", SPS_OUTCOME="success")
+            finally:
+                git("-C", dest, "config", "--unset", "remote.origin.promisor")
+            r = json.loads(out["record"])
+            self.assertIsNone(r["partial"])
+            self.assertIn("failed", r["unknown"].get("partial", ""))
+            self.assertEqual(r["completeness"], "unknown")
+
     def test_a_gitmodules_that_cannot_be_statted_is_unknown_never_no_submodules(self):
         """os.path.isfile answers False for a .gitmodules it may not stat, so a tree whose submodules were not
         fetched was published complete."""

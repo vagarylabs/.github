@@ -702,10 +702,12 @@ def _tree_shape(path, budget):
     # sparse tree read as "not partial" or "not sparse" would be published complete.
     remote, reason = git_config(path, budget, "extensions.partialclone", "--get", "extensions.partialclone")
     if not remote:
+        # --bool: git's own reading (yes, on, 1 are true; a value that is no boolean fails the read). -z: one
+        # "<key>\n<value>\0" per entry, so a remote name may hold any character, a space included.
         promisors, promisor_reason = git_config(path, budget, "remote.*.promisor",
-                                                "--get-regexp", r"^remote\..*\.promisor$")
-        remote = next((l.split()[0][len("remote."):-len(".promisor")] for l in (promisors or "").splitlines()
-                       if l.split()[-1:] == ["true"]), "")
+                                                "--bool", "-z", "--get-regexp", r"^remote\..*\.promisor$")
+        remote = next((key[len("remote."):-len(".promisor")] for key, _, value in
+                       (entry.partition("\n") for entry in (promisors or "").split("\0")) if value == "true"), "")
         reason = None if remote else reason or promisor_reason  # a promisor found is partial, whatever else failed
     shape["partial"] = None if reason else bool(remote)
     shape["filter"] = None

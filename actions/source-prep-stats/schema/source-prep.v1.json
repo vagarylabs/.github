@@ -347,7 +347,9 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "pattern": "^(other|(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)|combine:(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)(\\+(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)){1,7})$",
+      "description": "An allow-listed filter spec. Any other value is \"other\": the raw value is never published. sparse:oid drops its rev."
     },
     "sparse": {
       "type": [
@@ -426,8 +428,12 @@
           "minimum": 0
         },
         "objects_received": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "The --pack_header object counts of every received pack. Null when a pack was indexed without one (a clone, fetch --keep or unpackLimit 0)."
         },
         "lazy_fetches": {
           "type": "integer",
@@ -445,10 +451,14 @@
           "minimum": 0
         },
         "protocol_version": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "enum": [
+            "0",
+            "1",
+            "2",
+            "other",
+            null
+          ],
+          "description": "git's traced negotiated protocol version. Any other value is \"other\": raw trace strings are never published."
         },
         "negotiation_rounds": {
           "type": [
@@ -468,7 +478,9 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "pattern": "^(other|(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)|combine:(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)(\\+(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)){1,7})$",
+          "description": "git's traced filter/effective in allow-listed form. Any other value is \"other\": raw trace strings are never published."
         },
         "http_429_responses": {
           "type": [

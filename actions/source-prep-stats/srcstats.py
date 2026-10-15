@@ -61,6 +61,7 @@ MAX_PROCESSES = 20000
 MAX_SID_DEPTH = 32  # a child's sid is its parent's plus "/<own>": deeper than this is not a real process tree
 MAX_LINE_BYTES = 1 << 20
 MAX_SPARSE_BYTES = 16 << 20
+MAX_STATE_BYTES = 1 << 20  # before.json, pnpm-before.json, one record: each a few KB
 PROTOCOL_VERSIONS = ("0", "1", "2")
 # Every published filter is one of these (or "other"). sparse:oid=<rev> keeps only its kind: the rev is free text.
 FILTER_PART_RE = re.compile(r"blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|"
@@ -832,6 +833,33 @@ def dumps(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def read_state(path, budget):
+    """A JSON document this action wrote under its state directory, read under the budget: a regular file (never
+    a FIFO, never through a symlink) of at most MAX_STATE_BYTES. Raises OSError, ValueError or BudgetExhausted."""
+    fh = _open_regular(path)
+    if fh is None:
+        raise OSError("not a regular file")
+    with fh:
+        data = fh.read(MAX_STATE_BYTES + 1)
+    budget.charge(nbytes=len(data), events=1)
+    if len(data) > MAX_STATE_BYTES:
+        raise ValueError("larger than %d bytes" % MAX_STATE_BYTES)
+    try:
+        return json.loads(data)
+    except RecursionError:
+        raise ValueError("nested too deep to parse")
+
+
+def _before_ok(before):
+    return isinstance(before, dict) and isinstance(before.get("snapshot"), dict) and _finite_seconds(before.get("t0"))
+
+
+def _store_before_ok(snap):
+    return isinstance(snap, dict) and isinstance(snap.get("path"), str) \
+        and (snap.get("bytes") is None or _is_type(snap["bytes"], "integer")) \
+        and (snap.get("reason") is None or isinstance(snap["reason"], str))
+
+
 def store_snapshot(store, budget):
     store = os.path.abspath(os.path.expanduser(store))
     try:
@@ -1046,14 +1074,17 @@ def cmd_after(args):
 
 def _after(args, t_end, sid, run_dir, trace_dir):
     state = private_dir(args.state_dir)
+    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
     before = None
-    if run_dir and os.path.isfile(os.path.join(run_dir, "before.json")):
-        with open(os.path.join(run_dir, "before.json")) as fh:
-            before = json.load(fh)
+    if run_dir:
+        try:
+            before = read_state(os.path.join(run_dir, "before.json"), budget)
+        except (OSError, ValueError, BudgetExhausted):  # absent or unusable: the record says the before is unknown
+            before = None
+        before = before if _before_ok(before) else None
     if not sid:
         sid = "%d-%s" % (int(time.time() * 1000), secrets.token_hex(4))
     path = resolve_path(args.path)
-    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
     transfer, transfer_reason = summarize_trace(trace_dir, budget)
     purge_trace(trace_dir)  # parsed: gone now, not only when the step ends
     # The cheap facts first, the size walks last: a slow walk can then cost only the sizes.
@@ -1121,25 +1152,52 @@ def cmd_telemetry(args):
         purge_trace(job_trace, keep_dir=True)
 
 
+def read_records(records_dir, budget):
+    """(records, None) or (records, why some were left out), or (None, why) when they were not read in full. Only
+    a record that validates against source-prep.v1 is published: one written by an older version of this action,
+    or by anything else, can carry raw strings."""
+    try:
+        with os.scandir(records_dir) as entries:
+            names = []
+            for e in entries:
+                budget.charge(events=1)
+                if e.name.endswith(".json") and e.is_file(follow_symlinks=False):
+                    names.append(e.name)
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        return None, _unreadable("the source-prep records directory", exc)
+    except BudgetExhausted as exc:
+        return None, "source-prep records not read in full: %s" % exc
+    records, reason = [], None
+    for name in sorted(names):
+        try:
+            record = read_state(os.path.join(records_dir, name), budget)
+        except BudgetExhausted as exc:
+            return None, "source-prep records not read in full: %s" % exc
+        except (OSError, ValueError):
+            reason = "a source-prep record was unreadable"
+            continue
+        if validate(record, "source-prep.v1.json"):
+            reason = "a source-prep record did not validate against source-prep.v1 and was not published"
+            continue
+        records.append(record)
+    return records, reason
+
+
 def _telemetry(args, job_trace):
     state = private_dir(args.state_dir)
+    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
     unknown = {}
-    records_dir = os.path.join(state, "records")
-    records = []
-    if os.path.isdir(records_dir):
-        for name in sorted(os.listdir(records_dir)):
-            if name.endswith(".json"):
-                try:
-                    with open(os.path.join(records_dir, name)) as fh:
-                        records.append(json.load(fh))
-                except (OSError, ValueError):
-                    unknown["source_prep"] = "a source-prep record was unreadable"
-    if not records:
+    records, reason = read_records(os.path.join(state, "records"), budget)
+    if reason:
+        unknown["source_prep"] = reason
+    elif not records:
         unknown["source_prep"] = "no source-prep-stats step ran in this job (a plain checkout is not measured)"
+    records = records or []
     footprint, fp_unknown = footprint_from_env()
     unknown.update({"footprint." + k: v for k, v in fp_unknown.items()})
 
-    budget = Budget(args.walk_budget)  # one deadline and byte/event budget for every read below
     job_git = None
     if os.path.isdir(job_trace):
         summary_, reason = summarize_trace(job_trace, budget)
@@ -1155,10 +1213,11 @@ def _telemetry(args, job_trace):
 
     pnpm = None
     before_path = os.path.join(state, "pnpm-before.json")
-    pnpm_before = None
-    if os.path.isfile(before_path):
-        with open(before_path) as fh:
-            pnpm_before = json.load(fh)
+    try:
+        pnpm_before = read_state(before_path, budget)
+    except (OSError, ValueError, BudgetExhausted):  # absent or unusable: no before snapshot of the store
+        pnpm_before = None
+    pnpm_before = pnpm_before if _store_before_ok(pnpm_before) else None
     store = args.pnpm_store or (pnpm_before or {}).get("path")
     if store:
         now = store_snapshot(store, budget)

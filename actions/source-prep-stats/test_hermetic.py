@@ -870,6 +870,52 @@ class HermeticTest(unittest.TestCase):
         again = self.job.step("telemetry")
         self.assertNotEqual(again["name"], out["name"], "matrix legs share github.job; names must still differ")
 
+    def state(self, *parts):
+        return os.path.join(self.job.temp, "source-prep-stats", *parts)
+
+    def test_telemetry_publishes_only_records_that_validate(self):
+        """A record in the state directory that does not validate (here one with a raw URL as its filter, as an
+        older version of this action wrote) is left out of the artifact, with the reason; valid ones stay."""
+        r = self.job.prepare(self.url, "validrecord")
+        raw = dict(r, id="raw", filter=PLANTED)
+        with open(self.state("records", "0000-raw.json"), "w") as fh:
+            json.dump(raw, fh)
+        out, log = self.job.step_logged("telemetry")
+        text = read(out["path"])
+        doc = json.loads(text)
+        self.assertEqual(srcstats.validate(doc, "job-telemetry.v1.json"), [])
+        self.assertEqual([x["id"] for x in doc["source_prep"]], [r["id"]], "the valid record is still published")
+        self.assertIn("did not validate", doc["unknown"]["source_prep"])
+        self.assertNotIn(PLANTED_TOKEN, text + log + self.job.published())
+
+    def test_a_fifo_in_the_records_directory_never_stalls_telemetry(self):
+        """open() on a FIFO with no writer blocks forever; the records are read as regular files only."""
+        self.job.prepare(self.url, "fiforecord")
+        os.mkfifo(self.state("records", "0000-fifo.json"))
+        open(self.job.files["GITHUB_OUTPUT"], "w").close()
+        try:
+            subprocess.run([sys.executable, SCRIPT, "telemetry"], env=self.job.env(), capture_output=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            self.fail("telemetry blocked on a FIFO in the records directory")
+        out = dict(line.rstrip("\n").partition("=")[::2] for line in open(self.job.files["GITHUB_OUTPUT"]))
+        doc = json.loads(read(out["path"]))
+        self.assertEqual(len(doc["source_prep"]), 1)
+
+    def test_an_oversized_before_snapshot_is_refused_not_read_whole(self):
+        """before.json is read under the step's budget (at most 1 MiB): a larger one is not used."""
+        b = self.job.step("before", SPS_PATH="bigbefore")
+        outcome = self.job.checkout(self.url, "bigbefore", trace=b["trace_dir"])
+        path = self.state("runs", b["id"], "before.json")
+        before = json.loads(read(path))
+        before["pad"] = "x" * (1 << 20)
+        with open(path, "w") as fh:
+            json.dump(before, fh)
+        r = json.loads(self.job.step("after", SPS_ID=b["id"], SPS_PATH="bigbefore", SPS_OUTCOME=outcome)["record"])
+        self.assertEqual(srcstats.validate(r, "source-prep.v1.json"), [])
+        self.assertIn("before", r["unknown"])
+        self.assertIsNone(r["checkout"]["seconds"])
+        self.assertGreater(r["objects_detail"]["after"], 0, "positive control: the after side was measured")
+
     def test_telemetry_without_measurements_says_unknown(self):
         out = self.job.step("telemetry")
         doc = json.loads(read(out["path"]))

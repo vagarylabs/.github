@@ -1,0 +1,97 @@
+# Tests and dogfood for actions/source-prep-stats and the job-telemetry half of actions/job-footprint.
+#
+# tests:   trace2 parser on real fixtures + hermetic end-to-end runs (local smart-HTTP server, 429 injector).
+# dogfood: a real actions/checkout of this repository, measured three ways (depth 0, blob:none, shallow +
+#          sparse); checks each record, then job-footprint's job-telemetry.json and its uploaded artifact.
+# Report-only for the org: not a required check.
+name: source-prep-stats
+
+on:
+  pull_request:
+    paths:
+      - actions/source-prep-stats/**
+      - actions/job-footprint/**
+      - .github/workflows/source-prep-stats.yml
+  push:
+    branches: [main]
+    paths:
+      - actions/source-prep-stats/**
+      - actions/job-footprint/**
+      - .github/workflows/source-prep-stats.yml
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # Approved public-repository Ubuntu profile, as in ci.yml.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: source-prep-stats tests (trace2 fixtures; hermetic smart-HTTP server with a 429 injector)
+        run: python3 -B -m unittest discover -s actions/source-prep-stats -p 'test_*.py' -v
+
+  dogfood:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # list this run's artifacts to prove the upload
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: depth0
+            fetch-depth: "0"
+            filter: ""
+            sparse: ""
+          - leg: blobless
+            fetch-depth: "0"
+            filter: blob:none
+            sparse: ""
+          - leg: shallow-sparse
+            fetch-depth: "1"
+            filter: ""
+            sparse: actions
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - id: src
+        name: Measured checkout of this repository (${{ matrix.leg }})
+        uses: ./actions/source-prep-stats
+        with:
+          path: fixture
+          fetch-depth: ${{ matrix.fetch-depth }}
+          filter: ${{ matrix.filter }}
+          sparse-checkout: ${{ matrix.sparse }}
+          persist-credentials: false
+          trace-job: "true"
+      - name: Check the source-prep record
+        env:
+          LEG: ${{ matrix.leg }}
+          RECORD: ${{ steps.src.outputs.record }}
+        run: python3 -B actions/source-prep-stats/dogfood_check.py record "$LEG" "$RECORD" fixture
+      - name: Read one blob the partial clone lacks (exactly one lazy fetch, traced job-wide)
+        if: ${{ matrix.leg == 'blobless' }}
+        run: |
+          # --missing=print lists without fetching; the file avoids a SIGPIPE under pipefail.
+          git -C fixture rev-list --objects --missing=print --all > "$RUNNER_TEMP/objects.txt"
+          blob=$(awk '/^\?/ { print substr($0, 2); exit }' "$RUNNER_TEMP/objects.txt")
+          [ -n "$blob" ] || { echo "::error::no missing blob to fetch: the clone is not partial"; exit 1; }
+          git -C fixture cat-file -p "$blob" > /dev/null
+      - id: fp
+        if: ${{ always() }}
+        uses: ./actions/job-footprint
+      - name: Check job-telemetry.json and its artifact
+        env:
+          LEG: ${{ matrix.leg }}
+          TELEMETRY: ${{ steps.fp.outputs.telemetry_path }}
+          ARTIFACT: ${{ steps.fp.outputs.artifact_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B actions/source-prep-stats/dogfood_check.py telemetry "$LEG" "$TELEMETRY"
+          python3 -B actions/source-prep-stats/dogfood_check.py artifact "$ARTIFACT"

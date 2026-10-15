@@ -1,0 +1,188 @@
+# Source-prep stats: actions/checkout, measured. A drop-in for actions/checkout (same inputs, same `ref` and
+# `commit` outputs) that also records how the source was prepared, as a versioned source-prep.v1 record:
+# bytes and objects added, depth, filter (partial), sparse, files materialised, checkout and fetch time,
+# fetch attempts, retries, HTTP 429 / rate-limit hits and lazy fetches (git trace2 + git count-objects -v).
+#
+#   - uses: vagarylabs/.github/actions/source-prep-stats@<sha>
+#     with:
+#       fetch-depth: 0          # any actions/checkout input
+#   ...
+#   - if: ${{ always() }}       # last step: persists every record of the job in one job-telemetry.json artifact
+#     uses: vagarylabs/.github/actions/job-footprint@<sha>
+#
+# Measurement never fails the job; a failed checkout still does. What was not measured is null, with the
+# reason under "unknown". Raw trace2 output (argv, URLs, error text) stays in a 0700 directory under
+# RUNNER_TEMP and is deleted once parsed. See README.md for the fields and their semantics.
+name: source-prep-stats
+description: actions/checkout plus a source-prep.v1 record (bytes, objects, depth, filter, sparse, time, retries, throttling).
+inputs:
+  # --- actions/checkout v4 inputs, passed through unchanged (defaults are checkout's) ---
+  repository:
+    description: Repository name with owner.
+    default: ${{ github.repository }}
+  ref:
+    description: The branch, tag or SHA to check out.
+    default: ""
+  token:
+    description: Token used to fetch the repository.
+    default: ${{ github.token }}
+  ssh-key:
+    description: SSH key used to fetch the repository.
+    default: ""
+  ssh-known-hosts:
+    description: Known hosts in addition to the user and global host key database.
+    default: ""
+  ssh-strict:
+    description: Whether to perform strict host key checking.
+    default: "true"
+  ssh-user:
+    description: The user to use when connecting to the remote SSH host.
+    default: git
+  persist-credentials:
+    description: Whether to configure the token or SSH key with the local git config.
+    default: "true"
+  path:
+    description: Relative path under $GITHUB_WORKSPACE to place the repository.
+    default: ""
+  clean:
+    description: Whether to execute `git clean -ffdx && git reset --hard HEAD` before fetching.
+    default: "true"
+  filter:
+    description: Partially clone against a given filter (e.g. blob:none). Overrides sparse-checkout if set.
+    default: ""
+  sparse-checkout:
+    description: Patterns for sparse checkout (one per line).
+    default: ""
+  sparse-checkout-cone-mode:
+    description: Whether to use cone mode for sparse checkout.
+    default: "true"
+  fetch-depth:
+    description: Number of commits to fetch. 0 fetches all history.
+    default: "1"
+  fetch-tags:
+    description: Whether to fetch tags even when fetch-depth > 0.
+    default: "false"
+  show-progress:
+    description: Whether to show progress status output when fetching.
+    default: "true"
+  lfs:
+    description: Whether to download Git-LFS files.
+    default: "false"
+  submodules:
+    description: Whether to check out submodules (true, false or recursive).
+    default: "false"
+  set-safe-directory:
+    description: Add the repository path as safe.directory for the git global config.
+    default: "true"
+  github-server-url:
+    description: The base URL for the GitHub instance to clone from.
+    default: ""
+  allow-unsafe-pr-checkout:
+    description: >-
+      actions/checkout's guard against checking out fork PR code under pull_request_target or workflow_run.
+      Passed through unchanged; leave it false unless you have reviewed https://gh.io/securely-using-pull_request_target.
+    default: "false"
+  # --- measurement ---
+  pnpm-store-dir:
+    description: >-
+      Optional pnpm store directory. Its bytes are read now (before install) so job-footprint can report the
+      store delta at the end of the job. Empty: the store is not measured.
+    default: ""
+  trace-job:
+    description: >-
+      "true" keeps git trace2 on for the rest of the job so job-footprint can count lazy fetches and fetch
+      retries after the checkout (useful on partial clones). Raw traces stay private and are deleted when parsed.
+    default: "false"
+  walk-budget-seconds:
+    description: >-
+      Wall-clock budget for sizing .git (and the pnpm store), a finite number of seconds >= 0; inf, NaN or a
+      negative value is refused with a warning and the default used. An exceeded walk is reported as unknown.
+      Every read of a step (trace2, git, object listing, walks) also shares one 120 s deadline and a byte and
+      event budget; what runs out is unknown, never partial.
+    default: "20"
+outputs:
+  ref:
+    description: The branch, tag or SHA that was checked out (from actions/checkout).
+    value: ${{ steps.checkout.outputs.ref }}
+  commit:
+    description: The commit SHA that was checked out (from actions/checkout).
+    value: ${{ steps.checkout.outputs.commit }}
+  record:
+    description: The source-prep.v1 record (compact JSON).
+    value: ${{ steps.after.outputs.record }}
+  record-path:
+    description: Path of the record file under RUNNER_TEMP.
+    value: ${{ steps.after.outputs.record_path }}
+  bytes:
+    description: On-disk object bytes this preparation added (empty when not measured).
+    value: ${{ steps.after.outputs.bytes }}
+  objects:
+    description: Objects this preparation added (empty when not measured).
+    value: ${{ steps.after.outputs.objects }}
+  completeness:
+    description: complete, incomplete (shallow, partial, sparse, submodules not fetched, checkout failed) or unknown.
+    value: ${{ steps.after.outputs.completeness }}
+  checkout-seconds:
+    description: Wall time of the checkout step in seconds (empty when not measured).
+    value: ${{ steps.after.outputs.checkout_seconds }}
+runs:
+  using: composite
+  steps:
+    - id: before
+      shell: bash
+      continue-on-error: true
+      env:
+        SPS_PATH: ${{ inputs.path }}
+        SPS_PNPM_STORE: ${{ inputs.pnpm-store-dir }}
+        SPS_WALK_BUDGET: ${{ inputs.walk-budget-seconds }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/srcstats.py" before \
+          || echo "::warning::source-prep-stats: no before snapshot (is python3 on this runner?); the record will say so"
+    - id: checkout
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      env:
+        # Empty when the before step failed, which leaves trace2 off.
+        GIT_TRACE2_EVENT: ${{ steps.before.outputs.trace_dir }}
+        GIT_TRACE2_EVENT_NESTING: "8"
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        ssh-key: ${{ inputs.ssh-key }}
+        ssh-known-hosts: ${{ inputs.ssh-known-hosts }}
+        ssh-strict: ${{ inputs.ssh-strict }}
+        ssh-user: ${{ inputs.ssh-user }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        path: ${{ inputs.path }}
+        clean: ${{ inputs.clean }}
+        filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
+        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        fetch-tags: ${{ inputs.fetch-tags }}
+        show-progress: ${{ inputs.show-progress }}
+        lfs: ${{ inputs.lfs }}
+        submodules: ${{ inputs.submodules }}
+        set-safe-directory: ${{ inputs.set-safe-directory }}
+        github-server-url: ${{ inputs.github-server-url }}
+        allow-unsafe-pr-checkout: ${{ inputs.allow-unsafe-pr-checkout }}
+    - id: after
+      if: ${{ always() }}
+      shell: bash
+      continue-on-error: true
+      env:
+        SPS_ID: ${{ steps.before.outputs.id }}
+        SPS_PATH: ${{ inputs.path }}
+        SPS_OUTCOME: ${{ steps.checkout.outcome }}
+        SPS_TRACE_JOB: ${{ inputs.trace-job }}
+        SPS_WALK_BUDGET: ${{ inputs.walk-budget-seconds }}
+        SPS_REQ_REPOSITORY: ${{ inputs.repository }}
+        SPS_REQ_FETCH_DEPTH: ${{ inputs.fetch-depth }}
+        SPS_REQ_FILTER: ${{ inputs.filter }}
+        SPS_REQ_SPARSE: ${{ inputs.sparse-checkout }}
+        SPS_REQ_FETCH_TAGS: ${{ inputs.fetch-tags }}
+        SPS_REQ_LFS: ${{ inputs.lfs }}
+        SPS_REQ_SUBMODULES: ${{ inputs.submodules }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/srcstats.py" after \
+          || echo "::warning::source-prep-stats: no record written (is python3 on this runner?)"

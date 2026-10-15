@@ -811,6 +811,22 @@ def _test_stem(p):
     return b.rsplit(".", 1)[0]
 
 
+def _candidate_listing(candidates, keys):
+    """The first WEAKENING_MAX_CANDIDATES distinct paths filed under keys, then a count of the rest; "" for none.
+    A set does the de-duplication, so the cost is the number of paths filed, never that number squared."""
+    seen, names = set(), []
+    for key in keys:
+        for p in candidates.get(key, ()):
+            if p not in seen:
+                seen.add(p)
+                if len(names) < WEAKENING_MAX_CANDIDATES:
+                    names.append(p)
+    listed = ", ".join(md_code(p) for p in names)
+    if len(seen) > len(names):
+        listed += " and %d more" % (len(seen) - len(names))
+    return listed
+
+
 def deleted_test_findings(status_rows):
     """A test file deleted, or renamed to a non-test path (b.test.ts.bak, tests/fixtures/), is reported.
 
@@ -825,6 +841,8 @@ def deleted_test_findings(status_rows):
             for key in {new.rsplit("/", 1)[-1], _test_stem(new)}:
                 candidates.setdefault(key, []).append(new)
     deleted_sources = {_test_stem(o) for st, o, _ in status_rows if st == "D" and not is_test_file(o)}
+    # The listing depends only on the deleted file's name, and a PR can delete thousands of tests of one name.
+    listing = {}
     out = []
     for st, old, new in status_rows:
         if not is_test_file(old):
@@ -836,14 +854,12 @@ def deleted_test_findings(status_rows):
             detail = "renames a test file to the non-test path %s" % md_code(new)
         else:
             continue
-        names = []
-        for key in (old.rsplit("/", 1)[-1], _test_stem(old)):
-            names += [p for p in candidates.get(key, []) if p not in names]
-        if names:
-            listed = ", ".join(md_code(p) for p in names[:WEAKENING_MAX_CANDIDATES])
-            if len(names) > WEAKENING_MAX_CANDIDATES:
-                listed += " and %d more" % (len(names) - WEAKENING_MAX_CANDIDATES)
-            detail += ("; unverified successor candidate by name only: %s (git does not pair it by content, so the "
+        keys = (old.rsplit("/", 1)[-1], _test_stem(old))
+        if keys not in listing:
+            listing[keys] = _candidate_listing(candidates, keys)
+        listed = listing[keys]
+        if listed:
+            detail +=("; unverified successor candidate by name only: %s (git does not pair it by content, so the "
                        "deleted cases may not run)" % listed)
         else:
             detail += " with no successor"

@@ -365,6 +365,21 @@ class WeakeningCases(unittest.TestCase):
         got = classify.deleted_test_findings(rows[:2])
         self.assertIn("candidate by name only: `other/a.spec.ts`", got[0]["detail"])
 
+    def test_red_many_same_name_tests_stay_linear(self):
+        # The listing cap admits ~16k deletions plus ~16k additions of one test name. Red on de8a7b6: list
+        # membership made the candidate listing cubic (1200 pairs took ~6 s, 2000 took 39 s), outside any deadline.
+        n = 1200
+        rows = [("D", "d%d/index.test.ts" % i, "d%d/index.test.ts" % i) for i in range(n)]
+        rows += [("A", "a%d/index.test.ts" % i, "a%d/index.test.ts" % i) for i in range(n)]
+        rows += [("D", "e%d/index.spec.ts" % i, "e%d/index.spec.ts" % i) for i in range(n)]  # same stem, other name
+        started = time.monotonic()
+        got = classify.deleted_test_findings(rows)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(got), 2 * n)
+        listed = "`a0/index.test.ts`, `a1/index.test.ts`, `a2/index.test.ts` and %d more" % (n - 3)
+        self.assertIn("candidate by name only: %s (" % listed, got[0]["detail"])
+        self.assertIn("candidate by name only: %s (" % listed, got[-1]["detail"])
+
     def test_deleted_test_notes_a_deleted_subject(self):
         # A non-test file of the same stem is not a successor.
         got = self.findings({"pkg/test_util.py": None, "pkg/util.py": "x = 1\n"})

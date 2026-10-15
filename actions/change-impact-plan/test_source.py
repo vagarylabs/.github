@@ -445,6 +445,33 @@ class RealTransport(unittest.TestCase):
                                     transport=lambda *args: P.https_transport(url + "/compare", {}, 0.5, 1024))
         self.assertEqual((result["status"], result["reason"]), ("unknown", "provider_deadline"))
 
+    def test_trickled_status_line_and_headers_exceed_the_whole_request_deadline(self):
+        """Each header line arrives inside the per-read timeout, but the whole answer arrives after the deadline:
+        it must be refused, never accepted as a complete (if tiny) body."""
+        def trickle(pause):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    lines = [b"HTTP/1.0 200 OK\r\n"] + [b"X-Pad-%d: 1\r\n" % i for i in range(6)] \
+                        + [b"Content-Length: 2\r\n\r\n{}"]
+                    try:
+                        for line in lines:
+                            self.wfile.write(line)
+                            self.wfile.flush()
+                            time.sleep(pause)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+
+                def log_message(self, *args):
+                    pass
+            return Handler
+        self.assertEqual(P.https_transport(self.serve(trickle(0.01)) + "/compare", {}, 0.5, 1024)[::2], (200, b"{}"),
+                         "positive control: the same answer inside the deadline is read")
+        url = self.serve(trickle(0.15))
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            P.https_transport(url + "/compare", {}, 0.5, 1024)
+        self.assertLess(time.monotonic() - started, 2.0)
+
 
 class ContractShape(SourceFixture):
     """Field names and enums SRC-01 defines; the full schema check runs when a local copy is supplied."""

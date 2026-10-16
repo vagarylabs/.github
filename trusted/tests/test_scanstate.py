@@ -359,6 +359,47 @@ class ScannerCoverageTests(unittest.TestCase):
                 self.assertNotEqual(g.returncode, 0, (scanner, g.stdout, g.stderr))
 
 
+class FullHistoryReportOnlyTests(unittest.TestCase):
+    """Decision A (2026-10-17): the full-history scan reports findings but does not block until switched."""
+
+    def gate(self, t, *extra):
+        env = dict(os.environ, RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "summary.md"))
+        rec = ss.make_check("scan", "FINDINGS", "1 gitleaks finding(s) in HEAD", {"findings": 1},
+                            [{"rule": "generic-api-key", "path": "a.py", "line": 3, "commit": "abc"}])
+        ss.append(os.path.join(t, "scan-records"), "gitleaks", rec)
+        r = subprocess.run([sys.executable, "-I", str(ROOT / "trusted" / "scanstate.py"), "gate", "--scanner",
+                            "gitleaks", "--expect", "scan"] + list(extra), env=env, capture_output=True, text=True)
+        doc = json.loads(pathlib.Path(t, "scan-records", "scan-result-gitleaks.json").read_text())
+        return r, doc, pathlib.Path(t, "summary.md").read_text()
+
+    def test_report_only_exits_zero_but_surfaces_findings(self):
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "scan-records"))
+            r, doc, summary = self.gate(t, "--report-only")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((doc["state"], doc["mode"], doc["gate"]), ("FINDINGS", "report-only", "report-only"))
+            self.assertIn("a.py", summary)
+            self.assertIn("::notice", r.stdout)
+
+    def test_without_switch_findings_block(self):
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "scan-records"))
+            r, doc, _ = self.gate(t)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual((doc["mode"], doc["gate"]), ("blocking", "fail"))
+
+    def test_reusable_report_only_is_bound_to_full_mode_and_the_switch(self):
+        t = (WF / "secret-scan.yml").read_text()
+        self.assertIn("full-history-blocking:", t)
+        self.assertRegex(t, r"full-history-blocking:\n(?:.*\n)*?\s+default: false")
+        for sc in ("gitleaks", "trufflehog"):
+            body = step_block("secret-scan", "Scan state (%s)" % sc)
+            self.assertIn('if [ "$MODE" = full ] && [ "$FULL_BLOCKING" != true ]; then', body)
+            self.assertIn("name: scan-result-%s" % sc, t)
+        # range scans never get the flag: the only --report-only is inside the full-mode branch
+        self.assertEqual(t.count("ro=(--report-only)"), 2)
+
+
 def run_block(fragment):
     """The `run: |` body of a template fragment, de-indented: the exact bash the workflow executes."""
     text = (ROOT / "trusted" / "templates" / fragment).read_text()
@@ -560,8 +601,11 @@ class WorkflowInlineTests(unittest.TestCase):
                 self.assertNotIn('range="-1', code)
                 for scanner, expect in gates.items():
                     self.assertIn("gate --scanner %s --expect %s" % (scanner, expect), text)
-                self.assertEqual(text.count("if: ${{ !cancelled() }}\n        run: python3 -I \"$RUNNER_TEMP/trusted/scanstate.py\" gate"),
-                                 len(gates))
+                # Each gate step runs even after a failed step (`!cancelled()`); it may carry an env block and a
+                # multi-line run (the reusable's report-only switch), but nothing that leaves the step.
+                gate_steps = re.findall(r"if: \$\{\{ !cancelled\(\) \}\}\n(?:        (?!- ).*\n|          .*\n)*?"
+                                        r".*python3 -I \"\$RUNNER_TEMP/trusted/scanstate.py\" gate", text)
+                self.assertEqual(len(gate_steps), len(gates))
 
     def test_shared_workflow_text_has_no_dead_runner_label(self):
         text = (WF / "secret-scan.yml").read_text()

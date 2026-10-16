@@ -305,6 +305,60 @@ class ExceptionTests(unittest.TestCase):
         self.assertEqual(ss.classify_exceptions("", "", TODAY)["state"], "PASSED")
 
 
+class ScannerCoverageTests(unittest.TestCase):
+    """Positive control: on a non-empty range the scanner must REPORT that it read something."""
+
+    GL = "\x1b[90m3:05AM\x1b[0m INF \x1b[1m%d commits scanned.\x1b[0m\n"
+    TH = '{"level":"info-0","msg":"finished scanning","chunks":%d,"bytes":%d,"verified_secrets":0}\n'
+
+    def test_gitleaks_count_parsed_through_ansi(self):
+        self.assertEqual(ss.gitleaks_commits_scanned(self.GL % 2), 2)
+        self.assertIsNone(ss.gitleaks_commits_scanned("no such line\n"))
+
+    def test_gitleaks_zero_scanned_is_unavailable(self):
+        r = ss.classify_gitleaks(0, "[]", 3, "a..b", log_text=self.GL % 0)
+        self.assertEqual(r["state"], "UNAVAILABLE")
+        self.assertIn("0 commits scanned", r["reason"])
+
+    def test_gitleaks_missing_count_is_unavailable(self):
+        self.assertEqual(ss.classify_gitleaks(0, "[]", 3, "a..b", log_text="")["state"], "UNAVAILABLE")
+
+    def test_gitleaks_scanned_passes_and_without_log_unchanged(self):
+        self.assertEqual(ss.classify_gitleaks(0, "[]", 3, "a..b", log_text=self.GL % 2)["state"], "PASSED")
+        self.assertEqual(ss.classify_gitleaks(0, "[]", 3, "a..b")["state"], "PASSED")
+
+    def test_trufflehog_must_finish(self):
+        r = ss.classify_trufflehog(0, "", 3, "a..b", log_text='{"msg":"running source"}\n', added=5)
+        self.assertEqual(r["state"], "UNAVAILABLE")
+        self.assertIn("finished scanning", r["reason"])
+
+    def test_trufflehog_zero_chunks_on_added_lines_is_unavailable(self):
+        r = ss.classify_trufflehog(0, "", 3, "a..b", log_text=self.TH % (0, 0), added=5)
+        self.assertEqual(r["state"], "UNAVAILABLE")
+
+    def test_trufflehog_zero_chunks_on_deletion_only_range_passes(self):
+        self.assertEqual(ss.classify_trufflehog(0, "", 1, "a..b", log_text=self.TH % (0, 0), added=0)["state"],
+                         "PASSED")
+
+    def test_trufflehog_chunks_pass(self):
+        self.assertEqual(ss.classify_trufflehog(0, "", 3, "a..b", log_text=self.TH % (5, 184), added=3)["state"],
+                         "PASSED")
+
+    def test_cli_missing_log_file_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as t:
+            env = dict(os.environ, RUNNER_TEMP=t)
+            for scanner, extra in (("gitleaks", ["--report", os.path.join(t, "r.json")]),
+                                   ("trufflehog", ["--results", os.path.join(t, "r.jsonl"), "--added", "3"])):
+                pathlib.Path(extra[1]).write_text("[]" if scanner == "gitleaks" else "")
+                subprocess.run([sys.executable, "-I", str(ROOT / "trusted" / "scanstate.py"), scanner, "--rc", "0",
+                                "--commits", "3", "--scope", "a..b", "--log", os.path.join(t, "absent.log")] + extra,
+                               env=env, check=True, capture_output=True, text=True)
+                g = subprocess.run([sys.executable, "-I", str(ROOT / "trusted" / "scanstate.py"), "gate",
+                                    "--scanner", scanner, "--expect", "scan", "--out", t],
+                                   env=env, capture_output=True, text=True)
+                self.assertNotEqual(g.returncode, 0, (scanner, g.stdout, g.stderr))
+
+
 def run_block(fragment):
     """The `run: |` body of a template fragment, de-indented: the exact bash the workflow executes."""
     text = (ROOT / "trusted" / "templates" / fragment).read_text()
@@ -314,7 +368,7 @@ def run_block(fragment):
 
 
 class EventRangeTests(unittest.TestCase):
-    """G3: the shared workflow's range on new branches and force-pushes is the full branch range."""
+    """G3: no bindable range (new branch, force-push, unreadable before, schedule) means a FULL-history scan."""
 
     @classmethod
     def setUpClass(cls):
@@ -349,39 +403,63 @@ class EventRangeTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def resolve(self, event, before="", after="", pr_base="", pr_head=""):
+    def resolve(self, event, before="", after="", pr_base="", pr_head="", rc=0):
         with tempfile.TemporaryDirectory() as t:
             out = os.path.join(t, "out")
+            pathlib.Path(out).write_text("")
             env = dict(os.environ, EVENT=event, PR_BASE=pr_base, PR_HEAD=pr_head, PUSH_BEFORE=before,
-                       PUSH_AFTER=after, DEFAULT_BRANCH="main", GITHUB_OUTPUT=out)
+                       PUSH_AFTER=after, GITHUB_OUTPUT=out)
             r = subprocess.run(["bash", "-c", run_block("_event_range.yml.in")], cwd=self.d, env=env,
                                capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.returncode, rc, r.stderr)
             return dict(l.split("=", 1) for l in pathlib.Path(out).read_text().split("\n") if l), r.stdout
 
-    def test_new_branch_scans_full_branch_range(self):
-        o, log = self.resolve("push", before="0" * 40, after=self.after)
-        self.assertEqual((o["lower"], o["commits"]), (self.main, "2"), log)
+    def full_count(self, sha):
+        return subprocess.run(["git", "rev-list", "--count", sha], cwd=self.d, check=True, capture_output=True,
+                              text=True).stdout.strip()
 
-    def test_force_push_scans_full_branch_range(self):
+    def test_new_branch_scans_full_history(self):
+        o, log = self.resolve("push", before="0" * 40, after=self.after)
+        self.assertEqual((o["mode"], o["lower"], o["head"]), ("full", "", self.after), log)
+        self.assertEqual(o["commits"], self.full_count(self.after))
+        self.assertEqual(o["commits"], "4")  # 2 on main + 2 on the rewritten branch: never the pushed commit alone
+
+    def test_force_push_scans_full_history(self):
         o, log = self.resolve("push", before=self.old, after=self.after)
-        self.assertEqual((o["lower"], o["commits"]), (self.main, "2"), log)
-        self.assertIn("force-push", log)
+        self.assertEqual((o["mode"], o["lower"], o["commits"]), ("full", "", self.full_count(self.after)), log)
+
+    def test_unreadable_before_scans_full_history(self):
+        o, log = self.resolve("push", before="f" * 40, after=self.after)
+        self.assertEqual((o["mode"], o["commits"]), ("full", self.full_count(self.after)), log)
 
     def test_fast_forward_push_scans_before_after(self):
         o, _ = self.resolve("push", before=self.main, after=self.after)
-        self.assertEqual((o["lower"], o["commits"]), (self.main, "2"))
+        self.assertEqual((o["mode"], o["lower"], o["commits"]), ("range", self.main, "2"))
 
     def test_pull_request(self):
         o, _ = self.resolve("pull_request", pr_base=self.main, pr_head=self.after)
-        self.assertEqual((o["lower"], o["head"], o["commits"]), (self.main, self.after, "2"))
-        # trufflehog scans the merge commit on a PR, so it stays bounded at the base tip, as before
-        self.assertEqual(o["since"], self.main)
+        self.assertEqual((o["mode"], o["lower"], o["head"], o["commits"]), ("range", self.main, self.after, "2"))
+        self.assertNotIn("since", o)  # both engines scan merge-base..head of the PR head itself
 
-    def test_default_branch_without_usable_before_is_unresolved(self):
-        o, _ = self.resolve("push", before="0" * 40, after=self.main)
-        self.assertEqual((o["lower"], o["commits"]), ("", "0"))
+    def test_pull_request_without_merge_base_is_empty_and_unavailable(self):
+        o, _ = self.resolve("pull_request", pr_base="f" * 40, pr_head=self.after)
+        self.assertEqual((o["mode"], o["lower"], o["commits"]), ("range", "", "0"))
         self.assertEqual(ss.classify_gitleaks(0, "[]", int(o["commits"]), "unresolved")["state"], "UNAVAILABLE")
+        self.assertEqual(ss.classify_trufflehog(0, "", int(o["commits"]), "unresolved")["state"], "UNAVAILABLE")
+
+    def test_schedule_and_dispatch_scan_full_history(self):
+        for ev in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=ev):
+                o, _ = self.resolve(ev, after=self.main)
+                self.assertEqual((o["mode"], o["lower"], o["commits"]), ("full", "", self.full_count(self.main)))
+                self.assertGreater(int(o["commits"]), 0)
+
+    def test_default_branch_without_usable_before_scans_full_history(self):
+        o, _ = self.resolve("push", before="0" * 40, after=self.main)
+        self.assertEqual((o["mode"], o["commits"]), ("full", "2"))
+
+    def test_unsupported_event_fails(self):
+        self.resolve("release", after=self.main, rc=1)
 
 
 def step_block(workflow, name):

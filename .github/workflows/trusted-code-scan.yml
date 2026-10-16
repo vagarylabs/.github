@@ -156,13 +156,51 @@ jobs:
               return 0 if state in PASSING else 1
 
 
+          # --- scanner-reported coverage (positive control) ---------------------------------------------
+          # The range's commit count says what SHOULD be scanned; these read what the scanner SAYS it scanned, so a scanner
+          # that resolved nothing (a missing object, a range it could not walk) cannot pass on a non-empty range.
+
+          ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+          def gitleaks_commits_scanned(log_text):
+              """N from gitleaks' 'N commits scanned.' log line; None when absent."""
+              if log_text is None:
+                  return None
+              m = re.findall(r"\b(\d+) commits? scanned", ANSI.sub("", log_text))
+              return int(m[-1]) if m else None
+
+
+          def trufflehog_finished(log_text):
+              """(chunks, bytes) from trufflehog's JSON 'finished scanning' log line; None when absent."""
+              for line in (log_text or "").splitlines():
+                  try:
+                      r = json.loads(line)
+                  except ValueError:
+                      continue
+                  if isinstance(r, dict) and r.get("msg") == "finished scanning":
+                      try:
+                          return int(r.get("chunks")), int(r.get("bytes"))
+                      except (TypeError, ValueError):
+                          return None
+              return None
+
+
           # --- gitleaks --------------------------------------------------------------------------------
 
-          def classify_gitleaks(rc, report_text, commits, scope, tool=None):
+          def classify_gitleaks(rc, report_text, commits, scope, tool=None, log_text=None):
               if commits is not None and commits <= 0:
                   return make_check("scan", "UNAVAILABLE", "empty scan range %s: nothing was scanned" % scope, tool=tool, scope=scope)
               if rc not in (0, GITLEAKS_FINDINGS_RC):
                   return make_check("scan", "UNAVAILABLE", "gitleaks exited %d (an error, not a finding)" % rc, tool=tool, scope=scope)
+              if log_text is not None:
+                  n = gitleaks_commits_scanned(log_text)
+                  if n is None:
+                      return make_check("scan", "UNAVAILABLE", "gitleaks did not report how many commits it scanned in %s" % scope,
+                                        tool=tool, scope=scope)
+                  if n <= 0:
+                      return make_check("scan", "UNAVAILABLE", "gitleaks reported %d commits scanned over a non-empty range %s "
+                                        "(%s commit(s)): nothing was read" % (n, scope, commits), tool=tool, scope=scope)
               try:
                   rows = json.loads(report_text) if report_text is not None else None
               except ValueError:
@@ -203,7 +241,7 @@ jobs:
               return git.get("file"), git.get("line"), (git.get("commit") or "")[:12]
 
 
-          def classify_trufflehog(rc, results_text, commits, scope, tool=None):
+          def classify_trufflehog(rc, results_text, commits, scope, tool=None, log_text=None, added=None):
               """Input is trufflehog --json --results=verified,unknown output. A verified result is a live credential
               (FINDINGS). An unknown result means verification was attempted and errored, e.g. the provider was
               unreachable: that candidate was NOT cleared, so the scan is UNAVAILABLE, never PASSED."""
@@ -211,6 +249,14 @@ jobs:
                   return make_check("scan", "UNAVAILABLE", "empty scan range %s: nothing was scanned" % scope, tool=tool, scope=scope)
               if rc != 0:
                   return make_check("scan", "UNAVAILABLE", "trufflehog exited %d (scan error)" % rc, tool=tool, scope=scope)
+              if log_text is not None:
+                  fin = trufflehog_finished(log_text)
+                  if fin is None:
+                      return make_check("scan", "UNAVAILABLE", "trufflehog did not log 'finished scanning' for %s" % scope,
+                                        tool=tool, scope=scope)
+                  if added and fin[0] <= 0:
+                      return make_check("scan", "UNAVAILABLE", "trufflehog scanned 0 chunks over %s, which adds %d line(s): "
+                                        "nothing was read" % (scope, added), tool=tool, scope=scope)
               if results_text is None:
                   return make_check("scan", "UNAVAILABLE", "trufflehog output missing", tool=tool, scope=scope)
               verified, unknown = [], []
@@ -591,12 +637,15 @@ jobs:
               p.add_argument("--rc", type=int, required=True)
               p.add_argument("--report")
               p.add_argument("--commits", type=int)
+              p.add_argument("--log", help="gitleaks stderr; asserts 'N commits scanned' with N > 0")
               common(p)
 
               p = sub.add_parser("trufflehog")
               p.add_argument("--rc", type=int, required=True)
               p.add_argument("--results")
               p.add_argument("--commits", type=int)
+              p.add_argument("--log", help="trufflehog stderr (--json logs); asserts it finished and read a chunk")
+              p.add_argument("--added", type=int, help="lines the range adds; >0 requires chunks > 0")
               common(p)
 
               p = sub.add_parser("semgrep")
@@ -654,9 +703,11 @@ jobs:
               if a.cmd == "record":
                   rec, scanner = make_check(a.check, a.state, a.reason, scope=a.scope), a.scanner
               elif a.cmd == "gitleaks":
-                  rec, scanner = classify_gitleaks(a.rc, _read(a.report), a.commits, a.scope, _tool(a)), "gitleaks"
+                  rec, scanner = classify_gitleaks(a.rc, _read(a.report), a.commits, a.scope, _tool(a),
+                                                     log_text=(_read(a.log) or "") if a.log else None), "gitleaks"
               elif a.cmd == "trufflehog":
-                  rec, scanner = classify_trufflehog(a.rc, _read(a.results), a.commits, a.scope, _tool(a)), "trufflehog"
+                  rec, scanner = classify_trufflehog(a.rc, _read(a.results), a.commits, a.scope, _tool(a),
+                                                       log_text=(_read(a.log) or "") if a.log else None, added=a.added), "trufflehog"
               elif a.cmd == "semgrep":
                   rec, scanner = classify_semgrep(a.rc, _read(a.head), _read(a.base), a.rules, a.head_root, a.base_root,
                                                   a.scope, _tool(a)), "semgrep"

@@ -5,6 +5,7 @@
       # is still missing. Rename detection is off for the listing only, which lists both sides of a rename anyway.
       - name: Fetch every blob the scan range reads (blob-less checkout; stops if any is missing)
         env:
+          MODE: ${{ steps.range.outputs.mode }}
           LOWER: ${{ steps.range.outputs.lower }}
           HEAD_SHA: ${{ steps.range.outputs.head }}
           COMMITS: ${{ steps.range.outputs.commits }}
@@ -12,12 +13,14 @@
           set -euo pipefail
           if [ "$COMMITS" -le 0 ]; then echo "empty or unresolved range: nothing to fetch (the scan step records the state)"; exit 0; fi
           T="$RUNNER_TEMP/hydrate"; mkdir -p "$T"
-          git log --format= --raw --no-abbrev --no-renames -m "${LOWER}..${HEAD_SHA}" \
+          revs="${LOWER}..${HEAD_SHA}"
+          [ "$MODE" = full ] && revs="$HEAD_SHA"   # full history: every commit reachable from head
+          git log --format= --raw --no-abbrev --no-renames -m "$revs" \
             | awk '/^:/{ if ($1 != ":160000") print $3; if ($2 != "160000") print $4 }' \
             | { grep -v '^0\{40\}$' || true; } | sort -u > "$T/need"
           git cat-file --batch-all-objects --batch-check='%(objectname)' | sort -u > "$T/have"
           comm -23 "$T/need" "$T/have" > "$T/missing"
-          echo "range ${LOWER}..${HEAD_SHA}: $(wc -l < "$T/need") blob(s) read, $(wc -l < "$T/missing") to fetch"
+          echo "range $revs: $(wc -l < "$T/need") blob(s) read, $(wc -l < "$T/missing") to fetch"
           if [ -s "$T/missing" ]; then
             git -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head \
               --recurse-submodules=no --filter=blob:none --stdin origin < "$T/missing"

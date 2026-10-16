@@ -1,0 +1,9 @@
+{"event": "version", "evt": "4", "exe": "2.50.1 (Apple Git-155)", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.374018Z"}
+{"argv": ["git", "-C", "/fixture/http", "-c", "protocol.version=2", "fetch", "--no-tags", "--prune", "--no-recurse-submodules", "origin", "+refs/heads/main:refs/remotes/origin/main"], "event": "start", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "t_abs": 0.000629, "thread": "main", "time": "2026-10-15T16:15:52.374053Z"}
+{"event": "def_repo", "repo": 1, "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.374245Z", "worktree": "/fixture/http"}
+{"event": "cmd_name", "hierarchy": "fetch", "name": "fetch", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.374418Z"}
+{"category": "fetch", "event": "region_enter", "label": "fetch-one", "nesting": 1, "repo": 1, "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.374851Z"}
+{"category": "fetch", "event": "region_enter", "label": "remote_refs", "nesting": 2, "repo": 1, "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.375042Z"}
+{"argv": ["git", "remote-http", "origin", "http://127.0.0.1:0/fixture.git"], "child_class": "remote-http", "child_id": 0, "event": "child_start", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "thread": "main", "time": "2026-10-15T16:15:52.375060Z", "use_shell": false}
+{"code": 128, "event": "exit", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "t_abs": 0.020628, "thread": "main", "time": "2026-10-15T16:15:52.394055Z"}
+{"code": 128, "event": "atexit", "sid": "20261015T161552.373665Z-H6db4b9fc-P000180f4", "t_abs": 0.020665, "thread": "main", "time": "2026-10-15T16:15:52.394089Z"}

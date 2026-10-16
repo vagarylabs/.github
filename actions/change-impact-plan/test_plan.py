@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import edges as E
 import plan as P
 
 PR397 = """cli/src/__tests__/context-commands.test.ts
@@ -58,6 +59,38 @@ PACKAGES = {
 }
 
 
+def complete_scope(root: Path, cfg_path: Path, cfg, paths, *, event="pull_request", base="b" * 40,
+                   candidate="c" * 40):
+    """Source facts exactly as main() records them for a verified checkout: known immutable scope, base policy
+    verified byte-for-byte, provider identity, observed representation. Planner 1.4 refuses to narrow without
+    them, so selection tests supply them explicitly; the P3 vectors in test_source.py remove them one by one."""
+    manifests = sorted(m.relative_to(root).as_posix() for m in root.rglob("package.json"))
+    metadata = [".github/ci-plan.json"] if cfg_path.is_file() else []
+    metadata += [p for p in ("pnpm-workspace.yaml", "pnpm-lock.yaml") if (root / p).is_file()]
+    metadata += sorted(w.relative_to(root).as_posix() for w in (root / ".github/workflows").glob("*") if w.is_file()) \
+        if (root / ".github/workflows").is_dir() else []
+    return {"schema": 1, "event": event, "repository": "fixture/repo", "base": base, "head": "h" * 40,
+            "candidate": candidate, "tree": "e" * 40, "paths": paths, "status": "known",
+            "repository_id": "101", "repository_owner_id": "202", "policy_status": "verified",
+            "policy_revision": base, "policy_path": ".github/ci-plan.json",
+            "policy_sha256": P.sha256_file(cfg_path), "policy_paths": sorted(set(manifests + metadata)),
+            "representation": {"rung": "required_history", "sparse": {"enabled": False, "paths": []},
+                               "clone_filter": "none", "history_depth": 0}}
+
+
+def bound_readers(root: Path, cfg_path: Path, cfg, candidate="c" * 40):
+    """A matched assessment from the REAL edges.py assess(), bound to this candidate, policy and graph."""
+    if cfg is None:
+        return None
+    try:
+        pkgs = E.workspace_graph(root, cfg)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    reader_dirs = (cfg.get("edge_scan") or {}).get("reader_dirs") or []
+    deps = {name: set(info["deps"]) for name, info in pkgs.items()}
+    return E.assess(pkgs, cfg, deps, {d: set() for d in reader_dirs}, revision=candidate, config_path=cfg_path)
+
+
 def make_repo(tmp: Path, config=CONFIG) -> Path:
     (tmp / "pnpm-workspace.yaml").write_text(
         "packages:\n  - packages/*\n  - packages/adapters/*\n  # comment\n"
@@ -89,7 +122,20 @@ class PlannerTest(unittest.TestCase):
         cfg_path = root / ".github" / "ci-plan.json"
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else None
         return P.plan(cfg=cfg, root=root, config_path=cfg_path, paths=paths, event=event,
-                      base="b" * 40, head="h" * 40, expected_count=expected)
+                      base="b" * 40, head="h" * 40, expected_count=expected,
+                      scope=complete_scope(root, cfg_path, cfg, paths, event=event),
+                      reader_assessment=bound_readers(root, cfg_path, cfg))
+
+    def test_selection_without_source_facts_fails_closed(self):
+        """Library callers that supply no observed scope cannot obtain a reduced plan (unknown never narrows)."""
+        cfg_path = self.root / ".github" / "ci-plan.json"
+        rec = P.plan(cfg=json.loads(cfg_path.read_text()), root=self.root, config_path=cfg_path, paths=PR397,
+                     event="pull_request", base="b" * 40, head="h" * 40, expected_count=None)
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("source answer not complete", rec["reason"])
+        self.assertIsNone(rec["source_answer"])
+        self.assertEqual(rec["source_answer_meta"]["decision"], "FULL")
+        self.assertTrue(rec["jobs"]["canary_dry_run"]["run"])
 
     def included(self, rec, name="general_tests"):
         return [e["group"] for e in rec["matrices"][name]["include"]]

@@ -62,18 +62,25 @@ class FrozenScope(unittest.TestCase):
     def cli_plan(self, **changes):
         scope = dict(event="pull_request", base=self.base, head=self.head, candidate=self.candidate)
         scope.update(changes)
-        # A sparse, trusted-base policy checkout is separate from candidate files.
-        policy = Path(self.temp.name) / "base"
-        policy.mkdir(exist_ok=True)
-        (policy / ".github").mkdir(exist_ok=True)
-        (policy / ".github/ci-plan.json").write_text(json.dumps(self.cfg))
+        # A separate trusted-base policy checkout at the exact base, verified by the planner (v1.4).
+        number = getattr(self, "policy_number", 0) + 1
+        self.policy_number = number
+        policy = Path(self.temp.name) / f"policy-{number}"
+        self.git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(self.root), str(policy))
+        self.git("-C", str(policy), "reset", "--quiet", "--hard", self.base)
         stale_paths = Path(self.temp.name) / "ci-plan-paths.txt"
         stale_paths.write_text("docs/readme.md\n")
         output = Path(self.temp.name) / "plan.json"
         arguments = ["--config", ".github/ci-plan.json", "--root", str(policy),
                      "--scope-root", str(self.root), "--repository", "fixture/repo",
                      "--paths-file", str(stale_paths), "--tested-root", str(self.root),
-                     "--out-json", str(output)]
+                     "--out-json", str(output), "--repository-id", "101", "--repository-owner-id", "202"]
+        if (policy / ".github/ci-plan.json").is_file():
+            assessment = Path(self.temp.name) / f"readers-pr-{self.policy_number}.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                E.main(["check", "--config", str(policy / ".github/ci-plan.json"), "--repo", str(self.root),
+                        "--manifest-root", str(policy), "--revision", scope["candidate"], "--out-json", str(assessment)])
+            arguments += ["--reader-assessment", str(assessment)]
         for key, value in scope.items():
             arguments += ["--" + key, value]
         with contextlib.redirect_stdout(io.StringIO()):

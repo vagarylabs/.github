@@ -1,0 +1,606 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vagarylabs/.github/actions/source-prep-stats/schema/source-prep.v1.json",
+  "title": "source-prep.v1 (draft)",
+  "description": "How one CI checkout prepared its source. Draft producer schema; the canonical home is vagary-core contracts/delivery/v1 (P7-01). Null = not measured (see unknown); 0 = measured zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "source-prep.v1"
+    },
+    "schema_status": {
+      "enum": [
+        "draft"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "git_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "git_version",
+        "name"
+      ]
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_os": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_arch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_environment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "run_attempt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "event",
+        "job",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "runner_arch",
+        "runner_environment",
+        "runner_name",
+        "runner_os",
+        "workflow"
+      ]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "commit",
+        "path",
+        "repository"
+      ]
+    },
+    "requested": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fetch_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "filter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sparse_checkout": {
+          "type": "boolean"
+        },
+        "fetch_tags": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lfs": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "submodules": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fetch_depth",
+        "fetch_tags",
+        "filter",
+        "lfs",
+        "sparse_checkout",
+        "submodules"
+      ]
+    },
+    "checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "cancelled",
+            "skipped",
+            null
+          ]
+        },
+        "seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "outcome",
+        "seconds"
+      ]
+    },
+    "warm": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "bytes": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "on-disk bytes this preparation added under .git/objects: new pack files plus the loose-object delta"
+    },
+    "bytes_detail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "new_pack_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "loose_bytes_delta": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "objects_bytes_before": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "objects_bytes_after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "git_dir_bytes_after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "git_dir_bytes_after",
+        "loose_bytes_delta",
+        "new_pack_bytes",
+        "objects_bytes_after",
+        "objects_bytes_before"
+      ]
+    },
+    "objects": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "git count-objects -v (count + in-pack), after minus before"
+    },
+    "objects_detail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "received": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "after",
+        "before",
+        "received"
+      ]
+    },
+    "depth": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "const": "full"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "commits reachable from HEAD when shallow; 'full' when not shallow"
+    },
+    "shallow": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "partial": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "filter": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(other|(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)|combine:(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)(\\+(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)){1,7})$",
+      "description": "An allow-listed filter spec. Any other value is \"other\": the raw value is never published. sparse:oid drops its rev."
+    },
+    "sparse": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "sparse_cone": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "sparse_patterns": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "sparse_patterns_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "files_materialised": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "files_skipped": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "retries": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "throttle_hits": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "transfer": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fetch_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_fetch_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fetch_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "objects_received": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "The --pack_header object counts of every received pack. Null when a pack was indexed without one (a clone, fetch --keep or unpackLimit 0)."
+        },
+        "lazy_fetches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lazy_fetch_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lazy_objects": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "protocol_version": {
+          "enum": [
+            "0",
+            "1",
+            "2",
+            "other",
+            null
+          ],
+          "description": "git's traced negotiated protocol version. Any other value is \"other\": raw trace strings are never published."
+        },
+        "negotiation_rounds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "haves_sent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "filter_effective": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(other|(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)|combine:(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)(\\+(blob:none|blob:limit=[0-9]{1,20}[kmgKMG]?|tree:[0-9]{1,10}|object:type=(blob|tree|commit|tag)|sparse:oid)){1,7})$",
+          "description": "git's traced filter/effective in allow-listed form. Any other value is \"other\": raw trace strings are never published."
+        },
+        "http_429_responses": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "HTTP 429 responses git received, including ones it retried itself (http.maxRetries). Null before git 2.54, which does not report them."
+        }
+      },
+      "required": [
+        "failed_fetch_attempts",
+        "fetch_attempts",
+        "fetch_seconds",
+        "filter_effective",
+        "haves_sent",
+        "http_429_responses",
+        "lazy_fetch_failures",
+        "lazy_fetches",
+        "lazy_objects",
+        "negotiation_rounds",
+        "objects_received",
+        "protocol_version"
+      ]
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "incomplete",
+        "unknown"
+      ]
+    },
+    "incomplete_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "trace": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "processes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "excluded_server_processes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unterminated": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bad_lines": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "bad_lines",
+            "excluded_server_processes",
+            "processes",
+            "unterminated"
+          ]
+        }
+      },
+      "required": [
+        "complete",
+        "trace"
+      ]
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "measured field -> why it is null. Not listed here by design: attribution fields (null when the runner does not provide them), sparse_* when sparse is false and filter when partial is false (not applicable)."
+    }
+  },
+  "required": [
+    "attribution",
+    "bytes",
+    "bytes_detail",
+    "checkout",
+    "completeness",
+    "depth",
+    "files_materialised",
+    "files_skipped",
+    "filter",
+    "id",
+    "incomplete_reasons",
+    "measurement",
+    "objects",
+    "objects_detail",
+    "partial",
+    "producer",
+    "requested",
+    "retries",
+    "schema",
+    "schema_status",
+    "shallow",
+    "sparse",
+    "sparse_cone",
+    "sparse_patterns",
+    "sparse_patterns_sha256",
+    "subject",
+    "throttle_hits",
+    "transfer",
+    "unknown",
+    "warm"
+  ]
+}

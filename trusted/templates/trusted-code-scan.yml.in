@@ -1,0 +1,169 @@
+# Trusted code scan: semgrep (p/secrets + p/owasp-top-ten) and SCA (osv-scanner) over what the PR changes.
+# GENERATED from trusted/templates/trusted-code-scan.yml.in by `python3 trusted/render.py`; edit the template.
+#
+# An org-ruleset workflow like trusted-secret-scan: runs from the pinned vagarylabs/.github SHA in the TARGET
+# repository's context, and the PR is DATA (checked out without credentials, read with `git show`, never run).
+# Suppression files from the PR (.semgrepignore, osv-scanner.toml, nosemgrep comments) are not honoured:
+# .semgrepignore comes from BASE, osv-scanner gets an empty --config, and nosem is disabled.
+#
+# REPORT-ONLY (trusted/scanstate.py REPORT_ONLY): both scanners record exactly one state (PASSED, FINDINGS,
+# UNAVAILABLE, NOT_APPLICABLE) into the job summary and scan-result-<scanner>.json, and the job does not fail
+# on FINDINGS or UNAVAILABLE. Every acquisition and scan is inside a bounded step that records UNAVAILABLE on
+# failure instead of failing the step, and every command has a budget that keeps the job inside its deadline.
+# What can still fail the job: the recorder install, checkout or merge-base steps, and the artifact upload.
+# Flip criterion: trusted/README.md.
+#
+# Scope: semgrep compares the changed files at head with the same files at the merge-base and reports only
+# findings the merge-base does not already carry. SCA scans the changed lockfiles at head and at the
+# merge-base and reports only advisories the PR introduces. NOT_APPLICABLE needs the printed predicate:
+# no added or modified file (semgrep), no lockfile/manifest changed (SCA).
+name: trusted-code-scan
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  trusted-code-scan:
+    name: trusted-code-scan
+    # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
+    if: github.repository != 'vagarylabs/.github'
+    # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
+    runs-on: [self-hosted, Linux, X64, vl-light]
+    # Every network and scan command carries its own budget; the worst case of all of them is 875 s
+    # (semgrep: 2 rulesets x 62 + venv 60 + pip 150 + head 240 + base 120 = 694; osv: download 90 + 2 x 45 = 180),
+    # under 15 min, so the 20-minute job deadline, which would skip the gate and the upload, is never what ends
+    # a scan. Setup steps (recorder install, checkout, merge-base) and the upload can still fail the job.
+    timeout-minutes: 20
+    env:
+      SEMGREP_VERSION: "1.174.0"
+      SEMGREP_RULESETS: "p/secrets p/owasp-top-ten"
+      OSV_VERSION: "2.6.0"
+      OSV_SHA256: "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+    steps:
+{{INCLUDE:_scanstate.yml.in}}
+{{INCLUDE:_shas.yml.in}}
+{{INCLUDE:_scan_env.yml.in}}
+      - name: semgrep on the changed files (report-only)
+        env:
+          BASE: ${{ steps.shas.outputs.base }}
+          MB: ${{ steps.mb.outputs.merge_base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -uo pipefail
+          ss="$RUNNER_TEMP/trusted/scanstate.py"
+          range="${MB}..${HEAD_SHA}"
+          rec() { python3 -I "$ss" record --scanner semgrep --check scan --state "$1" --scope "$range" --reason "$2"; exit 0; }
+          T="$RUNNER_TEMP/semgrep"
+          rm -rf "$T"; mkdir -p "$T/head" "$T/base" "$T/rules"
+          git diff --name-only --no-renames --diff-filter=AM -z "$MB" "$HEAD_SHA" > "$T/changed.z" || rec UNAVAILABLE "git diff $range failed"
+          files=0
+          while IFS= read -r -d '' f; do
+            [ "$(git cat-file -t "$HEAD_SHA:$f" 2>/dev/null)" = blob ] || continue
+            mkdir -p "$T/head/$(dirname "$f")"
+            git show "$HEAD_SHA:$f" > "$T/head/$f" || rec UNAVAILABLE "could not read $f at head"
+            files=$((files + 1))
+            if [ "$(git cat-file -t "$MB:$f" 2>/dev/null)" = blob ]; then
+              mkdir -p "$T/base/$(dirname "$f")"
+              git show "$MB:$f" > "$T/base/$f" || rec UNAVAILABLE "could not read $f at the merge-base"
+            fi
+          done < "$T/changed.z"
+          [ "$files" -gt 0 ] || rec NOT_APPLICABLE "predicate: no added or modified file in $range"
+          if [ "$(git cat-file -t "$BASE:.semgrepignore" 2>/dev/null)" = blob ]; then
+            git show "$BASE:.semgrepignore" > "$T/head/.semgrepignore"
+            cp "$T/head/.semgrepignore" "$T/base/.semgrepignore"
+          fi
+          args=()
+          for p in $SEMGREP_RULESETS; do
+            out="$T/rules/${p//\//-}.yml"
+            curl -sSf --max-time 30 --retry 1 -o "$out" "https://semgrep.dev/c/$p" || rec UNAVAILABLE "ruleset $p could not be fetched"
+            args+=(--config "$out")
+          done
+          rules="$(cat "$T"/rules/*.yml | grep -cE '^- id:' || true)"
+          rules_sha="$(cat "$T"/rules/*.yml | sha256sum | cut -d' ' -f1)"
+          echo "rulesets: $SEMGREP_RULESETS, $rules rules, sha256 $rules_sha"
+          { timeout 60 python3 -m venv "$T/venv" && timeout 150 "$T/venv/bin/pip" install -q --no-cache-dir \
+              --disable-pip-version-check "semgrep==$SEMGREP_VERSION"; } > "$T/install.log" 2>&1 \
+            || { tail -n 5 "$T/install.log"; rec UNAVAILABLE "semgrep $SEMGREP_VERSION could not be installed (python3 -m venv + pip)"; }
+          run() {
+            (cd "$1" && timeout "$3" "$T/venv/bin/semgrep" scan "${args[@]}" --metrics=off --disable-version-check \
+              --disable-nosem --json --output "$2" --timeout 20 --jobs 2 --max-memory 2000 --quiet .)
+          }
+          run "$T/head" "$T/head.json" 240; rc=$?
+          base_json=()
+          if [ -n "$(find "$T/base" -type f ! -name .semgrepignore -print -quit)" ]; then
+            run "$T/base" "$T/base.json" 120; rcb=$?
+            [ "$rc" -ne 0 ] || rc=$rcb
+            base_json=(--base "$T/base.json" --base-root "$T/base")
+          fi
+          python3 -I "$ss" semgrep --rc "$rc" --head "$T/head.json" --head-root "$T/head" "${base_json[@]}" \
+            --rules "$rules" --scope "$range ($files file(s))" \
+            --tool-name semgrep --tool-version "$SEMGREP_VERSION" --tool-sha256 "rules:$rules_sha"
+      - name: SCA (osv-scanner) on the changed lockfiles (report-only)
+        env:
+          MB: ${{ steps.mb.outputs.merge_base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -uo pipefail
+          ss="$RUNNER_TEMP/trusted/scanstate.py"
+          range="${MB}..${HEAD_SHA}"
+          rec() { python3 -I "$ss" record --scanner sca --check scan --state "$1" --scope "$range" --reason "$2"; exit 0; }
+          T="$RUNNER_TEMP/sca"
+          rm -rf "$T"; mkdir -p "$T/head" "$T/base"
+          git diff --name-only --no-renames "$MB" "$HEAD_SHA" > "$T/changed.txt" || rec UNAVAILABLE "git diff $range failed"
+          python3 -I "$ss" is-lockfile < "$T/changed.txt" > "$T/lockfiles.txt"
+          [ -s "$T/lockfiles.txt" ] || rec NOT_APPLICABLE "predicate: no lockfile or dependency manifest changed in $range"
+          echo "changed lockfiles:"; cat "$T/lockfiles.txt"
+          # Pinned binary, copy-then-hash: a shared tool-cache copy is used only if the COPY matches the pin.
+          bin="$T/osv-scanner"
+          cache="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/osv-scanner/$OSV_VERSION/osv-scanner_linux_amd64"
+          if [ -f "$cache" ]; then cp "$cache" "$bin" 2>/dev/null || true; fi
+          if ! echo "$OSV_SHA256  $bin" | sha256sum -c - >/dev/null 2>&1; then
+            curl -sSfL --max-time 90 -o "$bin" \
+              "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" \
+              || rec UNAVAILABLE "osv-scanner $OSV_VERSION could not be downloaded"
+          fi
+          echo "$OSV_SHA256  $bin" | sha256sum -c - || rec UNAVAILABLE "osv-scanner $OSV_VERSION failed its sha256 pin"
+          chmod +x "$bin"
+          : > "$T/empty.toml"
+          scan() {
+            local side="$1" sha="$2" a=() f
+            while IFS= read -r f; do
+              [ "$(git cat-file -t "$sha:$f" 2>/dev/null)" = blob ] || continue
+              mkdir -p "$T/$side/$(dirname "$f")"
+              git show "$sha:$f" > "$T/$side/$f" || return 3
+              case "${f##*/}" in requirements.txt) a+=(-L "$f") ;; requirements*.txt) a+=(-L "requirements.txt:$f") ;; *) a+=(-L "$f") ;; esac
+            done < "$T/lockfiles.txt"
+            [ "${#a[@]}" -gt 0 ] || return 200
+            (cd "$T/$side" && timeout 45 "$bin" scan source --config "$T/empty.toml" --format json "${a[@]}" \
+              > "$T/$side.json" 2> "$T/$side.err")
+          }
+          scan head "$HEAD_SHA"; rch=$?
+          scan base "$MB"; rcb=$?
+          [ "$rch" -ne 200 ] || rch=""
+          [ "$rcb" -ne 200 ] || rcb=""
+          python3 -I "$ss" sca --rc-head "$rch" --head "$T/head.json" --head-err "$T/head.err" \
+            --rc-base "$rcb" --base "$T/base.json" --base-err "$T/base.err" \
+            --head-root "$T/head" --base-root "$T/base" --scope "$range" \
+            --tool-name osv-scanner --tool-version "$OSV_VERSION" --tool-sha256 "$OSV_SHA256"
+      - name: Scan state (semgrep)
+        if: ${{ !cancelled() }}
+        run: python3 -I "$RUNNER_TEMP/trusted/scanstate.py" gate --scanner semgrep --expect scan
+      - name: Scan state (sca)
+        if: ${{ !cancelled() }}
+        run: python3 -I "$RUNNER_TEMP/trusted/scanstate.py" gate --scanner sca --expect scan
+      - name: Keep scan-result-semgrep.json and scan-result-sca.json
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: scan-result-code-scan
+          path: |
+            ${{ runner.temp }}/scan-records/scan-result-semgrep.json
+            ${{ runner.temp }}/scan-records/scan-result-sca.json
+          retention-days: 14
+          # A re-run attempt re-uploads under the same name; without overwrite it would fail a passed scan.
+          overwrite: true

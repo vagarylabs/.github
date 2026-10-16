@@ -1,0 +1,33 @@
+      # The checkout above is blob-less (filter: blob:none) and sparse, so blobs arrive on demand. A scanner
+      # that meets a missing blob does NOT fail: measured on gitleaks 8.30.1, a lazy fetch that fails gives
+      # "0 commits scanned", "no leaks found" and rc 0. So every blob `git log -p` reads for the range (both
+      # sides of every change, every parent of a merge) is fetched here in ONE batch, and the job stops if any
+      # is still missing. Rename detection is off for the listing only, which lists both sides of a rename anyway.
+      - name: Fetch every blob the scan range reads (blob-less checkout; stops if any is missing)
+        env:
+          MODE: ${{ steps.range.outputs.mode }}
+          LOWER: ${{ steps.range.outputs.lower }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+          COMMITS: ${{ steps.range.outputs.commits }}
+        run: |
+          set -euo pipefail
+          if [ "$COMMITS" -le 0 ]; then echo "empty or unresolved range: nothing to fetch (the scan step records the state)"; exit 0; fi
+          T="$RUNNER_TEMP/hydrate"; mkdir -p "$T"
+          revs="${LOWER}..${HEAD_SHA}"
+          [ "$MODE" = full ] && revs="$HEAD_SHA"   # full history: every commit reachable from head
+          git log --format= --raw --no-abbrev --no-renames -m "$revs" \
+            | awk '/^:/{ if ($1 != ":160000") print $3; if ($2 != "160000") print $4 }' \
+            | { grep -v '^0\{40\}$' || true; } | sort -u > "$T/need"
+          git cat-file --batch-all-objects --batch-check='%(objectname)' | sort -u > "$T/have"
+          comm -23 "$T/need" "$T/have" > "$T/missing"
+          echo "range $revs: $(wc -l < "$T/need") blob(s) read, $(wc -l < "$T/missing") to fetch"
+          if [ -s "$T/missing" ]; then
+            git -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head \
+              --recurse-submodules=no --filter=blob:none --stdin origin < "$T/missing"
+          fi
+          git cat-file --batch-all-objects --batch-check='%(objectname)' | sort -u > "$T/have"
+          comm -23 "$T/need" "$T/have" > "$T/still"
+          if [ -s "$T/still" ]; then
+            echo "::error::$(wc -l < "$T/still") blob(s) the scan range reads are still missing; refusing a partial scan"
+            exit 1
+          fi

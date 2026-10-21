@@ -75,3 +75,14 @@ jobs:
           persist-credentials: false
       - name: trusted ruleset workflows (manifest, classifier, render drift, invariants)
         run: python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v
+
+  no-hosted-runners-guard:
+    # The reusable no-hosted-runners guard: its self-test, and that the copy embedded in the workflow matches its source.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/no_hosted_runners.py --self-test
+      - run: python3 scripts/check_no_hosted_runners_embedded.py

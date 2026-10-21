@@ -1,0 +1,87 @@
+# no-hosted-runners: refuse a GitHub-HOSTED `runs-on` in a PRIVATE repo's workflows (root, 2026-10-21).
+#
+# WHY. The org has no hosted-runner budget (the NO-GH-budget ruling). GitHub refuses a hosted job in a private repo in
+# about 2 s with ZERO steps run, so a hosted runs-on never fails loudly; the job simply never runs. vagarylabs-com's CI
+# was dark for 11 days that way. Private repos run on the vl-bridge runner group.
+#
+# PUBLIC repos are the opposite: they STAY on GitHub-hosted runners (free there), and must NEVER run on the self-hosted
+# bridge (fork-PR code on a Docker-root VM; the group has allows_public_repositories=false). So:
+#   - in a public caller, this job ALWAYS runs on ubuntu-latest, whatever `runner` says, and it passes: hosted is
+#     correct there;
+#   - in a private caller, it runs on `runner` (default: the light lane) and fails on any hosted runs-on, written
+#     literally or as an expression fallback, unless that line says why with `# hosted-ok: <reason>` (an npm OIDC
+#     publish, a Windows build, an external vantage, ...).
+#
+# Call it from pull_request or push, which carry `github.event.repository`. With no repository payload the job treats
+# the caller as public, so it runs hosted, which a private repo refuses: the call then never runs and reports nothing.
+#
+#   jobs:
+#     no-hosted-runners:
+#       uses: vagarylabs/.github/.github/workflows/no-hosted-runners.yml@<sha>
+#       permissions: { contents: read }
+#       with:
+#         runner: '["self-hosted","vl-light"]'
+name: no-hosted-runners
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >-
+          Runner for PRIVATE callers: a JSON array (e.g. '["self-hosted","vl-light"]') or one label. Ignored for
+          public callers, which always run hosted.
+        type: string
+        default: '["self-hosted","vl-light"]'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: no hosted runs-on
+    # Public caller -> hosted, never the bridge. Private caller -> the given self-hosted runner.
+    runs-on: ${{ github.event.repository.private == true && (startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Refuse a hosted runs-on (self-test first)
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private == true && 'true' || 'false' }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, sys, tempfile
+          HOSTED = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|\d[\w.]*)\b")
+          RUNS_ON = re.compile(r"^\s*runs-on:\s*(.*)$")
+          ALLOW = re.compile(r"#\s*hosted-ok:\s*\S")
+          def findings(root):
+              wf = pathlib.Path(root) / ".github" / "workflows"
+              files = sorted(list(wf.glob("*.yml")) + list(wf.glob("*.yaml"))) if wf.is_dir() else []
+              out = []
+              for p in files:
+                  for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                      m = RUNS_ON.match(line)
+                      if m and HOSTED.search(m.group(1).split("#", 1)[0]) and not ALLOW.search(line):
+                          out.append(f"{p.relative_to(root)}:{n}: hosted runs-on ({m.group(1).strip()})")
+              return out, len(files)
+          # SELF-TEST: a planted literal and a planted fallback are refused; self-hosted and allowlisted lines pass.
+          with tempfile.TemporaryDirectory() as d:
+              w = pathlib.Path(d) / ".github" / "workflows"; w.mkdir(parents=True)
+              (w / "t.yml").write_text("jobs:\n  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ${{ vars.R || 'ubuntu-24.04' }}\n"
+                                       "  c:\n    runs-on: [self-hosted, vl-light]\n  d:\n    runs-on: windows-latest  # hosted-ok: MSI\n")
+              got, _ = findings(d)
+              assert len(got) == 2 and ":3:" in got[0] and ":5:" in got[1], got
+          print("self-test OK: a literal and a fallback hosted runs-on are refused")
+          got, n = findings(".")
+          if os.environ["REPO_PRIVATE"] != "true":
+              print(f"PUBLIC repo: GitHub-hosted is correct here; {len(got)} hosted runs-on noted, none refused")
+              sys.exit(0)
+          if n == 0:
+              sys.exit("no workflow files found: refusing to report a pass for nothing")
+          for f in got:
+              print(f"::error::{f}: GitHub refuses a hosted job in a private repo (no hosted budget), so it never runs. Use the vl-bridge group ([self-hosted, vl-light] or [self-hosted, vl-bridge]), or say why on the line: '# hosted-ok: <reason>'")
+          print(f"{n} workflow file(s), {len(got)} unallowlisted hosted runs-on")
+          sys.exit(1 if got else 0)
+          PY

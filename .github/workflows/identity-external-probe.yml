@@ -1,0 +1,82 @@
+# IDENTITY EXTERNAL PROBE: the live issuer's public contract, from OUTSIDE the fleet, on a schedule.
+#
+# WHY HERE. This probe exists to run somewhere the fleet's failures cannot reach, a GitHub-hosted runner. It lived in
+# vagary-core (identity-closure I5), but vagary-core is PRIVATE, and a private repo's hosted job is refused with zero
+# steps (the 2026-10-21 placement ruling: no hosted-runner budget). It was red four times a day without ever running.
+# Public repos stay on GitHub-hosted runners, so the outside-in vantage lives in this public repo (root, 2026-10-22).
+#
+# WHAT IT PROVES. Three NEGATIVE-SAFE legs that need no credential: discovery binds the issuer claim and its endpoints,
+# the JWKS serves at least one key, and the token endpoint REFUSES a deliberately wrong client with an OAuth error. A
+# broken issuer 5xxs, hangs or serves a proxy's HTML; only a working provider produces these shapes. It cannot prove a
+# real login succeeds. That positive leg needs a credential, and this repo's logs are public, so it never runs here
+# (it stays on the fleet's own probes).
+#
+# WHAT IT PRINTS. Status codes, timings and the issuer URL only. Response bodies are read for the fields the
+# assertions need and are never echoed (public logs).
+#
+# ALERTING. A failed scheduled run notifies the org's admins through GitHub's own workflow-failure notifications. That
+# is a SECONDARY signal: Uptime Kuma on vagary-core-1 runs the same three legs every few minutes and pages through
+# Alertmanager, and stays primary.
+name: identity-external-probe
+
+on:
+  schedule:
+    # Every 6 hours, off the hour: the cadence the vagary-core original ran at. Kuma carries the short interval.
+    - cron: "17 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  ISSUER: https://auth.vagarylabs.com
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest      # the external vantage: public repo, GitHub-hosted, outside the fleet
+    timeout-minutes: 5
+    steps:
+      - name: "Leg 1: discovery binds the issuer and its endpoints"
+        run: |
+          set -euo pipefail
+          out="$(curl -sS -o disc.json -w '%{http_code} %{time_total}' --max-time 20 "$ISSUER/.well-known/openid-configuration")"
+          code="${out% *}"; echo "discovery $ISSUER -> $code in ${out#* }s"
+          [ "$code" = "200" ] || { echo "::error::discovery returned $code"; exit 1; }
+          iss="$(jq -r '.issuer // empty' disc.json)"
+          [ "$iss" = "$ISSUER" ] || { echo "::error::discovery issuer claim does not equal $ISSUER"; exit 1; }
+          jq -e '.token_endpoint and .jwks_uri and .authorization_endpoint' disc.json >/dev/null \
+            || { echo "::error::discovery is missing a required endpoint"; exit 1; }
+          jq -r '.jwks_uri' disc.json > jwks_uri.txt
+          jq -r '.token_endpoint' disc.json > token_endpoint.txt
+          # Both must stay on the issuer's own origin; a probe must never be pointed elsewhere by a response.
+          for u in "$(cat jwks_uri.txt)" "$(cat token_endpoint.txt)"; do
+            case "$u" in "$ISSUER"/*) ;; *) echo "::error::an advertised endpoint is not on $ISSUER"; exit 1 ;; esac
+          done
+
+      - name: "Leg 2: the JWKS serves at least one key"
+        run: |
+          set -euo pipefail
+          out="$(curl -sS -o jwks.json -w '%{http_code} %{time_total}' --max-time 20 "$(cat jwks_uri.txt)")"
+          code="${out% *}"; echo "jwks -> $code in ${out#* }s"
+          [ "$code" = "200" ] || { echo "::error::JWKS returned $code"; exit 1; }
+          n="$(jq '.keys | length' jwks.json)"
+          echo "jwks keys: $n"
+          [ "$n" -ge 1 ] || { echo "::error::JWKS served zero keys; every token verification would fail"; exit 1; }
+
+      - name: "Leg 3: the token endpoint refuses a wrong client precisely"
+        run: |
+          set -euo pipefail
+          out="$(curl -sS -o tok.json -w '%{http_code} %{time_total}' --max-time 25 \
+            -X POST "$(cat token_endpoint.txt)" \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=client_credentials' \
+            --data-urlencode 'client_id=identity-external-probe-not-a-real-client' \
+            --data-urlencode 'client_secret=not-a-credential')"
+          code="${out% *}"; echo "token (wrong client) -> $code in ${out#* }s"
+          case "$code" in
+            400|401) : ;;
+            *) echo "::error::expected a 400/401 refusal, got $code; the credential path is not serving"; exit 1 ;;
+          esac
+          jq -e 'has("error")' tok.json >/dev/null \
+            || { echo "::error::the refusal carried no OAuth error field; this is not the provider answering"; exit 1; }
+          echo "refusal shape: OAuth error present"

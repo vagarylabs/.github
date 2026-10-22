@@ -5,7 +5,7 @@
 # steps (the 2026-10-21 placement ruling: no hosted-runner budget). It was red four times a day without ever running.
 # Public repos stay on GitHub-hosted runners, so the outside-in vantage lives in this public repo (root, 2026-10-22).
 #
-# WHAT IT PROVES. Three NEGATIVE-SAFE legs that need no credential: discovery binds the issuer claim and its endpoints,
+# WHAT IT PROVES. For the canonical issuer AND each product login Domain (matrix), three NEGATIVE-SAFE legs that need no credential: discovery binds the issuer claim and its endpoints,
 # the JWKS serves at least one key, and the token endpoint REFUSES a deliberately wrong client with an OAuth error. A
 # broken issuer 5xxs, hangs or serves a proxy's HTML; only a working provider produces these shapes. It cannot prove a
 # real login succeeds. That positive leg needs a credential, and this repo's logs are public, so it never runs here
@@ -28,13 +28,18 @@ on:
 permissions:
   contents: read
 
-env:
-  ISSUER: https://auth.vagarylabs.com
-
 jobs:
   probe:
     runs-on: ubuntu-latest      # the external vantage: public repo, GitHub-hosted, outside the fleet
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # The canonical issuer, and each product login Domain a customer actually signs in on (ADR-179: per-product
+        # login Domains issue as themselves). auth.vagaris.org is Vagaris customers' door.
+        issuer: [ "https://auth.vagarylabs.com", "https://auth.vagaris.org" ]
+    env:
+      ISSUER: ${{ matrix.issuer }}
     steps:
       - name: "Leg 1: discovery binds the issuer and its endpoints"
         run: |

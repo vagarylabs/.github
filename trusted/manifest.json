@@ -7,6 +7,13 @@
     "ratchet_files": []
   },
   "repos": {
+    "vagarylabs/vagaris": {
+      "protected": [
+        {"class": "ci-judge", "patterns": [".github/workflows/*", ".github/actions/**", ".gitleaks.toml", ".gitleaksignore"]},
+        {"class": "authority-binding", "patterns": ["docker/docker-compose.override.yml"]}
+      ],
+      "ratchet_files": []
+    },
     "vagarylabs/vps-ansible": {
       "protected": [
         {"class": "ci-judge", "patterns": [".github/workflows/*", ".gitleaks.toml", "scripts/test-ci-hosted-routing.py"]},

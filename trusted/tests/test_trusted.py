@@ -41,9 +41,15 @@ class ManifestTests(unittest.TestCase):
                 classify.validate_manifest(bad)
 
     def test_every_vps_ansible_pattern_matches_a_real_path(self):
-        # A pattern that matches nothing fails OPEN silently; bind each one to vps-ansible c0ff73ea's tree.
+        # A pattern that matches nothing fails OPEN silently; bind each one to a real path of vps-ansible c0ff73ea's
+        # tree. This repository is PUBLIC and vps-ansible is private, so the fixture is NOT the tree: it is one real
+        # path per pattern (all already named in test_required_vps_ansible_paths_are_protected), each present in
+        # c0ff73ea (`git -C <vps-ansible> cat-file -e c0ff73ea:<path>`). A pattern added later needs its witness
+        # path added here, which this assertion forces. (The full tree was published before 2026-10-23 and remains
+        # in this repository's history; only further exposure is stopped.)
         paths = FIXTURE.read_text().split()
-        self.assertGreater(len(paths), 2000)
+        self.assertEqual(paths, sorted(paths))
+        self.assertEqual(len(paths), sum(len(p["patterns"]) for p in manifest()["repos"]["vagarylabs/vps-ansible"]["protected"]))
         entry = manifest()["repos"]["vagarylabs/vps-ansible"]
         for p in entry["protected"]:
             for pat in p["patterns"]:

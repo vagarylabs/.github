@@ -231,6 +231,11 @@ class EndToEndTests(unittest.TestCase):
                 self.assertEqual(self.run_mode("integrity", head=bad)[0], 2)
 
 
+# Literal bridge routing: merge_group on the vl-mq pool, everything else on vl-light. No `vars.` (pinned
+# below), so neither a repository variable nor a fallback can move the judge, onto hosted minutes or elsewhere.
+MQ_ROUTED_RUNS_ON = '${{ github.event_name == \'merge_group\' && fromJSON(\'["self-hosted","Linux","X64","vl-mq"]\') || fromJSON(\'["self-hosted","Linux","X64","vl-light"]\') }}'
+
+
 class WorkflowTests(unittest.TestCase):
     def test_generated_workflows_are_current(self):
         # The inline classifier/manifest are byte-identical copies of the trusted/ sources.
@@ -259,7 +264,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("\npermissions:\n  contents: read\n  pull-requests: read\n\njobs:", text)
                 jobs = re.findall(r"\n    runs-on: (.*)\n", text)
                 self.assertTrue(jobs)
-                self.assertEqual(set(jobs), {"[self-hosted, Linux, X64, vl-light]"})
+                self.assertEqual(set(jobs), {MQ_ROUTED_RUNS_ON})
                 self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), len(jobs))
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):

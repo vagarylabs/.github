@@ -1,0 +1,104 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    ":rebaseStalePrs",
+    "group:allNonMajor",
+    ":enablePreCommit"
+  ],
+  "timezone": "Asia/Calcutta",
+  "schedule": ["before 5am on monday"],
+  "labels": ["dependencies", "renovate"],
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "commitMessageLowerCase": "auto",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "branchConcurrentLimit": 10,
+  "rangeStrategy": "bump",
+  "rebaseWhen": "behind-base-branch",
+  "separateMinorPatch": true,
+  "separateMultipleMajor": true,
+  "automergeStrategy": "squash",
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "🤖 Renovate Dependency Dashboard",
+  "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "vulnerability"],
+    "schedule": [],
+    "prPriority": 10,
+    "minimumReleaseAge": null
+  },
+  "osvVulnerabilityAlerts": true,
+  "minimumReleaseAge": "3 days",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "automergeType": "branch",
+    "schedule": ["before 5am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Auto-merge patch/pin/digest everywhere (after CI). platformAutomerge:false so the vagary-renovate App token does the merge ($0, no GitHub-native auto-merge); automergeType:pr so the merge produces an auditable bot-merged PR.",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
+    },
+    {
+      "description": "GROUPING-FIX: carve PATCH out of group:allNonMajor (which groups minor+patch) into its OWN automergeable group. Without this, patch updates are collapsed into the all-non-major PR alongside prod-minor updates; that mixed PR is non-automergeable (the prod-minor rule sets automerge:false), so the $0 bot-automerge-after-CI tier never fires for the safe patch update-type. This rule comes after the `extends` presets so its groupName overrides the preset's. Inherits automerge:true/automergeType:pr/platformAutomerge:false from rule 1 above for the same update-type.",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch dependencies",
+      "groupSlug": "patch-deps"
+    },
+    {
+      "description": "GROUPING-FIX: digest updates in their OWN automergeable group too (group:allNonMajor does NOT include digest, so this is belt-and-suspenders for non-docker/non-gha digests; the docker/gha digest groups below win for those managers via last-match-wins, since they are declared AFTER this rule).",
+      "matchUpdateTypes": ["digest"],
+      "groupName": "digest dependencies",
+      "groupSlug": "digest-deps"
+    },
+    {
+      "description": "Auto-merge dev-dependency minor (after CI). Bot-token merge (platformAutomerge:false), PR artifact.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
+    },
+    {
+      "description": "Production minor -> PR + review (NO automerge)",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["minor"],
+      "automerge": false,
+      "labels": ["dependencies", "minor-update", "needs-review"]
+    },
+    {
+      "description": "Major -> PR + explicit review, never auto",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "automergeType": "pr",
+      "labels": ["major-update", "needs-review"]
+    },
+    {
+      "description": "Group all Docker base-image + compose digest bumps",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "groupName": "docker base images"
+    },
+    {
+      "description": "Group GitHub Actions bumps (every repo has gha)",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Pin GitHub Actions to digests (supply-chain hardening)",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["action"],
+      "pinDigests": true
+    }
+  ],
+  "ignoreDeps": [],
+  "ignorePaths": ["**/node_modules/**", "**/.archived/**", "**/vendor/**"]
+}

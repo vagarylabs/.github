@@ -34,8 +34,12 @@ def render(text):
     return "\n".join(out) + "\n"
 
 
+# The reusable (caller-invoked) secret scan shares the scan-state recorder, so it is rendered here too.
+SHARED = ("secret-scan.yml.in",)
+
+
 def targets():
-    for t in sorted(TEMPLATES.glob("trusted-*.yml.in")):
+    for t in sorted(TEMPLATES.glob("trusted-*.yml.in")) + [TEMPLATES / n for n in SHARED]:
         yield t, OUT / t.name[: -len(".in")]
 
 

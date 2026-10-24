@@ -29,3 +29,6 @@ lychee 0.23.0 https://github.com/lycheeverse/lychee/releases/download/lychee-v0.
 # actionlint: official actionlint_1.7.7_checksums.txt of v1.7.7; downloaded archive verified against this pin
 # source: https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_checksums.txt
 actionlint 1.7.7 https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+# osv-scanner: osv-scanner_SHA256SUMS of v2.6.0 (raw binary asset; the checksum file is not signed)
+# source: https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_SHA256SUMS
+osv-scanner 2.6.0 https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64 ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108

@@ -22,7 +22,8 @@ import render  # noqa: E402
 MANIFEST = ROOT / "trusted" / "manifest.json"
 FIXTURE = ROOT / "trusted" / "tests" / "fixtures" / "vps-ansible-c0ff73ea.paths"
 WORKFLOWS = {n: ROOT / ".github" / "workflows" / (n + ".yml")
-             for n in ("trusted-secret-scan", "trusted-workflow-integrity", "trusted-protected-paths")}
+             for n in ("trusted-secret-scan", "trusted-workflow-integrity", "trusted-protected-paths",
+                       "trusted-code-scan")}
 
 
 def manifest():
@@ -271,11 +272,13 @@ class WorkflowTests(unittest.TestCase):
             if line and not line.startswith("#"):
                 tool, version, _url, sha = line.split()
                 lock[(tool, version)] = sha
-        text = WORKFLOWS["trusted-secret-scan"].read_text()
-        for tool in ("GITLEAKS", "TRUFFLEHOG"):
+        for wf, tool, name in (("trusted-secret-scan", "GITLEAKS", "gitleaks"),
+                               ("trusted-secret-scan", "TRUFFLEHOG", "trufflehog"),
+                               ("trusted-code-scan", "OSV", "osv-scanner")):
+            text = WORKFLOWS[wf].read_text()
             v = re.search(tool + r'_VERSION: "([^"]+)"', text).group(1)
             s = re.search(tool + r'_SHA256: "([0-9a-f]{64})"', text).group(1)
-            self.assertEqual(lock[(tool.lower(), v)], s, tool)
+            self.assertEqual(lock[(name, v)], s, tool)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,48 @@
+      - name: Resolve the scan range (a full-history scan when no range can be bound; never one commit)
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          lower=""
+          mode=range
+          readable() { [ -n "$1" ] && [ "$1" != "$zero" ] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
+          case "$EVENT" in
+            pull_request)
+              head="$PR_HEAD"
+              # An unresolvable merge-base leaves the range empty: the scan step records UNAVAILABLE and fails.
+              lower="$(git merge-base "$PR_BASE" "$PR_HEAD" 2>/dev/null || true)"
+              how="pull request: merge-base(base, head)..head" ;;
+            schedule|workflow_dispatch)
+              head="$PUSH_AFTER"; mode=full
+              how="$EVENT: full history of $head" ;;
+            push)
+              head="$PUSH_AFTER"
+              # After a force-push the old head is on no branch, so the clone may lack it; ask for it by SHA.
+              if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "$zero" ] && ! readable "$PUSH_BEFORE"; then
+                git fetch --no-tags --quiet origin "$PUSH_BEFORE" 2>/dev/null || true
+              fi
+              if readable "$PUSH_BEFORE" && git merge-base --is-ancestor "$PUSH_BEFORE" "$head"; then
+                lower="$PUSH_BEFORE"
+                how="push: before..after"
+              else
+                # A new branch (before is all zeros), a force-push, or a before that cannot be read: no range can
+                # be bound, so the whole history is scanned. Never the pushed commit alone.
+                mode=full
+                how="push with no usable before ($PUSH_BEFORE): full history of $head"
+              fi ;;
+            *) echo "::error::unsupported event $EVENT"; exit 1 ;;
+          esac
+          commits=0
+          if [ "$mode" = full ]; then
+            commits="$(git rev-list --count "$head")"
+          elif [ -n "$lower" ]; then
+            commits="$(git rev-list --count "${lower}..${head}")"
+          fi
+          echo "scan: mode=$mode ${lower:-root}..${head} = $commits commit(s) [$how]"
+          { echo "mode=$mode"; echo "lower=$lower"; echo "head=$head"; echo "commits=$commits"; } >> "$GITHUB_OUTPUT"

@@ -32,7 +32,13 @@
 #
 # Env: EVENT, PR_BASE, PR_HEAD, MG_BASE, MG_HEAD, PUSH_BEFORE, PUSH_AFTER (action.yml maps them from the event).
 # Knobs: SCOPE_INITIAL_DEPTH (50), SCOPE_DEEPEN (200), SCOPE_DEEPEN_ROUNDS (4), SCOPE_REMOTE (origin).
-# Writes to $GITHUB_OUTPUT (else stdout): mode, head, base, merge_base, net, revs, tree_revs, reason.
+# Writes to $GITHUB_OUTPUT (else stdout): mode, head, base, merge_base, net, revs, tree_revs, reason, registry_policy.
+#
+# registry_policy says what the caller's accepted-live registry (.github/secret-scan-registry.json) may do in this scan:
+#   sweep  a schedule or workflow_dispatch full sweep: a registered live-pending-rotation credential is a warning;
+#   gate   everything else, a full-mode fallback included: the registry accepts nothing (every finding fails). The
+#          registry is read from the scanned checkout, so a PR or push that fell back to full mode could otherwise
+#          register the very key it adds.
 set -euo pipefail
 
 ZERO=0000000000000000000000000000000000000000
@@ -123,7 +129,9 @@ full() {
     die "head $head still has a shallow boundary in its history after the full fetch"
   fi
   merge_legs "$head"
-  emit "mode=full" "head=$head" "revs=$head $LEGS" "tree_revs=$LEGS" "reason=$1; $legs_note"
+  local policy=gate
+  case "$event" in schedule | workflow_dispatch) policy=sweep ;; esac
+  emit "mode=full" "head=$head" "revs=$head $LEGS" "tree_revs=$LEGS" "reason=$1; $legs_note" "registry_policy=$policy"
   exit 0
 }
 
@@ -182,4 +190,4 @@ merge_legs "^$base" "$head"
 revs="^$base $head $LEGS"
 say "RANGE ${base:0:12}..${head:0:12}: $n commit(s), proven (merge-base resolved, no shallow boundary inside); $legs_note; net change ${mb:0:12}..${head:0:12} as ${net:0:12}"
 emit "mode=range" "base=$base" "head=$head" "merge_base=$mb" "net=$net" "revs=$revs" "tree_revs=$revs" \
-  "reason=proven range of $n commit(s); $legs_note; net change $mb..$head"
+  "reason=proven range of $n commit(s); $legs_note; net change $mb..$head" "registry_policy=gate"

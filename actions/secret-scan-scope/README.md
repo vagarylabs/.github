@@ -20,6 +20,7 @@ Pin the action by **commit SHA**, never `@main`.
     sparse-checkout: |
       /.gitleaks.toml
       /.gitleaksignore
+      /.github/secret-scan-registry.json
     sparse-checkout-cone-mode: false
 - id: scope
   uses: vagarylabs/.github/actions/secret-scan-scope@<40-char commit sha>
@@ -41,6 +42,7 @@ default), because the action and the scan fetch more objects from `origin`.
 | `base`, `merge-base`, `net` | Range mode only: the event's base, `merge-base(base, head)`, and the local commit holding the net change |
 | `revs` | What to scan, as `git log` revisions: `^<base> <head> <legs>` in range mode, `<head> <legs>` in full mode. `<legs>` is the fixed string `--glob=refs/secret-scan/leg/* --not --glob=refs/secret-scan/auto/*`. Space-separated; split it without shell globbing |
 | `reason` | Why this mode, in words |
+| `registry-policy` | `sweep` for a `schedule` or `workflow_dispatch` full sweep, else `gate` (a full-mode fallback included). What the caller's accepted-live registry may do: see below |
 | `tree`, `tree-files` | The `tree` input directory and how many files it holds (when the input is set) |
 | `dir` | This action's directory, for `diffscan.py` |
 
@@ -97,6 +99,73 @@ These are stated plainly, so nobody reads more coverage into a green check than 
   allowlists in `.gitleaks.toml` would no longer match.
 - Full mode refuses to emit unless head's history is complete.
 
+## Accepted-live registry
+
+A caller may keep **`.github/secret-scan-registry.json`**. It lists real, live credentials that history cannot
+forget and whose rotation an operator ruling has deferred. Without the file, nothing changes: every finding fails.
+
+```json
+{
+  "version": 1,
+  "about": "optional free text",
+  "entries": [
+    {
+      "rule": "generic-api-key",
+      "sha256_20": "<first 20 hex characters of sha256(value)>",
+      "status": "live-pending-rotation",
+      "reason": "what the value is and where it lives",
+      "ruling": "who accepted it, when, and until what",
+      "review_by": "2026-11-25",
+      "renewal": "how the entry is renewed",
+      "seen_in": ["path/where/history/has/it"]
+    }
+  ]
+}
+```
+
+- **Required** in each entry: `sha256_20`, `status`, `reason`, `ruling` and `review_by`.
+  - `sha256_20` is 20 lowercase hex characters: sha256 of the value's UTF-8 bytes, first 20 (the vagary-voice
+    convention). Copy it from a registry that already names the value. Never put a value in the file.
+  - `status` must be `live-pending-rotation`. A value that is not a live credential belongs in a `.gitleaks.toml`
+    allowlist.
+  - `review_by` is a real date written `YYYY-MM-DD`, in UTC. The entry is valid through that day.
+- **Optional**: `rule` (a label; matching never uses it), `renewal` (free text) and `seen_in` (a list of paths).
+- **Refused**, failing every scan whose caller has the file:
+  - an unknown field or status;
+  - a missing or empty required field;
+  - a malformed hash or date;
+  - two entries naming the same value;
+  - `version` other than 1;
+  - a symbolic link.
+
+**One entry covers both scanners.** It names the value, not a rule. gitleaks' `Secret` and trufflehog's `Raw` (or
+`RawV2` when `Raw` is empty) are hashed in-process and looked up. Rule and detector names differ between the scanners
+(`generic-api-key` against `ElevenLabs`), so they are never matched.
+
+**What an entry does depends on `registry-policy`:**
+
+| Policy | When | A registered value | Anything else | An entry past `review_by` |
+|---|---|---|---|---|
+| `sweep` | `schedule`, `workflow_dispatch` (full) | accepted: printed as `accepted (registry entry #N ...)`, does not fail | fails: `NOT in registry` | fails the job (an error), and its value is not accepted |
+| `gate` | PRs, pushes, merge groups, a full-mode fallback | fails, printed exactly as with no registry | fails | a warning; the gate accepts nothing anyway |
+
+The gate accepts nothing for two reasons. A new commit must never carry a live key. And the registry is read from
+the scanned checkout, so a PR (or a push) that fell back to full mode could otherwise register the very key it adds.
+
+In every scan whose caller has the file, `diffscan.py registry` lists each entry with its rule, `review_by`, days
+left, ruling and renewal note. In the sweep each entry is a **warning**, so accepted credentials stay visible. A failed
+sweep files its issue (`secret-scan-sweep.yml`). An expired entry therefore fails the sweep every day until a human
+renews `review_by` with a fresh ruling or removes the entry.
+
+To hash gitleaks values, the sweep runs gitleaks **without `--redact`**, under `umask 077`, into a report in a
+private `mktemp -d` directory. `diffscan.py gitleaks` reads it, deletes it whatever happens, and hashes in memory. A
+shell trap removes the directory too. gitleaks 8.30.1 prints no value to its log without `-v` (checked with the real
+binary). Every other scan keeps `--redact`. No output ever carries a value or a digest. An entry is named by its
+index, rule, status, `review_by` and ruling.
+
+Not covered: an entry the scanners no longer find is **not** reported as stale (unlike vagary-voice's gitleaks gate).
+`review_by` is what forces a human to look again.
+
 ## diffscan.py
 
 `diffscan.py` holds the helpers the scan steps run in the scanned repository. It is stdlib-only Python.
@@ -108,15 +177,20 @@ These are stated plainly, so nobody reads more coverage into a green check than 
 - `count REVS`: how many commits gitleaks 8.30.1 reports as scanned for `--log-opts=REVS`. gitleaks counts a commit
   that has at least one text hunk in a file that is not deleted. On 1500 vagary-core commits this was measured at
   1069 against 1069. Empty, binary-only, mode-only, rename-only and deletion-only commits count 0, and so do merges.
-- `gitleaks REPORT LOG RC N`: fails on any of these:
+- `gitleaks REPORT LOG RC N [--registry FILE --policy sweep|gate]`: deletes `REPORT` once read. It fails on any
+  of these:
   - an exit code other than 0 or 1;
   - an `ERR` or `FTL` log line;
   - a "commits scanned" count other than `N`.
 
   This matters because gitleaks 8.30.1 exits **0** when its own `git log` fails, logging "0 commits scanned". The
-  helper prints each finding as rule, commit, path and line.
-- `trufflehog TREE`: reads `trufflehog --json` results and prints detector, commit, path and line. It fails on any
-  finding and on any line it cannot parse, and never echoes that line.
+  helper prints each finding as rule, commit, path and line. Under `--policy sweep` it also fails on any finding the
+  registry does not accept, and passes one it does.
+- `trufflehog TREE [--registry FILE --policy sweep|gate]`: reads `trufflehog --json` results and prints detector,
+  commit, path and line. It fails on any finding (under `--policy sweep`, any finding the registry does not accept),
+  and on any line it cannot parse, and never echoes that line.
+- `registry FILE sweep|gate`: the registry check. It lists every entry, and fails on a malformed registry and, under
+  `sweep`, on an entry past its `review_by`.
 - `trufflehog-log LOG MIN`: fails on any of these:
   - an `error` record;
   - a stderr line that is not JSON;
@@ -147,5 +221,14 @@ ref. It then runs `scope.sh` per event and asserts:
 - the tree's paths and line numbers;
 - in full mode, a complete history.
 
-It also checks that the findings helpers never print a value. Set `SCOPE_SH=<path>` to run another `scope.sh`; this
-is how negative controls run. Set `KEEP_SUITE=1` to keep the temporary tree.
+It also checks that the findings helpers never print a value, and `registry-policy` for every event. For the
+accepted-live registry it uses fake values generated at run time and checks:
+
+- validation, with each refusal in both policies;
+- `review_by` expiry, inclusive of the day itself;
+- sweep against gate for both scanners: accepted, `NOT in registry`, expired, and no value;
+- that the gitleaks report is deleted;
+- that no value or digest appears in any output, with a positive control for that grep.
+
+Set `SCOPE_SH=<path>` to run another `scope.sh`, or `DIFFSCAN=<path>` to run another `diffscan.py`; this is how
+negative controls run. Set `KEEP_SUITE=1` to keep the temporary tree.

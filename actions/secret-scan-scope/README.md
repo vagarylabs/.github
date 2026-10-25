@@ -166,6 +166,23 @@ index, rule, status, `review_by` and ruling.
 Not covered: an entry the scanners no longer find is **not** reported as stale (unlike vagary-voice's gitleaks gate).
 `review_by` is what forces a human to look again.
 
+## Trufflehog sweep excludes
+
+A caller may keep `.github/secret-scan-trufflehog-exclude.txt`: anchored regexes, one per line (`#` comments allowed), naming history that the daily FULL sweep's trufflehog may skip. Use it for history the caller has inventoried and that is too large to rescan every day.
+
+- **Sweep only.** The workflow applies the file only under `registry_policy=sweep` (schedule or `workflow_dispatch`, FULL). Every PR, push and merge-group scan reads every added line, including a PR or push that falls back to FULL. New content at an excluded path is therefore still scanned the first time it lands.
+- **Validated.** `diffscan.py excludes` refuses the whole file for any of these:
+  - an unanchored pattern;
+  - a lookaround or backreference, which RE2 (trufflehog's engine) lacks;
+  - a pattern that matches a generic path (`a`, `README.md`, `src/main.py`, `.github/workflows/ci.yml`, ...);
+  - a symlink, or a file with no pattern.
+- **One file per source.** trufflehog 3.97.0 matches the git source's patterns against the repository path, but the filesystem source's against the file's absolute path. So the history scan gets the patterns as written, and the remerge-leg tree scan gets each pattern prefixed with the tree's `<label>/` (`(^|/)[0-9a-f]{40}/`). Measured: `^docs/x$` excludes `docs/x` from a git scan and nothing from a filesystem scan; the prefixed form excludes it from the filesystem scan.
+- **gitleaks is separate.** Its equivalent is a commit-scoped `[[allowlists]]` in the caller's `.gitleaks.toml` (`condition = "AND"`, commits + paths), which skips the listed history in every mode while new commits are still scanned.
+
+vagary-platform generates its file from `docs/architecture/audit/HAR-MANIFEST.json` (its quarantined HAR captures, inventoried with 0 live credentials), and its `scripts/ci/har_quarantine.py check` keeps the file equal to the manifest.
+
+**Measured, every scan.** Each trufflehog invocation runs under `diffscan.py measure`, and the log prints its peak RSS and wall time (`trufflehog (history): peak RSS N MB, wall S s`). Runner placement for a sweep rests on that number: an unbounded full-history scan once starved a light runner.
+
 ## diffscan.py
 
 `diffscan.py` holds the helpers the scan steps run in the scanned repository. It is stdlib-only Python.

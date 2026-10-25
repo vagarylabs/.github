@@ -521,6 +521,52 @@ check "control: the forbidden-output grep catches a planted value" grep -qFf "$R
 check "registry: the outputs were captured" [ "$(grep -c . "$suite/reg-all.out")" -gt 50 ]
 check "registry: no fake value or digest in any output" sh -c '! grep -qFf "$1" "$2"' _ "$R/forbidden.txt" "$suite/reg-all.out"
 
+# ── trufflehog sweep excludes + measure ───────────────────────────────────────────────────────────────────────────
+X="$suite/excludes"
+mkdir -p "$X"
+xrun() { # xrun <name> <file contents (printf format)>: run `excludes` on that file; rc in $X/<name>.rc
+  printf "$2" > "$X/$1.txt"
+  set +e
+  python3 "$diffscan" excludes "$X/$1.txt" "$X/$1.hist" "$X/$1.tree" > "$X/$1.out" 2>&1
+  echo $? > "$X/$1.rc"
+  set -e
+}
+xrun good '# inventoried captures\n^docs/news/F001/trace\\.har$\n^graphify-out/\n'
+check "excludes: a valid file passes" [ "$(cat "$X/good.rc")" = 0 ]
+check "excludes: the history file holds the patterns as written" \
+  [ "$(cat "$X/good.hist")" = "$(printf '^docs/news/F001/trace\\.har$\n^graphify-out/')" ]
+check "excludes: the tree file prefixes each pattern with the tree's <label>/" \
+  [ "$(cat "$X/good.tree")" = "$(printf '(^|/)[0-9a-f]{40}/docs/news/F001/trace\\.har$\n(^|/)[0-9a-f]{40}/graphify-out/')" ]
+check "excludes: it says the excludes apply to the sweep only" grep -q 'FULL sweep only' "$X/good.out"
+xrun unanchored 'docs/news/F001/trace.har\n'
+check "excludes: an unanchored pattern is refused" [ "$(cat "$X/unanchored.rc")" = 2 ]
+xrun catchall '^.*\n'
+check "excludes: a catch-all pattern is refused (it matches a generic path)" [ "$(cat "$X/catchall.rc")" = 2 ]
+xrun generic '^src/\n'
+check "excludes: a pattern matching a generic source path is refused" [ "$(cat "$X/generic.rc")" = 2 ]
+xrun lookaround '^(?!src)docs/x$\n'
+check "excludes: a lookaround (not RE2) is refused" [ "$(cat "$X/lookaround.rc")" = 2 ]
+xrun empty '# only a comment\n\n'
+check "excludes: a file with no pattern is refused" [ "$(cat "$X/empty.rc")" = 2 ]
+ln -s "$X/good.txt" "$X/link.txt"
+set +e
+python3 "$diffscan" excludes "$X/link.txt" "$X/link.hist" "$X/link.tree" > /dev/null 2>&1
+link_rc=$?
+set -e
+check "excludes: a symlinked file is refused" [ "$link_rc" = 2 ]
+wf="$here/../../.github/workflows/secret-scan.yml"
+check "workflow: excludes are applied only under the sweep policy" \
+  grep -qF '[ "${POLICY:-gate}" = sweep ] && { [ -e "$excludes" ] || [ -L "$excludes" ]; }' "$wf"
+check "workflow: the trufflehog job's sparse checkout carries the excludes file" \
+  grep -qF '/.github/secret-scan-trufflehog-exclude.txt' "$wf"
+set +e
+python3 "$diffscan" measure "$X/usage" -- sh -c 'echo through; exit 3' > "$X/measure.out" 2>&1
+measure_rc=$?
+set -e
+check "measure: exits with the command's status" [ "$measure_rc" = 3 ]
+check "measure: passes the command's output through" grep -qx through "$X/measure.out"
+check "measure: records peak RSS and wall time" grep -qE '^peak RSS [0-9]+ MB, wall [0-9]+ s$' "$X/usage"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -5,14 +5,17 @@
 # ref), runs scope.sh per event and asserts: the mode; that the local base..head is EXACTLY the origin's commit set;
 # no shallow boundary inside the range; the remerge and net legs; the added-lines tree (paths, line numbers, what is
 # absent); in full mode that head's history is complete (no missing object, no shallow boundary). Then the findings
-# filters: they name commit, path and line, and never print a value.
-# Run: bash actions/secret-scan-scope/test_scope.sh   (SCOPE_SH=<path> runs another scope.sh, for negative controls)
+# filters: they name commit, path and line, and never print a value. Then the accepted-live registry: its validation,
+# review_by expiry, and the sweep and gate policies for both scanners, on fake values generated at run time; no value
+# or digest may appear in any output.
+# Run: bash actions/secret-scan-scope/test_scope.sh   (SCOPE_SH=<path> runs another scope.sh, DIFFSCAN=<path> another
+# diffscan.py: how negative controls run)
 # shellcheck disable=SC2016,SC2059 # checks pass code for deferred expansion; put() takes a printf format
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 scope=${SCOPE_SH:-$here/scope.sh}
-diffscan="$here/diffscan.py"
+diffscan=${DIFFSCAN:-$here/diffscan.py}
 
 pass=0
 fail=0
@@ -47,6 +50,8 @@ mainline() { # mainline <from> <to>: one commit per number, appending to main.tx
 put conf.txt 'line1\nline2\nline3\nline4\nline5\n'
 put old.txt 'keep\nMARKER-OLD\n'
 put .gitleaks.toml '# test config\n'
+mkdir -p "$w/.github"
+put .github/secret-scan-registry.json '{"version": 1, "entries": []}\n' # the caller's registry, on disk via sparse checkout
 put main.txt '0\n'
 commit "main 0" > /dev/null
 g checkout -q -b old
@@ -127,7 +132,7 @@ runner() {
   git init -q "$r"
   git -C "$r" remote add origin "file://$o"
   git -C "$r" fetch -q --no-tags --depth=1 --filter=blob:none origin "+$ref:refs/remotes/checkout"
-  git -C "$r" sparse-checkout set --no-cone '/.gitleaks.toml' '/.gitleaksignore'
+  git -C "$r" sparse-checkout set --no-cone '/.gitleaks.toml' '/.gitleaksignore' '/.github/secret-scan-registry.json'
   git -C "$r" checkout -q --detach refs/remotes/checkout
   : > "$r.out"
   if (cd "$r" && env "$@" EVENT="$event" PR_BASE="$base" PR_HEAD="$head" MG_BASE="$base" MG_HEAD="$head" \
@@ -201,6 +206,8 @@ check "pr: removed and pre-range lines are not scanned" nowhere pr MARKER-OLD
 check "pr: an evil merge before the range is not in a range scan" nowhere pr MARKER-EVIL-OLD
 check "pr: the tree counts its files" [ "$(cat "$suite/pr.files")" = "$(find "$suite/pr.tree" -type f | wc -l | tr -d ' ')" ]
 check "pr: the checkout was sparse (config only)" eval '[ -f "$suite/pr/.gitleaks.toml" ] && [ ! -e "$suite/pr/conf.txt" ]'
+check "pr: the caller's registry is in the sparse checkout" test -f "$suite/pr/.github/secret-scan-registry.json"
+check "pr: registry_policy=gate (a range never lets the registry accept)" [ "$(out pr registry_policy)" = gate ]
 
 # ── RANGE: merge_group, push (fast-forward, with a merge) ─────────────────────────────────────────────────────────
 runner mg "refs/heads/gh-readonly-queue/main/pr-1-$mp" merge_group "$mp" "$mq"
@@ -211,12 +218,14 @@ check "merge_group: count (the clean queue merge adds no text)" [ "$(count mg)" 
 tree mg
 check "merge_group: a clean merge's delta is empty" test ! -e "$suite/mg.tree/$mq"
 check "merge_group: the evil merge is still named" at_line mg "$m1/conf.txt" 5 MARKER-EVIL
+check "merge_group: registry_policy=gate" [ "$(out mg registry_policy)" = gate ]
 
 runner push "$mp" push "$m43" "$mp"
 check "push: mode=range" [ "$(out push mode)" = range ]
 check "push: exact commit set" same_set push "$m43" "$mp"
 check "push: the pushed merge has a leg" leg push "$mp"
 check "push: count" [ "$(count push)" = 4 ]
+check "push: registry_policy=gate" [ "$(out push registry_policy)" = gate ]
 
 # ── RANGE from depth 1: the boundary check must refuse ranges until history proves them ─────────────────────────────
 runner pr-d1 refs/pull/1/merge pull_request "$mp" "$f8" SCOPE_INITIAL_DEPTH=1 SCOPE_DEEPEN=1
@@ -231,13 +240,14 @@ tree pr-d1b
 check "depth 1: the remerge leg is right with shallow history" [ "$(tree_plus pr-d1b "$m1")" = "$(remerge_plus "$m1")" ]
 
 # ── FULL ────────────────────────────────────────────────────────────────────────────────────────────────────────
-full_case() { # full_case <runner> <description> <head>
+full_case() { # full_case <runner> <description> <head> [registry policy: gate unless given]
   check "$2: mode=full" [ "$(out "$1" mode)" = full ]
   check "$2: head output" [ "$(out "$1" head)" = "$3" ]
   check "$2: head's history is complete (no missing object, no shallow boundary)" complete "$1" "$3"
+  check "$2: registry_policy=${4:-gate}" [ "$(out "$1" registry_policy)" = "${4:-gate}" ]
 }
 runner sched "$mp" schedule "" "$mp"
-full_case sched "schedule" "$mp"
+full_case sched "schedule" "$mp" sweep
 check "schedule: the old evil merge has a leg" leg sched "$e0"
 check "schedule: the fixture's octopus has three parents" [ "$(git -C "$o" rev-list --no-walk --parents "$oct" | wc -w | tr -d ' ')" = 4 ]
 check "schedule: the octopus merge has none, and says so" \
@@ -247,13 +257,13 @@ tree sched
 check "schedule: the tree holds only the merge legs; the old evil merge is named" at_line sched "$e0/conf.txt" 3 MARKER-EVIL-OLD
 check "schedule: no ordinary commit in the full tree" test ! -e "$suite/sched.tree/$f1"
 runner linear "$o1" schedule "" "$o1"
-full_case linear "schedule on a linear history (no merge, so no leg)" "$o1"
+full_case linear "schedule on a linear history (no merge, so no leg)" "$o1" sweep
 check "linear history: no leg refs" [ -z "$(rg linear for-each-ref refs/secret-scan/)" ]
 tree linear
 check "linear history: the legs-only tree is empty, not a fallback to HEAD" [ "$(cat "$suite/linear.files")" = 0 ]
 check "linear history: gitleaks count covers both commits" [ "$(count linear)" = 2 ]
 runner disp "$mp" workflow_dispatch "" "$mp"
-full_case disp "workflow_dispatch" "$mp"
+full_case disp "workflow_dispatch" "$mp" sweep
 runner unknown "$mp" release "" "$mp"
 full_case unknown "unknown event" "$mp"
 runner newbr "$f8" push 0000000000000000000000000000000000000000 "$f8"
@@ -262,7 +272,7 @@ runner force "$f8" push "$z1" "$f8"
 full_case force "force-push" "$f8"
 check "force-push: the reason says so" grep -q 'force-push' "$suite/force.out"
 runner unrel refs/pull/1/merge pull_request "$u" "$f8"
-full_case unrel "unrelated base" "$f8"
+full_case unrel "unrelated base (a PR falling back to full mode stays gate)" "$f8"
 check "unrelated base: legs for both evil merges in head's history" eval 'leg unrel "$m1" && leg unrel "$e0"'
 runner nobase refs/pull/1/merge pull_request 1111111111111111111111111111111111111111 "$f8"
 full_case nobase "a base the origin does not have" "$f8"
@@ -327,6 +337,189 @@ check "gitleaks: a git failure (exit 0, error line, 0 scanned) fails" \
 check "gitleaks: fewer commits scanned than selected fails" [ "$(gl '[]' '1:00PM INF 7 commits scanned.' 0 8)" = 1 ]
 check "gitleaks: no summary line fails" [ "$(gl '[]' '1:00PM INF no leaks found' 0 8)" = 1 ]
 check "gitleaks: an unexpected exit code fails" [ "$(gl '[]' '1:00PM INF 8 commits scanned.' 2 8)" = 1 ]
+
+# ── the accepted-live registry ─────────────────────────────────────────────────────────────────────────────────
+# Fake values, generated at run time (no credential-shaped literal lives in this file). forbidden.txt holds every value
+# and its digest: none may appear in any output below.
+R="$suite/reg"
+mkdir -p "$R"
+python3 - "$R" "$f1" <<'PY'
+import datetime, hashlib, json, os, secrets, sys
+R, f1 = sys.argv[1:]
+V = {k: f"fixture-{k}-{secrets.token_hex(12)}" for k in ("accepted", "today", "v2only", "unregistered", "expired")}
+d = lambda v: hashlib.sha256(v.encode()).hexdigest()[:20]
+today = datetime.datetime.now(datetime.timezone.utc).date()
+day = lambda n: (today + datetime.timedelta(days=n)).isoformat()
+def entry(k, n, drop=(), **extra):
+    e = {"rule": "generic-api-key", "sha256_20": d(V[k]), "status": "live-pending-rotation",
+         "reason": f"fixture {k}", "ruling": f"test ruling for {k}", "review_by": day(n), **extra}
+    return {f: x for f, x in e.items() if f not in drop}
+def write(name, obj):
+    with open(os.path.join(R, name), "w") as f:
+        f.write(obj if isinstance(obj, str) else json.dumps(obj, indent=1))
+reg = lambda *entries: {"version": 1, "entries": list(entries)}
+write("ok.json", {"version": 1, "about": "fixture", "entries": [
+    entry("accepted", 30, renewal="re-reviewed monthly", seen_in=["a.cfg"]), entry("today", 0), entry("v2only", 30)]})
+write("expired.json", reg(entry("accepted", 30), entry("expired", -1)))
+write("empty.json", reg())
+bad = {
+    "not-json": "{not json", "top-list": [], "top-unknown": {"version": 1, "entries": [], "extra": 1},
+    "version": {"version": 2, "entries": []}, "no-version": {"entries": []},
+    "entries-not-list": {"version": 1, "entries": {}}, "entry-not-object": reg("x"),
+    "entry-unknown-field": reg(entry("accepted", 30, comment="x")),
+    "status-accepted": reg(entry("accepted", 30, status="accepted")),
+    "no-status": reg(entry("accepted", 30, drop=("status",))),
+    "no-reason": reg(entry("accepted", 30, drop=("reason",))), "blank-ruling": reg(entry("accepted", 30, ruling="  ")),
+    "no-ruling": reg(entry("accepted", 30, drop=("ruling",))),
+    "no-review-by": reg(entry("accepted", 30, drop=("review_by",))),
+    "compact-date": reg(entry("accepted", 30, review_by=day(30).replace("-", ""))),
+    "impossible-date": reg(entry("accepted", 30, review_by="2026-02-30")),
+    "hash-upper": reg(entry("accepted", 30, sha256_20=d(V["accepted"]).upper())),
+    "hash-short": reg(entry("accepted", 30, sha256_20=d(V["accepted"])[:19])),
+    "no-hash": reg(entry("accepted", 30, drop=("sha256_20",))),
+    "duplicate": reg(entry("accepted", 30), entry("accepted", 60, reason="again")),
+    "seen-in-string": reg(entry("accepted", 30, seen_in="a.cfg")), "rule-empty": reg(entry("accepted", 30, rule="")),
+}
+for k, v in bad.items():
+    write(f"bad-{k}.json", v)
+with open(os.path.join(R, "bad.list"), "w") as f:
+    f.write("\n".join(bad) + "\n")
+with open(os.path.join(R, "forbidden.txt"), "w") as f:
+    f.write("".join(f"{v}\n{d(v)}\n{d(v).upper()}\n" for v in V.values()))
+for k, n in (("today", 0), ("yesterday", -1), ("plus30", 30)):
+    write(k, day(n))
+def gl(*finds):
+    return [{"RuleID": "generic-api-key", "Commit": f1, "File": "a.cfg", "StartLine": n, "Secret": V.get(k, ""),
+             "Match": f"key = {V.get(k, '')}", "Line": f"key = {V.get(k, '')}"} for k, n in finds]
+write("gl-mixed.json", gl(("accepted", 3), ("unregistered", 4)))
+write("gl-all-accepted.json", gl(("accepted", 3), ("today", 5)))
+write("gl-accepted.json", gl(("accepted", 3)))
+write("gl-expired.json", gl(("expired", 6)))
+write("gl-no-value.json", gl(("none", 7)))
+write("gl-empty.json", [])
+write("gl-broken.json", "{broken")
+def th(*finds):
+    return "".join(json.dumps({"DetectorName": "AWS", "Verified": True, "Raw": raw, "RawV2": raw2,
+                               "Redacted": raw or raw2, "SourceMetadata": {"Data": {"Git": {
+                                   "commit": f1, "file": "a.cfg", "line": n}}}}) + "\n" for raw, raw2, n in finds)
+write("th-accepted.json", th((V["accepted"], "", 3), ("", V["v2only"], 9)))
+write("th-unregistered.json", th((V["unregistered"], "", 3)))
+write("th-mixed.json", th((V["accepted"], "", 3), (V["unregistered"], "", 4)))
+write("th-expired.json", th((V["expired"], "", 6)))
+write("th-no-value.json", th(("", "", 7)))
+PY
+today=$(cat "$R/today") yesterday=$(cat "$R/yesterday") plus30=$(cat "$R/plus30")
+: > "$suite/reg-all.out"
+rec() { cat "$suite/last.out" >> "$suite/reg-all.out"; }
+in_last() { grep -qxF -- "$1" "$suite/last.out"; } # in_last <exact line>
+has() { grep -qF -- "$1" "$suite/last.out"; }      # has <text>
+regc() { (cd "$suite/pr" && rc_of python3 "$diffscan" registry "$@"); rec; } # regc <file> <policy>
+glr() { # glr <report fixture> <gitleaks rc> [--registry FILE --policy P]: the judge deletes the report
+  local rep=$1 grc=$2
+  shift 2
+  cp "$R/$rep" "$R/report.json"
+  printf '%s\n' '1:00PM INF 8 commits scanned.' > "$R/gl.log"
+  (cd "$suite/pr" && rc_of python3 "$diffscan" gitleaks "$R/report.json" "$R/gl.log" "$grc" 8 "$@")
+  rec
+}
+thr() { # thr <results fixture> [--registry FILE --policy P]
+  local res=$1
+  shift
+  (cd "$suite/pr" && rc_of python3 "$diffscan" trufflehog "$suite/pr.tree" "$@" < "$R/$res")
+  rec
+}
+gone() { [ ! -e "$R/report.json" ]; }
+e0="registry entry #0 (rule generic-api-key, live-pending-rotation, review_by $plus30)"
+at3="commit $f1, path a.cfg, line 3"
+
+# The registry check (diffscan.py registry FILE sweep|gate), run once per scanner job when the caller has the file.
+check "registry: a valid registry passes the sweep" [ "$(regc "$R/ok.json" sweep)" = 0 ]
+check "registry: ... and the sweep lists EVERY entry as a warning" \
+  [ "$(grep -c '^::warning title=accepted live credential::registry entry #' "$suite/last.out")" = 3 ]
+check "registry: ... with its ruling and renewal note" \
+  has "$e0, 30 day(s) left: ruling: test ruling for accepted; renewal: re-reviewed monthly"
+check "registry: review_by is inclusive (due today = valid, 0 days left)" has "review_by $today), 0 day(s) left"
+check "registry: the gate passes a valid registry" [ "$(regc "$R/ok.json" gate)" = 0 ]
+check "registry: ... lists its entries as accepting nothing, with no warning" \
+  eval 'has "accepts nothing in this scan" && ! grep -q "^::warning" "$suite/last.out"'
+check "registry: an EXPIRED entry FAILS the sweep" [ "$(regc "$R/expired.json" sweep)" = 1 ]
+check "registry: ... loudly: an error naming the entry, its review_by and the remedy" in_last \
+  "::error title=secret-scan registry entry expired::registry entry #1 (rule generic-api-key, live-pending-rotation, review_by $yesterday) expired 1 day(s) ago. Renew review_by with a fresh ruling, or remove the entry. ruling: test ruling for expired"
+check "registry: ... the live entry is still listed" has "::warning title=accepted live credential::$e0"
+check "registry: an expired entry is a warning in the gate (the gate accepts nothing anyway)" \
+  eval '[ "$(regc "$R/expired.json" gate)" = 0 ] && has "::warning title=secret-scan registry entry expired::registry entry #1"'
+check "registry: an empty entries list is valid" [ "$(regc "$R/empty.json" sweep)" = 0 ]
+while read -r b; do
+  check "registry refused, sweep and gate: $b" eval '[ "$(regc "$R/bad-$b.json" sweep)" = 1 ] &&
+    has "::error title=secret-scan registry refused::" && [ "$(regc "$R/bad-$b.json" gate)" = 1 ]'
+done < "$R/bad.list"
+check "registry refused: a duplicate names both entries" \
+  eval 'regc "$R/bad-duplicate.json" sweep > /dev/null; has "entries #0 and #1 name the same value"'
+check "registry refused: status accepted says where false positives go" \
+  eval 'regc "$R/bad-status-accepted.json" sweep > /dev/null; has ".gitleaks.toml allowlist"'
+ln -s ok.json "$R/link.json"
+check "registry refused: a symbolic link" [ "$(regc "$R/link.json" sweep)" = 1 ]
+check "registry refused: a file named but absent" [ "$(regc "$R/absent.json" sweep)" = 1 ]
+check "registry: an unknown policy is a usage error" [ "$(regc "$R/ok.json" lenient)" = 2 ]
+
+# gitleaks: values are hashed in-process from the (unredacted, sweep-only) report, which is then deleted.
+check "gitleaks sweep: an accepted value and an unregistered one -> fail" \
+  [ "$(glr gl-mixed.json 1 --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "gitleaks sweep: ... the accepted finding names its entry and is not an error" \
+  in_last "gitleaks generic-api-key: $at3: accepted ($e0)"
+check "gitleaks sweep: ... the unregistered one is an error: NOT in registry" \
+  in_last "::error::gitleaks generic-api-key: commit $f1, path a.cfg, line 4: NOT in registry"
+check "gitleaks sweep: ... the report is deleted" gone
+check "gitleaks sweep: only accepted values (one due today) -> pass" \
+  [ "$(glr gl-all-accepted.json 1 --registry "$R/ok.json" --policy sweep)" = 0 ]
+check "gitleaks sweep: ... counted" in_last "gitleaks: 2 finding(s), 2 accepted by the registry; scanned 8 of 8 commit(s)"
+check "gitleaks sweep: ... per entry" in_last "gitleaks: $e0 accepted 1 finding(s) in this scan"
+check "gitleaks sweep: ... the report is deleted on a pass too" gone
+check "gitleaks sweep: an EXPIRED entry's value fails, reported as expired" \
+  eval '[ "$(glr gl-expired.json 1 --registry "$R/expired.json" --policy sweep)" = 1 ] && has "has EXPIRED"'
+check "gitleaks sweep: a malformed registry accepts nothing" \
+  eval '[ "$(glr gl-accepted.json 1 --registry "$R/bad-status-accepted.json" --policy sweep)" = 1 ] &&
+    has "NOT accepted (the registry is unusable"'
+check "gitleaks sweep: a finding with no value fails" \
+  eval '[ "$(glr gl-no-value.json 1 --registry "$R/ok.json" --policy sweep)" = 1 ] && has "the scanner gave no value to match"'
+check "gitleaks sweep: exit 0 with findings still fails (fail closed)" \
+  [ "$(glr gl-all-accepted.json 0 --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "gitleaks sweep: an unreadable report fails" [ "$(glr gl-broken.json 1 --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "gitleaks sweep: ... and is deleted" gone
+check "gitleaks sweep: a clean report passes" [ "$(glr gl-empty.json 0 --registry "$R/ok.json" --policy sweep)" = 0 ]
+check "gitleaks GATE (range): a registered value FAILS" \
+  [ "$(glr gl-accepted.json 1 --registry "$R/ok.json" --policy gate)" = 1 ]
+check "gitleaks gate: ... printed exactly as with no registry" in_last "::error::gitleaks generic-api-key: $at3"
+check "gitleaks: no registry is today's behaviour (fails, same line, same summary)" \
+  eval '[ "$(glr gl-accepted.json 1)" = 1 ] && in_last "::error::gitleaks generic-api-key: $at3" &&
+    in_last "gitleaks: 1 finding(s); scanned 8 of 8 commit(s)"'
+check "gitleaks: --registry without --policy is a usage error" [ "$(glr gl-accepted.json 1 --registry "$R/ok.json")" = 2 ]
+
+# trufflehog: Raw (else RawV2) hashed in-process.
+check "trufflehog sweep: accepted values (Raw; RawV2 when Raw is empty) -> pass" \
+  [ "$(thr th-accepted.json --registry "$R/ok.json" --policy sweep)" = 0 ]
+check "trufflehog sweep: ... named as accepted" in_last "trufflehog AWS (verified): $at3: accepted ($e0)"
+check "trufflehog sweep: ... the RawV2-only one too" has "line 9: accepted (registry entry #2"
+check "trufflehog sweep: an UNREGISTERED verified finding goes RED" \
+  [ "$(thr th-unregistered.json --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "trufflehog sweep: ... as an error: NOT in registry" in_last "::error::trufflehog AWS (verified): $at3: NOT in registry"
+check "trufflehog sweep: accepted + unregistered -> red" [ "$(thr th-mixed.json --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "trufflehog sweep: an EXPIRED entry's value goes red, reported as expired" \
+  eval '[ "$(thr th-expired.json --registry "$R/expired.json" --policy sweep)" = 1 ] && has "has EXPIRED"'
+check "trufflehog sweep: no raw value -> red" [ "$(thr th-no-value.json --registry "$R/ok.json" --policy sweep)" = 1 ]
+check "trufflehog sweep: a malformed registry -> red" \
+  [ "$(thr th-accepted.json --registry "$R/bad-no-reason.json" --policy sweep)" = 1 ]
+check "trufflehog GATE (range): a registered value FAILS (strict)" \
+  [ "$(thr th-accepted.json --registry "$R/ok.json" --policy gate)" = 1 ]
+check "trufflehog gate: ... printed exactly as with no registry" in_last "::error::trufflehog AWS (verified): $at3"
+check "trufflehog: no registry is today's behaviour" eval '[ "$(thr th-accepted.json)" = 1 ] && in_last "trufflehog: 2 finding(s)"'
+
+# No value and no digest anywhere; the grep's own positive control first.
+cp "$suite/reg-all.out" "$suite/reg-planted.out"
+sed -n 1p "$R/forbidden.txt" >> "$suite/reg-planted.out"
+check "control: the forbidden-output grep catches a planted value" grep -qFf "$R/forbidden.txt" "$suite/reg-planted.out"
+check "registry: the outputs were captured" [ "$(grep -c . "$suite/reg-all.out")" -gt 50 ]
+check "registry: no fake value or digest in any output" sh -c '! grep -qFf "$1" "$2"' _ "$R/forbidden.txt" "$suite/reg-all.out"
 
 echo
 echo "$pass passed, $fail failed"

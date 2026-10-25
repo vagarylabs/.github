@@ -66,6 +66,16 @@ jobs:
       - name: fetch-release-asset tests (curl stubbed; private temp cache) and release-assets.lock lint
         run: bash actions/fetch-release-asset/test_fetch.sh
 
+  secret-scan-scope-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: secret-scan-scope tests (local bare origin; git and python3 only, no scanners, no network)
+        run: bash actions/secret-scan-scope/test_scope.sh
+
   trusted-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5

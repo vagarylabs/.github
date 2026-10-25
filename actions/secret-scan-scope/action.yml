@@ -1,0 +1,82 @@
+# Secret scan scope: fetch only the history a secret scan needs and say what to scan, after a blobless, depth-1,
+# sparse actions/checkout. Reads the event itself; no inputs are needed.
+#
+#   - uses: actions/checkout@<sha>
+#     with: {fetch-depth: 1, filter: blob:none, sparse-checkout: "/.gitleaks.toml", sparse-checkout-cone-mode: false}
+#   - id: scope
+#     uses: vagarylabs/.github/actions/secret-scan-scope@<commit sha>   # pin a SHA, never @main
+#     with:
+#       tree: ${{ runner.temp }}/scan-range    # optional: materialise the added lines for a file scanner
+#   - run: gitleaks git --log-opts="$REVS" .    # REVS: ${{ steps.scope.outputs.revs }}
+#
+# RANGE (pull_request, merge_group, a fast-forward push): the event's own commits, each merge's remerge delta and the
+# net change merge-base..head, all proven complete. FULL (schedule, workflow_dispatch, a new branch, a force-push,
+# anything unprovable): head's whole history with blobs, plus every merge's remerge delta. Script: scope.sh; helpers
+# for the scan steps: diffscan.py; tests: test_scope.sh; contract and blind spots: README.md.
+name: secret-scan-scope
+description: Fetch only the history a secret scan needs (range or full) and say what to scan.
+inputs:
+  tree:
+    description: >-
+      Optional directory to write the added lines of the selected diffs into, as <commit>/<path> with each line at
+      its line number (a remerge delta under the MERGE's SHA). For scanners that read files (trufflehog filesystem).
+    required: false
+    default: ""
+outputs:
+  mode:
+    description: range | full
+    value: ${{ steps.scope.outputs.mode }}
+  base:
+    description: The event's base commit (range mode).
+    value: ${{ steps.scope.outputs.base }}
+  head:
+    description: The commit whose history is scanned.
+    value: ${{ steps.scope.outputs.head }}
+  merge-base:
+    description: merge-base(base, head) (range mode).
+    value: ${{ steps.scope.outputs.merge_base }}
+  net:
+    description: The local commit holding the net change merge-base..head (range mode).
+    value: ${{ steps.scope.outputs.net }}
+  revs:
+    description: The git revisions to scan, for `git log` / gitleaks --log-opts (space-separated, no shell globbing).
+    value: ${{ steps.scope.outputs.revs }}
+  reason:
+    description: Why this mode, in words.
+    value: ${{ steps.scope.outputs.reason }}
+  tree:
+    description: The tree directory (the `tree` input), when written.
+    value: ${{ steps.tree.outputs.tree }}
+  tree-files:
+    description: How many non-empty files the tree holds.
+    value: ${{ steps.tree.outputs.files }}
+  dir:
+    description: This action's directory, for its diffscan.py helper.
+    value: ${{ steps.scope.outputs.dir }}
+runs:
+  using: composite
+  steps:
+    - id: scope
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        MG_BASE: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        PUSH_AFTER: ${{ github.sha }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/scope.sh"
+        echo "dir=$GITHUB_ACTION_PATH" >> "$GITHUB_OUTPUT"
+    - id: tree
+      if: inputs.tree != ''
+      shell: bash
+      env:
+        TREE: ${{ inputs.tree }}
+        TREE_REVS: ${{ steps.scope.outputs.tree_revs }}
+      run: |
+        set -euo pipefail
+        files=$(python3 "$GITHUB_ACTION_PATH/diffscan.py" tree "$TREE" "$TREE_REVS")
+        echo "tree: $files file(s) of added lines under $TREE"
+        { echo "tree=$TREE"; echo "files=$files"; } >> "$GITHUB_OUTPUT"

@@ -4,17 +4,35 @@
   diffscan.py tree DIR REVS             write the added lines of `git log -p -U0 REVS` to DIR/<label>/<path>, each at
                                         its line number in the new file (blank lines between); print the file count
   diffscan.py count REVS                the number of commits gitleaks 8.30.1 reports as scanned for --log-opts=REVS
-  diffscan.py gitleaks REPORT LOG RC N  judge a gitleaks run (rc, error lines, scanned count == N); print findings
-  diffscan.py trufflehog TREE           read `trufflehog --json` results on stdin; print findings
+  diffscan.py gitleaks REPORT LOG RC N [--registry FILE --policy sweep|gate]
+                                        judge a gitleaks run (rc, error lines, scanned count == N); print findings;
+                                        delete REPORT
+  diffscan.py trufflehog TREE [--registry FILE --policy sweep|gate]
+                                        read `trufflehog --json` results on stdin; print findings
   diffscan.py trufflehog-log LOG MIN    judge trufflehog's stderr: no error line, "finished scanning", chunks >= MIN
+  diffscan.py registry FILE POLICY      judge the caller's accepted-live registry (POLICY: sweep | gate); list entries
 
 Findings are printed as detector/rule, commit, path and line, NEVER the matched value (no Raw, RawV2, Redacted,
 Secret, Match or Line field is ever read out). A finding on a local scan commit is named for what it stands for: a
 merge's remerge delta names the MERGE, the net commit names "net change <merge-base>..<head>".
 
+THE ACCEPTED-LIVE REGISTRY. A caller may keep .github/secret-scan-registry.json: real, live credentials that history
+cannot forget and whose rotation an operator ruling has deferred. Each entry names one value by sha256(value)[:20] (the
+vagary-voice convention), so one entry covers both scanners: gitleaks' Secret and trufflehog's Raw (RawV2 when Raw is
+empty) are hashed in-process and looked up. Rules and detector names are never matched (gitleaks says generic-api-key
+where trufflehog says ElevenLabs). Only under --policy sweep (scope.sh's registry_policy for the scheduled or
+dispatched full sweep) is a registered value reported as accepted and not failed; anything else fails as "NOT in
+registry". Under --policy gate (every other scan) the registry is not consulted: every finding fails, registered or
+not, and prints exactly as with no registry.
+`registry FILE POLICY` runs in every scan whose caller has the file: a malformed registry fails it in both policies;
+an entry whose review_by has passed fails the sweep and is a warning in the gate; every entry is listed (a warning in
+the sweep). No digest is ever printed: an entry is named by its index, rule, status, review_by and ruling.
+
 <label> in the tree is the commit's SHA; for a remerge delta it is the MERGE's SHA, for the net change the net commit's.
 Exit codes: 0 clean, 1 findings or a failed check, 2 usage or a malformed input.
 """
+import datetime
+import hashlib
 import json
 import os
 import re
@@ -27,10 +45,160 @@ HUNK = re.compile(rb"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 TOKENISH = re.compile(r"[A-Za-z0-9+=_-]{16,}")
 
+LIVE = "live-pending-rotation"
+REGISTRY_FIELDS = {"version", "about", "entries"}
+ENTRY_REQUIRED = ("sha256_20", "status", "reason", "ruling", "review_by")
+ENTRY_OPTIONAL = ("rule", "renewal", "seen_in")
+HEX20 = re.compile(r"[0-9a-f]{20}\Z")
+YMD = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+
 
 def die(msg, code=2):
     print(f"::error::diffscan: {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+def esc(text):
+    """Workflow-command data: % CR LF would end an annotation early or forge another."""
+    return str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def digest(value):
+    """sha256(value)[:20], the registry's key. Computed in-process; never printed."""
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+
+
+def utc_today():
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def load_registry(path):
+    """-> (entries, problems). An entry is valid through its review_by date (UTC) and expired from the day after.
+    Problems name an entry by its index, never by its hash."""
+    if os.path.islink(path):
+        return [], [f"{path} is a symbolic link; the registry must be a regular file"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return [], [f"{path} is not readable JSON ({type(e).__name__})"]
+    if not isinstance(data, dict):
+        return [], ["the registry is not a JSON object"]
+    problems = []
+    unknown = sorted(set(data) - REGISTRY_FIELDS)
+    if unknown:
+        problems.append(f"unknown top-level field(s) {', '.join(TOKENISH.sub('<masked>', k) for k in unknown)}")
+    if data.get("version") != 1:
+        problems.append("version must be 1")
+    raw = data.get("entries")
+    if not isinstance(raw, list):
+        problems.append("entries must be a list")
+        raw = []
+    entries, first, today = [], {}, utc_today()
+    for i, e in enumerate(raw):
+        at = f"entry #{i}"
+        if not isinstance(e, dict):
+            problems.append(f"{at} is not an object")
+            continue
+        unknown = sorted(set(e) - set(ENTRY_REQUIRED) - set(ENTRY_OPTIONAL))
+        if unknown:
+            problems.append(f"{at}: unknown field(s) {', '.join(TOKENISH.sub('<masked>', k) for k in unknown)} "
+                            f"(known: {', '.join(ENTRY_REQUIRED + ENTRY_OPTIONAL)})")
+        for k in ENTRY_REQUIRED:
+            if not isinstance(e.get(k), str) or not e[k].strip():
+                problems.append(f"{at}: {k} is missing or empty")
+        for k in ("rule", "renewal"):
+            if k in e and (not isinstance(e[k], str) or not e[k].strip()):
+                problems.append(f"{at}: {k}, when present, must be a non-empty string")
+        seen = e.get("seen_in", [])
+        if not (isinstance(seen, list) and all(isinstance(x, str) and x for x in seen)):
+            problems.append(f"{at}: seen_in, when present, must be a list of paths")
+        h, status, review_by = e.get("sha256_20"), e.get("status"), e.get("review_by")
+        if isinstance(h, str) and h:
+            if not HEX20.match(h):
+                problems.append(f"{at}: sha256_20 must be 20 lowercase hex characters (sha256 of the value, first 20)")
+            elif h in first:
+                problems.append(f"entries #{first[h]} and #{i} name the same value (a duplicate sha256_20)")
+            else:
+                first[h] = i
+        if isinstance(status, str) and status and status != LIVE:
+            problems.append(f"{at}: status must be {LIVE!r}; a value that is not a live credential belongs in a "
+                            ".gitleaks.toml allowlist, not here")
+        due = None
+        if isinstance(review_by, str) and review_by:
+            try:
+                due = datetime.date.fromisoformat(review_by) if YMD.match(review_by) else None
+            except ValueError:
+                pass
+            if due is None:
+                problems.append(f"{at}: review_by must be a real date written YYYY-MM-DD")
+        entries.append({
+            "n": i, "digest": h, "due": due, "expired": due is not None and due < today,
+            "days": (due - today).days if due else None,
+            "label": f"registry entry #{i} (rule {esc(e.get('rule') or '?')}, {LIVE}, review_by {esc(review_by)})",
+            "ruling": esc(e.get("ruling", "")), "renewal": esc(e.get("renewal", "")),
+        })
+    return entries, problems
+
+
+class Matcher:
+    """Looks a finding's value up in the registry (sweep only). Its notes never hold a value or a digest."""
+
+    def __init__(self, path, policy):
+        self.on = bool(path) and policy == "sweep"  # under the gate policy the registry accepts nothing
+        self.entries, self.problems = load_registry(path) if self.on else ([], [])
+        self.by = {} if self.problems else {e["digest"]: e for e in self.entries}
+        self.accepted = {}
+
+    def judge(self, value):
+        """-> (fails, suffix for the finding's line)."""
+        if not self.on:
+            return True, ""
+        if self.problems:
+            return True, ": NOT accepted (the registry is unusable; the registry check lists why)"
+        if not value:
+            return True, ": NOT in registry (the scanner gave no value to match)"
+        e = self.by.get(digest(value))
+        if e is None:
+            return True, ": NOT in registry"
+        if e["expired"]:
+            return True, f": NOT accepted, {e['label']} has EXPIRED (renew it with a fresh ruling, or remove it)"
+        self.accepted[e["n"]] = self.accepted.get(e["n"], 0) + 1
+        return False, f": accepted ({e['label']})"
+
+    def summary(self, scanner):
+        if not self.on:
+            return
+        if self.problems:
+            print(f"::error::{scanner}: the registry is unusable ({len(self.problems)} problem(s)); "
+                  "nothing is accepted")
+            return
+        for e in self.entries:
+            print(f"{scanner}: {e['label']} accepted {self.accepted.get(e['n'], 0)} finding(s) in this scan")
+
+
+def registry(path, policy):
+    """The registry check, run once per scanner job when the caller has the file."""
+    entries, problems = load_registry(path)
+    sweep = policy == "sweep"
+    for p in problems:
+        print(f"::error title=secret-scan registry refused::{path}: {esc(p)}")
+    expired = 0
+    for e in [] if problems else entries:
+        why = f"ruling: {e['ruling']}" + (f"; renewal: {e['renewal']}" if e["renewal"] else "")
+        if e["expired"]:
+            expired += 1
+            kind = "error" if sweep else "warning"
+            print(f"::{kind} title=secret-scan registry entry expired::{e['label']} expired {-e['days']} day(s) ago. "
+                  f"Renew review_by with a fresh ruling, or remove the entry. {why}")
+        elif sweep:
+            print(f"::warning title=accepted live credential::{e['label']}, {e['days']} day(s) left: {why}")
+        else:
+            print(f"{e['label']}, {e['days']} day(s) left: accepts nothing in this scan (only the scheduled sweep "
+                  f"may); {why}")
+    print(f"registry: {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}, {expired} expired, "
+          f"{len(problems)} problem(s); policy {policy}")
+    sys.exit(1 if problems or (sweep and expired) else 0)
 
 
 def revs_of(text):
@@ -181,7 +349,7 @@ def count(revs):
     print(n)
 
 
-def gitleaks(report, log, rc, expected):
+def gitleaks(report, log, rc, expected, registry_path=None, policy="gate"):
     problems = []
     text = ANSI.sub("", open(log, encoding="utf-8", errors="replace").read())
     if rc not in (0, 1):
@@ -194,29 +362,48 @@ def gitleaks(report, log, rc, expected):
         problems.append("gitleaks printed no 'commits scanned' line")
     elif int(scanned[-1]) != expected:
         problems.append(f"gitleaks scanned {scanned[-1]} commit(s) but the selected revisions hold {expected} with text changes")
+    # With a registry the report is unredacted: read it, then delete it whatever happens. Values live only in memory.
     try:
-        found = json.load(open(report, encoding="utf-8"))
+        with open(report, encoding="utf-8") as f:
+            found = json.load(f)
+        if not isinstance(found, list) or not all(isinstance(x, dict) for x in found):
+            raise ValueError("not a list of findings")
     except (OSError, ValueError) as e:
         problems.append(f"no readable gitleaks report ({type(e).__name__})")
         found = []
+    finally:
+        try:
+            os.unlink(report)
+        except FileNotFoundError:
+            pass
     table = legs()
+    match = Matcher(registry_path, policy)
+    failing = 0
     for f in found:
-        print(f"::error::gitleaks {f.get('RuleID')}: {describe(table, f.get('Commit', ''))}, "
-              f"path {f.get('File')}, line {f.get('StartLine')}")
+        secret = f.get("Secret")
+        fails, note = match.judge(secret if isinstance(secret, str) else "")
+        failing += fails
+        line = (f"gitleaks {f.get('RuleID')}: {describe(table, f.get('Commit', ''))}, "
+                f"path {f.get('File')}, line {f.get('StartLine')}{note}")
+        print(f"::error::{line}" if fails else line)
     if rc == 1 and not found:
         problems.append("gitleaks exited 1 with an empty report")
     if rc == 0 and found:
         problems.append("gitleaks exited 0 with findings in its report")
     for p in problems:
         print(f"::error::{p}")
-    print(f"gitleaks: {len(found)} finding(s); scanned {scanned[-1] if scanned else '?'} of {expected} commit(s)")
-    sys.exit(1 if problems or found else 0)
+    match.summary("gitleaks")
+    accepted = f", {len(found) - failing} accepted by the registry" if match.on else ""
+    print(f"gitleaks: {len(found)} finding(s){accepted}; "
+          f"scanned {scanned[-1] if scanned else '?'} of {expected} commit(s)")
+    sys.exit(1 if problems or failing or match.problems else 0)
 
 
-def trufflehog(tree_dir):
+def trufflehog(tree_dir, registry_path=None, policy="gate"):
     root = os.path.realpath(tree_dir) + os.sep if tree_dir else None
     table = legs()
-    found = bad = 0
+    match = Matcher(registry_path, policy)
+    found = bad = failing = 0
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -242,11 +429,17 @@ def trufflehog(tree_dir):
         else:
             where = f"source {sorted(data)}"
         found += 1
-        print(f"::error::trufflehog {det} ({state}): {where}")
+        raw = d.get("Raw") or d.get("RawV2") or ""
+        fails, note = match.judge(raw if isinstance(raw, str) else "")
+        failing += fails
+        line = f"trufflehog {det} ({state}): {where}{note}"
+        print(f"::error::{line}" if fails else line)
     if bad:
         print(f"::error::trufflehog printed {bad} output line(s) that are not results (not shown)")
-    print(f"trufflehog: {found} finding(s)")
-    sys.exit(1 if found or bad else 0)
+    match.summary("trufflehog")
+    accepted = f", {found - failing} accepted by the registry" if match.on else ""
+    print(f"trufflehog: {found} finding(s){accepted}")
+    sys.exit(1 if failing or bad or match.problems else 0)
 
 
 def trufflehog_log(log, min_chunks):
@@ -275,20 +468,35 @@ def trufflehog_log(log, min_chunks):
     sys.exit(1 if problems else 0)
 
 
+def registry_opt(args, n):
+    """n positional arguments, then optionally `--registry FILE --policy sweep|gate` -> (positional, FILE, policy)."""
+    if len(args) == n:
+        return args, None, "gate"
+    if (len(args) == n + 4 and args[n] == "--registry" and args[n + 1] and args[n + 2] == "--policy"
+            and args[n + 3] in ("sweep", "gate")):
+        return args[:n], args[n + 1], args[n + 3]
+    die("usage: the only option is a trailing `--registry FILE --policy sweep|gate`")
+
+
 def main(argv):
     cmd, args = (argv[1], argv[2:]) if len(argv) > 1 else ("", [])
     if cmd == "tree" and len(args) == 2:
         tree(args[0], revs_of(args[1]))
     elif cmd == "count" and len(args) == 1:
         count(revs_of(args[0]))
-    elif cmd == "gitleaks" and len(args) == 4:
-        gitleaks(args[0], args[1], int(args[2]), int(args[3]))
-    elif cmd == "trufflehog" and len(args) == 1:
-        trufflehog(args[0])
+    elif cmd == "gitleaks" and len(args) in (4, 8):
+        args, reg, policy = registry_opt(args, 4)
+        gitleaks(args[0], args[1], int(args[2]), int(args[3]), reg, policy)
+    elif cmd == "trufflehog" and len(args) in (1, 5):
+        args, reg, policy = registry_opt(args, 1)
+        trufflehog(args[0], reg, policy)
     elif cmd == "trufflehog-log" and len(args) == 2:
         trufflehog_log(args[0], int(args[1]))
+    elif cmd == "registry" and len(args) == 2 and args[1] in ("sweep", "gate"):
+        registry(args[0], args[1])
     else:
-        die("usage: diffscan.py tree DIR REVS | count REVS | gitleaks REPORT LOG RC N | trufflehog TREE | trufflehog-log LOG MIN")
+        die("usage: diffscan.py tree DIR REVS | count REVS | gitleaks REPORT LOG RC N [--registry FILE --policy P] | "
+            "trufflehog TREE [--registry FILE --policy P] | trufflehog-log LOG MIN | registry FILE P (P: sweep|gate)")
 
 
 if __name__ == "__main__":

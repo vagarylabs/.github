@@ -44,6 +44,12 @@ outputs:
   reason:
     description: Why this mode, in words.
     value: ${{ steps.scope.outputs.reason }}
+  registry-policy:
+    description: >-
+      What the caller's accepted-live registry (.github/secret-scan-registry.json) may do: `sweep` (a schedule or
+      workflow_dispatch full sweep; a registered live-pending-rotation value is accepted with a warning) or `gate`
+      (every other scan, a full-mode fallback included; it accepts nothing and every finding fails).
+    value: ${{ steps.scope.outputs.registry_policy }}
   tree:
     description: The tree directory (the `tree` input), when written.
     value: ${{ steps.tree.outputs.tree }}

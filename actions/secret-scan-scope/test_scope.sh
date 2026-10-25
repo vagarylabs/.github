@@ -51,7 +51,7 @@ put main.txt '0\n'
 commit "main 0" > /dev/null
 g checkout -q -b old
 put conf.txt 'line1\nline2-old\nline3\nline4\nline5\n'
-commit "old: line2" > /dev/null
+o1=$(commit "old: line2") # a linear history: no merge at all
 g checkout -q main
 put conf.txt 'line1\nline2-main\nline3\nline4\nline5\n'
 commit "main: line2" > /dev/null
@@ -246,6 +246,12 @@ check "schedule: revs = head plus the legs" [ "$(out sched revs)" = "$mp --glob=
 tree sched
 check "schedule: the tree holds only the merge legs; the old evil merge is named" at_line sched "$e0/conf.txt" 3 MARKER-EVIL-OLD
 check "schedule: no ordinary commit in the full tree" test ! -e "$suite/sched.tree/$f1"
+runner linear "$o1" schedule "" "$o1"
+full_case linear "schedule on a linear history (no merge, so no leg)" "$o1"
+check "linear history: no leg refs" [ -z "$(rg linear for-each-ref refs/secret-scan/)" ]
+tree linear
+check "linear history: the legs-only tree is empty, not a fallback to HEAD" [ "$(cat "$suite/linear.files")" = 0 ]
+check "linear history: gitleaks count covers both commits" [ "$(count linear)" = 2 ]
 runner disp "$mp" workflow_dispatch "" "$mp"
 full_case disp "workflow_dispatch" "$mp"
 runner unknown "$mp" release "" "$mp"

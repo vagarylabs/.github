@@ -169,7 +169,8 @@ scan() {
 }
 sha() { git -C "$suite/$1.git" rev-parse "$2"; }
 rc() { cat "$suite/$1.$2.rc"; }
-said() { grep -qF -- "$3" "$suite/$1.$2.out"; } # said <scan> <gitleaks|trufflehog> <text>
+said() { grep -qF -- "$3" "$suite/$1.$2.out"; }   # said <scan> <gitleaks|trufflehog> <text>
+line() { grep -qxF -- "$3" "$suite/$1.$2.out"; }   # line <scan> <gitleaks|trufflehog> <exact line>
 args() { cat "$suite/$1/gitleaks.args"; }
 
 scan sweep-ok live main schedule "" "$(sha live main)"
@@ -190,6 +191,7 @@ check "sweep: the step wrote passed=true" eval 'grep -qx passed=true "$suite/swe
 
 scan sweep-new live more schedule "" "$(sha live more)"
 check "sweep + an unregistered key: the gitleaks step FAILS" [ "$(rc sweep-new gitleaks)" != 0 ]
+check "sweep + an unregistered key: ... and wrote no passed=true" eval '! grep -qs passed=true "$suite/sweep-new.gitleaks.gh"'
 check "sweep + an unregistered key: the trufflehog step FAILS" [ "$(rc sweep-new trufflehog)" != 0 ]
 check "sweep: gitleaks says NOT in registry" \
   said sweep-new gitleaks "::error::gitleaks generic-api-key: commit $(sha live more), path svc/new.cfg, line 1: NOT in registry"
@@ -209,14 +211,22 @@ check "sweep, review_by passed: the finding is not accepted" said sweep-exp gitl
 scan pr-gate live refs/heads/pr pull_request "$(sha live main)" "$(sha live pr)"
 check "PR repeating the registered key: range mode, policy gate" grep -qx "mode=range policy=gate" "$suite/pr-gate.mode"
 check "PR (gate): the gitleaks step FAILS" [ "$(rc pr-gate gitleaks)" != 0 ]
+check "PR (gate): ... on the repeated key, printed exactly as with no registry" \
+  line pr-gate gitleaks "::error::gitleaks generic-api-key: commit $(sha live pr), path svc/again.cfg, line 1"
 check "PR (gate): the trufflehog step FAILS" [ "$(rc pr-gate trufflehog)" != 0 ]
+check "PR (gate): ... on the repeated key, verified, printed exactly as with no registry" \
+  line pr-gate trufflehog "::error::trufflehog CustomRegex (verified): commit $(sha live pr), path svc/again.cfg, line 1"
 check "PR (gate): gitleaks kept --redact" eval 'args pr-gate | grep -q -- --redact'
 check "PR (gate): nothing is printed as accepted" eval '! grep -qF ": accepted (" "$suite/pr-gate.gitleaks.out" "$suite/pr-gate.trufflehog.out"'
 check "PR (gate): the finding is the new file" said pr-gate trufflehog "path svc/again.cfg, line 1"
 
 scan sweep-none none main schedule "" "$(sha none main)"
 check "no registry file: the gitleaks step FAILS, as before" [ "$(rc sweep-none gitleaks)" != 0 ]
+check "no registry file: ... on the history key, the line as before" \
+  line sweep-none gitleaks "::error::gitleaks generic-api-key: commit $(sha none main~1), path svc/old.cfg, line 2"
 check "no registry file: the trufflehog step FAILS, as before" [ "$(rc sweep-none trufflehog)" != 0 ]
+check "no registry file: ... on the history key, the line as before" \
+  line sweep-none trufflehog "::error::trufflehog CustomRegex (verified): commit $(sha none main~1), path svc/old.cfg, line 2"
 check "no registry file: gitleaks kept --redact" eval 'args sweep-none | grep -q -- --redact'
 check "no registry file: nothing mentions a registry" eval '! grep -qi registry "$suite/sweep-none.gitleaks.out" "$suite/sweep-none.trufflehog.out"'
 

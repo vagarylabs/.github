@@ -11,6 +11,10 @@
                                         read `trufflehog --json` results on stdin; print findings
   diffscan.py trufflehog-log LOG MIN    judge trufflehog's stderr: no error line, "finished scanning", chunks >= MIN
   diffscan.py registry FILE POLICY      judge the caller's accepted-live registry (POLICY: sweep | gate); list entries
+  diffscan.py excludes FILE HIST TREE   validate the caller's trufflehog sweep excludes; write HIST (git source, repo
+                                        paths) and TREE (filesystem source, the <label>/<path> tree) pattern files
+  diffscan.py measure OUT -- CMD...     run CMD (stdout and stderr passed through), then write its peak RSS and wall
+                                        time to OUT; exit with CMD's status
 
 Findings are printed as detector/rule, commit, path and line, NEVER the matched value (no Raw, RawV2, Redacted,
 Secret, Match or Line field is ever read out). A finding on a local scan commit is named for what it stands for: a
@@ -27,6 +31,14 @@ not, and prints exactly as with no registry.
 `registry FILE POLICY` runs in every scan whose caller has the file: a malformed registry fails it in both policies;
 an entry whose review_by has passed fails the sweep and is a warning in the gate; every entry is listed (a warning in
 the sweep). No digest is ever printed: an entry is named by its index, rule, status, review_by and ruling.
+
+TRUFFLEHOG SWEEP EXCLUDES. A caller may keep .github/secret-scan-trufflehog-exclude.txt: anchored regexes (one per
+line, # comments) naming history that the FULL sweep's trufflehog may skip, e.g. inventoried captures too large to
+scan (vagary-platform's HAR quarantine). The workflow honours it ONLY under --policy sweep: PR, push and merge-group
+scans (a full-mode fallback included) read every added line. `excludes` refuses an unanchored pattern, a construct
+RE2 (trufflehog's engine) lacks, and any pattern that matches a generic path: excludes must name specific history.
+trufflehog matches the git source's patterns against the repository path and the filesystem source's against the
+file's absolute path, so the TREE file prefixes each pattern with the tree's <label>/ (measured on 3.97.0).
 
 <label> in the tree is the commit's SHA; for a remerge delta it is the MERGE's SHA, for the net change the net commit's.
 Exit codes: 0 clean, 1 findings or a failed check, 2 usage or a malformed input.
@@ -468,6 +480,58 @@ def trufflehog_log(log, min_chunks):
     sys.exit(1 if problems else 0)
 
 
+EXCLUDE_PROBES = ("a", "README.md", "src/main.py", ".github/workflows/ci.yml", ".env", "package.json", "docs/index.md",
+                  "frontend/src/App.jsx", "backend/server.py")
+NOT_RE2 = re.compile(r"\(\?[=!<]|\\[1-9]")
+
+
+def excludes(path, hist_out, tree_out):
+    if os.path.islink(path):
+        die(f"{path} is a symlink")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [line.rstrip("\n") for line in f]
+    except (OSError, UnicodeDecodeError) as exc:
+        die(f"{path} is unreadable: {exc}")
+    patterns = [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if not patterns:
+        die(f"{path} holds no pattern")
+    for n, pattern in enumerate(patterns, 1):
+        if not pattern.startswith("^") or pattern != pattern.strip():
+            die(f"{path}: pattern {n} is not anchored at the path start (^), or has surrounding space")
+        if NOT_RE2.search(pattern):
+            die(f"{path}: pattern {n} uses a lookaround or backreference, which RE2 does not support")
+        try:
+            rx = re.compile(pattern)
+        except re.error as exc:
+            die(f"{path}: pattern {n} does not compile: {exc}")
+        hit = next((probe for probe in EXCLUDE_PROBES if rx.search(probe)), None)
+        if hit is not None:
+            die(f"{path}: pattern {n} matches the generic path {hit!r}; excludes must name specific history")
+    with open(hist_out, "w", encoding="utf-8") as f:
+        f.write("\n".join(patterns) + "\n")
+    with open(tree_out, "w", encoding="utf-8") as f:
+        f.write("\n".join("(^|/)[0-9a-f]{40}/" + pattern[1:] for pattern in patterns) + "\n")
+    print(f"::warning::trufflehog sweep excludes: {len(patterns)} pattern(s) from {esc(path)} skipped in this FULL "
+          "sweep only; PR, push and merge-group scans read every added line")
+
+
+def measure(out, cmd):
+    import resource
+    import time
+    start = time.monotonic()
+    try:
+        rc = subprocess.run(cmd, check=False).returncode
+    except OSError as exc:
+        die(f"measure: cannot run {cmd[0]}: {exc}")
+    wall = time.monotonic() - start
+    peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    peak_mb = peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024  # bytes on macOS, KiB on Linux
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(f"peak RSS {peak_mb:.0f} MB, wall {wall:.0f} s\n")
+    sys.exit(rc)
+
+
 def registry_opt(args, n):
     """n positional arguments, then optionally `--registry FILE --policy sweep|gate` -> (positional, FILE, policy)."""
     if len(args) == n:
@@ -494,9 +558,14 @@ def main(argv):
         trufflehog_log(args[0], int(args[1]))
     elif cmd == "registry" and len(args) == 2 and args[1] in ("sweep", "gate"):
         registry(args[0], args[1])
+    elif cmd == "excludes" and len(args) == 3:
+        excludes(args[0], args[1], args[2])
+    elif cmd == "measure" and len(args) >= 3 and args[1] == "--":
+        measure(args[0], args[2:])
     else:
         die("usage: diffscan.py tree DIR REVS | count REVS | gitleaks REPORT LOG RC N [--registry FILE --policy P] | "
-            "trufflehog TREE [--registry FILE --policy P] | trufflehog-log LOG MIN | registry FILE P (P: sweep|gate)")
+            "trufflehog TREE [--registry FILE --policy P] | trufflehog-log LOG MIN | registry FILE P (P: sweep|gate) | "
+            "excludes FILE HIST TREE | measure OUT -- CMD...")
 
 
 if __name__ == "__main__":

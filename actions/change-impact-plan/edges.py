@@ -83,6 +83,49 @@ CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
+# A dots-only string literal (`'.'`, `".."`): inside a substitution it builds a parent step (`'.' * 2`).
+DOTS_LITERAL = re.compile(r"""(['"])\.+\1""")
+# A parent step inside a substitution. A single `'.'` is a separator (`.split('.')`), never a step; dots build one only
+# as `..`, repeated (`'.' * 2`) or concatenated (`'.' + '.'`).
+SUB_PARENT = re.compile(r"(?<![.\w])\.\.(?![.\w])|\.parents?\b|\bpardir\b|\bdirname\s*\("
+                        r"|(['\"])\.\.+\1|(['\"])\.+\2\s*[*+]|[*+]\s*(['\"])\.+\3")
+SUB_NAME = re.compile(r"(?<![\w$])(\.?)([A-Za-z_$][\w$]*)")
+
+
+def substitutions(body: str, js: bool) -> list[str]:
+    """The expressions a computed string interpolates: Python `{expr}` (never `{{`), JS `${expr}`, nesting kept."""
+    out, i, n = [], 0, len(body)
+    while i < n:
+        if js:
+            k = body.find("${", i)
+            if k < 0:
+                break
+            j = k + 2
+        else:
+            k = body.find("{", i)
+            if k < 0:
+                break
+            if body.startswith("{{", k):
+                i = k + 2
+                continue
+            j = k + 1
+        depth, start, quote = 1, j, None
+        while j < n and depth:
+            ch = body[j]
+            if quote:
+                quote = None if ch == quote else quote
+            elif ch in "'\"`":
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            j += 1
+        out.append(body[start:j - 1] if not depth else body[start:])
+        i = j
+    return out
+
+
 # A path relative to the file: `../` steps then literal segments (`../app/api/x/`); the `rel` rule reads it exactly.
 REL_RUN = re.compile(r"(?:\.\./)+(?:[A-Za-z0-9_.-]+/)*")
 PARENT_WORD = re.compile(r"\b(?:pardir|parents?|dirname)\b")
@@ -90,7 +133,7 @@ GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W\d][\w$]*|\$[\w$]*|\d[\w.]*")
 _OPS = re.compile(r"\.\.\.|===|!==|\*\*|==|!=|<=|>=|=>|->|::|:=|\?\.|\?\?|&&|\|\||[^\w\s]")
-_PY_PREFIX = re.compile(r"[rRbBuUfF]{1,2}")
+_PY_PREFIX = re.compile(r"[rRbBuUfFtT]{1,2}")
 
 
 def _skip_quoted(text: str, i: int, q: str, multiline: bool) -> int | None:
@@ -186,7 +229,7 @@ def file_tokens(text: str, ext: str) -> tuple[list, list, bool]:
                 i += 1
                 continue
             body = text[i + len(q):end - len(q)]
-            computed = "f" in prefix.lower() and "{" in body
+            computed = ("f" in prefix.lower() or "t" in prefix.lower()) and "{" in body
             code.append(("str", start, end, (body, not computed, i)))
             i = end
             continue
@@ -274,9 +317,12 @@ class Source:
         # finds. The name
         # taint (RootLiteral.taint_check) refuses where they meet.
         code = self.code
+        js = ext in JS_EXT
+        self.subs = {j: substitutions(tok[3][0], js) for j, tok in enumerate(code) if tok[0] == "str" and not tok[3][1]}
         self.parent_toks = [
             j for j, tok in enumerate(code)
             if (tok[0] == "str" and (PARENT_STEP.search(tok[3][0])
+                                     or any(SUB_PARENT.search(e) for e in self.subs.get(j, ()))
                                      or (tok[3][0] in ("parent", "parents", "pardir") and self._in_getattr(j))))
             or (tok[0] == "word" and tok[3] == "pardir")
             or (tok[0] == "word" and tok[3] == "dirname" and j + 1 < len(code) and code[j + 1][3] == "(")
@@ -805,7 +851,8 @@ class RootLiteral:
         mentions += [m.start() + 1 for m in self.quoted.finditer(src.text, lo, hi)]
         if not mentions:
             return set()
-        if not plain and (PARENT_STEP.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)):
+        if not plain and (PARENT_STEP.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)
+                          or any(DOTS_LITERAL.search(e) for e in src.subs.get(k, ()))):
             self.refuse("unresolved")  # H3.2: an opaque substitution may leave the root
         if ">>>" in body:
             self.refuse("a doctest naming a root is executed code the scanner does not parse; an unsupported")
@@ -1168,6 +1215,32 @@ class RootLiteral:
                 out += [((j, hi), n) for n in self.param_names(j + 1, end) - drop]
         return out
 
+    def class_bodies(self) -> list[tuple[int, int]]:
+        """Token ranges of the class bodies: Python `class X:` blocks (by indentation), JS `class X {...}`."""
+        src, T, out = self.src, self.src.code, []
+        if src.py:
+            lines = src.text.split("\n")
+            for i, line in enumerate(lines):
+                m = re.match(r"(\s*)class\s+\w+", line)
+                if not m:
+                    continue
+                indent, end = len(m.group(1)), i + 1
+                while end < len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith("#")
+                                            or len(lines[end]) - len(lines[end].lstrip()) > indent):
+                    end += 1
+                lo = bisect.bisect_left(src.starts, src.bounds(i)[0])
+                hi = bisect.bisect_left(src.starts, src.bounds(end - 1)[1]) - 1
+                out.append((lo, max(lo, hi)))
+            return out
+        for j, tok in enumerate(T):
+            if tok[0] == "word" and tok[3] == "class":
+                k = j + 1
+                while k < len(T) and T[k][3] != "{" and T[k][0] in ("word", "op"):
+                    k += 1
+                if k < len(T) and T[k][3] == "{" and src.match.get(k) is not None:
+                    out.append((k, src.match[k]))
+        return out
+
     def function_scopes(self, funcs: list) -> list[tuple[int, int]]:
         """Every function body's token range, innermost first when sorted by size: the named functions, and in JS every
         arrow or `function` block body (anonymous callbacks included)."""
@@ -1265,6 +1338,8 @@ class RootLiteral:
             elif depth == 0 and kind == "op" and T[j][3] in self.ASSIGN_OPS:
                 start = j
                 break
+        if start is not None and start and T[start - 1][0] == "op" and T[start - 1][3] in self.COMPOUND_PREFIX:
+            start = None  # an augmented assignment (`p /= ".."`, `p += "/.."`) reads its own target
         plain, attrs = set(), set()
         targets = self.for_target_tokens(toks)
         for j in toks:
@@ -1272,6 +1347,11 @@ class RootLiteral:
                 continue
             if T[j][0] == "word":
                 (attrs if j and T[j - 1][3] in (".", "?.") else plain).add(T[j][3])
+            elif T[j][0] == "str":
+                for expr in self.src.subs.get(j, ()):
+                    for m in SUB_NAME.finditer(expr):
+                        if m.group(2) not in KEYWORDS:
+                            (attrs if m.group(1) else plain).add(m.group(2))
         return plain, attrs
 
     def bound(self, lo: int, hi: int, toks: list[int]) -> tuple[set, set]:
@@ -1360,6 +1440,16 @@ class RootLiteral:
                 return (f, src.match[body])
             return (f, max(rng[1], self.statement(body, body, taint=True)[1]) if body < len(T) else rng[1])
 
+        classes = self.class_bodies()
+
+        def class_level(j):
+            """Token j is directly in a class body: inside a class, and in no function nested in that class."""
+            for lo, hi in classes:
+                if lo <= j <= hi:
+                    sc = scope_of(j)
+                    return sc is None or not (lo <= sc[0] and sc[1] <= hi)
+            return False
+
         def decl_scope(rng, name):
             sc = scope_of(rng[0])
             if sc is None and src.py:
@@ -1385,6 +1475,8 @@ class RootLiteral:
             vars_.update((decl_scope(rng, n), n) for n in p)
             names_any.update(p)
             attrs_.update(a)
+            if class_level(rng[0]):
+                attrs_.update(p)  # a class attribute or field is read as `self.x`, `this.x`, `Cls.x`
             for sc, n in self.param_scopes(own[rng], rng[1]):
                 vars_.add((sc, n))
                 names_any.add(n)
@@ -1418,12 +1510,12 @@ class RootLiteral:
             # A parent step inside a callback this statement defines is never an anchor: its parameters may receive
             # the read (`map(lambda p: join(p, ".."), [read])`).
             callbacks = [sc for sc, _ in self.param_scopes(own[rng], rng[1])]
-            if any(j in parents and (first is None or j > first or any(a <= j <= b for a, b in callbacks))
+            if any(j in parents and (first is None or j >= first or any(a <= j <= b for a, b in callbacks))
                    for j in own[rng]):
                 self.refuse(f"unresolved (rule 7: a parent step on a name bound from a computed root read, line {line})")
             for j in own[rng]:
                 if T[j][0] == "word" and T[j][3] in parent_funcs and j + 1 < len(T) and T[j + 1][3] == "(" \
-                        and not (j and T[j - 1][3] in ("def", "function", ".", "?.")):
+                        and not (j and T[j - 1][3] in ("def", "function")):
                     close = src.match.get(j + 1)
                     args = range(j + 2, close if close is not None else j + 2)
                     if any((T[i][0] == "word" and visible(T[i][3], i) and not T[i - 1][3] in (".", "?."))

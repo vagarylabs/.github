@@ -87,7 +87,6 @@ PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `.
 REL_RUN = re.compile(r"(?:\.\./)+(?:[A-Za-z0-9_.-]+/)*")
 PARENT_WORD = re.compile(r"\b(?:pardir|parents?|dirname)\b")
 GLOB_CHARS = re.compile(r"[*?\[\]{}]")
-COMPONENT_CHAR = re.compile(r"[A-Za-z0-9_.-]")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W\d][\w$]*|\$[\w$]*|\d[\w.]*")
 _OPS = re.compile(r"\.\.\.|===|!==|\*\*|==|!=|<=|>=|=>|->|::|:=|\?\.|\?\?|&&|\|\||[^\w\s]")
@@ -315,7 +314,6 @@ class RootLiteral:
         self.roots, self.by_dir, self.owner, self.globs, self.path = set(roots), by_dir, owner, globs, path
         alt = "|".join(re.escape(r) for r in sorted(self.roots))
         self.quoted = re.compile(r"(?<![\w$])([\"'`])(?:\./)*(?:%s)/?\1" % alt)
-        self.root_path = re.compile(r"(?<![\w./-])(?:\.\./)*(?:%s)/" % alt)
         # In a computed string a root segment anywhere (`${root}/services/${x}`) is a path; a backslash separates too.
         self.root_segment = re.compile(r"(?<![\w.-])(?:%s)(?=[/\\])" % alt)
         # Round 4 (root, 2026-10-26): a root SEGMENT anywhere in a string is a mention, whatever precedes it
@@ -1188,27 +1186,6 @@ class RootLiteral:
                         if body < len(T) and T[body][3] == "{" and match.get(body) is not None:
                             out.append((body, match[body]))
         return sorted(set(out), key=lambda r: r[1] - r[0])
-
-    def callback_params(self, toks: list[int]) -> set:
-        """Parameters of the arrow functions, lambdas and anonymous functions a statement defines: a tainted value can
-        reach them (`[read].map(p => path.resolve(p, '..'))`)."""
-        T, match, opener, names = self.src.code, self.src.match, self.src.opener, set()
-        for j in toks:
-            if T[j][0] == "op" and T[j][3] == "=>":
-                names |= self.arrow_params(j)
-            elif T[j][0] == "word" and T[j][3] == "function":
-                i = j + 1
-                i += 1 if i < len(T) and T[i][3] == "*" else 0
-                i += 1 if i < len(T) and T[i][0] == "word" else 0
-                if i < len(T) and T[i][3] == "(" and match.get(i) is not None:
-                    names |= self.param_names(i + 1, match[i])
-            elif T[j][0] == "word" and T[j][3] == "lambda":
-                end, depth = j + 1, 0
-                while end < len(T) and not (depth == 0 and T[end][0] == "colon"):
-                    depth += {"open": 1, "close": -1}.get(T[end][0], 0)
-                    end += 1
-                names |= self.param_names(j + 1, end)
-        return names - KEYWORDS - self.DECL_WORDS - LITERAL_WORDS
 
     TYPE_OPS = frozenset({".", "<", ">", "|", "&", "?", ",", "=>"})
 

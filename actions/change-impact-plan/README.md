@@ -171,8 +171,9 @@ FULL.
      like a line of a shell file, under the line-level rule 7 and the bare-word read. A value that is not a string
      is not a command and is skipped. One leading UTF-8 BOM is stripped first, as npm does. Such a file REFUSES when
      the rest is not strict JSON with an object at the top level, or when its `scripts` is present and is not an
-     object (`null` included). Strict means `NaN`, `Infinity` and `-Infinity` refuse, as npm refuses them; nesting
-     too deep, or an integer too long, for Python to decode also refuses, though npm would accept it.
+     object (`null` included). Strict means `NaN`, `Infinity` and `-Infinity` refuse, as npm refuses them. So does
+     nesting deeper than 64 levels (counted before parsing, so the answer is the same on every Python) and an
+     integer too long for Python to decode, though npm would accept either.
 
    Any form not on this list is NOT covered.
 5. **Everything else REFUSES**, including:
@@ -189,7 +190,7 @@ FULL.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
-`test_edges_review_vectors.json` holds 552 adversarial readers:
+`test_edges_review_vectors.json` holds 554 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7;
@@ -204,7 +205,8 @@ The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not sca
   - R7T08-R7T11 are precision controls that read, and R7T12 pins that a TOML key reads;
   - R7T16, R7T19 and R7T20 refuse and pin the working-directory wording; R7T17 and R7T18 are named residuals;
 - 9 for round 8: the seventh review's R7B1a-R7B1d and R7V14, and R8T01-R8T04 (the working-directory wording's
-  edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads).
+  edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads);
+- 2 for the 64-level nesting bound: R8T05 (100 deep) refuses on every Python, R8T06 (exactly 64) reads.
 
 Each one reads its truth or refuses, except the named residuals:
 - **A12, N08, N11:** an object value or key later used as a path (root's metadata ruling).

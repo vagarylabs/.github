@@ -1652,6 +1652,33 @@ class RootLiteral:
                                     f"holding a parent step, line {line})")
 
 
+PACKAGE_JSON_MAX_DEPTH = 64
+
+
+def json_nesting_depth(text: str) -> int:
+    """The deepest `[`/`{` nesting in JSON text, skipping strings and their escapes. A package.json deeper than
+    PACKAGE_JSON_MAX_DEPTH refuses before it is parsed: how deep `json.loads` can recurse depends on the interpreter
+    (CPython 3.11 stops near 1000 levels, 3.12 goes further), and a refusal must not depend on which Python runs."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def strict_json_constant(name: str):
     """`json.loads` accepts NaN, Infinity and -Infinity; JSON (and npm's JSON.parse) does not."""
     raise ValueError(f"{name} is not JSON")
@@ -1758,13 +1785,17 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             if posixpath.basename(path) == "package.json" and path not in scripts_read:
                 # npm `scripts` values are shell commands: each string value is read like a line of a shell file (rule
                 # 7 raw, and bare root words), once per file. npm strips one leading UTF-8 BOM, so this does too. A
-                # manifest that still does not parse as strict JSON (no NaN/Infinity) whose top level is an object, or
-                # whose `scripts` is present and not an object, cannot be read, so it refuses rather than read nothing.
-                # RecursionError is nesting too deep to decode.
+                # manifest nested deeper than PACKAGE_JSON_MAX_DEPTH, or that still does not parse as strict JSON (no
+                # NaN/Infinity) whose top level is an object, or whose `scripts` is present and not an object, cannot be
+                # read, so it refuses rather than read nothing. Under the bound json.loads never recurses deep enough to
+                # raise RecursionError.
                 scripts_read.add(path)
+                body = src.text.removeprefix("\ufeff")
+                if json_nesting_depth(body) > PACKAGE_JSON_MAX_DEPTH:
+                    classify.refuse(f"unresolved (package.json nests deeper than {PACKAGE_JSON_MAX_DEPTH} levels)")
                 try:
-                    manifest = json.loads(src.text.removeprefix("\ufeff"), parse_constant=strict_json_constant)
-                except (ValueError, RecursionError):
+                    manifest = json.loads(body, parse_constant=strict_json_constant)
+                except ValueError:
                     manifest = None
                 if not isinstance(manifest, dict):
                     classify.refuse("unresolved (package.json does not parse as a JSON object)")

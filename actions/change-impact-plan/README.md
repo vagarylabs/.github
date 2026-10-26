@@ -42,27 +42,35 @@ Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now inc
 
 ## Reader scan (1.4.1)
 
-`edges.py` reads a workspace-root literal (`"services"`, `"apps"`, ...) by where it stands.
+`edges.py` classifies each quoted workspace-root literal (`"services"`, `"apps"`, ...) by the source around it. A
+construct opened on an earlier line is read as one logical line (up to 40 lines back), with brackets balanced.
 
-- **Outside a path-construction call, after a `,`, it is metadata.** That covers a JSON field, an object key, an
-  array of labels, SQL `VALUES` and keyword arguments. It is never a read and never a refusal. Before 1.4.1 such a
-  line raised, and the check failed, so every plan for the repository was FULL.
-  - One exception reads MORE: a list naming two or more roots (`("services", "apps")`) is a walker's root list. It
-    reads every package under each root it names.
-- **In a path,** meaning inside `os.path.join`, `path.join`/`path.resolve`, `joinpath` or `Path(...)`, or after a
-  pathlib `/`, the literal components are joined.
-  - A path whose literal prefix a package owns reads that package, even when a computed component follows.
-  - A computed component under a prefix no package owns (`ROOT / "services" / cap`) reads EVERY package beneath that
-    prefix. So does a literal directory above packages, such as a root itself.
-  - A literal path with no package beneath it is unowned content. A change to it is unmapped and plans FULL, so it
-    needs no edge.
-  - A `..` component still refuses.
+1. **In a path, the literal is joined.** That means after a pathlib `/`, as an argument of a path call (`join`,
+   `resolve`, `joinpath`, `Path(...)`, found by balanced brackets, so `join(get_root(), "services", x)` and black's
+   one-argument-per-line output both count), or in a list spread into one, passed to `sep.join(`, or `.join(`-ed.
+   - A literal prefix that a package owns reads that package. When a computed component follows, it also reads every
+     package nested beneath that prefix.
+   - A prefix that no package owns reads every package beneath it.
+   - A `..`, `.parent` or `os.pardir` after a computed component REFUSES, and so does a literal `.` or `..` component.
+   - An unowned path with nothing beneath it needs no edge, because a change to it is unmapped and plans FULL. When the
+     caller's `inert_globs` or `extra_edges` cover it, that is no longer true, and the read REFUSES.
+2. **A comma-listed literal outside a path call is metadata ONLY with positive evidence:** an object key or value, a
+   subscript (`m["services"]`), SQL (`VALUES (`, or any `.sql` file).
+   - Or when its list closes on the line and EVERY sibling is a string literal or a `name=` argument naming no package.
+   - A sibling that names a package (`("services", "b")`) or a package-owning top-level directory
+     (`("services", "packages")`) is a read.
+   - A list or set holding only the root (`["services"]`, `("services",)`) is a walker over it.
+   - An argv list passed to an exec call (`subprocess.run([...])`) refuses.
+3. **Everything else REFUSES, as 1.4.0 did:** a computed or starred sibling, a bare tuple, an unrecognised call
+   (`repo_path("services", name)`), or a list that runs past the line. A literal that is neither comma-listed nor in a
+   path stays metadata, as before.
 
-**The metadata rule narrows on purpose.** Such a line used to refuse, which made every plan FULL. Now it reads
-nothing, because a listed value is not a path. The path and walker rules only widen: before 1.4.1 a computed join
-refused, and now it reads every package under its literal prefix, which is a superset of anything a computed
-component other than `..` can reach. A bare `join(...)`/`resolve(...)` imported from `node:path` counts as a path
-call, so a computed walker in package code keeps its edge.
+Before 1.4.1, ANY root literal followed by `,` or `/` that could not be resolved refused, so a JSON field or a UI
+label made every plan FULL. 1.4.1 narrows only where the evidence is positive. An independent review ran 60
+adversarial readers through it: every input either reads the truth or refuses. Two residuals were accepted by the
+2026-10-26 ruling: a dict value later used as a path, and (closed here by the exec rule) an argv list. Template and
+f-strings, `+` concatenation, `glob`/`listdir`, and lines that begin with `*` read nothing, here and in 1.4.0. They are
+listed for a follow-up.
 
 ## Compatibility and validation
 

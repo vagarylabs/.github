@@ -270,6 +270,98 @@ class EdgesTest(unittest.TestCase):
                 self.assertEqual(E.scan(self.repo, cfg)[0]["a"], expected, line)
 
 
+    # The independent review of 1.4.1 (root, 2026-10-26): 60 adversarial reader lines against this graph. A result
+    # is SOUND when it reads every truth package or REFUSES (which plans FULL); it must never read less.
+    REVIEW_CFG = {"schema": 1, "workspace": {"type": "declared", "packages": {
+        "r": {"dir": "services/r", "deps": []}, "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []}, "nest": {"dir": "services/b/worker", "deps": []},
+        "b2": {"dir": "services/b2", "deps": []}, "web": {"dir": "apps/web", "deps": []},
+        "shared": {"dir": "packages/shared", "deps": []}}},
+        "edge_scan": {"roots": ["services", "apps"], "reader_dirs": [], "reader_job": "root"},
+        "jobs": {"root": {"packages": []}}}
+    SVC = ["a", "b", "b2", "nest"]
+    REVIEW_CASES = {
+        # F1: base found these reads; 1.4.1 read nothing
+        "A03 multi-line args": ('p = os.path.join(\n    ROOT, "services", "b", "cfg.json"\n)', ["b"], "py"),
+        "A05 closed nested call": ('p = os.path.join(get_root(), "services", "b", "x.json")', ["b"], "py"),
+        "A06 literal tuple": ('TTS = ("services", "b")\np = Path(ROOT, *TTS)', ["b"], "py"),
+        # F2: base refused these; 1.4.1 read nothing
+        "A01 one arg per line": ('p = os.path.join(\n    ROOT,\n    "services",\n    name,\n)', SVC, "py"),
+        "A02 one arg per line, literal": ('p = os.path.join(\n    ROOT,\n    "services",\n    "b",\n    "cfg.json",\n)', ["b"], "py"),
+        "A04 dirname call": ('p = os.path.join(os.path.dirname(__file__), "services", name)', SVC, "py"),
+        "A07 parts list": ('parts = ["services", name, "config.json"]\nopen(os.path.join(ROOT, *parts))', SVC, "py"),
+        "A08 js array join": ("const p = [root, 'services', name].join('/');", SVC, "js"),
+        "A09 helper": ('cfg = repo_path("services", name, "cfg.json")', SVC, "py"),
+        "A10 aliased join": ('from os.path import join as pjoin\np = pjoin(ROOT, "services", name)', SVC, "py"),
+        "A11 Path subclass": ('p = UPath(ROOT, "services", name)', SVC, "py"),
+        "A14 js resolve": ("const d = path.resolve(here(), 'services', name);", SVC, "js"),
+        "A15 dirname dotdot": ('p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "services", name)', SVC, "py"),
+        "A28 helper joinpath": ('p = safe_joinpath(ROOT, "services", name)', SVC, "py"),
+        "A29 new URL": ('const u = new URL("services", import.meta.url);', SVC, "js"),
+        "A13 argv (exec context)": ('subprocess.run(["pytest", "services", "-q"], cwd=ROOT)', SVC, "py"),
+        # F3: walker root lists
+        "W05 bare tuple": ('ROOTS = "services",', SVC, "py"),
+        "W06 starred sibling": ('ROOTS = ("services", *EXTRA)', SVC, "py"),
+        "W07 multi-line roots": ('ROOTS = (\n    "services",\n    "apps",\n)', SVC + ["web"], "py"),
+        "W08 non-root top-level dir": ('for top in ("services", "packages"):', SVC + ["shared"], "py"),
+        "W09 computed sibling": ('for top in ("services", extra_root):', SVC, "py"),
+        "W11 one-tuple, comment": ('ROOTS = ("services",  # the walk root\n)', SVC, "py"),
+        # F4: a computed tail under an owned prefix also reads the packages nested beneath it
+        "B01 slash under owned prefix": ('p = ROOT / "services" / "b" / sub', ["b", "nest"], "py"),
+        "B03 join under owned prefix": ('p = os.path.join(ROOT, "services", "b", sub, "x.json")', ["b", "nest"], "py"),
+        # F5: a parent step after a computed component
+        "C01 dotdot after computed": ('p = os.path.join(ROOT, "services", name, "..", "..", "packages", "shared")', ["shared"], "py"),
+        "C02 slash dotdot": ('p = ROOT / "services" / name / ".." / ".." / "packages" / "shared"', ["shared"], "py"),
+        "C03 .parent": ('p = (ROOT / "services" / name).parent.parent / "packages" / "shared"', ["shared"], "py"),
+        "C04 os.pardir": ('p = os.path.join(ROOT, "services", name, os.pardir, os.pardir, "packages", "shared")', ["shared"], "py"),
+        # path-call vectors (resolve, joinpath, spread, sep.join) and the walkers that already worked
+        "A27 joinpath": ('p = Path(ROOT).joinpath("services", name)', SVC, "py"),
+        "A20 spread into join": ("const p = path.join(...['services', x]);", SVC, "js"),
+        "A30 os.sep.join": ('p = os.sep.join(["services", name])', SVC, "py"),
+        "W02 one-tuple": ('for root in ("services",):', SVC, "py"),
+        "W03 one-element list": ('for root in ["services"]:', SVC, "py"),
+        "W04 one-element set": ('ROOTS = {"services"}', SVC, "py"),
+    }
+
+    def review_scan(self, src, ext):
+        repo = Path(self._td.name) / ("review-" + str(abs(hash(src)))[:10])
+        for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared"):
+            (repo / d).mkdir(parents=True, exist_ok=True)
+            (repo / d / "keep.txt").write_text("k\n")
+        (repo / "services/r" / ("x." + ext)).write_text(src + "\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        try:
+            return sorted(E.scan(repo, self.REVIEW_CFG)[0]["r"])
+        except ValueError:
+            return "REFUSE"
+
+    def test_review_inputs_find_the_read_or_refuse(self):
+        for label, (src, truth, ext) in self.REVIEW_CASES.items():
+            with self.subTest(label):
+                got = self.review_scan(src, ext)
+                self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
+        # Precision where a read is resolvable: these READ (not merely refuse).
+        for label in ("A03 multi-line args", "A05 closed nested call", "A06 literal tuple", "A01 one arg per line",
+                      "A04 dirname call", "B01 slash under owned prefix", "B03 join under owned prefix", "W07 multi-line roots",
+                      "W08 non-root top-level dir", "A27 joinpath", "A14 js resolve", "W03 one-element list"):
+            with self.subTest(precision=label):
+                self.assertNotEqual(self.review_scan(*self.REVIEW_CASES[label][::2]), "REFUSE")
+        # Controls: metadata stays metadata, and a keyword named `parents` is not a parent step.
+        self.assertEqual(self.review_scan("{ key: 'services', label: 'Capabilities', icon: Server },", "js"), [])
+        self.assertEqual(self.review_scan('(Path(tmp) / "services" / "a" / sub).mkdir(parents=True)', "py"), ["a"])
+
+    def test_an_unowned_path_a_glob_maps_or_inerts_refuses(self):
+        """F6: an unowned path is safe to leave unread only because its change is unmapped and plans FULL. When a
+        caller's inert_globs or extra_edges covers it, that is no longer true, so the read refuses."""
+        src = 'p = os.path.join(ROOT, "services", "fixtures", "seed.json")'
+        self.assertEqual(self.review_scan(src, "py"), [])
+        for key, value in (("inert_globs", ["services/fixtures/**"]), ("extra_edges", {"services/fixtures/**": ["a"]})):
+            with self.subTest(key):
+                self.REVIEW_CFG = {**type(self).REVIEW_CFG, key: value}
+                self.assertEqual(self.review_scan(src, "py"), "REFUSE")
+        self.REVIEW_CFG = type(self).REVIEW_CFG
+
     def test_reader_scan_uses_immutable_revision_not_later_working_tree(self):
         cfg = self.pnpm_fixture()
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

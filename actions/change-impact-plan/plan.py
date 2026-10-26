@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.4.0"
+PLANNER_VERSION = "1.4.1"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 

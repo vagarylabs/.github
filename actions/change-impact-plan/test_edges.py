@@ -129,20 +129,25 @@ class EdgesTest(unittest.TestCase):
         (self.repo / "services/c").mkdir(parents=True)
         (self.repo / "services/c/test").mkdir()
         shapes = {
-            "pathlib join": 'P = ROOT / "services" / "b" / "app.py"\n',
-            "os.path.join": 'P = os.path.join(ROOT, "services", "b")\n',
-            "relative URL": 'const p = new URL("../../b/app.py", import.meta.url)\n',
-            "go relative read": 'right, e := os.ReadFile("../../b/app.py")\n',
+            "pathlib join": ('P = ROOT / "services" / "b" / "app.py"\n', "py"),
+            "os.path.join": ('P = os.path.join(ROOT, "services", "b")\n', "py"),
+            "relative URL": ('const p = new URL("../../b/app.py", import.meta.url)\n', "js"),
+            "go relative read": ('right, e := os.ReadFile("../../b/app.py")\n', "go"),
         }
         cfg = json.loads(json.dumps(CFG))
         cfg["workspace"]["packages"]["c"] = {"dir": "services/c", "deps": []}
-        for name, line in shapes.items():
+        for name, (line, ext) in shapes.items():
             with self.subTest(name):
-                (self.repo / "services/c/test/x.src").write_text(line)
+                for old in (self.repo / "services/c/test").glob("x.*"):
+                    old.unlink()
+                (self.repo / f"services/c/test/x.{ext}").write_text(line)
                 subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
                 deps, _ = E.scan(self.repo, cfg)
                 self.assertEqual(deps["c"], {"b"}, name)
-        (self.repo / "services/c/test/x.src").write_text('local = "../fixtures/a.json"\n')
+        for old in (self.repo / "services/c/test").glob("x.*"):
+            old.unlink()
+        (self.repo / "services/c/test/x.py").write_text('local = "../fixtures/a.json"\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
         deps, _ = E.scan(self.repo, cfg)
         self.assertEqual(deps["c"], set(), "a relative path inside its own package is not a cross-package read")
 
@@ -202,21 +207,308 @@ class EdgesTest(unittest.TestCase):
                 self.assertEqual(self.run_check()[0], 0)
                 cfg["jobs"]["root"]["packages"] = []
 
-    def test_unresolved_or_dynamic_workspace_component_joins_refuse(self):
+    def test_computed_or_unowned_component_joins_read_every_package_beneath_their_literal_prefix(self):
+        """A computed component cannot be resolved statically, so the join reads EVERY package under its literal
+        prefix: an over-approximation, which only runs more. A literal path no package owns reads the packages beneath
+        it; with none beneath it, it is unowned content, whose change is unmapped and plans FULL, so it needs no edge.
+        A `..` component still refuses."""
         cfg = self.pnpm_fixture()
-        for expression in (
-            'path.join(root, "packages", "plugins")',
-            'path.join(root, "packages", "plugins", "missing", "index.js")',
-            'path.join(root, "packages", pluginName, "index.js")',
-            'path.join(root, "packages", "plugins", "sdk", selectedFile)',
-            'ROOT / "packages" / pluginName',
-        ):
+        cfg["edge_scan"].update(reader_dirs=["scripts"], reader_job="root")
+        cases = {
+            'path.join(root, "packages", "plugins")': {"sdk", "plugin"},
+            'path.join(root, "packages", "plugins", "missing", "index.js")': set(),
+            'path.join(root, "packages", pluginName, "index.js")': {"sdk", "plugin"},
+            'path.join(root, "packages", "plugins", "sdk", selectedFile)': {"sdk"},
+            'ROOT / "packages" / pluginName': {"sdk", "plugin"},
+            'ROOT / "server" / name': {"server"},
+            'os.path.join(ROOT, "server")': {"server"},
+        }
+        for expression, expected in cases.items():
+            with self.subTest(expression=expression):
+                (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                self.assertEqual(E.scan(self.repo, cfg)[1]["scripts"], expected)
+        for expression in ('ROOT / "packages" / ".." / "server"', 'path.join(root, "packages", "../server")'):
             with self.subTest(expression=expression):
                 (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
                 subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
                 with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
                     E.scan(self.repo, cfg)
 
+    def test_a_root_literal_is_metadata_only_with_positive_evidence(self):
+        """Root's principle (2026-10-26): METADATA needs POSITIVE evidence (an object key or value, a subscript key, a
+        comparison, a .sql file, or a literal list that is assigned, an object value or compared); EVERYTHING ELSE
+        REFUSES, which plans FULL. Controls: the same literal in a path call or after a pathlib `/` IS a read, and a
+        walker's root list reads every package under each root."""
+        cfg = json.loads(json.dumps(CFG))
+        cfg["edge_scan"]["roots"] = ["services", "apps"]
+        cfg["workspace"]["packages"]["web"] = {"dir": "apps/web", "deps": []}
+        (self.repo / "apps/web").mkdir(parents=True)
+        (self.repo / "apps/web/page.tsx").write_text("export default 1\n")
+
+        def scan(src, ext):
+            for old in (self.repo / "services/a").glob("probe.*"):
+                old.unlink()
+            (self.repo / f"services/a/probe.{ext}").write_text(src + "\n")
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            return E.scan(self.repo, cfg)[0]["a"]
+
+        # Round 4 (root, 2026-10-26): "reads nothing" only for ratified positive-evidence metadata.
+        metadata = (
+            ("{ key: 'services', label: 'Capabilities', icon: Server },", "js"),  # an object value
+            ('{\n  "policy_id": "services",\n  "version": "1"\n}', "json"),
+            ("INSERT INTO t VALUES ('apps', 'dns_iac', NULL);", "sql"),
+            ('count = manifest["services"][0]', "py"),  # a subscript key
+            # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
+            ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
+             "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
+        )
+        for src, ext in metadata:
+            with self.subTest(metadata=src):
+                self.assertEqual(scan(src, ext), set(), src)
+        refused = (
+            ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
+            ('policy_ref = dict(policy_id="services", version="1")', "py"),
+            ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
+            ('"services"', "py"),
+            ('kind = "services"', "py"),
+            ('def walk(root="services"):\n    pass', "py"),
+            ("const p = web ? 'apps' : 'services';", "js"),
+            ("const o = { dir: web ? other : 'services' };", "js"),  # a ternary branch is not an object value
+            ("spawn('pytest', ['-q'], { cwd: 'services' });", "js"),  # an exec call's options are its argv's context
+            ('const r = /"services"/;', "js"),  # a root inside a regex literal is not a token the classifier reads
+            ('broken = (]\nTABS = ["services", "docs"]', "py"),  # a file whose brackets do not close is untrusted
+            ('TABS = ["services", "docs"]\nbroken = (', "py"),
+            ('p = os.path.join(ROOT, "services" + "/../../packages/shared")', "py"),  # not alone: `..` hides inside
+            ('name = ("services", "docs")[i]', "py"),  # a subscripted collection is one root value, not a label list
+            ("- 'services'", "yaml"),
+            ('p = getattr(getattr(Path(ROOT, "services", name), "parent"), "parent") / "x"', "py"),  # rule 7 (T32)
+            ('p = Path(ROOT, "services", name)\nq = p.parent.parent / "packages" / "shared"', "py"),  # rule 7 (T31)
+            ("const p = `${root}/services/${up ? '..' : name}/x`;", "js"),  # H3.2: '..' in a substitution
+            ('cd services\npytest ../packages/shared', "sh"),  # rule 7, raw: a `..` after a cd into a root path
+            ('pytest services/b/../../packages/shared', "sh"),  # rule 7, raw: a root path and `..` on one line
+            ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
+            ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
+            ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
+        )
+        for src, ext in refused:
+            with self.subTest(refused=src):
+                with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
+                    scan(src, ext)
+        reads = {
+            ('P = os.path.join(ROOT, "services", "b")', "py"): {"b"},
+            ('P = ROOT / "services" / name', "py"): {"b"},
+            ('for root in ("services", "apps"):\n    pass', "py"): {"b", "web"},
+            ('walk(ROOT / "apps")', "py"): {"web"},
+            ('P = Path(ROOT, "apps", name)', "py"): {"web"},
+            ("const p = join(ROOT, 'services', cap, 'dist');", "js"): {"b"},
+            ('for root in ("services",):\n    pass', "py"): {"b"},
+            ("for (const root of ['services', 'docs']) walk(root);", "js"): {"b"},
+            ("for (const [dir, job] of [['services', 'build'], ['docs', 'docs']]) run(dir, job);", "js"): {"b"},
+            # A root named inside a string (prose, SQL, a glob, an f-string) is a walker read beneath it, not metadata.
+            ('log.info("Walks the \'services\' tree")', "py"): {"b"},
+            ('cur.execute("INSERT INTO t VALUES (\'services\')")', "py"): {"b"},
+            ('for m in glob.glob("services/*/migrations"):\n    pass', "py"): {"b"},
+            ('p = f"{ROOT}/services/{name}/x.json"', "py"): {"b"},
+            ("const p = `${root}/services/${name}`;", "js"): {"b"},
+            ('p = os.path.join(ROOT, "services", "{a,b}", "x")', "py"): {"b"},  # a brace glob is computed, not a name
+            # Round 4: no rule turns a mention into nothing. Each of these reads beneath the root (wide).
+            ("const tabs = ['services', 'providers', 'upstreams'];", "js"): {"b"},  # rule 8: no list exemption
+            ("useQuery({\n  queryKey: ['monitoring', 'services'],\n  queryFn: load,\n});", "js"): {"b"},
+            ('if kind == "services":\n    pass', "py"): {"b"},  # a comparison selects a value (H3.4)
+            ("if (obligation === 'services') run();", "js"): {"b"},
+            ('if part not in ("services", "docs"):\n    pass', "py"): {"b"},
+            ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"): {"b"},
+            ('"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # docstrings are read (H3.6)
+            ("'use strict';\nconst url = '/:org/services/:service';", "js"): {"b"},  # any root segment (H3.5)
+            ('NOTE = "copied from backend/services/ in vagary-platform"', "py"): {"b"},
+            ("SRC = b'name: services\\non: push\\n'", "py"): {"b"},  # a backslash always separates (H3.7)
+            ('p = "{}/services/{}/x.json".format(ROOT, name)', "py"): {"b"},  # a placeholder prefix (P01)
+            ('p = "services/b" + suffix', "py"): {"b"},  # a concatenated last component is partial (T21)
+            ("pytest services/ -q", "sh"): {"b"},  # an unparsed file's root segment (T40)
+            ('cd "$(dirname "$0")/.."  # services/r\npytest services/ -q', "sh"): {"b"},  # an anchor names no root
+            ("`usage <item...> ${x} services/b`", "ts"): {"b"},  # an ellipsis in a template is not a `..` step
+        }
+        for (src, ext), expected in reads.items():
+            with self.subTest(read=src):
+                self.assertEqual(scan(src, ext), expected, src)
+
+
+    # The independent review of 1.4.1 (root, 2026-10-26): 60 adversarial reader lines against this graph. A result
+    # is SOUND when it reads every truth package or REFUSES (which plans FULL); it must never read less.
+    REVIEW_CFG = {"schema": 1, "workspace": {"type": "declared", "packages": {
+        "r": {"dir": "services/r", "deps": []}, "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []}, "nest": {"dir": "services/b/worker", "deps": []},
+        "b2": {"dir": "services/b2", "deps": []}, "web": {"dir": "apps/web", "deps": []},
+        "shared": {"dir": "packages/shared", "deps": []}}},
+        "edge_scan": {"roots": ["services", "apps"], "reader_dirs": [], "reader_job": "root"},
+        "jobs": {"root": {"packages": []}}}
+    REVIEW_VECTORS = json.loads(Path(__file__).with_name("test_edges_review_vectors.json").read_text())["cases"]
+
+    def review_scan(self, src, ext):
+        repo = Path(self._td.name) / ("review-" + str(abs(hash(src)))[:10])
+        for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared"):
+            (repo / d).mkdir(parents=True, exist_ok=True)
+            (repo / d / "keep.txt").write_text("k\n")
+        (repo / "services/r" / ("x." + ext)).write_text(src + "\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        try:
+            return sorted(E.scan(repo, self.REVIEW_CFG)[0]["r"])
+        except ValueError:
+            return "REFUSE"
+
+    def vector_scan(self, repo, case, revision=False):
+        """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
+        --revision`) through an immutable commit whose working tree has since changed."""
+        subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "services/r"], check=True)
+        for f in sorted((repo / "services/r").rglob("*"), reverse=True):
+            if f.is_file() and f.name != "keep.txt":
+                f.unlink()
+        rel = case.get("file") or "services/r/x." + case["ext"]
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
+        (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
+        rev = None
+        if revision:
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
+                            "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
+            rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / rel).write_text("# the working tree differs from the scanned revision\n")
+        try:
+            return sorted(E.scan(repo, cfg, revision=rev)[0]["r"])
+        except ValueError:
+            return "REFUSE"
+
+    def vector_repo(self, name):
+        repo = Path(self._td.name) / name
+        for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared", ".github"):
+            (repo / d).mkdir(parents=True, exist_ok=True)
+            (repo / d / "keep.txt").write_text("k\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return repo
+
+    def judge(self, label, case, got):
+        truth, expect = case["truth"], case["expect"]
+        if expect == "refuse":
+            self.assertEqual(got, "REFUSE", label)
+        elif expect != "residual":
+            self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
+            if expect == "read":
+                self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
+
+    def test_review_vectors_read_their_truth_or_refuse(self):
+        """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
+        read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
+        (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
+        does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
+        os.path.split), and the fifth and sixth reviews' inputs outside README rule 4's closed list, all named
+        residuals."""
+        repo = self.vector_repo("vectors")
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            with self.subTest(label):
+                self.judge(label, case, self.vector_scan(repo, case))
+        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
+                         [
+                          "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
+                          "M6_py_literal_slash_then_parents", "N08_dict_values_walked", "N11_dict_key_walked",
+                          "R5V01_py_subprocess_module_alias", "R5V02_py_from_subprocess_import_run",
+                          "R5V03_py_command_string_via_variable", "R5V04_py_asyncio_create_subprocess_shell",
+                          "R5V07_js_execaCommand", "R5V08_js_child_process_destructured_alias",
+                          "R5V13_makefile_target_specific_var", "R5V14_sh_find_while_read", "R5V15_taskfile_dir_key",
+                          "R5V17_yaml_key_is_project_dir", "R5V18_py_popen_alias_cwd", "R5V19_py_chdir_alias",
+                          "R5V22_py_asyncio_exec_cwd", "R5V24_py_dirname_alias_inline_comment",
+                          "R5V25_py_dirname_alias_tuple", "R5V26_js_require_dirname_alias",
+                          "R5V27_py_parent_name_concat_dots", "R5V28_py_parent_name_joined_dots",
+                          "R5V29_py_parent_name_path_dotdot", "R5V30_py_parent_name_fstring",
+                          "R5V31_py_parent_name_in_substitution", "R5V32_py_adjacent_dot_literals_in_subst",
+                          "R5V33_py_joined_dots_in_subst", "R5V35_py_cached_property",
+                          "R5V36_py_property_with_comment", "R5V37_py_function_ref_via_assignment",
+                          "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
+                          "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
+                          "R6V18_pkg_husky_hooks_not_scripts", "R6V19_deno_json_tasks",
+                          "R6V21_chdir_tainted_attribute", "R6V22_exec_cwd_tainted_attribute",
+                          "R6V23_js_exec_cwd_this_attribute", "R6V24_chdir_then_path_cwd_parent",
+                          "R6V25_chdir_then_fstring_dotdot_end", "R7B1a_py_chdir_fstring_of_tainted_name",
+                          "R7B1c_js_quoted_cwd_key", "R7T17_py_chdir_sibling_function_parameter",
+                          "R7T18_py_chdir_sibling_function_local", "R8T02_js_cwd_template_of_tainted_name",
+                          "R8T03_js_single_quoted_cwd_key", "T19_partial_split_root",
+                          "T36_computed_prefix_not_repo_root",
+                          "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
+                          "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
+
+    def test_the_action_path_reads_the_scanned_revision(self):
+        """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a
+        later working tree. The round-2 cases whose lines span or shift, plus positive controls that must READ."""
+        repo = self.vector_repo("revision")
+        for label in ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
+                      "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
+                      "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
+                      "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
+                      "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
+                      "W07_multiline_roots"):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.judge(label, case, self.vector_scan(repo, case, revision=True))
+        for label in ("A01_multiline_join_computed", "A02_multiline_join_literal", "N52_formfeed_above_multiline_join"):
+            with self.subTest(precision=label):
+                self.assertNotEqual(self.vector_scan(repo, self.REVIEW_VECTORS[label], revision=True), "REFUSE")
+        # Controls: metadata stays metadata, and a keyword named `parents` is not a parent step.
+        self.assertEqual(self.review_scan("{ key: 'services', label: 'Capabilities', icon: Server },", "js"), [])
+        self.assertEqual(self.review_scan('(Path(tmp) / "services" / "a" / sub).mkdir(parents=True)', "py"), ["a"])
+
+    def test_round5_precision_narrowings_read_exactly(self):
+        """Each round-5 narrowing is a positive-evidence shape, so it must read EXACTLY this, not merely its truth: a
+        wide read here means the narrowing was lost (the must-read vectors alone accept an over-read)."""
+        for label, want in (("R5R01_py_dot_separator_in_substitution", ["b"]),
+                            ("R5R02_yaml_compose_services_key", []),
+                            ("R5R03_py_database_execute_not_a_command", []),
+                            ("R5R04_py_def_default_cwd_not_a_process_cwd", ["b", "nest"])):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.assertEqual(self.vector_scan(self.vector_repo("exact-" + label[:5]), case), want)
+
+    def test_reader_scan_greps_bytes_whatever_the_callers_locale(self):
+        """R7V14: under a UTF-8 locale `git grep -E` stops matching a line at an invalid UTF-8 byte, which hid a root
+        mention after it. The scan pins LC_ALL=C; the caller's locale is set to C.UTF-8 here, so a scan that inherited
+        it would read nothing."""
+        case = self.REVIEW_VECTORS["R7V14_pkg_invalid_utf8_byte_before_script"]
+        with patch.dict(os.environ, {"LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}):
+            self.assertEqual(self.vector_scan(self.vector_repo("locale"), case), ["a", "b", "b2", "nest"])
+
+    def test_round7_package_json_and_toml_read_exactly(self):
+        """Round 7's reads, pinned exactly (a must-read vector accepts an over-read): a BOM-prefixed package.json reads
+        its script; every string script is read, the second included; a non-string or nested value is skipped, and an
+        empty or absent `scripts` reads nothing, without refusing; a TOML key reads like any bare word."""
+        svc = ["a", "b", "b2", "nest"]
+        for label, want in (("R6V15_pkg_utf8_bom", svc),
+                            ("R6V16_pkg_two_scripts_second_reads", svc + ["web"]),
+                            ("R6V10_pkg_nested_scripts_object", []),
+                            ("R6V11_pkg_non_string_values", svc),
+                            ("R7T09_pkg_empty_scripts", []),
+                            ("R7T10_pkg_bom_no_scripts", []),
+                            ("R6V30_toml_key_precision", svc),
+                            ("R7T12_toml_colon_key_reads", svc)):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.assertEqual(self.vector_scan(self.vector_repo("exact7-" + label[:6]), case), want)
+
+    def test_an_unowned_path_a_glob_maps_or_inerts_refuses(self):
+        """F6: an unowned path is safe to leave unread only because its change is unmapped and plans FULL. When a
+        caller's inert_globs or extra_edges covers it, that is no longer true, so the read refuses."""
+        sources = (('p = os.path.join(ROOT, "services", "fixtures", "seed.json")', "py"),
+                   ('p = "services/fixtures/seed.json"', "py"),  # the literal form, read through a string
+                   ("const p = 'services/fixtures/seed.json';", "js"))
+        for src, ext in sources:
+            self.assertEqual(self.review_scan(src, ext), [])
+        for key, value in (("inert_globs", ["services/fixtures/**"]), ("extra_edges", {"services/fixtures/**": ["a"]})):
+            for src, ext in sources:
+                with self.subTest(key=key, src=src):
+                    self.REVIEW_CFG = {**type(self).REVIEW_CFG, key: value}
+                    self.assertEqual(self.review_scan(src, ext), "REFUSE")
+        self.REVIEW_CFG = type(self).REVIEW_CFG
 
     def test_reader_scan_uses_immutable_revision_not_later_working_tree(self):
         cfg = self.pnpm_fixture()

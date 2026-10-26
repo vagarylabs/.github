@@ -253,21 +253,12 @@ class EdgesTest(unittest.TestCase):
             subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
             return E.scan(self.repo, cfg)[0]["a"]
 
+        # Round 4 (root, 2026-10-26): "reads nothing" only for ratified positive-evidence metadata.
         metadata = (
-            ("{ key: 'services', label: 'Capabilities', icon: Server },", "js"),
+            ("{ key: 'services', label: 'Capabilities', icon: Server },", "js"),  # an object value
             ('{\n  "policy_id": "services",\n  "version": "1"\n}', "json"),
-            ("const tabs = ['services', 'providers', 'upstreams'];", "js"),
-            ("useQuery({\n  queryKey: ['monitoring', 'services'],\n  queryFn: load,\n});", "js"),
             ("INSERT INTO t VALUES ('apps', 'dns_iac', NULL);", "sql"),
-            ('count = manifest["services"][0]', "py"),
-            ('if kind == "services":\n    pass', "py"),
-            ("if (obligation === 'services') run();", "js"),
-            ('if part not in ("services", "docs"):\n    pass', "py"),
-            ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"),  # a comprehension's comparison
-            ('"""A sweep across all of `services/` for the SDK copies."""', "py"),  # a docstring no code consumes
-            ("'use strict';\nconst url = '/:org/services/:service';", "js"),  # a route: no root-level segment
-            ('NOTE = "copied from backend/services/ in vagary-platform"', "py"),
-            ("SRC = b'name: services\\non: push\\n'", "py"),  # `\n` is an escape, not a separator
+            ('count = manifest["services"][0]', "py"),  # a subscript key
             # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
             ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
              "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
@@ -291,6 +282,14 @@ class EdgesTest(unittest.TestCase):
             ('p = os.path.join(ROOT, "services" + "/../../packages/shared")', "py"),  # not alone: `..` hides inside
             ('name = ("services", "docs")[i]', "py"),  # a subscripted collection is one root value, not a label list
             ("- 'services'", "yaml"),
+            ('p = getattr(getattr(Path(ROOT, "services", name), "parent"), "parent") / "x"', "py"),  # rule 7 (T32)
+            ('p = Path(ROOT, "services", name)\nq = p.parent.parent / "packages" / "shared"', "py"),  # rule 7 (T31)
+            ("const p = `${root}/services/${up ? '..' : name}/x`;", "js"),  # H3.2: '..' in a substitution
+            ('cd services\npytest ../packages/shared', "sh"),  # rule 7, raw: a `..` after a cd into a root path
+            ('pytest services/b/../../packages/shared', "sh"),  # rule 7, raw: a root path and `..` on one line
+            ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
+            ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
+            ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
         )
         for src, ext in refused:
             with self.subTest(refused=src):
@@ -313,6 +312,22 @@ class EdgesTest(unittest.TestCase):
             ('p = f"{ROOT}/services/{name}/x.json"', "py"): {"b"},
             ("const p = `${root}/services/${name}`;", "js"): {"b"},
             ('p = os.path.join(ROOT, "services", "{a,b}", "x")', "py"): {"b"},  # a brace glob is computed, not a name
+            # Round 4: no rule turns a mention into nothing. Each of these reads beneath the root (wide).
+            ("const tabs = ['services', 'providers', 'upstreams'];", "js"): {"b"},  # rule 8: no list exemption
+            ("useQuery({\n  queryKey: ['monitoring', 'services'],\n  queryFn: load,\n});", "js"): {"b"},
+            ('if kind == "services":\n    pass', "py"): {"b"},  # a comparison selects a value (H3.4)
+            ("if (obligation === 'services') run();", "js"): {"b"},
+            ('if part not in ("services", "docs"):\n    pass', "py"): {"b"},
+            ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"): {"b"},
+            ('"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # docstrings are read (H3.6)
+            ("'use strict';\nconst url = '/:org/services/:service';", "js"): {"b"},  # any root segment (H3.5)
+            ('NOTE = "copied from backend/services/ in vagary-platform"', "py"): {"b"},
+            ("SRC = b'name: services\\non: push\\n'", "py"): {"b"},  # a backslash always separates (H3.7)
+            ('p = "{}/services/{}/x.json".format(ROOT, name)', "py"): {"b"},  # a placeholder prefix (P01)
+            ('p = "services/b" + suffix', "py"): {"b"},  # a concatenated last component is partial (T21)
+            ("pytest services/ -q", "sh"): {"b"},  # an unparsed file's root segment (T40)
+            ('cd "$(dirname "$0")/.."  # services/r\npytest services/ -q', "sh"): {"b"},  # an anchor names no root
+            ("`usage <item...> ${x} services/b`", "ts"): {"b"},  # an ellipsis in a template is not a `..` step
         }
         for (src, ext), expected in reads.items():
             with self.subTest(read=src):
@@ -384,16 +399,17 @@ class EdgesTest(unittest.TestCase):
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
 
     def test_review_vectors_read_their_truth_or_refuse(self):
-        """All 124 inputs of root's two independent reviews (rounds 1 and 2): none may read less than its truth without
-        refusing, and those resolvable today must keep reading. Only the residuals root's metadata ruling accepts are
-        exempt, and they are exactly these five."""
+        """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
+        read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
+        (object values and keys, the ratified metadata) and T19/T36/T37 (lexical limits, named residuals)."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 self.judge(label, case, self.vector_scan(repo, case))
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          ["A12_dict_value_as_path", "N08_dict_values_walked", "N11_dict_key_walked",
-                          "N16_lint_paths_list", "N28_cmd_var_then_run"])
+                          "T19_partial_split_root", "T36_computed_prefix_not_repo_root",
+                          "T37_fstring_computed_prefix_not_root"])
 
     def test_the_action_path_reads_the_scanned_revision(self):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a

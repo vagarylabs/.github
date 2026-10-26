@@ -65,6 +65,7 @@ JS_EXT = frozenset({"js", "mjs", "cjs", "ts", "tsx", "jsx", "mts", "cts"})
 STRUCTURED = PY_EXT | JS_EXT | {"json"}
 PATH_CALLS = frozenset({"join", "resolve", "joinpath", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
 EXEC_CALL = re.compile(r"(?:^|\.)(?:subprocess\.\w+|run|call|check_call|check_output|Popen|spawn\w*|exec\w*|fork)$")
+LITERAL_WORDS = frozenset({"null", "undefined", "true", "false", "None", "True", "False", "NaN", "Infinity"})
 KEYWORDS = frozenset({"in", "for", "if", "elif", "while", "return", "and", "or", "not", "is", "yield", "await", "else",
                       "case", "of", "typeof", "with", "assert", "lambda", "switch", "catch", "throw", "delete", "void",
                       "instanceof", "do", "from", "import", "export", "default", "print"})
@@ -81,12 +82,12 @@ CONT_OPS = frozenset({"\\", "+", "-", "*", "/", "%", "|", "&", "^", "||", "&&", 
 CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
+# A path relative to the file: `../` steps then literal segments (`../app/api/x/`); the `rel` rule reads it exactly.
+REL_RUN = re.compile(r"(?:\.\./)+(?:[A-Za-z0-9_.-]+/)*")
 PARENT_WORD = re.compile(r"\b(?:pardir|parents?|dirname)\b")
 GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 COMPONENT_CHAR = re.compile(r"[A-Za-z0-9_.-]")
-# After one backslash, these characters make an escape in Python or JS source; any other keeps the backslash (Python),
-# so it separates a path.
-ESCAPE_CHARS = frozenset("nrtbfva01234567xuUN'\"`$\n")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W\d][\w$]*|\$[\w$]*|\d[\w.]*")
 _OPS = re.compile(r"\.\.\.|===|!==|\*\*|==|!=|<=|>=|=>|->|::|:=|\?\.|\?\?|&&|\|\||[^\w\s]")
@@ -248,7 +249,7 @@ def structure(code: list) -> tuple[dict, list, bool]:
 def read_source(repo: Path, path: str, revision: str | None, environment: dict) -> str:
     """The scanned revision's bytes of one file (the working tree's when no revision is pinned)."""
     if revision is None:
-        return (repo / path).read_text(errors="replace")
+        return (repo / path).read_bytes().decode("utf-8", errors="replace")  # no newline translation (CRLF)
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "show", f"{revision}:{path}"],
                          capture_output=True, timeout=15, env=environment)
     if out.returncode:
@@ -269,6 +270,24 @@ class Source:
         self.newlines = [m.start() for m in re.finditer("\n", text)]
         self.starts = [tok[1] for tok in self.code]
         self.comment_starts = [a for a, _ in self.comments]
+        # Rule 7 (root, 2026-10-26): the tokens of the file that step to a parent (`..`, a quoted '..', `.parent`,
+        # `.parents`, `os.pardir`, getattr(p, "parent")), and the computed root reads classification finds. The name
+        # taint (RootLiteral.taint_check) refuses where they meet.
+        code = self.code
+        self.parent_toks = [
+            j for j, tok in enumerate(code)
+            if (tok[0] == "str" and (PARENT_STEP.search(tok[3][0])
+                                     or (tok[3][0] in ("parent", "parents", "pardir") and self._in_getattr(j))))
+            or (tok[0] == "word" and tok[3] == "pardir")
+            or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
+                and code[j - 1][3] in (".", "?."))]
+        self.computed = []
+
+    def _in_getattr(self, j: int) -> bool:
+        """Token j is an argument of `getattr(` (its innermost bracket is a call named getattr)."""
+        stack = self.enclosing[j] if j < len(self.enclosing) else ()
+        e = stack[-1] if stack else None
+        return e is not None and self.code[e][3] == "(" and e > 0 and self.code[e - 1][3] == "getattr"
 
     def bounds(self, line: int) -> tuple[int, int]:
         a = 0 if line == 0 else self.newlines[line - 1] + 1
@@ -297,8 +316,10 @@ class RootLiteral:
         self.root_path = re.compile(r"(?<![\w./-])(?:\.\./)*(?:%s)/" % alt)
         # In a computed string a root segment anywhere (`${root}/services/${x}`) is a path; a backslash separates too.
         self.root_segment = re.compile(r"(?<![\w.-])(?:%s)(?=[/\\])" % alt)
-        self.root_backslash = re.compile(r"(?<![\w.-])(?:%s)\\" % alt)
-        self.root_lead = re.compile(r"/+(%s)/" % alt)
+        # Round 4 (root, 2026-10-26): a root SEGMENT anywhere in a string is a mention, whatever precedes it
+        # (`backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`), and a backslash always separates.
+        self.root_any = re.compile(r"(?<![\w.-])(?:%s)(?=[/\\])|(?<=[/\\])(?:%s)(?![\w.-])" % (alt, alt))
+        self.root_word = re.compile(r"(?<![\w.-])(?:%s)(?![\w.-])" % alt)
 
     def refuse(self, why="unsupported"):
         raise ValueError(f"{why} workspace-root reader expression in {self.path}")
@@ -326,6 +347,8 @@ class RootLiteral:
                 self.refuse("unresolved")
 
     def resolve(self, components: list[str], dynamic: bool) -> set:
+        if dynamic and getattr(self, "src", None) is not None and getattr(self, "current", None) is not None:
+            self.src.computed.append(self.current)  # rule 7: the name taint starts from this read's statement
         for component in components:
             if any(part in (".", "..") for part in component.split("/")):
                 self.refuse("unresolved")
@@ -434,9 +457,23 @@ class RootLiteral:
         """The innermost block around k: a statement never crosses it (an object literal is an expression bracket)."""
         return next((x for x in reversed(self.src.enclosing[k]) if self.block(x)), None)
 
-    def statement(self, s: int, e: int) -> tuple[int, int]:
+    COMPOUND = frozenset({"if", "elif", "else", "for", "while", "with", "def", "class", "try", "except", "finally",
+                          "async", "match", "case"})
+
+    def block_colon(self, j: int) -> bool:
+        """A Python colon that ends a compound header: the logical line holding it starts with a compound keyword."""
+        T, src, t = self.src.code, self.src, j
+        while True:
+            first = bisect.bisect_left(src.starts, src.bounds(src.line_of(T[t][1]))[0])
+            outer = src.enclosing[first] if first < len(src.enclosing) else ()
+            if not outer:
+                return T[first][0] == "word" and T[first][3] in self.COMPOUND
+            t = outer[0]
+
+    def statement(self, s: int, e: int, taint: bool = False) -> tuple[int, int]:
         """The token range of the statement (or object entry) holding tokens s..e: bracketed groups are whole, and a
-        line break ends it unless the line continues (a trailing operator or backslash, or a leading `.`)."""
+        line break ends it unless the line continues (a trailing operator or backslash, or a leading `.`). For rule 7
+        (`taint`), a top-level comma never ends it, and a Python colon ends it only after a compound header."""
         T, src = self.src.code, self.src
         c = self.container(s)
         expression = [x for x in src.enclosing[s] if c is None or x > c]
@@ -451,18 +488,23 @@ class RootLiteral:
             return ((T[right][0] == "op" and T[right][3] in (".", "?."))
                     or (T[left][0] == "op" and T[left][3] in CONT_OPS) or (T[left][0] == "word" and T[left][3] in CONT_WORDS))
 
-        def boundary(tok):
-            return tok[0] == "comma" or (tok[0] == "op" and tok[3] == ";") or (src.py and tok[0] == "colon")
+        def boundary(j):
+            tok = T[j]
+            if tok[0] == "comma":
+                return not taint
+            if src.py and tok[0] == "colon":
+                return not taint or self.block_colon(j)
+            return tok[0] == "op" and tok[3] == ";"
 
         j = lo - 1
         while j >= floor:
-            if boundary(T[j]) or not joined(j, lo):
+            if boundary(j) or not joined(j, lo):
                 break
             lo = src.opener[j] if T[j][0] == "close" else j
             j = lo - 1
         j = hi + 1
         while j <= ceiling:
-            if boundary(T[j]) or not joined(hi, j):
+            if boundary(j) or not joined(hi, j):
                 break
             hi = src.match[j] if T[j][0] == "open" else j
             j = hi + 1
@@ -494,9 +536,7 @@ class RootLiteral:
         _, tail = self.statement(lo, hi)
         j = hi + 1
         while j <= tail:
-            if T[j][0] == "open" and T[j][3] == "{":
-                j = src.match[j] + 1
-                continue
+            # Blocks and callbacks in the tail are scanned too (H3.3: `.map(p => path.resolve(p, '..'))`).
             if self.parent_step(j, j + 1):
                 self.refuse("unresolved")
             walked = walked or self.walks(j, j + 1)
@@ -625,11 +665,14 @@ class RootLiteral:
         if self.in_exec(e):
             self.refuse("an argv list of an exec call")
         if len(spans) == 1:
-            return self.beneath(root)  # ["services"], ("services",), {"services"}: a walker over the root
+            return self.resolve([root], dynamic=True)  # ["services"], ("services",), {"services"}: a walker
         walked = self.iterated(e) or method
         if not walked and not self.has_evidence(e):
             self.refuse("a collection literal outside an assignment, object value or comparison")
-        return self.named_by_siblings(spans, mine, root) | (self.beneath(root) if walked else set())
+        # Rule 8 (root, 2026-10-26): no list-literal exemption. An assigned literal list can flow into a path
+        # (`parts = ["services", "billing"]` then `join(ROOT, *parts)`), so it is a walker read beneath the root, plus
+        # the packages its siblings name. Only a direct call argument still refuses (H2).
+        return self.named_by_siblings(spans, mine, root) | self.resolve([root], dynamic=True)
 
     def named_by_siblings(self, spans: list, mine: int, root: str) -> set:
         """Packages named by the literal siblings of a listed root literal. Every sibling must be a plain string."""
@@ -693,7 +736,10 @@ class RootLiteral:
         if ((prev and ((prev[0] == "op" and prev[3] in COMPARE) or (prev[0] == "word" and prev[3] == "case")))
                 or (nxt and nxt[0] == "op" and nxt[3] in COMPARE)
                 or (nxt and nxt[0] == "word" and (nxt[3] == "in" or (nxt[3] == "not" and nxt2 and nxt2[3] == "in")))):
-            return set()
+            # A comparison selects a value that may become a path (`d == "services"` then `Path(ROOT, d)`): a walker
+            # read beneath the root, never metadata (H3.4, root's round-4 ruling).
+            self.after(k, k)
+            return self.resolve([root], dynamic=True)
         self.refuse("no positive metadata evidence for a")
 
     def line_reads(self, src: Source, line: int) -> set:
@@ -713,6 +759,10 @@ class RootLiteral:
             k = src.token_at(m.start())
             tok = src.code[k] if k is not None else None
             if tok is not None and tok[0] == "str":
+                if m.end() > tok[2]:
+                    # The quoted root runs past the string the tokenizer saw: the grammar desynchronised (JSX text,
+                    # a PEP 701 nested quote, a regex lexed as division). REFUSE rather than read nothing (H3.1).
+                    self.refuse("a quoted root the tokenizer split (desync) is an unsupported")
                 if tok[3][2] == m.start() and self.root_of(tok) is not None:
                     hits.append(k)
                 continue  # a quoted root inside another string: read below, with the string's other mentions
@@ -722,9 +772,11 @@ class RootLiteral:
         k = k if k is not None else bisect.bisect_left(src.starts, a)
         while k < len(src.code) and src.code[k][1] < b:
             if src.code[k][0] == "str" and k not in hits:
+                self.current = k
                 reads |= self.string_reads(k, a, b)
             k += 1
         for k in hits:
+            self.current = k
             try:
                 reads |= self.classify(k)
             except (IndexError, KeyError, StopIteration):
@@ -732,41 +784,30 @@ class RootLiteral:
         return reads
 
     def string_reads(self, k: int, a: int, b: int) -> set:
-        """A root named inside string k on this line (`f"{ROOT}/services/{x}"`, `"services/*/migrations"`, `'cat
-        services\\x'`, prose quoting 'services') reads every package beneath its literal prefix. A `..` in the same
-        path-like run, or a parent step applied to the string, REFUSES; so does a computed string that nests code naming
-        a root, or holds any parent step, since its substitutions are opaque."""
+        """Every root mention inside string k on this line is a walker read beneath its literal prefix (round 4: no rule
+        turns a mention into nothing):
+          - a root segment, whatever precedes it (`backend/services/`, `./services/`, `{}/services/`, `/services`);
+          - a backslash after a root, always (`services\\b`, an escape or not);
+          - a quoted root inside the string (prose, SQL text);
+          - a docstring, read like any string.
+        It REFUSES on a doctest naming a root (executed code), on any `..` in the mention's path run, on a computed
+        string that holds any `..` step (a quoted '..' included; an ellipsis is not a step), a parent word or nested code naming a root (its
+        substitutions are opaque), and on a parent step applied to the string."""
         src, tok = self.src, self.src.code[k]
         lo, hi = max(tok[1], a), min(tok[2], b)
-        plain = tok[3][1]
-        body = tok[3][0]
-        if not plain and (self.root_segment.search(body) or self.quoted.search(body)) and (
-                PARENT_SEG.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)):
-            # A substitution is opaque: code nested in it (a quoted root), or a parent step anywhere in it, may leave the
-            # root, so the string REFUSES rather than reading beneath its prefix.
-            self.refuse("unresolved")
-        raw = plain and "r" in src.text[tok[1]:tok[3][2]].lower()
-        if plain:
-            # A plain string's root starts a path only where no `/` precedes it (`backend/services/` and a route
-            # `/:org/services/:id` are not repo-root paths), or at the very start after leading slashes when nothing
-            # names a component after it (`ROOT + "/services/" + x`). A backslash separates when doubled, in a raw
-            # string, or before a character that makes no escape (`\d` keeps its backslash; `\n` does not).
-            mentions = [m.start() for m in self.root_path.finditer(src.text, lo, hi)
-                        if not COMPONENT_CHAR.match(src.text, m.end())]
-            quote = tok[3][2]
-            body_start = quote + (3 if src.text.startswith(src.text[quote] * 3, quote) else 1)
-            lead = self.root_lead.match(src.text, body_start) if lo <= body_start < hi else None
-            if lead and not COMPONENT_CHAR.match(src.text, lead.end()):
-                mentions.append(lead.start(1))
-            mentions += [m.start() for m in self.root_backslash.finditer(src.text, lo, hi)
-                         if raw or src.text[m.end():m.end() + 1] not in ESCAPE_CHARS | {""}]
-        else:
-            mentions = [m.start() for m in self.root_segment.finditer(src.text, lo, hi)]
+        plain, body = tok[3][1], tok[3][0]
+        # A segment reached through `../` is a path relative to this file, which the `rel` rule resolves exactly from
+        # the file's directory; it is not a repo-root mention.
+        mentions = [m.start() for m in self.root_any.finditer(src.text, lo, hi)
+                    if src.text[max(m.start() - 3, 0):m.start()] not in ("../", "..\\")
+                    and not REL_RUN.fullmatch(re.search(r"[^\s'\"`]*$", src.text[lo:m.start()]).group())]
         mentions += [m.start() + 1 for m in self.quoted.finditer(src.text, lo, hi)]
-        if plain and self.whole_statement(k):
-            if mentions and ">>>" in body:
-                self.refuse("a doctest naming a root is executed code the scanner does not parse; an unsupported")
-            return set()  # a docstring or directive: a string no code consumes
+        if not mentions:
+            return set()
+        if not plain and (PARENT_STEP.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)):
+            self.refuse("unresolved")  # H3.2: an opaque substitution may leave the root
+        if ">>>" in body:
+            self.refuse("a doctest naming a root is executed code the scanner does not parse; an unsupported")
         reads = set()
         for p in sorted(set(mentions)):
             while src.text.startswith("./", p):
@@ -778,16 +819,85 @@ class RootLiteral:
             parts = prefix.split("/")
             if len(run) > len(prefix) and run[len(prefix)] not in "/\\":
                 parts = parts[:-1] or parts  # the last component is cut by a glob or a substitution
+            elif p + len(run) >= tok[2] - 1 and k + 1 < len(src.code) and src.code[k + 1][3] == "+":
+                parts = parts[:-1] or parts  # `"services/b" + suffix`: the string's last component continues
             reads |= self.resolve(parts, dynamic=True)
-        if reads or mentions:
-            self.after(k, k)
+        self.after(k, k)
         return reads
 
-    def whole_statement(self, k: int) -> bool:
-        """String k is a statement by itself (a docstring, or a JS directive such as 'use strict')."""
-        if self.src.ext not in PY_EXT | JS_EXT or self.src.enclosing[k] and not self.container(k) == self.src.enclosing[k][-1]:
-            return False
-        return self.statement(k, k) == (k, k)
+    RAW_BIND = re.compile(r"^\s*(?:(?:export|local|readonly|declare(?:\s+-\w+)?)\s+)?([A-Za-z_]\w*)=(.*)$|^\s*(?:ARG|ENV)\s+([A-Za-z_]\w*)[=\s](.*)$")
+    RAW_CD = re.compile(r"(?<![\w.-])(?:cd|pushd|WORKDIR|working[-_]directory|working_dir|workdir|cwd)(?=[\s:=])")
+
+    def raw_taint(self, text: str) -> str:
+        """Rule 7 for a file the tokenizer does not parse (shell, Dockerfile, yaml, toml), line by line: a line holding a
+        root segment (or a variable bound from one) and a `..` step refuses; so does any `..` step after a `cd`,
+        `pushd` or `WORKDIR` into a root path or a bare root (`cd services`). An anchor (`cd "$(dirname "$0")/.."`) names no root, so it stays.
+        Returns the reason, or "" when the file is clean."""
+        lines = text.split("\n")
+        tainted: set = set()
+        changed = True
+        while changed:
+            changed = False
+            for line in lines:
+                m = self.RAW_BIND.match(self.strip_comment(line))
+                name, value = (m.group(1) or m.group(3), m.group(2) if m.group(1) else m.group(4)) if m else (None, "")
+                if name and name not in tainted and (self.root_any.search(value) or self.uses(value, tainted)):
+                    tainted.add(name)
+                    changed = True
+        cwd = False
+        for number, line in enumerate(lines, 1):
+            line = self.strip_comment(line)
+            rooted = bool(self.root_any.search(line)) or self.uses(line, tainted)
+            into_root = bool(self.RAW_CD.search(line)) and (rooted or bool(self.root_word.search(line)))
+            if PARENT_STEP.search(line):
+                if rooted or into_root:
+                    return f"a root path and a `..` step on line {number}"
+                if cwd:
+                    return f"a `..` step on line {number} after a cd into a root path"
+            cwd = cwd or into_root
+        return ""
+
+    @staticmethod
+    def strip_comment(line: str) -> str:
+        """A shell/Dockerfile/yaml/toml line without its trailing `#` comment: a `#` at the start or after whitespace,
+        outside quotes."""
+        quote = None
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == "\\":
+                    continue
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+                return line[:i]
+        return line
+
+    @staticmethod
+    def uses(text: str, names: set) -> bool:
+        return any(re.search(r"\$\{?%s\b" % re.escape(n), text) for n in names)
+
+    def raw_reads(self, text: str) -> set:
+        """Walker reads for every root segment of one line of an unparsed file (rule 1: a mention reads or refuses)."""
+        reads = set()
+        text = self.strip_comment(text)
+        for m in self.root_any.finditer(text):
+            if text[max(m.start() - 3, 0):m.start()] in ("../", "..\\"):
+                continue  # relative to the file: the `rel` rule resolves it
+            run = re.compile(r"[^\s'\"`]*").match(text, m.start()).group()
+            if PARENT_SEG.search(run.replace("\\", "/")):
+                self.refuse("unresolved")
+            prefix = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*").match(run).group()
+            parts = prefix.split("/")
+            if len(run) > len(prefix) and run[len(prefix)] not in "/\\":
+                parts = parts[:-1] or parts
+            src, self.src = getattr(self, "src", None), None  # unparsed: no token rule 7; the caller checked raw `..`
+            try:
+                reads |= self.resolve(parts, dynamic=True)
+            finally:
+                self.src = src
+        return reads
 
     def literal_path(self, src: Source, offset: int, path_text: str) -> set:
         """A `<root>/<name>` path literal is read by its text. A parent step after it in its statement, or a parent-step
@@ -798,7 +908,548 @@ class RootLiteral:
         k = src.token_at(offset)
         if k is None or src.code[k][0] != "str":
             return set()
-        return self.beneath(posixpath.normpath(path_text)) if self.after(k, k) else set()
+        self.current = k
+        return self.resolve([posixpath.normpath(path_text)], dynamic=True) if self.after(k, k) else set()
+
+    # ---- rule 7: lexical name taint (root, 2026-10-26) ----
+    ASSIGN_OPS = frozenset({"=", ":=", "+=", "-=", "*=", "/=", "|=", "&=", "??=", "||=", "&&="})
+    DECL_WORDS = frozenset({"const", "let", "var", "export", "default", "async", "await", "this", "self", "cls",
+                            "global", "nonlocal", "static", "readonly", "private", "public", "protected"})
+
+    def functions(self) -> list[tuple[str, int, int]]:
+        """(name, first token, last token) of every function the file defines: Python `def` (indented body) and a
+        lambda bound to a name; JS `function f(`, `f = (...) =>` / `f = x =>`, and a method `f(...) {`."""
+        src, T, out = self.src, self.src.code, []
+        if src.py:
+            lines = src.text.split("\n")
+            for i, line in enumerate(lines):
+                m = re.match(r"(\s*)(?:async\s+)?def\s+(\w+)\s*\(", line)
+                if not m:
+                    continue
+                indent, end = len(m.group(1)), i + 1
+                while end < len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith("#")
+                                            or len(lines[end]) - len(lines[end].lstrip()) > indent):
+                    end += 1
+                lo = bisect.bisect_left(src.starts, src.bounds(i)[0])
+                hi = bisect.bisect_left(src.starts, src.bounds(end - 1)[1] if end - 1 < len(src.newlines) + 1 else len(src.text)) - 1
+                out.append((m.group(2), lo, max(lo, hi)))
+            for j in range(len(T) - 3):
+                if T[j][0] == "word" and T[j + 1][3] == "=" and T[j + 2][3] == "lambda":
+                    lo, hi = self.statement(j, j, taint=True)
+                    out.append((T[j][3], lo, hi))
+            return out
+        for j, tok in enumerate(T):
+            if tok[0] != "word" or j + 1 >= len(T):
+                continue
+            body = None
+            if j and T[j - 1][3] == "function" and T[j + 1][3] == "(":
+                close = src.match.get(j + 1)
+                body = close + 1 if close is not None and close + 1 < len(T) and T[close + 1][3] == "{" else None
+            elif T[j + 1][3] == "=" and j + 2 < len(T):
+                k = j + 2 + (1 if T[j + 2][3] == "async" else 0)
+                if k < len(T) and T[k][3] == "(" and src.match.get(k) is not None and src.match[k] + 1 < len(T) \
+                        and T[src.match[k] + 1][3] == "=>":
+                    arrow = src.match[k] + 1
+                elif k + 1 < len(T) and T[k][0] == "word" and T[k + 1][3] == "=>":
+                    arrow = k + 1
+                elif k < len(T) and T[k][3] == "function":
+                    arrow = None
+                    close = src.match.get(k + 1) if k + 1 < len(T) and T[k + 1][3] == "(" else None
+                    body = close + 1 if close is not None and close + 1 < len(T) and T[close + 1][3] == "{" else None
+                else:
+                    continue
+                if arrow is not None:
+                    if arrow + 1 < len(T) and T[arrow + 1][3] == "{":
+                        body = arrow + 1
+                    else:
+                        out.append((tok[3], arrow, self.statement(arrow, arrow, taint=True)[1]))
+                        continue
+            elif T[j + 1][3] == "(" and tok[3] not in KEYWORDS and not (j and T[j - 1][3] in (".", "?.")):
+                close = src.match.get(j + 1)
+                if close is not None and close + 1 < len(T) and T[close + 1][3] == "{" and self.block(close + 1):
+                    body = close + 1
+            if body is not None and src.match.get(body) is not None:
+                out.append((tok[3], body, src.match[body]))
+        return out
+
+    def assigned(self, lo: int, hi: int, toks: list[int] | None = None) -> set:
+        """Names a statement binds: the targets before EVERY top-level `=` (a chained `a = b = v` binds both; a JS
+        statement splits into declarators, `let q = 1, d = v`), an assignment expression's name (`(m := v)`, JS
+        `while ((m = v))`), `for` targets, and `as` names. Only the statement's own tokens (`toks`) bind: a nested block
+        is its own statement."""
+        T, names = self.src.code, set()
+        own = sorted(toks) if toks is not None else list(range(lo, hi + 1))
+        # A JS statement splits at top-level commas into declarators, except inside a type annotation (`let m: Map<K, V>
+        # = v`); a Python statement keeps its tuple targets whole.
+        segments, cur, depth, annotation, seen_eq = [], [], 0, False, False
+        for j in own:
+            kind = T[j][0]
+            if kind == "open":
+                depth += 1
+            elif kind == "close":
+                depth -= 1
+            elif depth == 0 and kind == "colon" and not seen_eq:
+                annotation = True
+            elif depth == 0 and kind == "op" and T[j][3] in self.ASSIGN_OPS:
+                seen_eq, annotation = True, False
+            if not self.src.py and depth == 0 and kind == "comma" and not annotation:
+                segments.append(cur)
+                cur, seen_eq = [], False
+                continue
+            cur.append(j)
+        segments.append(cur)
+        for seg in segments:
+            depth, start = 0, seg[0] if seg else None
+            for j in seg:
+                kind = T[j][0]
+                if kind == "open":
+                    depth += 1
+                elif kind == "close":
+                    depth -= 1
+                elif kind == "op" and T[j][3] in self.ASSIGN_OPS:
+                    if depth == 0:
+                        names |= self.target_names(start, j)
+                        start = j + 1
+                    elif T[j][3] == ":=" or not self.src.py:
+                        k = j - 1
+                        k -= 1 if k > 0 and T[k][0] == "op" and T[k][3] in self.COMPOUND_PREFIX else 0
+                        if k >= 0 and T[k][0] == "word" and not (k and T[k - 1][3] in (".", "?.")):
+                            names.add(T[k][3])
+        for j in range(lo, hi + 1):
+            if j not in own:
+                continue
+            if T[j][0] == "word" and T[j][3] == "for":
+                names |= self.for_targets(j, hi)
+            elif T[j][0] == "word" and T[j][3] == "as" and j + 1 <= hi and T[j + 1][0] == "word":
+                names.add(T[j + 1][3])
+        return names - LITERAL_WORDS
+
+    COMPOUND_PREFIX = frozenset({"+", "-", "*", "/", "%", "**", "|", "&", "^", "??", "||", "&&", "@"})
+
+    def target_names(self, lo: int, hi: int) -> set:
+        """Names one assignment target list binds (tokens lo..hi-1): every top-level name (`self.paths` binds `paths`
+        as an attribute; a call's name never), a subscript's base (`x[i]`), every name inside a destructuring, tuple or
+        list pattern (`{a, b: c}`, `[x, *y]`, `(a, (b, c))`); never a type annotation (`a: T`)."""
+        T, match, names = self.src.code, self.src.match, set()
+        depth, annotation, prev, j = 0, False, None, lo
+        while j < hi:
+            kind = T[j][0]
+            if kind == "open":
+                pattern_start = prev is None or T[prev][0] == "comma" or T[prev][3] in self.DECL_WORDS \
+                    or (T[prev][0] == "op" and T[prev][3] in ("...", "*", "**"))
+                if depth == 0 and not annotation and pattern_start and T[j][3] in ("{", "[", "(") \
+                        and match.get(j) is not None and match[j] < hi:
+                    names |= self.param_names(j + 1, match[j], pattern=T[j][3] == "{")
+                    prev, j = match[j], match[j] + 1
+                    continue
+                depth += 1
+            elif kind == "close":
+                depth -= 1
+            elif depth == 0 and kind == "colon":
+                annotation = True  # `name: Type = value`: the words after the colon are a type
+            elif depth == 0 and kind == "comma":
+                annotation = False
+            elif kind == "word" and depth == 0 and not annotation and T[j][3] not in self.DECL_WORDS \
+                    and T[j][3] not in KEYWORDS and not (j + 1 < hi and T[j + 1][3] == "("):
+                names.add(T[j][3])
+            prev, j = j, j + 1
+        return names
+
+    def for_target_tokens(self, toks: list[int]) -> set:
+        """Token positions of the names the statement's `for`s bind (a binding, not a read): JS, the header words before
+        a top-level `of`/`in`, or a C-style init's names; Python, the words between `for` and `in`."""
+        T, match, out = self.src.code, self.src.match, set()
+        own = set(toks)
+        for j in toks:
+            if not (T[j][0] == "word" and T[j][3] == "for"):
+                continue
+            k = j + 1
+            if k < len(T) and T[k][3] == "await":
+                k += 1
+            if not self.src.py and k < len(T) and T[k][3] == "(" and match.get(k) is not None:
+                end, depth, stop = match[k], 0, None
+                for i in range(k + 1, end):
+                    depth += {"open": 1, "close": -1}.get(T[i][0], 0)
+                    if depth == 0 and T[i][0] == "word" and T[i][3] in ("in", "of"):
+                        stop = i
+                        break
+                if stop is not None:
+                    out |= {i for i in range(k + 1, stop) if T[i][0] == "word"}
+                else:
+                    depth = 0
+                    for i in range(k + 1, end):
+                        depth += {"open": 1, "close": -1}.get(T[i][0], 0)
+                        if depth == 0 and T[i][0] == "op" and T[i][3] == ";":
+                            break
+                        if depth == 0 and T[i][0] == "word" and i + 1 < end and T[i + 1][0] == "op" \
+                                and T[i + 1][3] in self.ASSIGN_OPS:
+                            out.add(i)
+                continue
+            while k < len(T) and k in own and not (T[k][0] == "word" and T[k][3] in ("in", "of")):
+                if T[k][0] == "word":
+                    out.add(k)
+                k += 1
+        return out
+
+    def for_targets(self, j: int, hi: int) -> set:
+        """The names a `for` at token j binds. JS: inside its header `( ... )` only: the targets before a top-level
+        `in`/`of`, or a C-style header's init names (`for (let i = 0, n = 1; ...)`). Python: the words before `in`."""
+        T, match, names = self.src.code, self.src.match, set()
+        k = j + 1
+        if k <= hi and T[k][3] == "await":
+            k += 1
+        if not self.src.py and k <= hi and T[k][3] == "(" and match.get(k) is not None:
+            end, depth, stop = match[k], 0, None
+            for i in range(k + 1, end):
+                depth += {"open": 1, "close": -1}.get(T[i][0], 0)
+                if depth == 0 and T[i][0] == "word" and T[i][3] in ("in", "of"):
+                    stop = i
+                    break
+            if stop is not None:
+                return {T[i][3] for i in range(k + 1, stop) if T[i][0] == "word"} - self.DECL_WORDS - KEYWORDS
+            depth = 0
+            for i in range(k + 1, end):
+                depth += {"open": 1, "close": -1}.get(T[i][0], 0)
+                if depth == 0 and T[i][0] == "op" and T[i][3] == ";":
+                    break
+                if depth == 0 and T[i][0] == "word" and T[i][3] not in self.DECL_WORDS and i + 1 < end \
+                        and T[i + 1][0] == "op" and T[i + 1][3] in self.ASSIGN_OPS:
+                    names.add(T[i][3])
+            return names
+        while k <= hi and not (T[k][0] == "word" and T[k][3] in ("in", "of")):
+            if T[k][0] == "word" and T[k][3] not in self.DECL_WORDS:
+                names.add(T[k][3])
+            k += 1
+        return names
+
+    SEED_ANCHOR = True  # a parent step BEFORE the read in its own statement acts on the base (an anchor)
+
+    def own_tokens(self, lo: int, hi: int) -> list[int]:
+        """The statement's own tokens: a nested block (a callback or function body) is its own statement."""
+        T, src, out, j = self.src.code, self.src, [], lo
+        while j <= hi:
+            if T[j][0] == "open" and T[j][3] == "{" and self.block(j) and src.match.get(j) is not None:
+                j = src.match[j] + 1
+                continue
+            out.append(j)
+            j += 1
+        return out
+
+    def param_scopes(self, toks: list[int], hi: int) -> list[tuple[tuple[int, int], str]]:
+        """(scope, name) for each parameter of the arrows, `function`s and lambdas a statement defines: a parameter is
+        visible from its function's start to the end of its body (a block's `}`; an expression body's enclosing bracket
+        or the statement end `hi`)."""
+        T, match, enclosing, out = self.src.code, self.src.match, self.src.enclosing, []
+        drop = KEYWORDS | self.DECL_WORDS | LITERAL_WORDS
+        for j in toks:
+            if T[j][0] == "op" and T[j][3] == "=>":
+                body = j + 1
+                if body < len(T) and T[body][3] == "{" and match.get(body) is not None:
+                    end = match[body]
+                else:
+                    stack = enclosing[j] if j < len(enclosing) else ()
+                    end = match.get(stack[-1], hi) if stack else hi
+                out += [((j, end), n) for n in self.arrow_params(j) - drop]
+            elif T[j][0] == "word" and T[j][3] == "function":
+                i = j + 1
+                i += 1 if i < len(T) and T[i][3] == "*" else 0
+                i += 1 if i < len(T) and T[i][0] == "word" else 0
+                if i < len(T) and T[i][3] == "(" and match.get(i) is not None:
+                    body = match[i] + 1
+                    end = match[body] if body < len(T) and T[body][3] == "{" and match.get(body) is not None else hi
+                    out += [((j, end), n) for n in self.param_names(i + 1, match[i]) - drop]
+            elif T[j][0] == "word" and T[j][3] == "lambda":
+                end, depth = j + 1, 0
+                while end < len(T) and not (depth == 0 and T[end][0] == "colon"):
+                    depth += {"open": 1, "close": -1}.get(T[end][0], 0)
+                    end += 1
+                out += [((j, hi), n) for n in self.param_names(j + 1, end) - drop]
+        return out
+
+    def function_scopes(self, funcs: list) -> list[tuple[int, int]]:
+        """Every function body's token range, innermost first when sorted by size: the named functions, and in JS every
+        arrow or `function` block body (anonymous callbacks included)."""
+        T, match, out = self.src.code, self.src.match, [(lo, hi) for _, lo, hi in funcs]
+        if not self.src.py:
+            for j, tok in enumerate(T):
+                if tok[0] == "op" and tok[3] == "=>" and j + 1 < len(T) and T[j + 1][3] == "{" \
+                        and match.get(j + 1) is not None:
+                    out.append((j + 1, match[j + 1]))
+                elif tok[0] == "word" and tok[3] == "function":
+                    i = j + 1
+                    i += 1 if i < len(T) and T[i][3] == "*" else 0
+                    i += 1 if i < len(T) and T[i][0] == "word" else 0
+                    if i < len(T) and T[i][3] == "(" and match.get(i) is not None:
+                        body = match[i] + 1
+                        if body < len(T) and T[body][3] == "{" and match.get(body) is not None:
+                            out.append((body, match[body]))
+        return sorted(set(out), key=lambda r: r[1] - r[0])
+
+    def callback_params(self, toks: list[int]) -> set:
+        """Parameters of the arrow functions, lambdas and anonymous functions a statement defines: a tainted value can
+        reach them (`[read].map(p => path.resolve(p, '..'))`)."""
+        T, match, opener, names = self.src.code, self.src.match, self.src.opener, set()
+        for j in toks:
+            if T[j][0] == "op" and T[j][3] == "=>":
+                names |= self.arrow_params(j)
+            elif T[j][0] == "word" and T[j][3] == "function":
+                i = j + 1
+                i += 1 if i < len(T) and T[i][3] == "*" else 0
+                i += 1 if i < len(T) and T[i][0] == "word" else 0
+                if i < len(T) and T[i][3] == "(" and match.get(i) is not None:
+                    names |= self.param_names(i + 1, match[i])
+            elif T[j][0] == "word" and T[j][3] == "lambda":
+                end, depth = j + 1, 0
+                while end < len(T) and not (depth == 0 and T[end][0] == "colon"):
+                    depth += {"open": 1, "close": -1}.get(T[end][0], 0)
+                    end += 1
+                names |= self.param_names(j + 1, end)
+        return names - KEYWORDS - self.DECL_WORDS - LITERAL_WORDS
+
+    TYPE_OPS = frozenset({".", "<", ">", "|", "&", "?", ",", "=>"})
+
+    def arrow_params(self, j: int) -> set:
+        """The parameter names of the arrow whose `=>` is token j: `x =>`, `(a, b) =>`, and a TS return type
+        `(a: A): R =>` (walked back over to its `):`). If the shape is not recognised, every word of the nearest group
+        binds (the round-3 behaviour), so an unrecognised arrow over-taints rather than drops a parameter."""
+        T, opener = self.src.code, self.src.opener
+        k = j - 1
+        if k < 0:
+            return set()
+        if T[k][0] == "close" and T[k][3] == ")" and opener.get(k) is not None:
+            return self.param_names(opener[k] + 1, k)
+        if T[k][0] == "word" and not (k and T[k - 1][0] == "colon") and not (k and T[k - 1][0] == "op"
+                                                                               and T[k - 1][3] in self.TYPE_OPS):
+            return {T[k][3]}
+        c, steps = k, 0
+        while c > 0 and steps < 64:
+            steps += 1
+            if T[c][0] == "colon":
+                if T[c - 1][0] == "close" and T[c - 1][3] == ")" and opener.get(c - 1) is not None:
+                    return self.param_names(opener[c - 1] + 1, c - 1)
+                break
+            if T[c][0] == "close" and opener.get(c) is not None:
+                c = opener[c] - 1
+            elif T[c][0] in ("word", "str") or (T[c][0] == "op" and T[c][3] in self.TYPE_OPS):
+                c -= 1
+            else:
+                break
+        if T[k][0] == "word":
+            return {T[k][3]}
+        if T[k][0] == "close" and opener.get(k) is not None:
+            return {T[i][3] for i in range(opener[k] + 1, k) if T[i][0] == "word"}
+        return set()
+
+    def param_names(self, lo: int, hi: int, pattern: bool = False) -> set:
+        """Binding names in tokens lo..hi-1, split at top-level commas: each element's own name, or the names of its
+        destructuring pattern; never a type annotation (after `:`) or a default value (after `=`). In an object
+        pattern, `key: target` binds the target."""
+        T, match, names = self.src.code, self.src.match, set()
+        i = lo
+        while i < hi:
+            end, depth = i, 0
+            while end < hi and not (depth == 0 and T[end][0] == "comma"):
+                depth += {"open": 1, "close": -1}.get(T[end][0], 0)
+                end += 1
+            j = i
+            if pattern:
+                depth = 0
+                for c in range(i, end):
+                    depth += {"open": 1, "close": -1}.get(T[c][0], 0)
+                    if depth == 0 and (T[c][0] == "colon" or (T[c][0] == "op" and T[c][3] == "=")):
+                        j = c + 1 if T[c][0] == "colon" else i
+                        break
+            while j < end and T[j][0] == "op" and T[j][3] in ("...", "*", "**"):
+                j += 1
+            if j < end and T[j][0] == "open" and T[j][3] in ("{", "[", "(") and match.get(j) is not None \
+                    and match[j] < end:
+                names |= self.param_names(j + 1, match[j], pattern=T[j][3] == "{")
+            elif j < end and T[j][0] == "word":
+                while j + 2 < end and T[j + 1][0] == "op" and T[j + 1][3] in (".", "?.") and T[j + 2][0] == "word":
+                    j += 2  # a dotted target element (`(self.a, b) = ...`) binds its attribute
+                names.add(T[j][3])
+            i = end + 1
+        return names - KEYWORDS - self.DECL_WORDS - LITERAL_WORDS
+
+    def mentions(self, lo: int, toks: list[int]) -> tuple[set, set]:
+        """(plain names, attribute names) a statement READS: an assignment's targets are not reads of them."""
+        T = self.src.code
+        depth, start = 0, None
+        for j in toks:
+            kind = T[j][0]
+            if kind == "open":
+                depth += 1
+            elif kind == "close":
+                depth -= 1
+            elif depth == 0 and kind == "op" and T[j][3] in self.ASSIGN_OPS:
+                start = j
+                break
+        plain, attrs = set(), set()
+        targets = self.for_target_tokens(toks)
+        for j in toks:
+            if (start is not None and j <= start) or j in targets:
+                continue
+            if T[j][0] == "word":
+                (attrs if j and T[j - 1][3] in (".", "?.") else plain).add(T[j][3])
+        return plain, attrs
+
+    def bound(self, lo: int, hi: int, toks: list[int]) -> tuple[set, set]:
+        """(plain names, attribute names) a statement's assignment targets bind (parameters: `param_scopes`)."""
+        T, plain, attrs = self.src.code, set(), set()
+        for name in self.assigned(lo, hi, toks):
+            hit = [j for j in toks if T[j][0] == "word" and T[j][3] == name]
+            if hit and all(j and T[j - 1][3] in (".", "?.") for j in hit):
+                attrs.add(name)
+            else:
+                plain.add(name)
+        return plain, attrs
+
+    def taint_check(self, src: Source) -> None:
+        """Rule 7, lexical name taint (root, 2026-10-26).
+        - Names bound from a computed root read are tainted, transitively within the file: assignment targets (a
+          plain name, or an attribute such as `self.paths`), `for`/`as` targets, the parameters of callbacks and lambdas
+          in a tainted statement, and a function whose `return` is tainted (its calls then yield a tainted value). A
+          statement reads a name only on the right of its assignment; an attribute name matches only as an attribute.
+        - A tainted statement that holds a parent step (`..`, '..', `.parent`, `.parents`, `os.pardir`, getattr(p,
+          "parent")) REFUSES. In the statement of the read itself, a parent step BEFORE the read acts on its base (an
+          anchor such as `Path(__file__).parents[2] / "services"`), so it does not count, unless it sits inside a
+          callback the statement defines (its parameters may receive the read).
+        - A tainted value passed to a function DEFINED IN THIS FILE whose body holds a parent step REFUSES.
+        - Residual: a tainted path handed to a helper defined in ANOTHER file that applies `..`. JSON binds no names.
+        """
+        self.src = src
+        if not src.computed or not src.ok or src.ext not in PY_EXT | JS_EXT:
+            return
+        T = src.code
+        parents = set(src.parent_toks)
+        stmts, seen = [], set()
+        for j in range(len(T)):
+            rng = self.statement(j, j, taint=True)
+            if rng not in seen:
+                seen.add(rng)
+                stmts.append(rng)
+        own = {rng: self.own_tokens(*rng) for rng in stmts}
+        reads = {rng: self.mentions(rng[0], own[rng]) for rng in stmts}
+        funcs = self.functions()
+        parent_funcs = {name for name, lo, hi in funcs if any(lo <= p <= hi for p in parents)}
+
+        def returning(rng):
+            """The function whose value this statement returns: a `return` statement, or an arrow's expression body."""
+            T0 = T[rng[0]]
+            inside = [(hi - lo, name, lo) for name, lo, hi in funcs if lo <= rng[0] <= hi]
+            if not inside:
+                return None
+            _, name, lo = min(inside)
+            return name if (T0[0] == "word" and T0[3] == "return") or (T[lo][3] == "=>" and rng[0] == lo + 1) else None
+
+        computed = set(src.computed)
+        # Scope, as each language scopes (a tainted (scope, name): scope is a function body's (lo, hi), or None for
+        # the whole file):
+        # - a parameter is visible only inside its own function (param_scopes);
+        # - JS: a `const`/`let`/`var` declaration, or a declared `for` target, is local to its innermost function
+        #   (anonymous callbacks included); a bare assignment may assign an outer binding, so it is file-wide;
+        # - Python: an assignment is local to its innermost def unless the def declares it `global` or `nonlocal`;
+        # - an attribute (`self.x`) and a function name are file-wide.
+        scoped = self.function_scopes(funcs)
+
+        def scope_of(j):
+            return next(((lo, hi) for lo, hi in scoped if lo <= j <= hi), None)
+
+        escapes = {}  # Python: the names a def declares global or nonlocal (nested defs included: a superset)
+        if src.py:
+            for lo, hi in scoped:
+                names = set()
+                for k in range(lo, hi + 1):
+                    if T[k][0] == "word" and T[k][3] in ("global", "nonlocal"):
+                        i = k + 1
+                        while i <= hi and T[i][0] in ("word", "comma") and src.line_of(T[i][1]) == src.line_of(T[k][1]):
+                            if T[i][0] == "word":
+                                names.add(T[i][3])
+                            i += 1
+                escapes[(lo, hi)] = names
+
+        def loop_scope(f, rng):
+            """A JS `for` at token f: its header and its body (a block, or the single statement after the header)."""
+            k = f + 1 + (1 if f + 1 < len(T) and T[f + 1][3] == "await" else 0)
+            close = src.match.get(k) if k < len(T) and T[k][3] == "(" else None
+            if close is None:
+                return (f, rng[1])
+            body = close + 1
+            if body < len(T) and T[body][3] == "{" and src.match.get(body) is not None:
+                return (f, src.match[body])
+            return (f, max(rng[1], self.statement(body, body, taint=True)[1]) if body < len(T) else rng[1])
+
+        def decl_scope(rng, name):
+            sc = scope_of(rng[0])
+            if sc is None and src.py:
+                return None
+            if src.py:
+                return None if name in escapes.get(sc, ()) else sc
+            k = next((k for k in own[rng] if T[k][3] not in ("export", "default", "declare")), None)
+            if k is not None and T[k][3] == "for":
+                f = k
+                k = next((i for i in own[rng] if i > k and T[i][3] not in ("await", "(")), None)
+                if k is not None and T[k][3] in ("const", "let"):
+                    return loop_scope(f, rng)  # a `for (const|let ...)` target lives in its loop
+            if k is not None and T[k][3] in ("const", "let"):
+                block = next((x for x in reversed(src.enclosing[rng[0]]) if self.block(x)), None)
+                return (block, src.match[block]) if block is not None and src.match.get(block) is not None else None
+            return sc if k is not None and T[k][3] == "var" else None
+
+        vars_, attrs_, by_name, seeded = set(), set(), set(), {}
+        names_any = set()
+
+        def bind(rng):
+            p, a = self.bound(rng[0], rng[1], own[rng])
+            vars_.update((decl_scope(rng, n), n) for n in p)
+            names_any.update(p)
+            attrs_.update(a)
+            for sc, n in self.param_scopes(own[rng], rng[1]):
+                vars_.add((sc, n))
+                names_any.add(n)
+            f = returning(rng)
+            if f:
+                vars_.add((None, f))
+                names_any.add(f)
+
+        def visible(name, j):
+            """A plain name read at token j is tainted if its binding's scope encloses j (or is module-level)."""
+            return (None, name) in vars_ or any(sc is not None and sc[0] <= j <= sc[1] and n == name for sc, n in vars_)
+
+        for rng in stmts:
+            here = [k for k in own[rng] if k in computed]
+            if here:
+                seeded[rng] = min(here)
+                bind(rng)
+        changed = True
+        while changed:
+            changed = False
+            for rng in stmts:
+                plain, attrs = reads[rng]
+                if rng in by_name or not (attrs & attrs_ or any(visible(n, rng[0]) for n in plain & names_any)):
+                    continue
+                by_name.add(rng)
+                changed = True
+                bind(rng)
+        for rng in set(seeded) | by_name:
+            first = seeded.get(rng) if self.SEED_ANCHOR and rng not in by_name else None
+            line = src.line_of(T[rng[0]][1]) + 1
+            # A parent step inside a callback this statement defines is never an anchor: its parameters may receive
+            # the read (`map(lambda p: join(p, ".."), [read])`).
+            callbacks = [sc for sc, _ in self.param_scopes(own[rng], rng[1])]
+            if any(j in parents and (first is None or j > first or any(a <= j <= b for a, b in callbacks))
+                   for j in own[rng]):
+                self.refuse(f"unresolved (rule 7: a parent step on a name bound from a computed root read, line {line})")
+            for j in own[rng]:
+                if T[j][0] == "word" and T[j][3] in parent_funcs and j + 1 < len(T) and T[j + 1][3] == "(" \
+                        and not (j and T[j - 1][3] in ("def", "function", ".", "?.")):
+                    close = src.match.get(j + 1)
+                    args = range(j + 2, close if close is not None else j + 2)
+                    if any((T[i][0] == "word" and visible(T[i][3], i) and not T[i - 1][3] in (".", "?."))
+                           or (T[i][0] == "word" and T[i][3] in attrs_ and T[i - 1][3] in (".", "?."))
+                           or i in computed for i in args):
+                        self.refuse("unresolved (rule 7: a computed root read handed to a same-file function "
+                                    f"holding a parent step, line {line})")
 
 
 def workspace_graph(root: Path, cfg: dict) -> dict[str, dict]:
@@ -825,7 +1476,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
 
     alt = "|".join(re.escape(r) for r in roots)
     # Every `<root>/`, every quoted root (also `./<root>`, `<root>/`, and a backtick string), and every `../`.
-    pattern = f"({alt})[/\\\\]|[\"'`](\\./)*({alt})/?[\"'`]|\\.\\./"
+    pattern = f"({alt})[/\\\\]|[/\\\\]({alt})([^A-Za-z0-9_.-]|$)|[\"'`](\\./)*({alt})/?[\"'`]|\\.\\./"
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
     if (cfg.get("workspace") or {}).get("type") == "pnpm":
         # The workspace manifest DEFINES the graph (its quoted roots are package globs, not reads), and any change to
@@ -837,7 +1488,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
                           *([revision] if revision else []), "--", ".", *excludes],
-                         capture_output=True, text=True, timeout=15, env=environment)
+                         capture_output=True, timeout=15, env=environment)
     if out.returncode not in (0, 1):
         raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
     lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")
@@ -846,6 +1497,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     globs = list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())
     classify = RootLiteral(roots, by_dir, owner, globs)
     sources: dict[str, Source] = {}
+    raw_parent: dict[str, bool] = {}
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
 
@@ -855,7 +1507,15 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             classify.unowned(posixpath.normpath(path_text))  # F6, the literal form
         return found
 
-    remaining = out.stdout
+    # Bytes decoded here, never in text mode, whose newline translation drops a CRLF file's `\r` and makes every line
+    # of it mismatch the scanned revision's bytes (a refusal, L3.2).
+    remaining = out.stdout.decode("utf-8", errors="replace")
+    pending: list[str] = []  # the structured file whose lines are being read; its name taint runs after its last line
+
+    def finish(done: str) -> None:
+        classify.path = done
+        classify.taint_check(sources[done])
+
     while remaining:
         path, separator, remaining = remaining.partition("\0")
         number, second, remaining = remaining.partition("\0")
@@ -867,6 +1527,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             if not path.startswith(prefix):
                 raise ValueError("reader scan revision mismatch")
             path = path[len(prefix):]
+        if pending and pending[0] != path:
+            finish(pending.pop())
         parts = path.split("/")
         reader = owner(path)
         ext = posixpath.splitext(path)[1].lstrip(".").lower()
@@ -877,6 +1539,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             src = sources.get(path)
             if src is None:
                 src = sources[path] = Source(read_source(repo, path, revision, environment), ext)
+            if not pending:
+                pending.append(path)
             line = int(number) - 1
             a, b = src.bounds(line) if line <= len(src.newlines) else (0, -1)
             if src.text[a:b] != text:
@@ -895,6 +1559,16 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 continue
             if classify.quoted.search(t) and ext != "sql":
                 classify.refuse("a root literal in a file whose syntax the scanner does not parse is an unsupported")
+            if ext != "sql":
+                # Round 4: rule 7 for a file the tokenizer does not parse (yaml, toml, shell, Dockerfile) is raw and
+                # line-level (`raw_taint`). It runs on every hit, since a `../` line after `cd services` names no root.
+                if path not in raw_parent:
+                    raw_parent[path] = classify.raw_taint(read_source(repo, path, revision, environment))
+                if raw_parent[path]:
+                    classify.refuse(f"unresolved (rule 7: {raw_parent[path]})")
+            if ext != "sql" and classify.root_any.search(t):
+                # A root segment there still READS: a walker beneath its literal prefix.
+                targets |= classify.raw_reads(t)
             for m in lit.finditer(t):
                 targets.add(literal_read(m.group(1)))
             for m in rel.finditer(t):
@@ -906,6 +1580,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 readers[parts[0]].add(target)
             else:
                 readers.setdefault("<unmapped>", set()).add(target)
+    if pending:
+        finish(pending.pop())
     return deps, readers
 
 

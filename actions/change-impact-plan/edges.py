@@ -1692,9 +1692,11 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
         raise ValueError("reader scan revision must be an immutable commit")
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    # LC_ALL=C: under a UTF-8 locale `git grep -E` stops matching a line after an invalid UTF-8 byte, so a root mention
+    # later on that line was never seen. The pattern is ASCII, so byte semantics lose nothing.
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
                           *([revision] if revision else []), "--", ".", *excludes],
-                         capture_output=True, timeout=15, env=environment)
+                         capture_output=True, timeout=15, env={**environment, "LC_ALL": "C"})
     if out.returncode not in (0, 1):
         raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
     lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")

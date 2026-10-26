@@ -44,7 +44,8 @@ Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now inc
 
 `edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
 backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
-brackets across lines. Lines are split on `\n` only, as `git grep` numbers them.
+brackets across lines. Lines are split on `\n` only, as `git grep` numbers them. The scan's `git grep` runs with
+`LC_ALL=C`: under a UTF-8 locale it stops matching a line at an invalid UTF-8 byte, which would hide a later mention.
 
 The rule is root's principle (2026-10-26): **metadata needs positive evidence; everything else refuses.** A refusal plans
 FULL.
@@ -139,10 +140,12 @@ FULL.
      callback that the statement defines, and a step in the read token itself.
    - **A working directory set from a computed root read or a tainted name** refuses when the file holds any `../`,
      any `".."` string component, or `pardir`. The value is the argument of a call spelled `chdir(...)`, or a `cwd=` or
-     `cwd:` argument of an exec call. It counts when it holds a computed root read, or a plain name that is tainted
-     and visible at the call under the scoping above. An attribute is NOT followed, even a tainted one: `x.d` counts
-     only when the plain name `x` is itself tainted, so `self.d` or `this.d` counts only when `self` or `this` is
-     (`setattr(self, ...)` taints `self`). An exec call is one whose callee ends in `subprocess.<name>`,
+     unquoted `cwd:` argument of an exec call; a quoted JS key (`{ "cwd": d }`) is not followed. It counts when it
+     holds a computed root read, or a plain name written as a bare identifier that is tainted and visible at the call
+     under the scoping above. A name inside a string or a substitution (`f"{d}"`, `` `${d}` ``) is NOT followed, and
+     neither is an attribute, even a tainted one: `x.d` counts only when the bare `x` is itself tainted, so `self.d`
+     or `this.d` counts only when `self` or `this` is (`setattr(self, ...)` taints `self`). An exec call is one whose
+     callee ends in `subprocess.<name>`,
      `run`, `call`, `check_call`, `check_output`, `Popen`, `spawn*`, `exec*` or `fork`.
 
    **In an unparsed file (shell, Makefile, Dockerfile, YAML, TOML), rule 7 is line-level,** after the trailing `#`
@@ -186,7 +189,7 @@ FULL.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
-`test_edges_review_vectors.json` holds 543 adversarial readers:
+`test_edges_review_vectors.json` holds 552 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7;
@@ -199,7 +202,9 @@ The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not sca
   - R7T01-R7T07 and R7T13-R7T15 refuse the `package.json` forms (`NaN`, `-Infinity` and an integer too long to
     decode included);
   - R7T08-R7T11 are precision controls that read, and R7T12 pins that a TOML key reads;
-  - R7T16, R7T19 and R7T20 refuse and pin the working-directory wording; R7T17 and R7T18 are named residuals.
+  - R7T16, R7T19 and R7T20 refuse and pin the working-directory wording; R7T17 and R7T18 are named residuals;
+- 9 for round 8: the seventh review's R7B1a-R7B1d and R7V14, and R8T01-R8T04 (the working-directory wording's
+  edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads).
 
 Each one reads its truth or refuses, except the named residuals:
 - **A12, N08, N11:** an object value or key later used as a path (root's metadata ruling).
@@ -226,7 +231,9 @@ Each one reads its truth or refuses, except the named residuals:
   - task runners other than `package.json` `scripts`: husky `hooks` in a `package.json`, `deno.json` `tasks`
     (R6V18, R6V19);
   - a working directory set from a name that is not tainted where the call is, because another function binds
-    it: a parameter of the calling function, or another function's local (R7T17, R7T18).
+    it: a parameter of the calling function, or another function's local (R7T17, R7T18);
+  - a working directory set through a string or substitution of a tainted name (`os.chdir(f"{d}")`), or through a
+    quoted JS `"cwd"` or `'cwd'` key (R7B1a, R7B1c, R8T02, R8T03).
 - **A YAML key used as a path** (R5V17, R6V02, R6V03): rule 4 makes a `.yml`/`.yaml` key metadata.
 - **Shapes outside the list, each counted on vagary-core** (occurrences carrying a root path / all occurrences):
   - a command string in a variable passed to an exec call (R5V03): 0 / 11;

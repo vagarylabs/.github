@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified).",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split).",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -3471,6 +3471,1134 @@
    "truth": [
     "b",
     "nest"
+   ]
+  },
+  "V01_py_augassign_slash_dotdot": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\np /= \"..\"\np /= \"..\"\nq = p / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V02_py_augassign_plus_string": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\np += \"/../../packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V03_js_augassign_plus_string": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "let p = path.join(root, 'services', name);\np += '/../../packages/shared';\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js"
+  },
+  "V04_py_tuple_unpack_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "a, b = Path(ROOT, \"services\", name), 1\nq = a.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V05_py_star_unpack": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "*rest, last = [ROOT, Path(ROOT, \"services\", name)]\nq = last.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V06_py_walrus_if_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "if (p := Path(ROOT, \"services\", name)).exists():\n    q = p.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V07_py_ternary_value_before_walrus": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "q = p.parent.parent / \"packages\" / \"shared\" if (p := Path(ROOT, \"services\", name)).exists() else None\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V08_py_listcomp_parent_before_iterable": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "q = [x.parent.parent / \"packages\" / \"shared\" for x in [Path(ROOT, \"services\", n) for n in names]]\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V09_py_genexp_in_next": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "q = next(p.parent.parent / \"packages\" / \"shared\" for p in (Path(ROOT, \"services\", n) for n in names))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V10_py_dictcomp": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "q = {n: p.parent.parent / \"packages\" / \"shared\" for n in names for p in [Path(ROOT, \"services\", n)]}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V11_py_closure_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def outer(n):\n    base = Path(ROOT, \"services\", n)\n    def inner():\n        return base.parent.parent / \"packages\" / \"shared\"\n    return inner()\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V12_py_nonlocal_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def outer(n):\n    base = None\n    def set_():\n        nonlocal base\n        base = Path(ROOT, \"services\", n)\n    set_()\n    return base.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V13_py_attr_store_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "cfg.p = Path(ROOT, \"services\", name)\nq = cfg.p.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V14_py_attr_store_getattr_read": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "cfg.p = Path(ROOT, \"services\", name)\nq = getattr(cfg, \"p\").parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V15_py_subscript_store_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "d[\"k\"] = Path(ROOT, \"services\", name)\nq = d[\"k\"].parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V16_py_list_append": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "paths = []\npaths.append(Path(ROOT, \"services\", name))\nq = paths[0].parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V17_py_dict_update": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "d = {}\nd.update(k=Path(ROOT, \"services\", name))\nq = d[\"k\"].parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V18_py_setattr": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "setattr(cfg, \"p\", Path(ROOT, \"services\", name))\nq = cfg.p.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V19_js_array_push": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const arr = [];\narr.push(path.join(root, 'services', name));\nconst q = path.resolve(arr[0], '..', '..', 'packages', 'shared');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V20_js_map_set": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const m = new Map();\nm.set('k', path.join(root, 'services', name));\nconst q = path.resolve(m.get('k'), '..', '..', 'packages', 'shared');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V21_py_return_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def svc(n):\n    return Path(ROOT, \"services\", n)\nq = svc(x).parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V22_py_yield": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def svcs():\n    for n in names:\n        yield Path(ROOT, \"services\", n)\nfor p in svcs():\n    q = p.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V23_py_property": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class S:\n    @property\n    def base(self):\n        return Path(ROOT, \"services\", self.n)\nq = S().base.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V24_py_class_attribute": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class C:\n    BASE = Path(ROOT, \"services\", NAME)\n    def up(self):\n        return self.BASE.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V25_js_class_field": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "class C {\n  base = path.join(root, 'services', name);\n  up() { return path.resolve(this.base, '..', '..', 'packages', 'shared'); }\n}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V26_py_default_argument": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def up(p=Path(ROOT, \"services\", NAME)):\n    return p.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V27_py_same_file_method_call": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class Nav:\n    def up2(self, p):\n        return p.parent.parent\nq = Nav().up2(Path(ROOT, \"services\", n)) / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V28_py_function_by_reference_map": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def up2(p):\n    return p.parent.parent\nq = [x / \"packages\" / \"shared\" for x in map(up2, [Path(ROOT, \"services\", n)])]\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V29_js_function_by_reference_map": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "function up2(p) { return path.resolve(p, '..', '..'); }\nconst q = [path.join(root, 'services', n)].map(up2).map(d => path.join(d, 'packages', 'shared'));\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V30_py_parents_index_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = p.parents[1] / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V31_py_resolve_parent_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = p.resolve().parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V32_py_pardir_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\nq = os.path.join(p, os.pardir, os.pardir, \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V33_py_pardir_via_constant": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "UP = os.pardir\np = os.path.join(ROOT, \"services\", name, UP, UP, \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V34_py_dotdot_built_by_join": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "up = \"/\".join([\"..\"] * 2)\np = os.path.join(ROOT, \"services\", name, up, \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V35_py_fstring_dotdot_on_tainted_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = f\"{p}/../../packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V36_py_percent_dotdot_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\nq = \"%s/%s/%s/packages/shared\" % (p, \"..\", \"..\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V37_py_format_dotdot_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\nq = \"{}/{}/{}/packages/shared\".format(p, \"..\", \"..\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V38_py_parts_list_with_dotdot_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "parts = [\"services\", name, \"..\", \"..\", \"packages\", \"shared\"]\np = os.path.join(ROOT, *parts)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V39_py_parts_built_by_append": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "parts = [\"services\"]\nparts.append(name)\nparts += [\"..\", \"..\", \"packages\", \"shared\"]\np = os.path.join(ROOT, *parts)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V40_py_shutil_on_tainted_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "base = Path(ROOT, \"services\", name)\nshutil.copytree(base, base.parent.parent / \"packages\" / \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V41_py_glob_on_tainted_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "base = os.path.join(ROOT, \"services\", name)\nfiles = glob.glob(os.path.join(base, \"..\", \"..\", \"packages\", \"*\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V42_py_dirname_import_alias": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "from os.path import dirname as up\np = os.path.join(ROOT, \"services\", name)\nq = os.path.join(up(up(p)), \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V43_py_dirname_assigned_alias": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "parent_of = os.path.dirname\np = os.path.join(ROOT, \"services\", name)\nq = os.path.join(parent_of(parent_of(p)), \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V44_js_dirname_destructured_alias": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const { dirname: up } = require('node:path');\nconst p = path.join(root, 'services', name);\nconst q = path.join(up(up(p)), 'packages', 'shared');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V45_py_parts_slice_head": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = Path(*p.parts[:-2]) / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V46_py_regex_head": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = re.sub(r\"/[^/]+/[^/]+$\", \"\", str(p)) + \"/packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V47_py_split_head_contract": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\nhead = os.path.split(os.path.split(p)[0])[0]\nq = os.path.join(head, \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V48_py_literal_read_then_parent": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "P = Path(ROOT, \"services\", \"b\")\nQ = P.parent / \"a\" / \"x.json\"\n",
+   "truth": [
+    "a",
+    "b"
+   ]
+  },
+  "V49_py_literal_string_then_dirname_dotdot": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "SCHEMA = \"services/b/schema.json\"\nother = os.path.join(os.path.dirname(SCHEMA), \"..\", \"a\", \"x.json\")\n",
+   "truth": [
+    "a",
+    "b"
+   ]
+  },
+  "V50_js_literal_string_then_dirname_dotdot": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const SCHEMA = 'services/b/schema.json';\nconst other = path.join(path.dirname(SCHEMA), '..', 'a', 'x.json');\n",
+   "truth": [
+    "a",
+    "b"
+   ]
+  },
+  "V51_py_literal_same_statement_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "other = os.path.join(os.path.dirname(\"services/b/schema.json\"), \"..\", \"a\")\n",
+   "truth": [
+    "a",
+    "b"
+   ]
+  },
+  "V52_py_chdir_then_relative": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "os.chdir(Path(ROOT, \"services\", name))\nwith open(\"../../packages/shared/x.json\") as f:\n    pass\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V53_py_subprocess_cwd_relative_argv": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "subprocess.run([\"make\", \"-C\", \"../../packages/shared\"], cwd=Path(ROOT, \"services\", name))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V54_js_process_chdir_then_relative": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "process.chdir(path.join(root, 'services', name));\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js"
+  },
+  "V55_jsx_swallow_with_dotdot": {
+   "expect": "refuse",
+   "ext": "jsx",
+   "src": "const Help = () => <p>It's {path.join(root, \"services\", name, \"..\", \"..\", \"packages\", \"shared\")} that's</p>;\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V56_js_regex_division_swallow_with_dotdot": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "if (ok) /'/.test(s); const p = path.join(root, \"services\", name, \"..\", \"..\", \"packages\", \"shared\"); const t = '/';\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V57_py_tstring_pep750": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = t\"{os.path.join(ROOT, 'services', name, '..', '..', 'packages', 'shared')}\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V58_py_shell_string_cd_dotdot": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "subprocess.run(\"cd services/b && cd ../../packages/shared && make\", shell=True)\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V59_py_shell_string_bare_root": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "subprocess.run(\"pytest services -q\", shell=True)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "V60_py_os_system_two_roots": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "os.system(\"ruff check services apps\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "V61_sh_bare_root": {
+   "expect": "sound",
+   "ext": "sh",
+   "src": "pytest services -q\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/run.sh"
+  },
+  "V62_makefile_var_dotdot": {
+   "expect": "refuse",
+   "ext": "",
+   "src": "SVC := services/b\ntest:\n\tcd $(SVC)/../../packages/shared && pytest\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/build/Makefile"
+  },
+  "V63_sh_for_loop_var_dotdot": {
+   "expect": "refuse",
+   "ext": "sh",
+   "src": "for d in services/*/; do\n  (cd \"$d/../../packages/shared\" && make)\ndone\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/ci/run.sh"
+  },
+  "V64_yaml_bare_value": {
+   "expect": "sound",
+   "ext": "yml",
+   "src": "paths:\n  - services\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/lint.yml"
+  },
+  "V65_dockerfile_copy_bare": {
+   "expect": "sound",
+   "ext": "",
+   "src": "FROM python:3.12\nCOPY services .\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/Dockerfile"
+  },
+  "V66_py_lambda_callback_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "q = list(map(lambda p: p.parent.parent / \"packages\" / \"shared\", [Path(ROOT, \"services\", n)]))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "V67_py_fstring_dotdot_by_repetition": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = f\"{ROOT}/services/{name}/{'.' * 2}/{'.' * 2}/packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "V68_py_comparison_now_walker_control": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "if d == \"services\":\n    shutil.copytree(Path(ROOT, d), out)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "V69_py_format_placeholder_control": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = \"{}/services/{}/x.json\".format(ROOT, name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "V70_py_docopt_control": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "\"\"\"Usage: sync.py [--src=<glob>]\n\nOptions:\n  --src=<glob>  [default: services/*/migrations].\n\"\"\"\nargs = docopt(__doc__)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "M1_js_template_subst_on_tainted": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const p = path.join(root, 'services', name);\nconst q = `${p}/../../packages/shared`;\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js"
+  },
+  "M2_py_fstring_subst_parent_attr": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = Path(f\"{p.parent.parent}\") / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "M3_py_fstring_subst_depth2_coincidence": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = f\"{p}/../../packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "M4_py_augassign_same_line_read": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name); p /= \"..\"; p /= \"..\"; q = p / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "M5_py_literal_join_then_parent_parent": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "P = os.path.join(ROOT, \"services\", \"b\")\nQ = os.path.join(os.path.dirname(P), \"a\", \"x.json\")\n",
+   "truth": [
+    "a",
+    "b"
+   ]
+  },
+  "M6_py_literal_slash_then_parents": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "P = ROOT / \"services\" / \"b\" / \"worker\"\nQ = P.parents[1] / \"a\"\n",
+   "truth": [
+    "a",
+    "nest"
+   ]
+  },
+  "X1_py_service_dirs_generator": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def service_dirs():\n    for d in (ROOT / \"services\").iterdir():\n        yield d\nfor d in service_dirs():\n    shared = d.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "X2_py_fstring_only_use_in_join_with_dotdot": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = os.path.join(f\"{p}\", \"..\", \"..\", \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "X3_js_template_only_use_in_resolve_with_dotdot": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const p = path.join(root, 'services', name);\nconst q = path.resolve(`${p}`, '..', '..', 'packages', 'shared');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "X4_py_str_call_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = os.path.join(str(p), \"..\", \"..\", \"packages\", \"shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "X5_py_class_config_realistic": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class Paths:\n    SERVICE = Path(ROOT) / \"services\" / os.environ[\"SVC\"]\n\nSHARED = Paths.SERVICE.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "X6_sh_bare_cd_root_then_make": {
+   "expect": "sound",
+   "ext": "sh",
+   "src": "cd services && make test\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/run.sh"
+  },
+  "K05_js_arrow_expression_return": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const svc = (n) => path.join(root, 'services', n);\nconst q = path.resolve(svc(x), '..', '..', 'packages', 'shared');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "K06_py_backward_alias_chain": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def up():\n    return ALIAS.parent.parent / \"packages\" / \"shared\"\nALIAS = BASE\nBASE = Path(ROOT, \"services\", NAME)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "K07_py_dotdot_run_string_on_tainted": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name)\nq = os.path.join(p, \"../../packages/shared\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "K09_sh_transitive_var": {
+   "expect": "refuse",
+   "ext": "sh",
+   "src": "A=services/b\nB=$A/tests\ncd $B/../../../packages/shared\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/ci/run.sh"
+  },
+  "K10_sh_pushd_then_relative": {
+   "expect": "refuse",
+   "ext": "sh",
+   "src": "pushd services/b\nmake -C ../../packages/shared\npopd\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/ci/run.sh"
+  },
+  "K09b_sh_transitive_var": {
+   "expect": "refuse",
+   "ext": "sh",
+   "src": "A=services/b\nB=$A/tests\ncd $B/../../../packages/shared\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/run.sh"
+  },
+  "R5R01_py_dot_separator_in_substitution": {
+   "expect": "read",
+   "ext": "py",
+   "src": "EX = [{'path': 'services/b/x.ts', 'reason': 'a. b'}]\nfor e in EX:\n    print(f\"why: {e['reason'].split('.')[0]}.\")\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T01_py_dot_repetition_in_substitution": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, 'services', name)\nq = f\"{p}/{'.' * 2}/{'.' * 2}/packages/shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "R5R02_yaml_compose_services_key": {
+   "expect": "read",
+   "ext": "yml",
+   "src": "services:\n  app:\n    build: .\n",
+   "truth": [],
+   "file": "services/r/docker-compose.yml"
+  },
+  "R5R03_py_database_execute_not_a_command": {
+   "expect": "read",
+   "ext": "py",
+   "src": "cur.execute(\"UPDATE services SET enabled = true WHERE id = %s\", (i,))\n",
+   "truth": []
+  },
+  "R5R04_py_def_default_cwd_not_a_process_cwd": {
+   "expect": "read",
+   "ext": "py",
+   "src": "STEP = 'python3 ../../scripts/x.py'\ndef resolve(shell=STEP, cwd='services/b'):\n    return run_script(shell, cwd)\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T02_py_fstring_subst_then_dotdot_root": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = f\"{base}/../services/b/x.json\"\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T03_js_template_subst_then_dotdot_root": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const p = `${base}/../services/b/x.json`;\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T04_py_tstring_subst_then_dotdot_root": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = t\"{base}/../services/b/x.json\"\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T05_py_fstring_literal_dir_dotdot_root": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = f\"{ROOT}/x/../services/b\"\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "R5T06_py_tstring_substitution_carries_taint": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = t\"{p.parent.parent}/packages/shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R5T07_py_plain_literal_dir_dotdot_root_is_not_its_own_anchor": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = \"x/../services/b/data.json\"\n",
+   "truth": [
+    "b"
    ]
   }
  }

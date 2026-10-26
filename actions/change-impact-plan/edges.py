@@ -83,8 +83,6 @@ CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
-# A dots-only string literal (`'.'`, `".."`): inside a substitution it builds a parent step (`'.' * 2`).
-DOTS_LITERAL = re.compile(r"""(['"])\.+\1""")
 # A parent step inside a substitution. A single `'.'` is a separator (`.split('.')`), never a step; dots build one only
 # as `..`, repeated (`'.' * 2`) or concatenated (`'.' + '.'`).
 SUB_PARENT = re.compile(r"(?<![.\w])\.\.(?![.\w])|\.parents?\b|\bpardir\b|\bdirname\s*\("
@@ -128,6 +126,8 @@ def substitutions(body: str, js: bool) -> list[str]:
 
 # A path relative to the file: `../` steps then literal segments (`../app/api/x/`); the `rel` rule reads it exactly.
 REL_RUN = re.compile(r"(?:\.\./)+(?:[A-Za-z0-9_.-]+/)*")
+BARE_WORD_GREP = "|(^|[^A-Za-z0-9_.-])({alt})([^A-Za-z0-9_.-]|$)"
+BARE_WORD_GREP = "|(^|[^A-Za-z0-9_.-])({alt})([^A-Za-z0-9_.-]|$)"
 PARENT_WORD = re.compile(r"\b(?:pardir|parents?|dirname)\b")
 GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 _SPACE = re.compile(r"\s+")
@@ -319,13 +319,19 @@ class Source:
         code = self.code
         js = ext in JS_EXT
         self.subs = {j: substitutions(tok[3][0], js) for j, tok in enumerate(code) if tok[0] == "str" and not tok[3][1]}
+        aliases = set(re.findall(r"\bdirname\s+as\s+([A-Za-z_$][\w$]*)", text))
+        aliases |= set(re.findall(r"\bdirname\s*:\s*([A-Za-z_$][\w$]*)", text))
+        aliases |= set(re.findall(
+            r"(?m)^\s*(?:const\s+|let\s+|var\s+)?([A-Za-z_$][\w$]*)\s*=\s*[\w$.]*\bdirname\s*;?\s*$", text))
+        self.dirname_aliases = aliases - {"dirname"}
         self.parent_toks = [
             j for j, tok in enumerate(code)
             if (tok[0] == "str" and (PARENT_STEP.search(tok[3][0])
                                      or any(SUB_PARENT.search(e) for e in self.subs.get(j, ()))
                                      or (tok[3][0] in ("parent", "parents", "pardir") and self._in_getattr(j))))
             or (tok[0] == "word" and tok[3] == "pardir")
-            or (tok[0] == "word" and tok[3] == "dirname" and j + 1 < len(code) and code[j + 1][3] == "(")
+            or (tok[0] == "word" and (tok[3] == "dirname" or tok[3] in self.dirname_aliases) and j + 1 < len(code)
+                and code[j + 1][3] == "(")
             or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
                 and code[j - 1][3] in (".", "?."))]
         self.computed = []
@@ -602,6 +608,19 @@ class RootLiteral:
                 return True
         return False
 
+    PROCESS_EXEC = re.compile(r"(?:^|\.)(?:subprocess\.\w+|system|popen|Popen|check_call|check_output|spawn\w*|"
+                              r"execSync|execFileSync|execFile|exec(?:[lv]p?e?)?)$")
+
+    def in_process_exec(self, k: int) -> bool:
+        """A string inside a call that runs a process (subprocess, os.system/popen, child_process), never a database
+        `execute()`: its bare root words are command arguments."""
+        for x in reversed(self.src.enclosing[k]):
+            if self.block(x):
+                return False
+            if self.kind(x) == "call" and self.PROCESS_EXEC.search(self.callee(x) or ""):
+                return True
+        return False
+
     # ---- reads ----
     def path_read(self, tail: list, root: str, start: int, end: int, dynamic: bool = False) -> set:
         components = [root]
@@ -845,18 +864,22 @@ class RootLiteral:
         plain, body = tok[3][1], tok[3][0]
         # A segment reached through `../` is a path relative to this file, which the `rel` rule resolves exactly from
         # the file's directory; it is not a repo-root mention.
+        # A segment is file-relative (the `rel` rule's) only after a pure-literal `../` run from the start of its path:
+        # after a substitution or a literal directory (`{base}/../services`, `x/../services`) it is a mention.
         mentions = [m.start() for m in self.root_any.finditer(src.text, lo, hi)
-                    if src.text[max(m.start() - 3, 0):m.start()] not in ("../", "..\\")
-                    and not REL_RUN.fullmatch(re.search(r"[^\s'\"`]*$", src.text[lo:m.start()]).group())]
+                    if not REL_RUN.fullmatch(re.search(r"[^\s'\"`]*$", src.text[lo:m.start()]).group())]
         mentions += [m.start() + 1 for m in self.quoted.finditer(src.text, lo, hi)]
-        if not mentions:
+        if not mentions and not (self.in_process_exec(k) and self.root_word.search(src.text, lo, hi)):
             return set()
-        if not plain and (PARENT_STEP.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)
-                          or any(DOTS_LITERAL.search(e) for e in src.subs.get(k, ()))):
+        if not plain and (PARENT_STEP.search(body) or PARENT_WORD.search(body) or self.quoted.search(body)):
             self.refuse("unresolved")  # H3.2: an opaque substitution may leave the root
         if ">>>" in body:
             self.refuse("a doctest naming a root is executed code the scanner does not parse; an unsupported")
         reads = set()
+        if self.in_process_exec(k):  # a command string: a bare root word (`pytest services -q`) names that whole tree
+            for m in self.root_word.finditer(src.text, lo, hi):
+                if not self.root_any.match(src.text, m.start()):
+                    reads |= self.resolve([m.group()], dynamic=True)
         for p in sorted(set(mentions)):
             while src.text.startswith("./", p):
                 p += 2
@@ -874,6 +897,8 @@ class RootLiteral:
         return reads
 
     RAW_BIND = re.compile(r"^\s*(?:(?:export|local|readonly|declare(?:\s+-\w+)?)\s+)?([A-Za-z_]\w*)=(.*)$|^\s*(?:ARG|ENV)\s+([A-Za-z_]\w*)[=\s](.*)$")
+    RAW_MAKE = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?::{1,2}|\?|\+|!)?=\s*(.*)$")
+    RAW_FOR = re.compile(r"(?:^|[;&|]\s*)for\s+([A-Za-z_]\w*)\s+in\s+([^;]*)")
     RAW_CD = re.compile(r"(?<![\w.-])(?:cd|pushd|WORKDIR|working[-_]directory|working_dir|workdir|cwd)(?=[\s:=])")
 
     def raw_taint(self, text: str) -> str:
@@ -888,8 +913,12 @@ class RootLiteral:
         while changed:
             changed = False
             for line in lines:
-                m = self.RAW_BIND.match(self.strip_comment(line))
+                bare = self.strip_comment(line)
+                m = self.RAW_BIND.match(bare)
                 name, value = (m.group(1) or m.group(3), m.group(2) if m.group(1) else m.group(4)) if m else (None, "")
+                if not name:
+                    m = self.RAW_MAKE.match(bare) or self.RAW_FOR.search(bare)
+                    name, value = (m.group(1), m.group(2)) if m else (None, "")
                 if name and name not in tainted and (self.root_any.search(value) or self.uses(value, tainted)):
                     tainted.add(name)
                     changed = True
@@ -925,12 +954,21 @@ class RootLiteral:
 
     @staticmethod
     def uses(text: str, names: set) -> bool:
-        return any(re.search(r"\$\{?%s\b" % re.escape(n), text) for n in names)
+        return any(re.search(r"\$[{(]?%s\b" % re.escape(n), text) for n in names)
 
     def raw_reads(self, text: str) -> set:
         """Walker reads for every root segment of one line of an unparsed file (rule 1: a mention reads or refuses)."""
         reads = set()
         text = self.strip_comment(text)
+        for m in self.root_word.finditer(text):  # a bare root word (`pytest services`, `COPY services .`, `- services`)
+            if text[m.end():m.end() + 1] == ":" and not text[m.end():m.end() + 2] == "::":
+                continue  # a YAML/TOML key (`services:`) is metadata, as an object key is
+            if not self.root_any.match(text, m.start()) and text[max(m.start() - 1, 0):m.start()] not in ("/", "\\"):
+                src, self.src = getattr(self, "src", None), None
+                try:
+                    reads |= self.resolve([m.group()], dynamic=True)
+                finally:
+                    self.src = src
         for m in self.root_any.finditer(text):
             if text[max(m.start() - 3, 0):m.start()] in ("../", "..\\"):
                 continue  # relative to the file: the `rel` rule resolves it
@@ -1073,6 +1111,8 @@ class RootLiteral:
                 names.add(T[j + 1][3])
         return names - LITERAL_WORDS
 
+    MUTATORS = frozenset({"append", "extend", "insert", "add", "update", "setdefault", "push", "unshift", "set",
+                          "splice"})
     COMPOUND_PREFIX = frozenset({"+", "-", "*", "/", "%", "**", "|", "&", "^", "??", "||", "&&", "@"})
 
     def target_names(self, lo: int, hi: int) -> set:
@@ -1384,6 +1424,23 @@ class RootLiteral:
         T = src.code
         parents = set(src.parent_toks)
         stmts, seen = [], set()
+        # A name bound ONLY from parent material (os.pardir, dots-only literals, separators, `*`/`+`/join of those)
+        # is itself a parent step wherever it is read. An anchor (`__file__`, `__dirname`, `import.meta`, cwd) never is.
+        PURE = {"os", "path", "pardir", "join", "sep", "posix", ".", "*", "+", ",", "(", ")", "[", "]"}
+        parent_names = set()
+        for j in range(len(T)):
+            if (T[j][0] == "op" and T[j][3] == "=" and j and T[j - 1][0] == "word"
+                    and not (j > 1 and T[j - 2][3] in (".", "?."))):
+                lo, hi = self.statement(j, j, taint=True)
+                rhs = [T[i] for i in range(j + 1, hi + 1)]
+                if rhs and any(i in parents for i in range(j + 1, hi + 1)) and all(
+                        (t[0] == "str" and t[3][1] and re.fullmatch(r"[./\\]*", t[3][0]))
+                        or (t[0] in ("op", "open", "close", "comma") and t[3] in PURE)
+                        or (t[0] == "word" and (t[3] in PURE or t[3].isdigit()))
+                        for t in rhs):
+                    parent_names.add(T[j - 1][3])
+        parents |= {j for j in range(len(T)) if T[j][0] == "word" and T[j][3] in parent_names
+                    and not (j and T[j - 1][3] in (".", "?.")) and not (j + 1 < len(T) and T[j + 1][3] == "=")}
         for j in range(len(T)):
             rng = self.statement(j, j, taint=True)
             if rng not in seen:
@@ -1401,7 +1458,8 @@ class RootLiteral:
             if not inside:
                 return None
             _, name, lo = min(inside)
-            return name if (T0[0] == "word" and T0[3] == "return") or (T[lo][3] == "=>" and rng[0] == lo + 1) else None
+            returns = (T0[0] == "word" and T0[3] in ("return", "yield")) or (T[lo][3] == "=>" and rng[0] == lo + 1)
+            return name if returns else None
 
         computed = set(src.computed)
         # Scope, as each language scopes (a tainted (scope, name): scope is a function body's (lo, hi), or None for
@@ -1441,6 +1499,7 @@ class RootLiteral:
             return (f, max(rng[1], self.statement(body, body, taint=True)[1]) if body < len(T) else rng[1])
 
         classes = self.class_bodies()
+        properties = set(re.findall(r"@property\s*\n\s*def\s+(\w+)", src.text)) if src.py else set()
 
         def class_level(j):
             """Token j is directly in a class body: inside a class, and in no function nested in that class."""
@@ -1477,10 +1536,48 @@ class RootLiteral:
             attrs_.update(a)
             if class_level(rng[0]):
                 attrs_.update(p)  # a class attribute or field is read as `self.x`, `this.x`, `Cls.x`
+            for k in own[rng]:  # container mutation: the receiver now holds what this statement passes in
+                if T[k][0] != "word" or k + 1 >= len(T) or T[k + 1][3] != "(":
+                    continue
+                if T[k][3] in self.MUTATORS and k >= 2 and T[k - 1][3] in (".", "?.") and T[k - 2][0] == "word":
+                    r = k - 2
+                    if r and T[r - 1][3] in (".", "?."):
+                        attrs_.add(T[r][3])
+                    else:
+                        vars_.add((None, T[r][3]))
+                        names_any.add(T[r][3])
+                elif T[k][3] == "setattr" and src.match.get(k + 1) is not None:
+                    inner = range(k + 2, src.match[k + 1])
+                    first = next((i for i in inner if T[i][0] == "word"), None)
+                    name = next((T[i][3][0] for i in inner if T[i][0] == "str" and T[i][3][1]), None)
+                    if name:
+                        attrs_.add(name)
+                    if first is not None:
+                        vars_.add((None, T[first][3]))
+                        names_any.add(T[first][3])
             for sc, n in self.param_scopes(own[rng], rng[1]):
                 vars_.add((sc, n))
                 names_any.add(n)
+            if src.py and rng in seeded and T[rng[0]][3] in ("def", "async"):
+                k = next((i for i in range(rng[0], rng[1] + 1) if T[i][3] == "("), None)
+                body = next(((lo, hi) for name, lo, hi in funcs
+                             if lo <= rng[0] <= hi and T[lo][3] in ("def", "async")), None)
+                if k is not None and body and src.match.get(k) is not None:
+                    i, close = k + 1, src.match[k]
+                    while i < close:  # each parameter segment; bind it only if its own default holds the read
+                        end, depth = i, 0
+                        while end < close and not (depth == 0 and T[end][0] == "comma"):
+                            depth += {"open": 1, "close": -1}.get(T[end][0], 0)
+                            end += 1
+                        if any(x in computed for x in range(i, end)):
+                            name = next((T[x][3] for x in range(i, end) if T[x][0] == "word"), None)
+                            if name:
+                                vars_.add((body, name))
+                                names_any.add(name)
+                        i = end + 1
             f = returning(rng)
+            if f and f in properties:
+                attrs_.add(f)  # a @property is read as an attribute
             if f:
                 vars_.add((None, f))
                 names_any.add(f)
@@ -1504,6 +1601,25 @@ class RootLiteral:
                 by_name.add(rng)
                 changed = True
                 bind(rng)
+        def carries(lo, hi):
+            return any(x in computed or (T[x][0] == "word" and visible(T[x][3], x)
+                                         and not (x and T[x - 1][3] in (".", "?.")))
+                       for x in range(lo, hi))
+        cwd_set = False
+        for rng in set(seeded) | by_name:
+            for k in own[rng]:
+                if T[k][0] == "word" and T[k][3] == "chdir" and k + 1 < len(T) and T[k + 1][3] == "(" \
+                        and src.match.get(k + 1) is not None and carries(k + 2, src.match[k + 1]):
+                    cwd_set = True
+                elif T[k][0] == "word" and T[k][3] == "cwd" and k + 1 < len(T) and T[k + 1][3] in ("=", ":") \
+                        and self.in_exec(k):  # an exec call's working directory, never a def's own parameter
+                    end, depth = k + 2, 0
+                    while end < len(T) and not (depth == 0 and (T[end][0] == "comma" or T[end][0] == "close")):
+                        depth += {"open": 1, "close": -1}.get(T[end][0], 0)
+                        end += 1
+                    cwd_set = cwd_set or carries(k + 2, end)
+        if cwd_set and re.search(r"(?<![\w.])\.\./", src.text):
+            self.refuse("unresolved (rule 7: a working directory set from a computed root read, and a `../` path)")
         for rng in set(seeded) | by_name:
             first = seeded.get(rng) if self.SEED_ANCHOR and rng not in by_name else None
             line = src.line_of(T[rng[0]][1]) + 1
@@ -1514,6 +1630,11 @@ class RootLiteral:
                    for j in own[rng]):
                 self.refuse(f"unresolved (rule 7: a parent step on a name bound from a computed root read, line {line})")
             for j in own[rng]:
+                if T[j][0] == "word" and T[j][3] in parent_funcs and not (j + 1 < len(T) and T[j + 1][3] == "(") \
+                        and not (j and T[j - 1][3] in ("def", "function", ".", "?.")) \
+                        and not (j + 1 < len(T) and T[j + 1][3] == "="):
+                    self.refuse("unresolved (rule 7: a same-file function holding a parent step, passed by reference "
+                                f"in a statement with a computed root read, line {line})")
                 if T[j][0] == "word" and T[j][3] in parent_funcs and j + 1 < len(T) and T[j + 1][3] == "(" \
                         and not (j and T[j - 1][3] in ("def", "function")):
                     close = src.match.get(j + 1)
@@ -1550,6 +1671,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     alt = "|".join(re.escape(r) for r in roots)
     # Every `<root>/`, every quoted root (also `./<root>`, `<root>/`, and a backtick string), and every `../`.
     pattern = f"({alt})[/\\\\]|[/\\\\]({alt})([^A-Za-z0-9_.-]|$)|[\"'`](\\./)*({alt})/?[\"'`]|\\.\\./"
+    pattern += BARE_WORD_GREP.format(alt=alt)  # a bare root word (`pytest services`, `COPY services .`)
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
     if (cfg.get("workspace") or {}).get("type") == "pnpm":
         # The workspace manifest DEFINES the graph (its quoted roots are package globs, not reads), and any change to
@@ -1639,7 +1761,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                     raw_parent[path] = classify.raw_taint(read_source(repo, path, revision, environment))
                 if raw_parent[path]:
                     classify.refuse(f"unresolved (rule 7: {raw_parent[path]})")
-            if ext != "sql" and classify.root_any.search(t):
+            if ext != "sql" and (classify.root_any.search(t) or classify.root_word.search(t)):
                 # A root segment there still READS: a walker beneath its literal prefix.
                 targets |= classify.raw_reads(t)
             for m in lit.finditer(t):

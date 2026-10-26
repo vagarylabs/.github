@@ -401,15 +401,19 @@ class EdgesTest(unittest.TestCase):
     def test_review_vectors_read_their_truth_or_refuse(self):
         """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
-        (object values and keys, the ratified metadata) and T19/T36/T37 (lexical limits, named residuals)."""
+        (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
+        does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
+        os.path.split), all named residuals."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 self.judge(label, case, self.vector_scan(repo, case))
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
-                         ["A12_dict_value_as_path", "N08_dict_values_walked", "N11_dict_key_walked",
+                         ["A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
+                          "M6_py_literal_slash_then_parents", "N08_dict_values_walked", "N11_dict_key_walked",
                           "T19_partial_split_root", "T36_computed_prefix_not_repo_root",
-                          "T37_fstring_computed_prefix_not_root"])
+                          "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
+                          "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 
     def test_the_action_path_reads_the_scanned_revision(self):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a

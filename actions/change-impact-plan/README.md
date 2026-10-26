@@ -93,25 +93,62 @@ FULL.
    - a subscript key (`m["services"]`);
    - any `.sql` file.
 4. **Rule 7, parent steps on names (lexical taint).**
-   - A name bound from a computed root read is tainted, and so is every name bound from a tainted one, transitively
-     within the file.
-   - A tainted statement holding a parent step REFUSES. The steps are `..`, a quoted `'..'`, `.parent`, `.parents`,
-     `os.pardir` and `getattr(p, "parent")`.
-   - So does a tainted value passed to a function defined in the same file whose body holds a parent step.
+   - A name bound from a COMPUTED root read is tainted, and so is every name bound from a tainted one, transitively
+     within the file. (A literal read such as `Path(ROOT, "services", "b")` does not start taint: residual below.)
+   - A tainted statement holding a parent step REFUSES. The steps are:
+     - `..` and a quoted `'..'`;
+     - `.parent` and `.parents`;
+     - `os.pardir` and `getattr(p, "parent")`;
+     - a `dirname(` call, under any import or assigned alias;
+     - a name bound only from parent material (`UP = os.pardir`, `"/".join([".."] * 2)`);
+     - inside an f-string, t-string or JS `${}` substitution, any of these or dots repeated or concatenated
+       (`'.' * 2`).
+   - So does a tainted value passed to a same-file function whose body holds a parent step, whether it is called
+     directly, as a method or by reference (`map(up2, [read])`).
    - In the read's own statement, a step BEFORE the read acts on its base (`Path(__file__).parents[2] / "services"`),
-     so it does not count. A step inside a callback that the statement defines always counts.
+     so it does not count. A step inside a callback that the statement defines always counts. So does a step in the
+     read token itself (a string that names a root and holds `..`).
+   - A working directory set from a tainted value (`os.chdir(read)`, an exec call's `cwd=read`) with any `../` path in
+     the file REFUSES.
 
-   Bindings follow each language:
-   - every target before every top-level `=` binds (`a = b = v`, `a, (b, c) = ...`, `let q = 1, d = v`), as do an
-     assignment expression (`(m := v)`), `for` and `as` targets, and parameters, never a type or a default value;
+   **What carries taint** (these constructs only):
+   - every target before every top-level `=` (`a = b = v`, `a, (b, c) = ...`, `let q = 1, d = v`);
+   - an augmented assignment (`p /= ".."`), which reads its own target;
+   - an assignment expression (`(m := v)`);
+   - `for` and `as` targets;
+   - parameters (never a type or a default value), and a Python def parameter whose own default holds the read;
+   - names read inside a substitution;
+   - a container mutated with the value (`.append`, `.extend`, `.insert`, `.add`, `.update`, `.setdefault`, `.push`,
+     `.unshift`, `.set`, `.splice`, and `setattr(obj, "name", value)`);
+   - a function whose `return` or `yield` is tainted, and so its calls; a tainted `@property` is a tainted attribute;
+   - a name bound in a class body, which is also an attribute (`self.BASE`, `this.base`, `Cls.BASE`).
+
+   **Scope follows each language:**
    - a parameter is visible only inside its function;
    - JS `const`/`let` are block-scoped, `var` is function-scoped, and a bare assignment is file-wide;
    - a Python name is local to its `def` unless declared `global` or `nonlocal`;
-   - an attribute (`self.paths`) matches by name across the file.
+   - an attribute matches by name across the file.
 
-   In an unparsed file, rule 7 is line-level:
-   - a line holding a root segment, or a shell/Dockerfile variable bound from one, together with a `..` step REFUSES;
-   - so does any `..` step after a `cd`, `pushd`, `WORKDIR` or `working-directory:` into a root.
+   **NOT covered** (named residuals below): flows through another file; a literal root read; a value carried through a
+   container read back by a computed key or slice; `getattr` with a computed name; `eval`/`exec` and dynamic imports;
+   a path head taken by string operations (`os.path.split(p)[0]`, `p.rsplit("/", 1)[0]`, tuple slicing
+   `Path(*p.parts[:-2])`, a regex substitution).
+
+   **In an unparsed file (shell, Makefile, Dockerfile, YAML, TOML), rule 7 is line-level,** after the trailing `#`
+   comment:
+   - a line holding a root segment, or a variable bound from one, together with a `..` step REFUSES. Variables are
+     shell/Dockerfile `NAME=`, `ARG`/`ENV`, Make `NAME :=`/`?=`/`+=`/`=`, and a shell `for NAME in`, used as `$NAME`,
+     `${NAME}` or `$(NAME)`;
+   - so does any `..` step after a `cd`, `pushd`, `WORKDIR` or `working-directory:` into a root, or after a `cd` into
+     one inside a command string.
+   - A bare root WORD there (`pytest services -q`, `COPY services .`, `- services`, `cd services && make`) reads every
+     package beneath it; a YAML/TOML key (`services:`) is metadata. So does a bare root word inside a command string
+     handed to a process, never a database `execute()`. The process APIs recognised are exactly:
+     - Python `subprocess.*`, `Popen`, `check_call`, `check_output`, `os.system` and `os.popen`;
+     - `spawn*`, and child_process `exec`, `execSync`, `execFile`, `execFileSync`, `execl*`/`execv*`.
+
+     A command string handed to any other API (a shell library such as `sh`, `plumbum` or `invoke`; `execa`; zx's
+     `` $`...` ``) is a stated gap: its bare words read nothing.
 5. **Everything else REFUSES**, including:
    - a root not alone in a path argument (`"services" + os.sep + x`, `"apps" if web else "services"`);
    - a subscripted list in a path call;
@@ -126,16 +163,29 @@ FULL.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
-`test_edges_review_vectors.json` holds 318 adversarial readers: 245 from root's three independent reviews, 12 of spine's
-own probes, and 61 for round 4's rule 7 (R4T01-R4T52 must refuse; R4R01-R4R09 must keep reading). Each one reads its
-truth or refuses, except the named residuals:
-- A12, N08, N11: an object value or key later used as a path (root's metadata ruling);
-- T19: a root built by deliberate string obfuscation (`"serv" + "ices"`);
+`test_edges_review_vectors.json` holds 424 adversarial readers:
+- 245 from root's first three independent reviews;
+- 12 of spine's own probes;
+- 74 for round 4's rule 7 (R4T01-R4T63 must refuse; R4R01-R4R11 must keep reading);
+- 89 from the fourth review (V01-V70, M1-M6, X1-X6, K05-K10);
+- 4 for round 5's precision (R5R01-R5R04 must read; R5T01 must refuse).
+
+Each one reads its truth or refuses, except the named residuals:
+- A12, N08, N11: an object value or key later used as a path (root's metadata ruling).
+- T19: a root built by deliberate string obfuscation (`"serv" + "ices"`).
 - T36/T37: a root joined to a computed base that is a repo-internal directory other than the root (`join(WEB_SRC,
   "services", x)`) reads beneath the root segment, not beneath that directory. A rule refusing every base not provably
-  the repo root would refuse 8 vagary-core files, 5 of them fixture trees under a temp directory;
-- rule 7 stays within a file: a cross-file flow (a tainted path handed to a helper in another module) is not followed;
-- a computed path component holding `..` (an opaque substitution) reads beneath its literal prefix.
+  the repo root would refuse 8 vagary-core files, 5 of them fixture trees under a temp directory.
+- M5, M6, V48: a LITERAL root read does not start taint, so `P = Path(ROOT, "services", "b")` then `P.parent / "a"`
+  reads b, not a. Measured: starting taint there refuses 11 more vagary-core files.
+- V45, V46, V47: a path head taken by string operations (tuple slicing `Path(*p.parts[:-2])`, a regex substitution,
+  `os.path.split(p)[0]`) is not a parent step.
+- Rule 7 stays within a file and covers only the constructs listed under rule 7. A cross-file flow (a tainted path
+  handed to a helper in another module), a computed container key, `getattr` with a computed name, and
+  `eval`/`exec` are not followed.
+- A computed path component whose runtime value holds `..` (an opaque substitution, such as a value read from config
+  or the environment) reads beneath its literal prefix. Parent material the file itself builds (`os.pardir`, `'..'`,
+  dots joined, repeated or concatenated) does count.
 
 These are bounded by the 10-22 ruling: main runs FULL after every merge, and a red main blocks landings.
 

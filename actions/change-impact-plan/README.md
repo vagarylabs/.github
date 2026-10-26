@@ -208,7 +208,8 @@ The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not sca
   edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads);
 - 2 for the 64-level nesting bound: R8T05 (100 deep) refuses on every Python, R8T06 (exactly 64) reads.
 
-Each one reads its truth or refuses, except the named residuals:
+Each one reads its truth or refuses, except the named residuals. Each residual records `reads`, its reading when
+pinned, and the suite asserts it exactly, so a residual that reads less (or more) fails until the pin is re-derived:
 - **A12, N08, N11:** an object value or key later used as a path (root's metadata ruling).
 - **T19:** a root built by deliberate string obfuscation (`"serv" + "ices"`).
 - **T36/T37:** a root joined to a computed base that is a repo-internal directory other than the root

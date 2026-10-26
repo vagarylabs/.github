@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals. Round 7 adds the sixth review's R6V01-R6V30 and Q1-Q3 (R6V12-R6V14 now refuse: a package.json that does not parse as a JSON object, or whose scripts is not an object; R6V15 reads once its UTF-8 BOM is stripped; R6V18, R6V19 and R6V21-R6V25 are named residuals outside rule 4's closed list; R6V02/R6V03 are the ratified YAML-key metadata) and R7T01-R7T20 (round 7: T01-T07 and T13-T15 refuse the package.json forms, NaN/Infinity and an integer too long to decode included; T08-T11 are precision controls that read; T12 pins that a TOML key reads; T16, T19 and T20 refuse and pin the working-directory wording; T17/T18 are named residuals, a name another function binds). Round 8 adds the seventh review's B1a-B1d (R7B1a/R7B1c: a tainted name inside a string or substitution, a quoted JS cwd key, named residuals; R7B1b/R7B1d refuse) and R7V14 (a root mention after an invalid UTF-8 byte reads, src_hex holding its raw bytes), and R8T01-R8T04 (the same wording's edges). The R7T02 CI fix adds R8T05 (a package.json nested 100 deep refuses at the explicit 64-level bound, the same on every Python) and R8T06 (exactly 64 deep, read).",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals. Round 7 adds the sixth review's R6V01-R6V30 and Q1-Q3 (R6V12-R6V14 now refuse: a package.json that does not parse as a JSON object, or whose scripts is not an object; R6V15 reads once its UTF-8 BOM is stripped; R6V18, R6V19 and R6V21-R6V25 are named residuals outside rule 4's closed list; R6V02/R6V03 are the ratified YAML-key metadata) and R7T01-R7T20 (round 7: T01-T07 and T13-T15 refuse the package.json forms, NaN/Infinity and an integer too long to decode included; T08-T11 are precision controls that read; T12 pins that a TOML key reads; T16, T19 and T20 refuse and pin the working-directory wording; T17/T18 are named residuals, a name another function binds). Round 8 adds the seventh review's B1a-B1d (R7B1a/R7B1c: a tainted name inside a string or substitution, a quoted JS cwd key, named residuals; R7B1b/R7B1d refuse) and R7V14 (a root mention after an invalid UTF-8 byte reads, src_hex holding its raw bytes), and R8T01-R8T04 (the same wording's edges). The R7T02 CI fix adds R8T05 (a package.json nested 100 deep refuses at the explicit 64-level bound, the same on every Python) and R8T06 (exactly 64 deep, read). Each residual carries `reads`, its reading when pinned: judge() asserts it exactly, so a residual that reads less (or more) than recorded fails until the pin is re-derived on purpose.",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -116,7 +116,8 @@
    "src": "LOC = {\"root\": \"services\", \"pkg\": \"b\"}\np = Path(ROOT, LOC[\"root\"], LOC[\"pkg\"])\n",
    "truth": [
     "b"
-   ]
+   ],
+   "reads": []
   },
   "A13_argv_pytest": {
    "expect": "sound",
@@ -1217,7 +1218,8 @@
     "b2",
     "nest",
     "web"
-   ]
+   ],
+   "reads": []
   },
   "N09_js_ternary_in_join": {
    "expect": "sound",
@@ -1254,7 +1256,8 @@
     "b2",
     "nest",
     "web"
-   ]
+   ],
+   "reads": []
   },
   "N12_fstring_sql_with_nested_join": {
    "expect": "sound",
@@ -2250,7 +2253,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "T20_fstring_root_then_sep_subst": {
    "expect": "read",
@@ -2411,6 +2415,12 @@
    "src": "p = os.path.join(WEB_SRC, \"services\", name)  # WEB_SRC = apps/web/src\n",
    "truth": [
     "web"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "T36b_computed_prefix_not_repo_root": {
@@ -2428,6 +2438,12 @@
    "src": "p = f\"{web_src}/services/{name}.ts\"\n",
    "truth": [
     "web"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "T38_toml_testpaths_glob": {
@@ -4014,6 +4030,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "V46_py_regex_head": {
@@ -4026,6 +4048,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "V47_py_split_head_contract": {
@@ -4038,6 +4066,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "V48_py_literal_read_then_parent": {
@@ -4046,6 +4080,9 @@
    "src": "P = Path(ROOT, \"services\", \"b\")\nQ = P.parent / \"a\" / \"x.json\"\n",
    "truth": [
     "a",
+    "b"
+   ],
+   "reads": [
     "b"
    ]
   },
@@ -4359,6 +4396,9 @@
    "truth": [
     "a",
     "b"
+   ],
+   "reads": [
+    "b"
    ]
   },
   "M6_py_literal_slash_then_parents": {
@@ -4367,6 +4407,9 @@
    "src": "P = ROOT / \"services\" / \"b\" / \"worker\"\nQ = P.parents[1] / \"a\"\n",
    "truth": [
     "a",
+    "nest"
+   ],
+   "reads": [
     "nest"
    ]
   },
@@ -4610,7 +4653,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V02_py_from_subprocess_import_run": {
    "expect": "residual",
@@ -4621,7 +4665,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V03_py_command_string_via_variable": {
    "expect": "residual",
@@ -4632,7 +4677,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V04_py_asyncio_create_subprocess_shell": {
    "expect": "residual",
@@ -4643,7 +4689,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V05_py_bash_c_list_control": {
    "expect": "read",
@@ -4676,7 +4723,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V08_js_child_process_destructured_alias": {
    "expect": "residual",
@@ -4687,7 +4735,8 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "reads": []
   },
   "R5V09_js_cp_exec_control": {
    "expect": "read",
@@ -4787,7 +4836,8 @@
     "b2",
     "nest"
    ],
-   "file": "services/r/tool.yml"
+   "file": "services/r/tool.yml",
+   "reads": []
   },
   "R5V13_makefile_target_specific_var": {
    "expect": "residual",
@@ -4798,7 +4848,11 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/build/Makefile"
+   "file": "services/r/build/Makefile",
+   "reads": [
+    "b",
+    "nest"
+   ]
   },
   "R5V14_sh_find_while_read": {
    "expect": "residual",
@@ -4811,7 +4865,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/ci/run.sh"
+   "file": "services/r/ci/run.sh",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R5V15_taskfile_dir_key": {
    "expect": "residual",
@@ -4822,7 +4882,11 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/ci/Taskfile.yml"
+   "file": "services/r/ci/Taskfile.yml",
+   "reads": [
+    "b",
+    "nest"
+   ]
   },
   "R5V18_py_popen_alias_cwd": {
    "expect": "residual",
@@ -4835,7 +4899,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R5V19_py_chdir_alias": {
    "expect": "residual",
@@ -4848,7 +4918,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R5V20_py_chdir_then_join_dotdot_components": {
    "expect": "refuse",
@@ -4887,7 +4963,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R5V23_js_spawn_cwd_shorthand_control": {
    "expect": "refuse",
@@ -4912,6 +4994,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V25_py_dirname_alias_tuple": {
@@ -4924,6 +5012,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V26_js_require_dirname_alias": {
@@ -4936,6 +5030,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V27_py_parent_name_concat_dots": {
@@ -4948,6 +5048,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V28_py_parent_name_joined_dots": {
@@ -4960,6 +5066,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V29_py_parent_name_path_dotdot": {
@@ -4972,6 +5084,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V30_py_parent_name_fstring": {
@@ -4984,6 +5102,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V31_py_parent_name_in_substitution": {
@@ -4996,6 +5120,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V32_py_adjacent_dot_literals_in_subst": {
@@ -5008,6 +5138,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V33_py_joined_dots_in_subst": {
@@ -5020,6 +5156,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V34_py_split_dot_precision_control": {
@@ -5043,6 +5185,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V36_py_property_with_comment": {
@@ -5055,6 +5203,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V37_py_function_ref_via_assignment": {
@@ -5067,6 +5221,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V38_py_getattr_literal_method": {
@@ -5079,6 +5239,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V39_py_factory_closure": {
@@ -5091,6 +5257,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V42_js_default_param": {
@@ -5115,6 +5287,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V41_js_object_assign": {
@@ -5127,6 +5305,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R5V43_py_enum_class_attr_control": {
@@ -5361,7 +5545,8 @@
     "b2",
     "nest"
    ],
-   "file": "services/r/tool.yml"
+   "file": "services/r/tool.yml",
+   "reads": []
   },
   "R6V03_uppercase_YML_ext": {
    "expect": "residual",
@@ -5373,7 +5558,8 @@
     "b2",
     "nest"
    ],
-   "file": "services/r/lint.YML"
+   "file": "services/r/lint.YML",
+   "reads": []
   },
   "R6V04_yaml_j2_template_key": {
    "expect": "read",
@@ -5532,7 +5718,8 @@
     "b2",
     "nest"
    ],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "reads": []
   },
   "R6V19_deno_json_tasks": {
    "expect": "residual",
@@ -5543,7 +5730,11 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/deno.json"
+   "file": "services/r/sub/deno.json",
+   "reads": [
+    "b",
+    "nest"
+   ]
   },
   "R6V20_pkg_precision_script_name_root": {
    "expect": "read",
@@ -5563,7 +5754,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R6V22_exec_cwd_tainted_attribute": {
    "expect": "residual",
@@ -5576,7 +5773,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R6V23_js_exec_cwd_this_attribute": {
    "expect": "residual",
@@ -5589,7 +5792,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.js"
+   "file": "services/r/sub/x.js",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R6V24_chdir_then_path_cwd_parent": {
    "expect": "residual",
@@ -5601,6 +5810,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R6V25_chdir_then_fstring_dotdot_end": {
@@ -5613,6 +5828,12 @@
     "b2",
     "nest",
     "shared"
+   ],
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
    ]
   },
   "R6V26_chdir_dotdot_components_control": {
@@ -5818,7 +6039,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7T18_py_chdir_sibling_function_local": {
    "expect": "residual",
@@ -5831,7 +6058,13 @@
     "nest",
     "shared"
    ],
-   "file": "services/r/sub/x.py"
+   "file": "services/r/sub/x.py",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7T19_py_chdir_self_tainted_by_setattr": {
    "expect": "refuse",
@@ -5870,7 +6103,13 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "src": "d = Path(ROOT, \"services\", name)\nos.chdir(f\"{d}\")\nopen(\"../../packages/shared/x.json\")\n"
+   "src": "d = Path(ROOT, \"services\", name)\nos.chdir(f\"{d}\")\nopen(\"../../packages/shared/x.json\")\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7B1b_py_chdir_str_of_tainted_name": {
    "expect": "refuse",
@@ -5896,7 +6135,13 @@
     "shared"
    ],
    "file": "services/r/sub/x.js",
-   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { \"cwd\": d });\nfs.readFileSync('../../packages/shared/x.json');\n"
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { \"cwd\": d });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7B1d_py_chdir_tainted_receiver_attr": {
    "expect": "refuse",
@@ -5947,7 +6192,13 @@
     "shared"
    ],
    "file": "services/r/sub/x.js",
-   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { cwd: `${d}` });\nfs.readFileSync('../../packages/shared/x.json');\n"
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { cwd: `${d}` });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R8T03_js_single_quoted_cwd_key": {
    "expect": "residual",
@@ -5960,7 +6211,13 @@
     "shared"
    ],
    "file": "services/r/sub/x.js",
-   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { 'cwd': d });\nfs.readFileSync('../../packages/shared/x.json');\n"
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { 'cwd': d });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R8T04_js_unquoted_cwd_control": {
    "expect": "refuse",

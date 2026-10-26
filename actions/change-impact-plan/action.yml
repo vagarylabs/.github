@@ -53,6 +53,13 @@ inputs:
       to full validation; disabling this check also forces full. Requires the exact candidate checkout.
     required: false
     default: "true"
+  merge-group:
+    description: >-
+      full | reduce. reduce lets a merge_group run narrow over the canonical target's cumulative change (the diff from
+      the target branch tip, re-read before output, to the group head, under the target's policy). Opt-in; the
+      default keeps every merge group FULL.
+    required: false
+    default: "full"
   source-query:
     description: >-
       off | witness. witness also asks the provider's compare API (with this action's token) which paths
@@ -194,6 +201,7 @@ runs:
         REPOSITORY_ID: ${{ github.repository_id }}
         REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
         SOURCE_QUERY: ${{ inputs.source-query }}
+        MERGE_GROUP: ${{ inputs.merge-group }}
         API_URL: ${{ github.api_url }}
       run: |
         set -euo pipefail
@@ -202,7 +210,7 @@ runs:
           --tested-root "$STATE/tested" --scope-root "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
           --candidate "$CANDIDATE" --repository "$REPOSITORY" --event-repository "$EVENT_REPOSITORY" \
           --repository-id "$REPOSITORY_ID" --repository-owner-id "$REPOSITORY_OWNER_ID" \
-          --source-query "$SOURCE_QUERY" --api-url "$API_URL" \
+          --source-query "$SOURCE_QUERY" --api-url "$API_URL" --merge-group "$MERGE_GROUP" \
           --target-ref "$TARGET_REF" --server-url "$SERVER_URL" --target-observation "$STATE/target.json" \
           --policy-checkout-outcome "$POLICY_OUTCOME" \
           --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --force-full-reason "$FORCE_FULL_REASON" \

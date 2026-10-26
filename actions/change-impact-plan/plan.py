@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.4.1"
+PLANNER_VERSION = "1.5.0"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -1119,7 +1119,7 @@ def bind_plan_id(record: dict) -> None:
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
          tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None,
-         reader_assessment: dict | None = None) -> dict:
+         reader_assessment: dict | None = None, merge_group: str = "full") -> dict:
     if paths is not None and (not isinstance(paths, list) or any(
             not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
             or any(part in (".", "..") for part in p.split("/")) for p in paths)):
@@ -1214,7 +1214,14 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         return finish("full", forced_full_reason)
     if cfg is None:
         return finish("full", "no plan config on the base commit")
-    if event not in ("pull_request", "pull_request_target"):
+    if event == "merge_group":
+        # A merge group narrows only when the caller opts in, and only over the canonical target's cumulative change:
+        # the diff from the target branch tip (re-read before output) to the group head, under the target's policy.
+        if merge_group != "reduce":
+            return finish("full", "event merge_group runs the full suite (the caller has not opted in: merge-group: reduce)")
+        if (scope or {}).get("scope_kind") != "canonical-target-cumulative":
+            return finish("full", "merge group scope is not the canonical target's cumulative change")
+    elif event not in ("pull_request", "pull_request_target"):
         return finish("full", f"event {event} always runs the full suite")
     if not paths:
         return finish("full", "no changed paths could be read")
@@ -1289,6 +1296,8 @@ def main(argv=None) -> int:
     ap.add_argument("--source-query", choices=("off", "witness"), default="off",
                     help="witness: also ask the provider compare API at the pinned SHAs; it can only widen")
     ap.add_argument("--api-url", default="https://api.github.com")
+    ap.add_argument("--merge-group", choices=("full", "reduce"), default="full",
+                    help="reduce: a merge group may narrow over the canonical target's cumulative change (opt-in)")
     ap.add_argument("--candidate", default="")
     ap.add_argument("--expected-count", type=int)
     ap.add_argument("--event", required=True)
@@ -1357,7 +1366,7 @@ def main(argv=None) -> int:
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
-               receipt=None, scope=scope, reader_assessment=readers)
+               receipt=None, scope=scope, reader_assessment=readers, merge_group=a.merge_group)
     if a.event == "merge_group" and scope["status"] == "known":
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)

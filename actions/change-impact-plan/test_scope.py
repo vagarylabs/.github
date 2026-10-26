@@ -106,7 +106,8 @@ class FrozenScope(unittest.TestCase):
 
 
     def canonical_plan(self, target=None, observation_changes=None, final_target=None, context_changes=None,
-                       policy_change=None, checkout="success", with_readers=False, reader_change=None):
+                       policy_change=None, checkout="success", with_readers=False, reader_change=None,
+                       merge_group=None, ids=False):
         target = target or self.base
         number = getattr(self, "policy_number", 0) + 1
         self.policy_number = number
@@ -127,6 +128,10 @@ class FrozenScope(unittest.TestCase):
         args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
                 "--event", "merge_group", "--base", self.base, "--head", self.candidate, "--out-json", str(output),
                 "--target-observation", str(observation_file), "--policy-checkout-outcome", checkout]
+        if merge_group:
+            args += ["--merge-group", merge_group]
+        if ids:
+            args += ["--repository-id", "101", "--repository-owner-id", "202"]
         for key, value in context.items():
             args += ["--" + key.replace("_", "-"), value]
         if with_readers and (policy / ".github/ci-plan.json").is_file():
@@ -167,6 +172,34 @@ class FrozenScope(unittest.TestCase):
         self.assertEqual(impact["readers"]["status"], "matched")
         self.assertEqual(impact["readers"]["coverage"], "supported-static-readers-only")
         self.assertFalse(result["reuse"]["reused"])
+
+    def test_an_opted_in_merge_group_narrows_only_over_a_complete_canonical_scope(self):
+        """merge-group: reduce lets a merge group narrow over the canonical target's cumulative change. Every other leg
+        must also hold (reader assessment, provider identity, verified policy checkout, an unmoved target), or it stays
+        FULL; and without the opt-in a merge group is FULL however complete it is."""
+        self.make_candidate("ui/a.ts", "UI change\n")
+        result, _ = self.canonical_plan(with_readers=True, merge_group="reduce", ids=True)
+        self.assertEqual(result["mode"], "reduced", result["reason"])
+        self.assertEqual(result["affected_packages"], ["ui"])
+        self.assertEqual({job: value["run"] for job, value in result["jobs"].items()},
+                         {"server_tests": False, "ui_tests": True})
+        self.assertEqual(result["source_answer_meta"]["decision"], "IMPACT_INPUT")
+        self.assertEqual(result["observation"]["scope_kind"], "canonical-target-cumulative")
+        for label, kwargs in (("no opt-in", dict(with_readers=True, ids=True)),
+                              ("no reader assessment", dict(merge_group="reduce", ids=True)),
+                              ("no provider identity", dict(with_readers=True, merge_group="reduce")),
+                              ("target moved before output", dict(with_readers=True, merge_group="reduce", ids=True,
+                                                                  final_target=self.head)),
+                              ("policy checkout failed", dict(with_readers=True, merge_group="reduce", ids=True,
+                                                              checkout="failure"))):
+            with self.subTest(label):
+                other, _ = self.canonical_plan(**kwargs)
+                self.assertEqual(other["mode"], "full", label)
+                self.assertTrue(all(job["run"] for job in other["jobs"].values()), label)
+        self.make_candidate("server/a.py", "hub change\n")
+        hub, _ = self.canonical_plan(with_readers=True, merge_group="reduce", ids=True)
+        self.assertEqual(hub["mode"], "full")
+        self.assertIn("hub package affected", hub["reason"])
 
     def test_no_reader_assessment_is_unknown_not_empty_impact(self):
         result, _ = self.canonical_plan()

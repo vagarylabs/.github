@@ -4,7 +4,7 @@ This deterministic action uses immutable candidate inputs and trusted base polic
 
 ## Cumulative impact record
 
-Planner 1.3 adds `plan.impact` (schema 1). It reuses the existing path ownership and reverse-dependency computation. It does not change merge-group jobs or matrices: those still select FULL validation, and this action does not authorize run-result reuse.
+Planner 1.3 adds `plan.impact` (schema 1). It reuses the existing path ownership and reverse-dependency computation. It does not change merge-group jobs or matrices: those still select FULL validation, unless the caller opts in with `merge-group: reduce` (1.5.0, below), and this action does not authorize run-result reuse.
 
 - `selection_authority` is always `false`.
 - `status: known` means modeled impact under a matched supported-static-reader assessment, not complete reader qualification or approval to omit tests.
@@ -39,6 +39,23 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
   - The witness can only widen a plan. Provider bodies and tokens are never recorded.
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
+
+## Merge-group reduction (1.5.0, opt-in)
+
+By default a merge group plans FULL, as it always has. A caller that sets `merge-group: reduce` lets a merge group
+narrow, and only over the canonical target's cumulative change: the diff from the target branch tip (read before the
+policy checkout and re-read before output) to the group head, under the target's verified policy. It narrows only
+when every leg holds:
+- the opt-in;
+- a `canonical-target-cumulative` scope;
+- a matched reader assessment;
+- provider identity;
+- a verified policy checkout;
+- an unmoved target;
+- no full trigger, unmapped path or hub.
+
+A missing leg keeps the group FULL. The callers that opt in own the matching obligation: under the vagary-core ruling
+of 2026-10-22, the full suite runs on every target-branch commit after it merges.
 
 ## Reader scan (1.4.1)
 

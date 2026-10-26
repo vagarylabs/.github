@@ -956,16 +956,17 @@ class RootLiteral:
     def uses(text: str, names: set) -> bool:
         return any(re.search(r"\$[{(]?%s\b" % re.escape(n), text) for n in names)
 
-    KEY_EXTS = frozenset({"yml", "yaml", "toml"})
+    KEY_EXTS = frozenset({"yml", "yaml"})
 
     def raw_reads(self, text: str, ext: str = "") -> set:
         """Walker reads for every root segment of one line of an unparsed file (rule 1: a mention reads or refuses).
-        `ext` is the file's extension: only a YAML or TOML key (`services:`) is metadata."""
+        `ext` is the file's extension: only a YAML key (`services:`) is metadata. A TOML key is written `services =`,
+        so it reads like any bare word."""
         reads = set()
         text = self.strip_comment(text)
         for m in self.root_word.finditer(text):  # a bare root word (`pytest services`, `COPY services .`, `- services`)
             if ext in self.KEY_EXTS and text[m.end():m.end() + 1] == ":" and not text[m.end():m.end() + 2] == "::":
-                continue  # a YAML/TOML key (`services:`) is metadata, as an object key is
+                continue  # a YAML key (`services:`) is metadata, as an object key is
             if not self.root_any.match(text, m.start()) and text[max(m.start() - 1, 0):m.start()] not in ("/", "\\"):
                 src, self.src = getattr(self, "src", None), None
                 try:
@@ -1651,6 +1652,11 @@ class RootLiteral:
                                     f"holding a parent step, line {line})")
 
 
+def strict_json_constant(name: str):
+    """`json.loads` accepts NaN, Infinity and -Infinity; JSON (and npm's JSON.parse) does not."""
+    raise ValueError(f"{name} is not JSON")
+
+
 def workspace_graph(root: Path, cfg: dict) -> dict[str, dict]:
     workspace = cfg.get("workspace") or {}
     if workspace.get("type") == "pnpm":
@@ -1748,14 +1754,22 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 raise ValueError(f"reader scan line {number} of {path} does not match the scanned revision")
             targets |= classify.line_reads(src, line)
             if posixpath.basename(path) == "package.json" and path not in scripts_read:
-                # npm `scripts` values are shell commands: each is read like a line of a shell file (rule 7 raw, and
-                # bare root words), once per file.
+                # npm `scripts` values are shell commands: each string value is read like a line of a shell file (rule
+                # 7 raw, and bare root words), once per file. npm strips one leading UTF-8 BOM, so this does too. A
+                # manifest that still does not parse as strict JSON (no NaN/Infinity) whose top level is an object, or
+                # whose `scripts` is present and not an object, cannot be read, so it refuses rather than read nothing.
+                # RecursionError is nesting too deep to decode.
                 scripts_read.add(path)
                 try:
-                    scripts = json.loads(src.text).get("scripts") or {}
-                except (ValueError, AttributeError):
-                    scripts = {}
-                for name, command in (scripts.items() if isinstance(scripts, dict) else ()):
+                    manifest = json.loads(src.text.removeprefix("\ufeff"), parse_constant=strict_json_constant)
+                except (ValueError, RecursionError):
+                    manifest = None
+                if not isinstance(manifest, dict):
+                    classify.refuse("unresolved (package.json does not parse as a JSON object)")
+                scripts = manifest.get("scripts", {})
+                if not isinstance(scripts, dict):
+                    classify.refuse("unresolved (package.json `scripts` is not an object)")
+                for name, command in scripts.items():
                     if not isinstance(command, str):
                         continue
                     why = classify.raw_taint(command)

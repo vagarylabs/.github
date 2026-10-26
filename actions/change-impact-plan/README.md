@@ -137,10 +137,13 @@ FULL.
    - **The anchor exception:** in the read's own statement, a step BEFORE the read acts on its base
      (`Path(__file__).parents[2] / "services"`), so it does not count. Two cases always count: a step inside a
      callback that the statement defines, and a step in the read token itself.
-   - **A working directory set from a tainted value** refuses when the file holds any `../`, any `".."` string
-     component, or `pardir`. The forms are a call spelled `chdir(...)`, and a `cwd=` or `cwd:` argument of an exec
-     call. An exec call is one whose callee ends in `subprocess.<name>`, `run`, `call`, `check_call`, `check_output`,
-     `Popen`, `spawn*`, `exec*` or `fork`.
+   - **A working directory set from a computed root read or a tainted name** refuses when the file holds any `../`,
+     any `".."` string component, or `pardir`. The value is the argument of a call spelled `chdir(...)`, or a `cwd=` or
+     `cwd:` argument of an exec call. It counts when it holds a computed root read, or a plain name that is tainted
+     and visible at the call under the scoping above. An attribute is NOT followed, even a tainted one: `x.d` counts
+     only when the plain name `x` is itself tainted, so `self.d` or `this.d` counts only when `self` or `this` is
+     (`setattr(self, ...)` taints `self`). An exec call is one whose callee ends in `subprocess.<name>`,
+     `run`, `call`, `check_call`, `check_output`, `Popen`, `spawn*`, `exec*` or `fork`.
 
    **In an unparsed file (shell, Makefile, Dockerfile, YAML, TOML), rule 7 is line-level,** after the trailing `#`
    comment:
@@ -153,14 +156,20 @@ FULL.
    - **Any `..` step refuses** after `cd`, `pushd`, `WORKDIR`, `working-directory`, `working_dir`, `workdir` or `cwd`
      (followed by a space, `:` or `=`) into a root, on the same line or later.
    - **A bare root WORD reads** every package beneath it (`pytest services -q`, `COPY services .`, `- services`). In
-     a `.yml`, `.yaml` or `.toml` file, a key (`services:`) is metadata instead.
+     a `.yml` or `.yaml` file, a key (`services:`) is metadata instead. A TOML key is written `services =`, so in a
+     `.toml` file it reads like any bare word.
    - **In code, a bare root word reads** only inside a string handed to a call whose callee ends in
      `subprocess.<name>`, `system`, `popen`, `Popen`, `check_call`, `check_output`, `spawn*`, `execSync`,
      `execFileSync`, `execFile`, `exec`, or `exec` + `l`/`v` (+ `p`)(+ `e`). Recognition is by spelling, so an
      aliased import (`import subprocess as sp`, `from subprocess import run`, `const { execSync: run }`) is not
      recognised.
-   - **`package.json` `scripts` values are commands:** each one is read like a line of a shell file, under the
-     line-level rule 7 and the bare-word read.
+   - **`package.json` `scripts` values are commands:** in a `package.json` the reader scan reaches (one of its lines
+     matches the scan's `git grep` pattern; a binary file is never scanned), each STRING value of `scripts` is read
+     like a line of a shell file, under the line-level rule 7 and the bare-word read. A value that is not a string
+     is not a command and is skipped. One leading UTF-8 BOM is stripped first, as npm does. Such a file REFUSES when
+     the rest is not strict JSON with an object at the top level, or when its `scripts` is present and is not an
+     object (`null` included). Strict means `NaN`, `Infinity` and `-Infinity` refuse, as npm refuses them; nesting
+     too deep, or an integer too long, for Python to decode also refuses, though npm would accept it.
 
    Any form not on this list is NOT covered.
 5. **Everything else REFUSES**, including:
@@ -177,14 +186,20 @@ FULL.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
-`test_edges_review_vectors.json` holds 490 adversarial readers:
+`test_edges_review_vectors.json` holds 543 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7;
 - 88 from the fourth review;
 - 11 for round 5;
 - 59 from the fifth review (the 52 inputs R5V01-R5V54, which skip R5V48 and R5V49, and Z1-Z7);
-- 1 for round 6 (R6T01: `pardir` in a file whose working directory is set from a read).
+- 1 for round 6 (R6T01: `pardir` in a file whose working directory is set from a read);
+- 33 from the sixth review (R6V01-R6V30 and the controls Q1-Q3);
+- 20 for round 7:
+  - R7T01-R7T07 and R7T13-R7T15 refuse the `package.json` forms (`NaN`, `-Infinity` and an integer too long to
+    decode included);
+  - R7T08-R7T11 are precision controls that read, and R7T12 pins that a TOML key reads;
+  - R7T16, R7T19 and R7T20 refuse and pin the working-directory wording; R7T17 and R7T18 are named residuals.
 
 Each one reads its truth or refuses, except the named residuals:
 - **A12, N08, N11:** an object value or key later used as a path (root's metadata ruling).
@@ -201,8 +216,18 @@ Each one reads its truth or refuses, except the named residuals:
     substitution, implicit string concatenation or joined dots in a substitution (R5V27, R5V28, R5V30-R5V33);
   - `@property` with anything on its line (R5V36);
   - an exec, `cwd=` or chdir reached through an aliased import or an unlisted API (R5V18, R5V19, R5V22, R5V01,
-    R5V02, R5V08);
+    R5V02, R5V08), including `asyncio.create_subprocess_shell` and `execa` (R5V04, R5V07);
   - a parent-step function bound to another name (R5V37).
+- **Forms outside rule 4's closed list from the sixth review:**
+  - a working directory set from an attribute of a receiver the file never binds: `os.chdir(self.d)`, `cwd=self.d`,
+    JS `{ cwd: this.d }` (R6V21-R6V23);
+  - a parent step taken from the working directory itself after a chdir, `Path.cwd().parent` (R6V24), and a `..`
+    held only inside f-strings (R6V25);
+  - task runners other than `package.json` `scripts`: husky `hooks` in a `package.json`, `deno.json` `tasks`
+    (R6V18, R6V19);
+  - a working directory set from a name that is not tainted where the call is, because another function binds
+    it: a parameter of the calling function, or another function's local (R7T17, R7T18).
+- **A YAML key used as a path** (R5V17, R6V02, R6V03): rule 4 makes a `.yml`/`.yaml` key metadata.
 - **Shapes outside the list, each counted on vagary-core** (occurrences carrying a root path / all occurrences):
   - a command string in a variable passed to an exec call (R5V03): 0 / 11;
   - a Make target-specific variable (R5V13): 0 / 0;

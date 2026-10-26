@@ -403,7 +403,8 @@ class EdgesTest(unittest.TestCase):
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
         (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
         does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
-        os.path.split), and the fifth review's inputs outside README rule 4's closed list, all named residuals."""
+        os.path.split), and the fifth and sixth reviews' inputs outside README rule 4's closed list, all named
+        residuals."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
@@ -425,7 +426,13 @@ class EdgesTest(unittest.TestCase):
                           "R5V33_py_joined_dots_in_subst", "R5V35_py_cached_property",
                           "R5V36_py_property_with_comment", "R5V37_py_function_ref_via_assignment",
                           "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
-                          "R5V41_js_object_assign", "T19_partial_split_root", "T36_computed_prefix_not_repo_root",
+                          "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
+                          "R6V18_pkg_husky_hooks_not_scripts", "R6V19_deno_json_tasks",
+                          "R6V21_chdir_tainted_attribute", "R6V22_exec_cwd_tainted_attribute",
+                          "R6V23_js_exec_cwd_this_attribute", "R6V24_chdir_then_path_cwd_parent",
+                          "R6V25_chdir_then_fstring_dotdot_end", "R7T17_py_chdir_sibling_function_parameter",
+                          "R7T18_py_chdir_sibling_function_local", "T19_partial_split_root",
+                          "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 
@@ -459,6 +466,23 @@ class EdgesTest(unittest.TestCase):
             with self.subTest(label):
                 case = self.REVIEW_VECTORS[label]
                 self.assertEqual(self.vector_scan(self.vector_repo("exact-" + label[:5]), case), want)
+
+    def test_round7_package_json_and_toml_read_exactly(self):
+        """Round 7's reads, pinned exactly (a must-read vector accepts an over-read): a BOM-prefixed package.json reads
+        its script; every string script is read, the second included; a non-string or nested value is skipped, and an
+        empty or absent `scripts` reads nothing, without refusing; a TOML key reads like any bare word."""
+        svc = ["a", "b", "b2", "nest"]
+        for label, want in (("R6V15_pkg_utf8_bom", svc),
+                            ("R6V16_pkg_two_scripts_second_reads", svc + ["web"]),
+                            ("R6V10_pkg_nested_scripts_object", []),
+                            ("R6V11_pkg_non_string_values", svc),
+                            ("R7T09_pkg_empty_scripts", []),
+                            ("R7T10_pkg_bom_no_scripts", []),
+                            ("R6V30_toml_key_precision", svc),
+                            ("R7T12_toml_colon_key_reads", svc)):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.assertEqual(self.vector_scan(self.vector_repo("exact7-" + label[:6]), case), want)
 
     def test_an_unowned_path_a_glob_maps_or_inerts_refuses(self):
         """F6: an unowned path is safe to leave unread only because its change is unmapped and plans FULL. When a

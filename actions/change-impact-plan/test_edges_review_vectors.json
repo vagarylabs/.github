@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals.",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals. Round 7 adds the sixth review's R6V01-R6V30 and Q1-Q3 (R6V12-R6V14 now refuse: a package.json that does not parse as a JSON object, or whose scripts is not an object; R6V15 reads once its UTF-8 BOM is stripped; R6V18, R6V19 and R6V21-R6V25 are named residuals outside rule 4's closed list; R6V02/R6V03 are the ratified YAML-key metadata) and R7T01-R7T20 (round 7: T01-T07 and T13-T15 refuse the package.json forms, NaN/Infinity and an integer too long to decode included; T08-T11 are precision controls that read; T12 pins that a TOML key reads; T16, T19 and T20 refuse and pin the working-directory wording; T17/T18 are named residuals, a name another function binds).",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -5300,6 +5300,564 @@
     "shared"
    ],
    "src": "os.chdir(Path(ROOT, \"services\", name))\nopen(os.path.join(os.pardir, os.pardir, \"packages\", \"shared\", \"x.json\"))\n"
+  },
+  "Q1_self_attr_is_tainted_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class R:\n    def __init__(self, n):\n        self.d = Path(ROOT, \"services\", n)\n    def go(self):\n        q = self.d.parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "Q2_chdir_plain_tainted_name_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "d = Path(ROOT, \"services\", name)\nos.chdir(d)\nopen(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "Q3_chdir_attr_module_level": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "cfg.d = Path(ROOT, \"services\", name)\nos.chdir(cfg.d)\nopen(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R6V01_makefile_root_target_dollar_at": {
+   "expect": "read",
+   "ext": "",
+   "src": "services:\n\tcd $@ && pytest\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/Makefile"
+  },
+  "R6V02_yml_key_still_metadata_control": {
+   "expect": "residual",
+   "ext": "yml",
+   "src": "projects:\n  services:\n    test: pytest\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/tool.yml"
+  },
+  "R6V03_uppercase_YML_ext": {
+   "expect": "residual",
+   "ext": "YML",
+   "src": "lint:\n  services:\n    - x\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/lint.YML"
+  },
+  "R6V04_yaml_j2_template_key": {
+   "expect": "read",
+   "ext": "j2",
+   "src": "services:\n  - x\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/ci.yaml.j2"
+  },
+  "R6V05_toml_table_header": {
+   "expect": "read",
+   "ext": "toml",
+   "src": "[services]\npath = \"x\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/cfg.toml"
+  },
+  "R6V06_ini_key_colon": {
+   "expect": "read",
+   "ext": "ini",
+   "src": "[tool]\nservices: x\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/setup.ini"
+  },
+  "R6V07_dockerfile_label_colon": {
+   "expect": "read",
+   "ext": "",
+   "src": "FROM x\nLABEL services: y\nCOPY services/ /app/\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/Dockerfile"
+  },
+  "R6V08_pkg_and_chain_cd_root_then_dotdot": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"scripts\": {\"build\": \"cd services/b && make && cd ../../packages/shared && make\"}}\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/package.json"
+  },
+  "R6V09_pkg_cd_bare_root_then_dotdot": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"scripts\": {\"t\": \"cd services && cd b && cd ../../packages/shared\"}}\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/package.json"
+  },
+  "R6V10_pkg_nested_scripts_object": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {\"group\": {\"test\": \"pytest services\"}}}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R6V11_pkg_non_string_values": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {\"a\": 1, \"b\": null, \"c\": [\"pytest services\"], \"d\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R6V12_pkg_scripts_not_object": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"scripts\": \"pytest services\", \"name\": \"x\"}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R6V13_pkg_top_level_array": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "[\"pytest services\"]\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R6V14_pkg_invalid_json_trailing_comma": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"scripts\": {\"t\": \"pytest services -q\",}}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R6V15_pkg_utf8_bom": {
+   "expect": "read",
+   "ext": "json",
+   "src": "\ufeff{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R6V16_pkg_two_scripts_second_reads": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {\"a\": \"echo hi\", \"b\": \"ruff check services apps\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R6V17_pkg_quoted_root_in_script": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {\"t\": \"pytest 'services' -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R6V18_pkg_husky_hooks_not_scripts": {
+   "expect": "residual",
+   "ext": "json",
+   "src": "{\"husky\": {\"hooks\": {\"pre-commit\": \"pytest services -q\"}}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R6V19_deno_json_tasks": {
+   "expect": "residual",
+   "ext": "json",
+   "src": "{\"tasks\": {\"b\": \"cd services/b && cd ../../packages/shared && deno task b\"}}\n",
+   "truth": [
+    "b",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/deno.json"
+  },
+  "R6V20_pkg_precision_script_name_root": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {\"services\": \"echo hi\"}}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R6V21_chdir_tainted_attribute": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "class R:\n    def __init__(self, n):\n        self.d = Path(ROOT, \"services\", n)\n    def go(self):\n        os.chdir(self.d)\n        open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R6V22_exec_cwd_tainted_attribute": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "class R:\n    def __init__(self, n):\n        self.d = Path(ROOT, \"services\", n)\n    def go(self):\n        subprocess.run([\"make\"], cwd=self.d)\n        open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R6V23_js_exec_cwd_this_attribute": {
+   "expect": "residual",
+   "ext": "js",
+   "src": "class R {\n  constructor(n) { this.d = path.join(root, 'services', n); }\n  go() {\n    spawnSync('make', [], { cwd: this.d });\n    fs.readFileSync('../../packages/shared/x.json');\n  }\n}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js"
+  },
+  "R6V24_chdir_then_path_cwd_parent": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "os.chdir(Path(ROOT, \"services\", name))\nq = Path.cwd().parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R6V25_chdir_then_fstring_dotdot_end": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "os.chdir(Path(ROOT, \"services\", name))\nopen(os.path.join(f\"{os.curdir}/..\", f\"{os.curdir}/..\", \"packages\", \"shared\", \"x.json\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R6V26_chdir_dotdot_components_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "os.chdir(Path(ROOT, \"services\", name))\nopen(os.path.join(\"..\", \"..\", \"packages\", \"shared\", \"x.json\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R6V27_chdir_pardir_control": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "os.chdir(Path(ROOT, \"services\", name))\nopen(os.path.join(os.pardir, os.pardir, \"packages\", \"shared\", \"x.json\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R6V28_js_chdir_dotdot_components_control": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "process.chdir(path.join(root, 'services', name));\nfs.readFileSync(path.join('..', '..', 'packages', 'shared', 'x.json'));\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "R6V29_no_cwd_unrelated_dotdot_precision": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nsys.path.insert(0, os.path.join(HERE, \"..\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R6V30_toml_key_precision": {
+   "expect": "read",
+   "ext": "toml",
+   "src": "[tool]\nservices = 1\n[services]\nx = 1\nservices: y\n",
+   "truth": [],
+   "file": "services/r/cfg.toml"
+  },
+  "R7T01_pkg_scripts_null": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"name\": \"x\", \"scripts\": null, \"files\": [\"services\"]}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T02_pkg_nesting_too_deep": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"a\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]], \"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R7T03_pkg_two_boms": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "\ufeff\ufeff{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T04_pkg_bom_then_invalid": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "\ufeff{\"scripts\": {\"t\": \"pytest services -q\",}}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T05_pkg_top_level_string": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "\"pytest services -q\"\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T06_pkg_scripts_array": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"scripts\": [\"pytest services -q\"]}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T07_pkg_comment_is_invalid": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\n  // services\n  \"scripts\": {\"t\": \"echo hi\"}\n}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T08_pkg_no_scripts_root_elsewhere": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"name\": \"x\", \"description\": \"runs services\", \"files\": [\"services\"]}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T09_pkg_empty_scripts": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": {}, \"description\": \"services\"}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T10_pkg_bom_no_scripts": {
+   "expect": "read",
+   "ext": "json",
+   "src": "\ufeff{\"name\": \"x\", \"description\": \"services\"}\n",
+   "truth": [],
+   "file": "services/r/package.json"
+  },
+  "R7T11_pkg_not_named_package_json": {
+   "expect": "read",
+   "ext": "json",
+   "src": "{\"scripts\": \"pytest services\", \"x\": ,}\n",
+   "truth": [],
+   "file": "services/r/other.json"
+  },
+  "R7T12_toml_colon_key_reads": {
+   "expect": "read",
+   "ext": "toml",
+   "src": "[tool.x]\nservices: y\n",
+   "truth": [],
+   "file": "services/r/cfg.toml"
+  },
+  "R7T13_pkg_nan_is_not_json": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"x\": NaN, \"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R7T14_pkg_negative_infinity_is_not_json": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"x\": -Infinity, \"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R7T15_pkg_integer_too_long_to_decode": {
+   "expect": "refuse",
+   "ext": "json",
+   "src": "{\"x\": 99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999, \"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json"
+  },
+  "R7T16_py_chdir_before_module_taint": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def go():\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\nd = Path(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R7T17_py_chdir_sibling_function_parameter": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "def a(name):\n    d = Path(ROOT, \"services\", name)\n    return d\ndef b(d):\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R7T18_py_chdir_sibling_function_local": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "def a(name):\n    d = Path(ROOT, \"services\", name)\n    return d\ndef b():\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R7T19_py_chdir_self_tainted_by_setattr": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "class R:\n    def go(self, n):\n        setattr(self, \"d\", Path(ROOT, \"services\", n))\n        os.chdir(self.d)\n        open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
+  },
+  "R7T20_py_chdir_param_default_tainted": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def go(d=Path(ROOT, \"services\", name)):\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py"
   }
  }
 }

@@ -76,10 +76,21 @@ FULL.
 
    A substitution is opaque, so a computed string REFUSES when it holds a parent step anywhere (`..`, `pardir`,
    `parent`, `dirname`) or nests code naming a root: `f"{os.path.join(ROOT, 'services', x, '..')}"`.
+
+   In a plain string, a root starts a path in two places:
+   - where no `/` precedes it, so `backend/services/` and a route `/:org/services/:id` are not repo-root paths;
+   - at the very start, after leading slashes, when no component follows (`ROOT + "/services/" + x`).
+
+   A backslash separates when doubled, in a raw string, or before a character that makes no escape: `\d` keeps its
+   backslash, while `\n` is an escape.
+
+   A string that is a statement by itself (a docstring, or a JS directive) is never consumed, so it reads nothing.
+   The exception is a doctest (`>>>`) that names a root: that is executed code, so it REFUSES.
 3. **Metadata, only with positive evidence:**
    - an object key or value, never a ternary branch;
    - a subscript key (`m["services"]`);
-   - a comparison (`==`, `===`, `in`, `not in`, `case`);
+   - a comparison (`==`, `===`, `in`, `not in`, `case`), also inside a comprehension, which is never a literal
+     collection;
    - any `.sql` file;
    - a list, tuple or set of literals that is assigned in a statement (`ROOTS = (...)`), an object value, compared, or
      nested in such a collection. Even then, a sibling naming a package (`("services", "b")`) or a package-owning

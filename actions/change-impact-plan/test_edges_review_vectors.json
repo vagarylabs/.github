@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1 (rounds 1 and 2, 2026-10-26): 124 adversarial reader files, plus S01-S05 (code or a parent step inside an f-string/template substitution). Each must READ its truth packages or REFUSE (which plans FULL). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = an object value/key or assigned label list that root's 2026-10-26 metadata ruling accepts as metadata.",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1 (rounds 1 and 2, 2026-10-26): 124 adversarial reader files, plus S01-S05 (code or a parent step inside an f-string/template substitution) and T01-T07 (the plain-string, escape, docstring and statement rules). Each must READ its truth packages or REFUSE (which plans FULL). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = an object value/key or assigned label list that root's 2026-10-26 metadata ruling accepts as metadata.",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -1177,6 +1177,80 @@
    "truth": [
     "shared"
    ]
+  },
+  "T01_leading_slash_concat": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "p = ROOT + \"/services/\" + name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "T02_js_leading_slash_join": {
+   "expect": "read",
+   "ext": "js",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "const p = path.join(root, '/services/', name);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "T03_py_invalid_escape_backslash": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "p = ROOT + \"\\\\services\\data\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "T04_doctest_docstring": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "def f():\n    \"\"\"\n    >>> open(os.path.join(ROOT, 'services', name)).read()\n    \"\"\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "T05_js_chained_string_statement": {
+   "expect": "sound",
+   "ext": "js",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "const a = 1\n'services/' + name\n  .split('/')\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "T06_route_control": {
+   "expect": "read",
+   "ext": "js",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "const r = '/:org/services/:service';\n",
+   "truth": []
+  },
+  "T07_escape_control": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-round-3: the four narrowing rules (leading slash, escapes, docstrings/doctests, statements)",
+   "src": "SRC = b'name: services\\non: push\\n'\n",
+   "truth": []
   },
   "W01_two_roots": {
    "expect": "read",

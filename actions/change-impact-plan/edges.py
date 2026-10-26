@@ -84,6 +84,9 @@ PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_WORD = re.compile(r"\b(?:pardir|parents?|dirname)\b")
 GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 COMPONENT_CHAR = re.compile(r"[A-Za-z0-9_.-]")
+# After one backslash, these characters make an escape in Python or JS source; any other keeps the backslash (Python),
+# so it separates a path.
+ESCAPE_CHARS = frozenset("nrtbfva01234567xuUN'\"`$\n")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W\d][\w$]*|\$[\w$]*|\d[\w.]*")
 _OPS = re.compile(r"\.\.\.|===|!==|\*\*|==|!=|<=|>=|=>|->|::|:=|\?\.|\?\?|&&|\|\||[^\w\s]")
@@ -295,6 +298,7 @@ class RootLiteral:
         # In a computed string a root segment anywhere (`${root}/services/${x}`) is a path; a backslash separates too.
         self.root_segment = re.compile(r"(?<![\w.-])(?:%s)(?=[/\\])" % alt)
         self.root_backslash = re.compile(r"(?<![\w.-])(?:%s)\\" % alt)
+        self.root_lead = re.compile(r"/+(%s)/" % alt)
 
     def refuse(self, why="unsupported"):
         raise ValueError(f"{why} workspace-root reader expression in {self.path}")
@@ -580,7 +584,10 @@ class RootLiteral:
         return False
 
     def collection(self, e: int) -> bool:
+        """A list, set or tuple LITERAL. A comprehension (`{x for x in y if x == "services"}`) is an expression."""
         kind = self.kind(e)
+        if any(self.src.code[j][0] == "word" and self.src.code[j][3] == "for" for j in self.level(e)):
+            return False
         return kind in ("list", "set") or (kind == "group" and (len(self.elements(e)) > 1 or self.trailing_comma(e)))
 
     def trailing_comma(self, e: int) -> bool:
@@ -738,11 +745,28 @@ class RootLiteral:
             # A substitution is opaque: code nested in it (a quoted root), or a parent step anywhere in it, may leave the
             # root, so the string REFUSES rather than reading beneath its prefix.
             self.refuse("unresolved")
-        mentions = [m.start() for m in self.root_segment.finditer(src.text, lo, hi) if not plain
-                    or not COMPONENT_CHAR.match(src.text, m.end() + 1) or src.text[m.end()] == "\\"]
+        raw = plain and "r" in src.text[tok[1]:tok[3][2]].lower()
+        if plain:
+            # A plain string's root starts a path only where no `/` precedes it (`backend/services/` and a route
+            # `/:org/services/:id` are not repo-root paths), or at the very start after leading slashes when nothing
+            # names a component after it (`ROOT + "/services/" + x`). A backslash separates when doubled, in a raw
+            # string, or before a character that makes no escape (`\d` keeps its backslash; `\n` does not).
+            mentions = [m.start() for m in self.root_path.finditer(src.text, lo, hi)
+                        if not COMPONENT_CHAR.match(src.text, m.end())]
+            quote = tok[3][2]
+            body_start = quote + (3 if src.text.startswith(src.text[quote] * 3, quote) else 1)
+            lead = self.root_lead.match(src.text, body_start) if lo <= body_start < hi else None
+            if lead and not COMPONENT_CHAR.match(src.text, lead.end()):
+                mentions.append(lead.start(1))
+            mentions += [m.start() for m in self.root_backslash.finditer(src.text, lo, hi)
+                         if raw or src.text[m.end():m.end() + 1] not in ESCAPE_CHARS | {""}]
+        else:
+            mentions = [m.start() for m in self.root_segment.finditer(src.text, lo, hi)]
         mentions += [m.start() + 1 for m in self.quoted.finditer(src.text, lo, hi)]
-        mentions += [m.start() for m in self.root_path.finditer(src.text, lo, hi)
-                     if plain and not COMPONENT_CHAR.match(src.text, m.end())]
+        if plain and self.whole_statement(k):
+            if mentions and ">>>" in body:
+                self.refuse("a doctest naming a root is executed code the scanner does not parse; an unsupported")
+            return set()  # a docstring or directive: a string no code consumes
         reads = set()
         for p in sorted(set(mentions)):
             while src.text.startswith("./", p):
@@ -758,6 +782,12 @@ class RootLiteral:
         if reads or mentions:
             self.after(k, k)
         return reads
+
+    def whole_statement(self, k: int) -> bool:
+        """String k is a statement by itself (a docstring, or a JS directive such as 'use strict')."""
+        if self.src.ext not in PY_EXT | JS_EXT or self.src.enclosing[k] and not self.container(k) == self.src.enclosing[k][-1]:
+            return False
+        return self.statement(k, k) == (k, k)
 
     def literal_path(self, src: Source, offset: int, path_text: str) -> set:
         """A `<root>/<name>` path literal is read by its text. A parent step after it in its statement, or a parent-step

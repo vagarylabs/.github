@@ -263,6 +263,11 @@ class EdgesTest(unittest.TestCase):
             ('if kind == "services":\n    pass', "py"),
             ("if (obligation === 'services') run();", "js"),
             ('if part not in ("services", "docs"):\n    pass', "py"),
+            ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"),  # a comprehension's comparison
+            ('"""A sweep across all of `services/` for the SDK copies."""', "py"),  # a docstring no code consumes
+            ("'use strict';\nconst url = '/:org/services/:service';", "js"),  # a route: no root-level segment
+            ('NOTE = "copied from backend/services/ in vagary-platform"', "py"),
+            ("SRC = b'name: services\\non: push\\n'", "py"),  # `\n` is an escape, not a separator
             # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
             ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
              "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
@@ -302,7 +307,7 @@ class EdgesTest(unittest.TestCase):
             ("for (const root of ['services', 'docs']) walk(root);", "js"): {"b"},
             ("for (const [dir, job] of [['services', 'build'], ['docs', 'docs']]) run(dir, job);", "js"): {"b"},
             # A root named inside a string (prose, SQL, a glob, an f-string) is a walker read beneath it, not metadata.
-            ('"""Walks the "services" tree."""', "py"): {"b"},
+            ('log.info("Walks the \'services\' tree")', "py"): {"b"},
             ('cur.execute("INSERT INTO t VALUES (\'services\')")', "py"): {"b"},
             ('for m in glob.glob("services/*/migrations"):\n    pass', "py"): {"b"},
             ('p = f"{ROOT}/services/{name}/x.json"', "py"): {"b"},

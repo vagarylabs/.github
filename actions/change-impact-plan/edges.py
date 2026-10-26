@@ -271,7 +271,8 @@ class Source:
         self.starts = [tok[1] for tok in self.code]
         self.comment_starts = [a for a, _ in self.comments]
         # Rule 7 (root, 2026-10-26): the tokens of the file that step to a parent (`..`, a quoted '..', `.parent`,
-        # `.parents`, `os.pardir`, getattr(p, "parent")), and the computed root reads classification finds. The name
+        # `.parents`, `os.pardir`, getattr(p, "parent"), a `dirname(` call), and the computed root reads classification
+        # finds. The name
         # taint (RootLiteral.taint_check) refuses where they meet.
         code = self.code
         self.parent_toks = [
@@ -279,6 +280,7 @@ class Source:
             if (tok[0] == "str" and (PARENT_STEP.search(tok[3][0])
                                      or (tok[3][0] in ("parent", "parents", "pardir") and self._in_getattr(j))))
             or (tok[0] == "word" and tok[3] == "pardir")
+            or (tok[0] == "word" and tok[3] == "dirname" and j + 1 < len(code) and code[j + 1][3] == "(")
             or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
                 and code[j - 1][3] in (".", "?."))]
         self.computed = []
@@ -791,8 +793,9 @@ class RootLiteral:
           - a quoted root inside the string (prose, SQL text);
           - a docstring, read like any string.
         It REFUSES on a doctest naming a root (executed code), on any `..` in the mention's path run, on a computed
-        string that holds any `..` step (a quoted '..' included; an ellipsis is not a step), a parent word or nested code naming a root (its
-        substitutions are opaque), and on a parent step applied to the string."""
+        string that holds any `..` step (a quoted '..' included; an ellipsis is not a step), a parent word or nested
+        code naming a root (its substitutions are opaque), and on a parent step applied to the string. A segment
+        inside a pure-literal `../` run is the `rel` rule's: it is relative to the file."""
         src, tok = self.src, self.src.code[k]
         lo, hi = max(tok[1], a), min(tok[2], b)
         plain, body = tok[3][1], tok[3][0]
@@ -829,10 +832,11 @@ class RootLiteral:
     RAW_CD = re.compile(r"(?<![\w.-])(?:cd|pushd|WORKDIR|working[-_]directory|working_dir|workdir|cwd)(?=[\s:=])")
 
     def raw_taint(self, text: str) -> str:
-        """Rule 7 for a file the tokenizer does not parse (shell, Dockerfile, yaml, toml), line by line: a line holding a
-        root segment (or a variable bound from one) and a `..` step refuses; so does any `..` step after a `cd`,
-        `pushd` or `WORKDIR` into a root path or a bare root (`cd services`). An anchor (`cd "$(dirname "$0")/.."`) names no root, so it stays.
-        Returns the reason, or "" when the file is clean."""
+        """Rule 7 for a file the tokenizer does not parse (shell, Dockerfile, yaml, toml), line by line, after its
+        trailing comment: a line holding a root segment (or a variable bound from one) and a `..` step refuses; so does
+        any `..` step after a `cd`, `pushd`, `WORKDIR` or `working-directory:` into a root path or a bare root (`cd
+        services`). An anchor (`cd "$(dirname "$0")/.."`) names no root, so it stays. Returns the reason, or "" when the
+        file is clean."""
         lines = text.split("\n")
         tainted: set = set()
         changed = True
@@ -1311,9 +1315,9 @@ class RootLiteral:
           in a tainted statement, and a function whose `return` is tainted (its calls then yield a tainted value). A
           statement reads a name only on the right of its assignment; an attribute name matches only as an attribute.
         - A tainted statement that holds a parent step (`..`, '..', `.parent`, `.parents`, `os.pardir`, getattr(p,
-          "parent")) REFUSES. In the statement of the read itself, a parent step BEFORE the read acts on its base (an
-          anchor such as `Path(__file__).parents[2] / "services"`), so it does not count, unless it sits inside a
-          callback the statement defines (its parameters may receive the read).
+          "parent"), a `dirname(` call) REFUSES. In the statement of the read itself, a parent step BEFORE the read
+          acts on its base (an anchor such as `Path(__file__).parents[2] / "services"`), so it does not count, unless
+          it sits inside a callback the statement defines (its parameters may receive the read).
         - A tainted value passed to a function DEFINED IN THIS FILE whose body holds a parent step REFUSES.
         - Residual: a tainted path handed to a helper defined in ANOTHER file that applies `..`. JSON binds no names.
         """

@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T52 (rule 7: every taint shape must refuse) and R4R01-R4R09 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified).",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified).",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -807,7 +807,7 @@
    ]
   },
   "E06_exec_options_args_list": {
-   "expect": "sound",
+   "expect": "refuse",
    "ext": "js",
    "src": "spawn('pytest', { args: ['pytest', 'services'] });\n",
    "truth": [
@@ -818,7 +818,7 @@
    ]
   },
   "E07_keyword_arg_list": {
-   "expect": "sound",
+   "expect": "refuse",
    "ext": "py",
    "src": "f(paths=[\"services\", \"tools\"])\n",
    "truth": [
@@ -3350,6 +3350,124 @@
    "expect": "read",
    "ext": "py",
    "src": "p = Path(__file__).resolve().parents[2] / 'services' / 'b' / name\n",
+   "truth": [
+    "b",
+    "nest"
+   ]
+  },
+  "R4R10_js_default_value_inside_callback": {
+   "expect": "read",
+   "ext": "ts",
+   "src": "const xs = [path.join(ROOT, 'services', x)];\nxs.forEach((p: string = DEFAULT_DIR) => {\n  fs.readdirSync(path.join(DEFAULT_DIR, '..'));\n  fs.readdirSync(p);\n});\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R4T53_literal_path_parent_tail": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "p = Path(ROOT, 'services', 'b').parent / 'a' / 'x.py'\n",
+   "truth": [
+    "a"
+   ]
+  },
+  "R4T54_literal_join_parent_tail_js": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const p = path.join(path.join(ROOT, 'services', 'b'), '..', 'a', 'x.ts');\n",
+   "truth": [
+    "a"
+   ]
+  },
+  "R4T55_js_cstyle_for_init_binds": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "let e;\nfor (let d = path.join(ROOT, 'services', x), i = 0; i < 1; i++) {\n  e = d;\n}\nfs.readdirSync(path.join(e, '..', '..', 'packages', 'shared'));\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "R4T56_js_return_flow": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "function g() {\n  return path.join(ROOT, 'services', x);\n}\nfs.readdirSync(path.join(g(), '..', '..', 'packages', 'shared'));\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "R4T57_py_return_flow": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "def g():\n    return os.path.join(ROOT, 'services', x)\nos.listdir(os.path.join(g(), '..', '..', 'packages', 'shared'))\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "R4T58_sh_variable_parent": {
+   "expect": "refuse",
+   "ext": "sh",
+   "src": "D=services/b/worker\nls $D/../../b2\n",
+   "truth": [
+    "b2"
+   ]
+  },
+  "R4T59_dockerfile_arg_parent": {
+   "expect": "refuse",
+   "ext": "dockerfile",
+   "src": "ARG D=services/b/worker\nRUN ls ${D}/../../b2\n",
+   "truth": [
+    "b2"
+   ]
+  },
+  "R4T60_sh_dir_walked_beneath": {
+   "expect": "read",
+   "ext": "sh",
+   "src": "pytest services/b\n",
+   "truth": [
+    "b",
+    "nest"
+   ]
+  },
+  "R4T61_py_dirname_on_tainted_name": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "d = f\"{ROOT}/services/b/{x}\"\nup = os.path.dirname(os.path.dirname(os.path.dirname(d)))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R4T62_js_dirname_on_tainted_name": {
+   "expect": "refuse",
+   "ext": "js",
+   "src": "const d = `${ROOT}/services/b/${x}`;\nconst up = path.dirname(path.dirname(path.dirname(d)));\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R4T63_py_dirname_around_string_read": {
+   "expect": "refuse",
+   "ext": "py",
+   "src": "up = os.path.dirname(os.path.dirname(f\"{ROOT}/services/b\"))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R4R11_py_dirname_anchor_before_read": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'services', 'b', name)\n",
    "truth": [
     "b",
     "nest"

@@ -68,34 +68,51 @@ FULL.
 2. **A read, as a walker.** These read every package beneath the root:
    - a collection holding only the root;
    - a loop over a collection holding it, or over pairs that hold it;
-   - a method called on such a collection.
+   - a method called on such a collection;
+   - a list, tuple or set of literals in an assignment, an object value or a comparison (rule 8: there is no
+     list-literal exemption, since `parts = ["services", "billing"]` can flow into `join(ROOT, *parts)`). Its siblings
+     that name a package (`("services", "b")`) are read too;
+   - a comparison (`==`, `===`, `in`, `not in`, `case`): `d == "services"` selects a value that may become a path.
 
-   A root named INSIDE a string also reads every package beneath its literal prefix, unless a `..` follows in the same
-   path run. That covers an f-string, a template, a glob, SQL text or prose: `f"{ROOT}/services/{x}"`,
-   `"services/*/migrations"`.
+   A root SEGMENT anywhere in a string reads every package beneath its literal prefix, whatever precedes it:
+   `backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`, a route, prose, a docstring, SQL text. That
+   covers an f-string, a template and a glob too: `f"{ROOT}/services/{x}"`, `"services/*/migrations"`. A backslash
+   always separates. A segment inside a pure-literal `../` run (`'../app/api/x/services/route.ts'`) is a path relative to
+   the file, which the `rel` rule reads exactly. A string REFUSES when:
+   - a `..` follows the segment in the same path run;
+   - it is computed and holds a `..` step anywhere (`..`, `pardir`, `parent`, `dirname`; an ellipsis is not a step),
+     or nests code naming a root: `f"{os.path.join(ROOT, 'services', x, '..')}"`. A substitution is opaque;
+   - it is a doctest (`>>>`) naming a root, which is executed code;
+   - the quoted root runs past the string the tokenizer saw (a desynchronised grammar: JSX text, a PEP 701 nested
+     quote, a regex lexed as division).
 
-   A substitution is opaque, so a computed string REFUSES when it holds a parent step anywhere (`..`, `pardir`,
-   `parent`, `dirname`) or nests code naming a root: `f"{os.path.join(ROOT, 'services', x, '..')}"`.
-
-   In a plain string, a root starts a path in two places:
-   - where no `/` precedes it, so `backend/services/` and a route `/:org/services/:id` are not repo-root paths;
-   - at the very start, after leading slashes, when no component follows (`ROOT + "/services/" + x`).
-
-   A backslash separates when doubled, in a raw string, or before a character that makes no escape: `\d` keeps its
-   backslash, while `\n` is an escape.
-
-   A string that is a statement by itself (a docstring, or a JS directive) is never consumed, so it reads nothing.
-   The exception is a doctest (`>>>`) that names a root: that is executed code, so it REFUSES.
+   A file the tokenizer does not parse (shell, Dockerfile, YAML, TOML) reads the same way, line by line, after its
+   trailing `#` comment is removed. A QUOTED root there (`"services"`) still REFUSES, and `.sql` files are metadata.
 3. **Metadata, only with positive evidence:**
-   - an object key or value, never a ternary branch;
+   - an object key or value, never a ternary branch (a JSON file is parsed, so its keys and values are these);
    - a subscript key (`m["services"]`);
-   - a comparison (`==`, `===`, `in`, `not in`, `case`), also inside a comprehension, which is never a literal
-     collection;
-   - any `.sql` file;
-   - a list, tuple or set of literals that is assigned in a statement (`ROOTS = (...)`), an object value, compared, or
-     nested in such a collection. Even then, a sibling naming a package (`("services", "b")`) or a package-owning
-     top-level directory (`("services", "packages")`) is read.
-4. **Everything else REFUSES**, including:
+   - any `.sql` file.
+4. **Rule 7, parent steps on names (lexical taint).**
+   - A name bound from a computed root read is tainted, and so is every name bound from a tainted one, transitively
+     within the file.
+   - A tainted statement holding a parent step REFUSES. The steps are `..`, a quoted `'..'`, `.parent`, `.parents`,
+     `os.pardir` and `getattr(p, "parent")`.
+   - So does a tainted value passed to a function defined in the same file whose body holds a parent step.
+   - In the read's own statement, a step BEFORE the read acts on its base (`Path(__file__).parents[2] / "services"`),
+     so it does not count. A step inside a callback that the statement defines always counts.
+
+   Bindings follow each language:
+   - every target before every top-level `=` binds (`a = b = v`, `a, (b, c) = ...`, `let q = 1, d = v`), as do an
+     assignment expression (`(m := v)`), `for` and `as` targets, and parameters, never a type or a default value;
+   - a parameter is visible only inside its function;
+   - JS `const`/`let` are block-scoped, `var` is function-scoped, and a bare assignment is file-wide;
+   - a Python name is local to its `def` unless declared `global` or `nonlocal`;
+   - an attribute (`self.paths`) matches by name across the file.
+
+   In an unparsed file, rule 7 is line-level:
+   - a line holding a root segment, or a shell/Dockerfile variable bound from one, together with a `..` step REFUSES;
+   - so does any `..` step after a `cd`, `pushd`, `WORKDIR` or `working-directory:` into a root.
+5. **Everything else REFUSES**, including:
    - a root not alone in a path argument (`"services" + os.sep + x`, `"apps" if web else "services"`);
    - a subscripted list in a path call;
    - a direct argument of any other call (`make("services", v=1)`, `shutil.copytree("services", ...)`,
@@ -105,14 +122,22 @@ FULL.
    - a bare assignment (`kind = "services"`);
    - an argv element of an exec call, or its options;
    - a root inside a regex literal;
-   - any file whose brackets do not close;
-   - any file type the tokenizer does not parse. Only Python, JS/TS and JSON are parsed; `.sql` is metadata.
+   - any file whose brackets do not close.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
-`test_edges_review_vectors.json` holds the 124 adversarial readers from root's two independent reviews. Each one reads its
-truth or refuses, except five residuals that root's 2026-10-26 metadata ruling accepts: an object value or key, or an
-assigned label list, later used as a path. The scanner reads lexically and does not follow a value through variables.
+`test_edges_review_vectors.json` holds 318 adversarial readers: 245 from root's three independent reviews, 12 of spine's
+own probes, and 61 for round 4's rule 7 (R4T01-R4T52 must refuse; R4R01-R4R09 must keep reading). Each one reads its
+truth or refuses, except the named residuals:
+- A12, N08, N11: an object value or key later used as a path (root's metadata ruling);
+- T19: a root built by deliberate string obfuscation (`"serv" + "ices"`);
+- T36/T37: a root joined to a computed base that is a repo-internal directory other than the root (`join(WEB_SRC,
+  "services", x)`) reads beneath the root segment, not beneath that directory. A rule refusing every base not provably
+  the repo root would refuse 8 vagary-core files, 5 of them fixture trees under a temp directory;
+- rule 7 stays within a file: a cross-file flow (a tainted path handed to a helper in another module) is not followed;
+- a computed path component holding `..` (an opaque substitution) reads beneath its literal prefix.
+
+These are bounded by the 10-22 ruling: main runs FULL after every merge, and a red main blocks landings.
 
 ## Compatibility and validation
 

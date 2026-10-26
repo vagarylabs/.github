@@ -434,12 +434,16 @@ class EdgesTest(unittest.TestCase):
     def test_an_unowned_path_a_glob_maps_or_inerts_refuses(self):
         """F6: an unowned path is safe to leave unread only because its change is unmapped and plans FULL. When a
         caller's inert_globs or extra_edges covers it, that is no longer true, so the read refuses."""
-        src = 'p = os.path.join(ROOT, "services", "fixtures", "seed.json")'
-        self.assertEqual(self.review_scan(src, "py"), [])
+        sources = (('p = os.path.join(ROOT, "services", "fixtures", "seed.json")', "py"),
+                   ('p = "services/fixtures/seed.json"', "py"),  # the literal form, read through a string
+                   ("const p = 'services/fixtures/seed.json';", "js"))
+        for src, ext in sources:
+            self.assertEqual(self.review_scan(src, ext), [])
         for key, value in (("inert_globs", ["services/fixtures/**"]), ("extra_edges", {"services/fixtures/**": ["a"]})):
-            with self.subTest(key):
-                self.REVIEW_CFG = {**type(self).REVIEW_CFG, key: value}
-                self.assertEqual(self.review_scan(src, "py"), "REFUSE")
+            for src, ext in sources:
+                with self.subTest(key=key, src=src):
+                    self.REVIEW_CFG = {**type(self).REVIEW_CFG, key: value}
+                    self.assertEqual(self.review_scan(src, ext), "REFUSE")
         self.REVIEW_CFG = type(self).REVIEW_CFG
 
     def test_reader_scan_uses_immutable_revision_not_later_working_tree(self):

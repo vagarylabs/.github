@@ -201,7 +201,8 @@ The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not sca
   - R7T08-R7T11 are precision controls that read, and R7T12 pins that a TOML key reads;
   - R7T16, R7T19 and R7T20 refuse and pin the working-directory wording; R7T17 and R7T18 are named residuals.
 
-Each one reads its truth or refuses, except the named residuals:
+Each one reads its truth or refuses, except the named residuals. Each residual records `reads`, its reading when
+pinned, and the suite asserts it exactly, so a residual that reads less (or more) fails until the pin is re-derived:
 - **A12, N08, N11:** an object value or key later used as a path (root's metadata ruling).
 - **T19:** a root built by deliberate string obfuscation (`"serv" + "ices"`).
 - **T36/T37:** a root joined to a computed base that is a repo-internal directory other than the root

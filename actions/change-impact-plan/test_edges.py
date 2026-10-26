@@ -393,7 +393,11 @@ class EdgesTest(unittest.TestCase):
         truth, expect = case["truth"], case["expect"]
         if expect == "refuse":
             self.assertEqual(got, "REFUSE", label)
-        elif expect != "residual":
+        elif expect == "residual":
+            # A named residual reads less than its truth by ruling; its reading when pinned is recorded so that one
+            # reading even less (or more) fails here until the pin is re-derived on purpose.
+            self.assertEqual(got, case["reads"], f"{label}: a residual's reading moved from its pin")
+        else:
             self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
             if expect == "read":
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
@@ -409,6 +413,8 @@ class EdgesTest(unittest.TestCase):
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 self.judge(label, case, self.vector_scan(repo, case))
+        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual" and "reads" not in c),
+                         [], "every residual vector pins its reading")
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          [
                           "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",

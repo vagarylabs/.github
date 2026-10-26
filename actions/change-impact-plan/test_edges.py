@@ -367,7 +367,8 @@ class EdgesTest(unittest.TestCase):
                 f.unlink()
         rel = case.get("file") or "services/r/x." + case["ext"]
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        (repo / rel).write_bytes(case["src"].encode("utf-8"))
+        # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
+        (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
         cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
         rev = None
@@ -436,8 +437,10 @@ class EdgesTest(unittest.TestCase):
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V19_deno_json_tasks",
                           "R6V21_chdir_tainted_attribute", "R6V22_exec_cwd_tainted_attribute",
                           "R6V23_js_exec_cwd_this_attribute", "R6V24_chdir_then_path_cwd_parent",
-                          "R6V25_chdir_then_fstring_dotdot_end", "R7T17_py_chdir_sibling_function_parameter",
-                          "R7T18_py_chdir_sibling_function_local", "T19_partial_split_root",
+                          "R6V25_chdir_then_fstring_dotdot_end", "R7B1a_py_chdir_fstring_of_tainted_name",
+                          "R7B1c_js_quoted_cwd_key", "R7T17_py_chdir_sibling_function_parameter",
+                          "R7T18_py_chdir_sibling_function_local", "R8T02_js_cwd_template_of_tainted_name",
+                          "R8T03_js_single_quoted_cwd_key", "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
@@ -472,6 +475,14 @@ class EdgesTest(unittest.TestCase):
             with self.subTest(label):
                 case = self.REVIEW_VECTORS[label]
                 self.assertEqual(self.vector_scan(self.vector_repo("exact-" + label[:5]), case), want)
+
+    def test_reader_scan_greps_bytes_whatever_the_callers_locale(self):
+        """R7V14: under a UTF-8 locale `git grep -E` stops matching a line at an invalid UTF-8 byte, which hid a root
+        mention after it. The scan pins LC_ALL=C; the caller's locale is set to C.UTF-8 here, so a scan that inherited
+        it would read nothing."""
+        case = self.REVIEW_VECTORS["R7V14_pkg_invalid_utf8_byte_before_script"]
+        with patch.dict(os.environ, {"LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}):
+            self.assertEqual(self.vector_scan(self.vector_repo("locale"), case), ["a", "b", "b2", "nest"])
 
     def test_round7_package_json_and_toml_read_exactly(self):
         """Round 7's reads, pinned exactly (a must-read vector accepts an over-read): a BOM-prefixed package.json reads

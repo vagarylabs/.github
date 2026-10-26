@@ -1,5 +1,5 @@
 {
- "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals. Round 7 adds the sixth review's R6V01-R6V30 and Q1-Q3 (R6V12-R6V14 now refuse: a package.json that does not parse as a JSON object, or whose scripts is not an object; R6V15 reads once its UTF-8 BOM is stripped; R6V18, R6V19 and R6V21-R6V25 are named residuals outside rule 4's closed list; R6V02/R6V03 are the ratified YAML-key metadata) and R7T01-R7T20 (round 7: T01-T07 and T13-T15 refuse the package.json forms, NaN/Infinity and an integer too long to decode included; T08-T11 are precision controls that read; T12 pins that a TOML key reads; T16, T19 and T20 refuse and pin the working-directory wording; T17/T18 are named residuals, a name another function binds). Each residual carries `reads`, its reading when pinned: judge() asserts it exactly, so a residual that reads less (or more) than recorded fails until the pin is re-derived on purpose.",
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1, rounds 1-3 (2026-10-26): 245 adversarial reader files, plus S01-S05 and SP01-SP07 (spine's own probes). Each must READ its truth packages or REFUSE (which plans FULL). Round 4 adds R4T01-R4T63 (rule 7: every taint shape must refuse) and R4R01-R4R11 (rule 7's precision: each binding and scoping narrowing must keep reading). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = A12/N08/N11 (object values and keys, root's ratified metadata) and T19/T36/T37 (lexical limits proposed to root, not ratified). Round 5 adds root's round-4 reviewer inputs (V01-V70, M1-M6, X1-X6, K05-K10) and R5T01-R5T07/R5R01-R5R04; residual adds M5/M6/V48 (a literal root read does not start taint) and V45-V47 (heads taken by tuple slicing, a regex or os.path.split). Round 6 adds the fifth review's R5V01-R5V54 and Z1-Z7; inputs outside README rule 4's closed list are named residuals. Round 7 adds the sixth review's R6V01-R6V30 and Q1-Q3 (R6V12-R6V14 now refuse: a package.json that does not parse as a JSON object, or whose scripts is not an object; R6V15 reads once its UTF-8 BOM is stripped; R6V18, R6V19 and R6V21-R6V25 are named residuals outside rule 4's closed list; R6V02/R6V03 are the ratified YAML-key metadata) and R7T01-R7T20 (round 7: T01-T07 and T13-T15 refuse the package.json forms, NaN/Infinity and an integer too long to decode included; T08-T11 are precision controls that read; T12 pins that a TOML key reads; T16, T19 and T20 refuse and pin the working-directory wording; T17/T18 are named residuals, a name another function binds). Round 8 adds the seventh review's B1a-B1d (R7B1a/R7B1c: a tainted name inside a string or substitution, a quoted JS cwd key, named residuals; R7B1b/R7B1d refuse) and R7V14 (a root mention after an invalid UTF-8 byte reads, src_hex holding its raw bytes), and R8T01-R8T04 (the same wording's edges). The R7T02 CI fix adds R8T05 (a package.json nested 100 deep refuses at the explicit 64-level bound, the same on every Python) and R8T06 (exactly 64 deep, read). Each residual carries `reads`, its reading when pinned: judge() asserts it exactly, so a residual that reads less (or more) than recorded fails until the pin is re-derived on purpose.",
  "cases": {
   "A01_multiline_join_computed": {
    "expect": "read",
@@ -6091,6 +6091,170 @@
     "shared"
    ],
    "file": "services/r/sub/x.py"
+  },
+  "R7B1a_py_chdir_fstring_of_tainted_name": {
+   "expect": "residual",
+   "ext": "py",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py",
+   "src": "d = Path(ROOT, \"services\", name)\nos.chdir(f\"{d}\")\nopen(\"../../packages/shared/x.json\")\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R7B1b_py_chdir_str_of_tainted_name": {
+   "expect": "refuse",
+   "ext": "py",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py",
+   "src": "d = Path(ROOT, \"services\", name)\nos.chdir(str(d))\nopen(\"../../packages/shared/x.json\")\n"
+  },
+  "R7B1c_js_quoted_cwd_key": {
+   "expect": "residual",
+   "ext": "js",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js",
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { \"cwd\": d });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R7B1d_py_chdir_tainted_receiver_attr": {
+   "expect": "refuse",
+   "ext": "py",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py",
+   "src": "cfg.d = Path(ROOT, \"services\", name)\nos.chdir(cfg.d)\nopen(\"../../packages/shared/x.json\")\n"
+  },
+  "R7V14_pkg_invalid_utf8_byte_before_script": {
+   "expect": "read",
+   "ext": "json",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "file": "services/r/package.json",
+   "src_hex": "7b226465736372697074696f6e223a2022636166e9222c202273637269707473223a207b2274223a2022707974657374207365727669636573202d71227d7d0a"
+  },
+  "R8T01_py_chdir_fstring_of_computed_read": {
+   "expect": "refuse",
+   "ext": "py",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.py",
+   "src": "os.chdir(f\"{Path(ROOT, 'services', name)}\")\nopen(\"../../packages/shared/x.json\")\n"
+  },
+  "R8T02_js_cwd_template_of_tainted_name": {
+   "expect": "residual",
+   "ext": "js",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js",
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { cwd: `${d}` });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R8T03_js_single_quoted_cwd_key": {
+   "expect": "residual",
+   "ext": "js",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js",
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { 'cwd': d });\nfs.readFileSync('../../packages/shared/x.json');\n",
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "R8T04_js_unquoted_cwd_control": {
+   "expect": "refuse",
+   "ext": "js",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ],
+   "file": "services/r/sub/x.js",
+   "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { cwd: d });\nfs.readFileSync('../../packages/shared/x.json');\n"
+  },
+  "R8T05_pkg_nesting_past_the_bound": {
+   "expect": "refuse",
+   "ext": "json",
+   "file": "services/r/package.json",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "src": "{\"scripts\": {\"t\": \"pytest services -q\"}, \"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}\n"
+  },
+  "R8T06_pkg_nesting_at_the_bound_reads": {
+   "expect": "read",
+   "ext": "json",
+   "file": "services/r/package.json",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "src": "{\"scripts\": {\"t\": \"pytest services -q\"}, \"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}\n"
   }
  }
 }

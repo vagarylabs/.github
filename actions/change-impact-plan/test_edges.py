@@ -105,6 +105,73 @@ class EdgesTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("unmapped source readers", output)
 
+    def always_cfg(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["jobs"]["root"] = "always"
+        cfg["edge_scan"]["always_reader_dirs"] = ["scripts"]
+        return cfg
+
+    def test_always_reader_dirs_are_left_out_of_the_scan(self):
+        """A directory whose files run only in `always` jobs cannot change a selection (no plan skips an `always` job),
+        so a construct the scanner cannot read there no longer refuses, which planned every change FULL. The same
+        construct anywhere else still refuses under the same config, and an undeclared directory still refuses."""
+        refusing = 'p = os.path.join(ROOT, "services", "..", "b")\n'
+        (self.repo / "scripts/gate.py").write_text(refusing)
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        undeclared = json.loads(json.dumps(CFG))
+        undeclared["jobs"]["root"] = "always"
+        with self.assertRaises(ValueError):
+            E.scan(self.repo, undeclared)  # control: not declared always-only, the parent step refuses
+        cfg = self.always_cfg()
+        self.assertEqual(E.scan(self.repo, cfg), ({"a": set(), "b": set()}, {"scripts": set()}))
+        self.write_cfg(cfg)
+        self.assertEqual(self.run_check()[0], 0)
+        # The same through an immutable revision, as action.yml runs `check --revision`.
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-qm", "always", "--no-gpg-sign"], check=True)
+        head = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        self.assertEqual(E.scan(self.repo, cfg, revision=head)[1], {"scripts": set()})
+        # FAIL-CLOSED ELSEWHERE: the same construct in a package still refuses under the same config.
+        (self.repo / "services/a/gate.py").write_text(refusing)
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        with self.assertRaises(ValueError):
+            E.scan(self.repo, cfg)
+
+    def test_always_reader_dirs_refuse_every_declaration_that_could_hide_a_selecting_read(self):
+        cases = {
+            "the reader job selects (not always)": lambda c: c["jobs"].update(root={"packages": []}),
+            "no reader job": lambda c: c["edge_scan"].pop("reader_job"),
+            "a reader job that does not exist": lambda c: c["edge_scan"].update(reader_job="missing"),
+            "not a declared reader directory": lambda c: c["edge_scan"].update(reader_dirs=[]),
+            "a nested path": lambda c: c["edge_scan"].update(always_reader_dirs=["scripts/sub"], reader_dirs=["scripts/sub"]),
+            "a parent step": lambda c: c["edge_scan"].update(always_reader_dirs=[".."], reader_dirs=[".."]),
+            "a glob": lambda c: c["edge_scan"].update(always_reader_dirs=["scr*"], reader_dirs=["scr*"]),
+            "a scan root": lambda c: c["edge_scan"].update(always_reader_dirs=["services"], reader_dirs=["services"]),
+            # A root that holds no package yet: only the root check catches it (files under it are unmapped readers).
+            "a scan root holding no package": lambda c: c["edge_scan"].update(
+                roots=["services", "tools"], always_reader_dirs=["tools"], reader_dirs=["tools"]),
+            "a directory holding a workspace package": lambda c: c["workspace"]["packages"].update(
+                tool={"dir": "scripts/tool", "deps": []}),
+            "an empty list": lambda c: c["edge_scan"].update(always_reader_dirs=[]),
+            "not a list": lambda c: c["edge_scan"].update(always_reader_dirs="scripts"),
+            "a repeated directory": lambda c: c["edge_scan"].update(always_reader_dirs=["scripts", "scripts"]),
+        }
+        self.assertEqual(E.scan(self.repo, self.always_cfg())[1], {"scripts": set()}, "control: the safe declaration scans")
+        for why, mutate in cases.items():
+            with self.subTest(why):
+                cfg = self.always_cfg()
+                mutate(cfg)
+                with self.assertRaises(ValueError):
+                    E.scan(self.repo, cfg)
+
+    def test_a_change_inside_an_always_reader_dir_still_plans_full(self):
+        """Leaving the directory out of the scan scopes its READS only; its own files stay unmapped."""
+        import plan
+        cfg = self.always_cfg()
+        pkgs = E.workspace_graph(self.repo, cfg)
+        evidence = plan.classify_paths(["scripts/gate.py"], cfg, pkgs)["evidence"]
+        self.assertEqual(evidence["unmapped"], ["scripts/gate.py"])
+
     def test_external_readers_require_an_actual_mapped_obligation(self):
         cfg = json.loads(json.dumps(CFG))
         cfg["jobs"]["root"] = {"packages": ["b"]}

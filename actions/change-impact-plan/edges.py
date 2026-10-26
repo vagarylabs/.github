@@ -1693,6 +1693,39 @@ def workspace_graph(root: Path, cfg: dict) -> dict[str, dict]:
     raise ValueError("reader graph requires declared or pnpm workspace")
 
 
+ALWAYS_DIR_NAME = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")
+
+
+def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: set) -> set[str]:
+    """`edge_scan.always_reader_dirs`: top-level reader directories whose files run ONLY in `always` jobs. No plan can
+    skip an `always` job, so what such a file reads cannot change a selection; the directory is left out of the scan,
+    and a construct the scanner cannot read there no longer refuses (which planned every change FULL). A change to a
+    file in it is still unmapped and still plans FULL. The caller proves the premise (no selected job or matrix
+    executes the directory); this refuses every configuration under which leaving it out could hide a read that
+    selects: anything but a plain top-level name, a directory that is not a declared reader directory, a scan root,
+    one holding a workspace package, or a reader job whose rule is not exactly `always`."""
+    declared = es.get("always_reader_dirs")
+    if declared is None:
+        return set()
+    if not isinstance(declared, list) or not declared:
+        raise ValueError("edge_scan.always_reader_dirs must be a non-empty list of top-level directory names")
+    for name in declared:
+        if not isinstance(name, str) or name in (".", "..") or not ALWAYS_DIR_NAME.fullmatch(name):
+            raise ValueError(f"edge_scan.always_reader_dirs entry {name!r} is not one top-level directory name")
+        if name not in reader_dirs:
+            raise ValueError(f"edge_scan.always_reader_dirs entry {name!r} is not in edge_scan.reader_dirs")
+        if name in roots:
+            raise ValueError(f"edge_scan.always_reader_dirs entry {name!r} is a scan root")
+        if any(d == name or d.startswith(name + "/") for d in package_dirs):
+            raise ValueError(f"edge_scan.always_reader_dirs entry {name!r} holds a workspace package")
+    if len(set(declared)) != len(declared):
+        raise ValueError("edge_scan.always_reader_dirs repeats a directory")
+    job = es.get("reader_job")
+    if not isinstance(job, str) or (cfg.get("jobs") or {}).get(job) != "always":
+        raise ValueError("edge_scan.always_reader_dirs needs edge_scan.reader_job to name a job whose rule is \"always\"")
+    return set(declared)
+
+
 def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
@@ -1711,6 +1744,9 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     pattern = f"({alt})[/\\\\]|[/\\\\]({alt})([^A-Za-z0-9_.-]|$)|[\"'`](\\./)*({alt})/?[\"'`]|\\.\\./"
     pattern += BARE_WORD_GREP.format(alt=alt)  # a bare root word (`pytest services`, `COPY services .`)
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
+    reader_dirs = set(es.get("reader_dirs") or [])
+    # Directories that run only in `always` jobs are not scanned (always_reader_dirs, validated above all else).
+    excludes += [f":!{name}" for name in sorted(always_reader_dirs(es, cfg, by_dir, roots, reader_dirs))]
     if (cfg.get("workspace") or {}).get("type") == "pnpm":
         # The workspace manifest DEFINES the graph (its quoted roots are package globs, not reads), and any change to
         # it already plans FULL (plan.py BUILTIN_FULL_GLOBS).
@@ -1728,7 +1764,6 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
         raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
     lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")
     rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
-    reader_dirs = set(es.get("reader_dirs") or [])
     globs = list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())
     classify = RootLiteral(roots, by_dir, owner, globs)
     sources: dict[str, Source] = {}

@@ -190,6 +190,22 @@ FULL.
 
 The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
 
+**Always-only reader directories (`edge_scan.always_reader_dirs`).** A top-level reader directory whose files run ONLY in
+`always` jobs is left out of the scan. No plan can skip an `always` job, so what those files read cannot change a
+selection, and a construct the scanner cannot read there no longer refuses (a refusal plans every change FULL). A change
+to a file in the directory is still unmapped and still plans FULL: only its reads are out of scope.
+
+The scanner REFUSES every declaration that could hide a read that selects:
+- an entry that is not one plain top-level name (no `/`, no `.` or `..`, no glob);
+- an entry that is not also in `edge_scan.reader_dirs`;
+- a scan root, or a directory that holds a workspace package;
+- an empty or repeated list;
+- an `edge_scan.reader_job` whose rule in `jobs` is not exactly `"always"`.
+
+The CONSUMER proves the premise this rests on: no selected job, and no matrix it builds, executes a file in the
+directory. A file that a selected job runs (a test runner script, say) must not live in a declared directory. If one does,
+the declaration is unsound, and nothing in this scanner can see it.
+
 `test_edges_review_vectors.json` holds 554 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;

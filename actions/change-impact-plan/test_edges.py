@@ -435,6 +435,17 @@ class EdgesTest(unittest.TestCase):
         self.assertEqual(self.review_scan("{ key: 'services', label: 'Capabilities', icon: Server },", "js"), [])
         self.assertEqual(self.review_scan('(Path(tmp) / "services" / "a" / sub).mkdir(parents=True)', "py"), ["a"])
 
+    def test_round5_precision_narrowings_read_exactly(self):
+        """Each round-5 narrowing is a positive-evidence shape, so it must read EXACTLY this, not merely its truth: a
+        wide read here means the narrowing was lost (the must-read vectors alone accept an over-read)."""
+        for label, want in (("R5R01_py_dot_separator_in_substitution", ["b"]),
+                            ("R5R02_yaml_compose_services_key", []),
+                            ("R5R03_py_database_execute_not_a_command", []),
+                            ("R5R04_py_def_default_cwd_not_a_process_cwd", ["b", "nest"])):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.assertEqual(self.vector_scan(self.vector_repo("exact-" + label[:5]), case), want)
+
     def test_an_unowned_path_a_glob_maps_or_inerts_refuses(self):
         """F6: an unowned path is safe to leave unread only because its change is unmapped and plans FULL. When a
         caller's inert_globs or extra_edges covers it, that is no longer true, so the read refuses."""

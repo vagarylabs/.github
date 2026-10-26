@@ -167,8 +167,8 @@ The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not sca
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7 (R4T01-R4T63 must refuse; R4R01-R4R11 must keep reading);
-- 89 from the fourth review (V01-V70, M1-M6, X1-X6, K05-K10);
-- 4 for round 5's precision (R5R01-R5R04 must read; R5T01 must refuse).
+- 88 from the fourth review (V01-V70, M1-M6, X1-X6, K05-K10);
+- 11 for round 5 (R5T01-R5T07 must refuse; R5R01-R5R04 must read, pinned to exact reads).
 
 Each one reads its truth or refuses, except the named residuals:
 - A12, N08, N11: an object value or key later used as a path (root's metadata ruling).

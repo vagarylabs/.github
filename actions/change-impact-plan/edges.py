@@ -1452,14 +1452,14 @@ class RootLiteral:
         parent_funcs = {name for name, lo, hi in funcs if any(lo <= p <= hi for p in parents)}
 
         def returning(rng):
-            """The function whose value this statement returns: a `return` statement, or an arrow's expression body."""
+            """The function whose value this statement returns or yields. (An arrow with an expression body,
+            `svc = (n) => read`, needs no rule: its own assignment binds the name in the same statement.)"""
             T0 = T[rng[0]]
             inside = [(hi - lo, name, lo) for name, lo, hi in funcs if lo <= rng[0] <= hi]
             if not inside:
                 return None
             _, name, lo = min(inside)
-            returns = (T0[0] == "word" and T0[3] in ("return", "yield")) or (T[lo][3] == "=>" and rng[0] == lo + 1)
-            return name if returns else None
+            return name if T0[0] == "word" and T0[3] in ("return", "yield") else None
 
         computed = set(src.computed)
         # Scope, as each language scopes (a tainted (scope, name): scope is a function body's (lo, hi), or None for

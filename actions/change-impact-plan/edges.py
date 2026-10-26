@@ -956,12 +956,15 @@ class RootLiteral:
     def uses(text: str, names: set) -> bool:
         return any(re.search(r"\$[{(]?%s\b" % re.escape(n), text) for n in names)
 
-    def raw_reads(self, text: str) -> set:
-        """Walker reads for every root segment of one line of an unparsed file (rule 1: a mention reads or refuses)."""
+    KEY_EXTS = frozenset({"yml", "yaml", "toml"})
+
+    def raw_reads(self, text: str, ext: str = "") -> set:
+        """Walker reads for every root segment of one line of an unparsed file (rule 1: a mention reads or refuses).
+        `ext` is the file's extension: only a YAML or TOML key (`services:`) is metadata."""
         reads = set()
         text = self.strip_comment(text)
         for m in self.root_word.finditer(text):  # a bare root word (`pytest services`, `COPY services .`, `- services`)
-            if text[m.end():m.end() + 1] == ":" and not text[m.end():m.end() + 2] == "::":
+            if ext in self.KEY_EXTS and text[m.end():m.end() + 1] == ":" and not text[m.end():m.end() + 2] == "::":
                 continue  # a YAML/TOML key (`services:`) is metadata, as an object key is
             if not self.root_any.match(text, m.start()) and text[max(m.start() - 1, 0):m.start()] not in ("/", "\\"):
                 src, self.src = getattr(self, "src", None), None
@@ -1618,8 +1621,10 @@ class RootLiteral:
                         depth += {"open": 1, "close": -1}.get(T[end][0], 0)
                         end += 1
                     cwd_set = cwd_set or carries(k + 2, end)
-        if cwd_set and re.search(r"(?<![\w.])\.\./", src.text):
-            self.refuse("unresolved (rule 7: a working directory set from a computed root read, and a `../` path)")
+        if cwd_set and (re.search(r"(?<![\w.])\.\./", src.text)
+                        or any(t[0] == "str" and t[3][1] and PARENT_STEP.search(t[3][0]) for t in T)
+                        or any(t[0] == "word" and t[3] == "pardir" for t in T)):
+            self.refuse("unresolved (rule 7: a working directory set from a computed root read, and a `..` step)")
         for rng in set(seeded) | by_name:
             first = seeded.get(rng) if self.SEED_ANCHOR and rng not in by_name else None
             line = src.line_of(T[rng[0]][1]) + 1
@@ -1693,6 +1698,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     classify = RootLiteral(roots, by_dir, owner, globs)
     sources: dict[str, Source] = {}
     raw_parent: dict[str, bool] = {}
+    scripts_read: set = set()
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
 
@@ -1741,6 +1747,21 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             if src.text[a:b] != text:
                 raise ValueError(f"reader scan line {number} of {path} does not match the scanned revision")
             targets |= classify.line_reads(src, line)
+            if posixpath.basename(path) == "package.json" and path not in scripts_read:
+                # npm `scripts` values are shell commands: each is read like a line of a shell file (rule 7 raw, and
+                # bare root words), once per file.
+                scripts_read.add(path)
+                try:
+                    scripts = json.loads(src.text).get("scripts") or {}
+                except (ValueError, AttributeError):
+                    scripts = {}
+                for name, command in (scripts.items() if isinstance(scripts, dict) else ()):
+                    if not isinstance(command, str):
+                        continue
+                    why = classify.raw_taint(command)
+                    if why:
+                        classify.refuse(f"unresolved (rule 7: package.json script {name!r}: {why})")
+                    targets |= classify.raw_reads(command, "sh")
             for m in lit.finditer(src.text, a, b):
                 if not src.in_comment(m.start()):
                     targets.add(literal_read(m.group(1)))
@@ -1763,7 +1784,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                     classify.refuse(f"unresolved (rule 7: {raw_parent[path]})")
             if ext != "sql" and (classify.root_any.search(t) or classify.root_word.search(t)):
                 # A root segment there still READS: a walker beneath its literal prefix.
-                targets |= classify.raw_reads(t)
+                targets |= classify.raw_reads(t, ext)
             for m in lit.finditer(t):
                 targets.add(literal_read(m.group(1)))
             for m in rel.finditer(t):

@@ -403,15 +403,29 @@ class EdgesTest(unittest.TestCase):
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
         (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
         does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
-        os.path.split), all named residuals."""
+        os.path.split), and the fifth review's inputs outside README rule 4's closed list, all named residuals."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 self.judge(label, case, self.vector_scan(repo, case))
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
-                         ["A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
+                         [
+                          "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
                           "M6_py_literal_slash_then_parents", "N08_dict_values_walked", "N11_dict_key_walked",
-                          "T19_partial_split_root", "T36_computed_prefix_not_repo_root",
+                          "R5V01_py_subprocess_module_alias", "R5V02_py_from_subprocess_import_run",
+                          "R5V03_py_command_string_via_variable", "R5V04_py_asyncio_create_subprocess_shell",
+                          "R5V07_js_execaCommand", "R5V08_js_child_process_destructured_alias",
+                          "R5V13_makefile_target_specific_var", "R5V14_sh_find_while_read", "R5V15_taskfile_dir_key",
+                          "R5V17_yaml_key_is_project_dir", "R5V18_py_popen_alias_cwd", "R5V19_py_chdir_alias",
+                          "R5V22_py_asyncio_exec_cwd", "R5V24_py_dirname_alias_inline_comment",
+                          "R5V25_py_dirname_alias_tuple", "R5V26_js_require_dirname_alias",
+                          "R5V27_py_parent_name_concat_dots", "R5V28_py_parent_name_joined_dots",
+                          "R5V29_py_parent_name_path_dotdot", "R5V30_py_parent_name_fstring",
+                          "R5V31_py_parent_name_in_substitution", "R5V32_py_adjacent_dot_literals_in_subst",
+                          "R5V33_py_joined_dots_in_subst", "R5V35_py_cached_property",
+                          "R5V36_py_property_with_comment", "R5V37_py_function_ref_via_assignment",
+                          "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
+                          "R5V41_js_object_assign", "T19_partial_split_root", "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 

@@ -1,0 +1,1397 @@
+{
+ "$comment": "Root's independent reviews of change-impact-plan 1.4.1 (rounds 1 and 2, 2026-10-26): 124 adversarial reader files, plus S01-S05 (code or a parent step inside an f-string/template substitution). Each must READ its truth packages or REFUSE (which plans FULL). expect: read = must not refuse (precision); sound = read or refuse; refuse = must refuse; residual = an object value/key or assigned label list that root's 2026-10-26 metadata ruling accepts as metadata.",
+ "cases": {
+  "A01_multiline_join_computed": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(\n    ROOT,\n    \"services\",\n    name,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A02_multiline_join_literal": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(\n    ROOT,\n    \"services\",\n    \"b\",\n    \"cfg.json\",\n)\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "A03_multiline_args_same_line": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(\n    ROOT, \"services\", \"b\", \"cfg.json\"\n)\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "A04_nested_call_computed": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(os.path.dirname(__file__), \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A05_nested_call_literal": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(get_root(), \"services\", \"b\", \"x.json\")\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "A06_tuple_const_literal": {
+   "expect": "read",
+   "ext": "py",
+   "src": "TTS = (\"services\", \"b\")\np = Path(ROOT, *TTS)\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "A07_list_parts_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "parts = [\"services\", name, \"config.json\"]\nopen(os.path.join(ROOT, *parts))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A08_js_array_join": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const p = [root, 'services', name].join('/');\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A09_custom_helper": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "cfg = repo_path(\"services\", name, \"cfg.json\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A10_aliased_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "from os.path import join as pjoin\np = pjoin(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A11_path_subclass": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = UPath(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A12_dict_value_as_path": {
+   "expect": "residual",
+   "ext": "py",
+   "src": "LOC = {\"root\": \"services\", \"pkg\": \"b\"}\np = Path(ROOT, LOC[\"root\"], LOC[\"pkg\"])\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "A13_argv_pytest": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "subprocess.run([\"pytest\", \"services\", \"-q\"], cwd=ROOT)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A14_js_resolve_nested_call": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const d = path.resolve(here(), 'services', name);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A15_dirname_dotdot_join": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"..\", \"..\", \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A16_template_string": {
+   "expect": "sound",
+   "ext": "js",
+   "note": "pre-existing?",
+   "src": "const p = `${root}/services/${name}/x.json`;\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A17_fstring": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "p = f\"{ROOT}/services/{name}/x.json\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A18_concat_sep": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "p = \"services\" + os.sep + name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A19_concat_slash": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "p = \"services/\" + name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A20_spread_join": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const p = path.join(...[\"services\", x]);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A21_open_join": {
+   "expect": "read",
+   "ext": "py",
+   "src": "open(os.path.join(\"services\", x))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A22_star_continuation": {
+   "expect": "read",
+   "ext": "py",
+   "note": "line starts with *",
+   "src": "p = os.path.join(\n    ROOT,\n    *(\"services\", name),\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A23_listdir": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "names = os.listdir(\"services\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A24_glob_star": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "g = glob.glob(\"services/*/pyproject.toml\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A25_path_join_kw": {
+   "expect": "read",
+   "ext": "js",
+   "note": "control",
+   "src": "const p = join(ROOT, 'services', cap);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A26_parents_slash": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "p = Path(__file__).resolve().parents[2] / \"services\" / name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A27_joinpath": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "p = Path(ROOT).joinpath(\"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A28_underscore_joinpath": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = safe_joinpath(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A29_new_url": {
+   "expect": "sound",
+   "ext": "js",
+   "src": "const u = new URL(\"services\", import.meta.url);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A30_os_sep_join": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "p = os.sep.join([\"services\", name])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "A31_metadata_true": {
+   "expect": "read",
+   "ext": "js",
+   "note": "true metadata control",
+   "src": "{ key: 'services', label: 'Capabilities' },\n",
+   "truth": []
+  },
+  "B01_computed_under_pkg_nested": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = ROOT / \"services\" / \"b\" / sub\n",
+   "truth": [
+    "b",
+    "nest"
+   ]
+  },
+  "B02_computed_under_root": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = ROOT / \"services\" / name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "B03_join_computed_under_pkg": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", \"b\", sub, \"x.json\")\n",
+   "truth": [
+    "b",
+    "nest"
+   ]
+  },
+  "B04_partial_literal_concat": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "p = os.path.join(ROOT, \"services\", \"b\" + suffix)\n",
+   "truth": [
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "B05_fstring_component": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = ROOT / \"services\" / f\"{name}\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "B06_template_component": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const p = path.join(root, 'services', `${name}`);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "B07_literal_dir_walk": {
+   "expect": "read",
+   "ext": "py",
+   "note": "walks nested",
+   "src": "for f in (ROOT / \"services\" / \"b\").rglob(\"*\"): pass\n",
+   "truth": [
+    "b",
+    "nest"
+   ]
+  },
+  "C01_dotdot_after_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name, \"..\", \"..\", \"packages\", \"shared\")\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C02_slash_dotdot_after_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = ROOT / \"services\" / name / \"..\" / \"..\" / \"packages\" / \"shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C03_parent_after_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = (ROOT / \"services\" / name).parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C04_pardir_after_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", name, os.pardir, os.pardir, \"packages\", \"shared\")\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C05_dotdot_literal": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control: expect REFUSE",
+   "src": "p = os.path.join(ROOT, \"services\", \"b\", \"..\", \"a\")\n",
+   "truth": [
+    "a"
+   ]
+  },
+  "C06_dotdot_in_component": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control: expect REFUSE",
+   "src": "p = os.path.join(ROOT, \"services\", \"b/../../packages/shared\")\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C07_dot_component": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control: expect REFUSE",
+   "src": "p = os.path.join(ROOT, \"services\", \"./b\")\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "C08_lit_dotdot": {
+   "expect": "read",
+   "ext": "py",
+   "note": "lit path",
+   "src": "p = \"services/b/../../packages/shared/x.json\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "C09_dotdot_after_computed_to_root": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "second root literal",
+   "src": "p = os.path.join(ROOT, \"services\", name, \"..\", \"..\", \"apps\", \"web\")\n",
+   "truth": [
+    "web"
+   ]
+  },
+  "N01_join_41_comment_lines_last_arg": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = os.path.join(\n    ROOT,\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    \"services\"\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N02_walker_list_41_lines": {
+   "expect": "read",
+   "ext": "py",
+   "src": "ROOTS = [\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    \"services\"\n]\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N03_join_39_comment_lines_control": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control inside window",
+   "src": "p = os.path.join(\n    ROOT,\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    # pad\n    \"services\"\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N04_vue_trailing_comment_open_paren": {
+   "expect": "sound",
+   "ext": "vue",
+   "src": "const p = path.join(\n  root, // base (repo root\n  'services',\n  name\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N05_svelte_trailing_comment_close_paren": {
+   "expect": "sound",
+   "ext": "svelte",
+   "src": "const p = path.join(\n  root, // see note 1)\n  'services'\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N06_js_regex_literal_escaped_paren": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const p = path.join(\n  root.replace(/\\)$/, ''),\n  'services'\n);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N07_bzl_hash_comment_paren": {
+   "expect": "sound",
+   "ext": "bzl",
+   "src": "p = paths.join(\n    ROOT,  # root (see notes\n    \"services\",\n    name,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N08_dict_values_walked": {
+   "expect": "residual",
+   "ext": "py",
+   "note": "ruling residual (object value)",
+   "src": "DIRS = {\"svc\": \"services\", \"web\": \"apps\"}\nfor d in DIRS.values(): walk(Path(ROOT, d))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "N09_js_ternary_in_join": {
+   "expect": "sound",
+   "ext": "js",
+   "src": "const d = path.join(root, isApp ? 'apps' : 'services', name);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "N10_py_ternary_in_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"apps\" if web else \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "N11_dict_key_walked": {
+   "expect": "residual",
+   "ext": "py",
+   "note": "ruling residual (object key)",
+   "src": "ROOTS = {\"services\": True, \"apps\": False}\nfor r in ROOTS: walk(ROOT / r)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "N12_fstring_sql_with_nested_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "cur.execute(f\"COPY t FROM '{os.path.join(ROOT, 'services', name)}'\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N13_js_template_with_nested_join": {
+   "expect": "sound",
+   "ext": "js",
+   "src": "const cmd = `cat ${path.join(root, 'services', name)}`;\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N14_values_named_helper": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "contrived",
+   "src": "p = Path(ROOT, *values(\"services\", name))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N15_sql_file_copy": {
+   "expect": "read",
+   "ext": "sql",
+   "note": "truly metadata; control",
+   "src": "\\copy caps FROM 'services' WITH CSV;\n",
+   "truth": []
+  },
+  "N16_lint_paths_list": {
+   "expect": "residual",
+   "ext": "py",
+   "note": "rule (b) residual",
+   "src": "LINT_PATHS = [\"services\", \"scripts\", \"tests\"]\nsubprocess.run([\"ruff\", \"check\", *LINT_PATHS])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N17_parts_unowned_extra_edges": {
+   "cfg": {
+    "extra_edges": {
+     "services/fixtures/**": [
+      "a"
+     ]
+    }
+   },
+   "expect": "refuse",
+   "ext": "py",
+   "note": "F6 via sibling form",
+   "src": "parts = [\"services\", \"fixtures\", \"golden.json\"]\nopen(os.path.join(ROOT, *parts))\n",
+   "truth": "REFUSE"
+  },
+  "N18_lit_unowned_extra_edges": {
+   "cfg": {
+    "extra_edges": {
+     "services/fixtures/**": [
+      "a"
+     ]
+    }
+   },
+   "expect": "refuse",
+   "ext": "py",
+   "note": "F6 via literal form (pre-existing)",
+   "src": "GOLDEN = \"services/fixtures/golden.json\"\n",
+   "truth": "REFUSE"
+  },
+  "N19_join_unowned_extra_edges_control": {
+   "cfg": {
+    "extra_edges": {
+     "services/fixtures/**": [
+      "a"
+     ]
+    }
+   },
+   "expect": "refuse",
+   "ext": "py",
+   "note": "F6 control",
+   "src": "p = os.path.join(ROOT, \"services\", \"fixtures\", \"golden.json\")\n",
+   "truth": "REFUSE"
+  },
+  "N20_call_unowned_extra_edges": {
+   "cfg": {
+    "extra_edges": {
+     "services/fixtures/**": [
+      "a"
+     ]
+    }
+   },
+   "expect": "refuse",
+   "ext": "py",
+   "note": "F6 via unrecognised call",
+   "src": "g = load_fixture(\"services\", \"fixtures\", \"golden.json\")\n",
+   "truth": "REFUSE"
+  },
+  "N21_copytree_literal_and_kwarg": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "shutil.copytree(\"services\", \"dist\", dirs_exist_ok=True)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N22_copytree_kwargs": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "shutil.copytree(src=\"services\", dst=out)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N23_tar_add_kwargs": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "tar.add(\"services\", arcname=\"svc\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N24_pytest_main": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "pytest.main([\"services\", \"-q\"])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N25_os_walk_kwarg": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "for d, _, fs in os.walk(\"services\", topdown=True): pass\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N26_subprocess_multiline_list_own_line": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "subprocess.run(\n    [\"pytest\", \"services\", \"-q\"],\n    check=True,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N27_subprocess_list_opened_own_line": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "subprocess.run(\n    [\n        \"pytest\",\n        \"services\",\n    ],\n    check=True,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N28_cmd_var_then_run": {
+   "expect": "residual",
+   "ext": "py",
+   "note": "A13-class residual",
+   "src": "cmd = [\"pytest\", \"services\", \"-q\"]\nsubprocess.run(cmd)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N29_create_subprocess_exec_direct_args": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "proc = await asyncio.create_subprocess_exec(\"pytest\", \"services\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N30_js_execFileSync_control": {
+   "expect": "sound",
+   "ext": "js",
+   "note": "control",
+   "src": "execFileSync('pytest', ['services', '-q'], { cwd: root });\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N31_js_spawn_multiline": {
+   "expect": "sound",
+   "ext": "js",
+   "src": "const child = spawn(\n  'pytest',\n  ['services', '--maxfail=1'],\n  { cwd: root },\n);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N32_execvp_control": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control",
+   "src": "os.execvp(\"pytest\", [\"pytest\", \"services\"])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N33_run_args_kw_control": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control",
+   "src": "subprocess.run(args=[\"pytest\", \"services\"])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N34_custom_runner": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "run_cmd([\"pytest\", \"services\"])\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N35_double_paren_tuple": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, *((\"services\", name)))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N36_str_wrapped_root": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, str(\"services\"), name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N37_list_subscript_in_path": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = Path(ROOT, [\"services\", \"apps\"][i], name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "N38_concat_inside_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\" + os.sep + name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N39_js_concat_inside_join": {
+   "expect": "sound",
+   "ext": "js",
+   "src": "const p = path.join(root, 'services' + '/' + name);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N40_backtick_root_in_join": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const p = path.join(root, `services`, name);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N41_mkdir_parents_true_control": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control: must not refuse",
+   "src": "Path(ROOT, \"services\", name).mkdir(parents=True, exist_ok=True)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N42_parent_after_Path_call": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name).parent.parent / \"packages\" / \"shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "N43_dirname_wrapping_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(os.path.dirname(os.path.dirname(os.path.join(ROOT, \"services\", name))), \"packages\", \"shared\")\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "N44_concat_dotdot_after_join_deep_reader": {
+   "expect": "sound",
+   "ext": "py",
+   "file": "services/r/sub/x.py",
+   "src": "p = os.path.normpath(os.path.join(ROOT, \"services\", name) + \"/../../packages/shared\")\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "N45_slash_resolve_parent_control": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "control: expect refuse",
+   "src": "p = (ROOT / \"services\" / name).resolve().parent / \"packages\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "N46_parents_attr_lookalike": {
+   "expect": "read",
+   "ext": "py",
+   "note": "precision",
+   "src": "p = os.path.join(ROOT, \"services\", name, cfg.parents_dir)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N47_backslash_component": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing; only a read on Windows",
+   "src": "p = os.path.join(ROOT, \"services\\\\b\\\\cfg.json\")\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "N48_backslash_concat": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing",
+   "src": "p = ROOT + \"\\\\services\\\\\" + name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N49_ntpath_join_control": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "p = ntpath.join(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N50_purewindowspath_control": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "p = PureWindowsPath(ROOT, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N51_powershell_join_path": {
+   "expect": "sound",
+   "ext": "ps1",
+   "note": "pre-existing",
+   "src": "$p = Join-Path $root \"services\"\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N52_formfeed_above_multiline_join": {
+   "expect": "read",
+   "ext": "py",
+   "src": "x = 1\f\np = os.path.join(\n    ROOT,\n    \"services\",\n    name,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N53_u2028_in_js_string_above_join": {
+   "expect": "read",
+   "ext": "js",
+   "src": "const sep = 'a\u2028b';\nconst p = path.join(\n  root,\n  'services',\n  name,\n);\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N54_formfeed_shift_to_metadata_line": {
+   "expect": "read",
+   "ext": "py",
+   "src": "x = 1\f\nTABS = [\n    \"services\",\n    \"b\",\n]\n",
+   "truth": [
+    "b"
+   ]
+  },
+  "N55_trailing_slash_root": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-existing",
+   "src": "p = os.path.join(ROOT, \"services/\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N56_dot_slash_root": {
+   "expect": "read",
+   "ext": "py",
+   "note": "pre-existing",
+   "src": "p = os.path.join(ROOT, \"./services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N57_go_filepath_Join": {
+   "expect": "sound",
+   "ext": "go",
+   "src": "p := filepath.Join(root, \"services\", name)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N58_json_fixture_metadata_control": {
+   "expect": "read",
+   "ext": "json",
+   "file": "services/r/fixture.json",
+   "note": "precision control",
+   "src": "{\n  \"policy_id\": \"services\",\n  \"package\": \"b\",\n  \"version\": 1\n}\n",
+   "truth": []
+  },
+  "S01_fstring_nested_join_dotdot": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-round-3: code or a parent step inside a substitution",
+   "src": "p = f\"{os.path.join(ROOT, 'services', name, '..', '..', 'packages', 'shared')}\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "S02_template_nested_join_dotdot": {
+   "expect": "sound",
+   "ext": "js",
+   "note": "pre-round-3: code or a parent step inside a substitution",
+   "src": "const p = `${path.join(root, 'services', x, '..', '..', 'packages', 'shared')}`;\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "S03_fstring_pardir_substitution": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-round-3: code or a parent step inside a substitution",
+   "src": "p = f\"{ROOT}/services/{name}/{os.pardir}/{os.pardir}/packages/shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "S04_template_dirname_substitution": {
+   "expect": "sound",
+   "ext": "js",
+   "note": "pre-round-3: code or a parent step inside a substitution",
+   "src": "const p = `${dirname(`${root}/services/${x}`)}/../packages/shared`;\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "S05_fstring_parent_attr": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-round-3: code or a parent step inside a substitution",
+   "src": "p = f\"{(ROOT / 'services' / name).parent.parent}/packages/shared\"\n",
+   "truth": [
+    "shared"
+   ]
+  },
+  "W01_two_roots": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "for root in (\"services\", \"apps\"):\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "W02_one_tuple": {
+   "expect": "read",
+   "ext": "py",
+   "note": "control",
+   "src": "for root in (\"services\",):\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W03_one_list": {
+   "expect": "read",
+   "ext": "py",
+   "src": "for root in [\"services\"]:\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W04_one_set": {
+   "expect": "read",
+   "ext": "py",
+   "src": "ROOTS = {\"services\"}\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W05_bare_tuple": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "ROOTS = \"services\",\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W06_tuple_with_star": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "ROOTS = (\"services\", *EXTRA)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W07_multiline_roots": {
+   "expect": "read",
+   "ext": "py",
+   "src": "ROOTS = (\n    \"services\",\n    \"apps\",\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
+  },
+  "W08_root_plus_nonroot": {
+   "expect": "read",
+   "ext": "py",
+   "src": "for top in (\"services\", \"packages\"):\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "shared"
+   ]
+  },
+  "W09_root_plus_computed": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "for top in (\"services\", extra_root):\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W10_kw_default": {
+   "expect": "sound",
+   "ext": "py",
+   "note": "pre-existing?",
+   "src": "def walk(root=\"services\"):\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "W11_one_tuple_comment": {
+   "expect": "read",
+   "ext": "py",
+   "src": "ROOTS = (\"services\",  # the walk root\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X01_formfeed_index_overrun_crash": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "x = 1\f\nROOTS = (\n    \"a\",\n)\ny = \"x\", \"y\", \"services\",\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X02_lone_cr_above_multiline_join": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "x = 1  # old\rmac\np = os.path.join(\n    ROOT,\n    \"services\",\n    name,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X03_unterminated_string_line": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = os.path.join(ROOT, \"services\", \"unterminated\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X04_root_first_token_slash": {
+   "expect": "read",
+   "ext": "py",
+   "src": "\"services\" / name\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X05_close_before_open": {
+   "expect": "sound",
+   "ext": "py",
+   "src": ") ] } \"services\", (\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X06_deep_nesting": {
+   "expect": "sound",
+   "ext": "py",
+   "src": "p = f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(\"services\", name))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X07_trailing_slash_op_only": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = ROOT / \"services\" /\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "X08_x1c_separator_in_string": {
+   "expect": "read",
+   "ext": "py",
+   "src": "s = \"a\u001cb\"\np = os.path.join(\n    ROOT,\n    \"services\",\n    name,\n)\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  }
+ }
+}

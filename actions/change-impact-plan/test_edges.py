@@ -129,20 +129,25 @@ class EdgesTest(unittest.TestCase):
         (self.repo / "services/c").mkdir(parents=True)
         (self.repo / "services/c/test").mkdir()
         shapes = {
-            "pathlib join": 'P = ROOT / "services" / "b" / "app.py"\n',
-            "os.path.join": 'P = os.path.join(ROOT, "services", "b")\n',
-            "relative URL": 'const p = new URL("../../b/app.py", import.meta.url)\n',
-            "go relative read": 'right, e := os.ReadFile("../../b/app.py")\n',
+            "pathlib join": ('P = ROOT / "services" / "b" / "app.py"\n', "py"),
+            "os.path.join": ('P = os.path.join(ROOT, "services", "b")\n', "py"),
+            "relative URL": ('const p = new URL("../../b/app.py", import.meta.url)\n', "js"),
+            "go relative read": ('right, e := os.ReadFile("../../b/app.py")\n', "go"),
         }
         cfg = json.loads(json.dumps(CFG))
         cfg["workspace"]["packages"]["c"] = {"dir": "services/c", "deps": []}
-        for name, line in shapes.items():
+        for name, (line, ext) in shapes.items():
             with self.subTest(name):
-                (self.repo / "services/c/test/x.src").write_text(line)
+                for old in (self.repo / "services/c/test").glob("x.*"):
+                    old.unlink()
+                (self.repo / f"services/c/test/x.{ext}").write_text(line)
                 subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
                 deps, _ = E.scan(self.repo, cfg)
                 self.assertEqual(deps["c"], {"b"}, name)
-        (self.repo / "services/c/test/x.src").write_text('local = "../fixtures/a.json"\n')
+        for old in (self.repo / "services/c/test").glob("x.*"):
+            old.unlink()
+        (self.repo / "services/c/test/x.py").write_text('local = "../fixtures/a.json"\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
         deps, _ = E.scan(self.repo, cfg)
         self.assertEqual(deps["c"], set(), "a relative path inside its own package is not a cross-package read")
 
@@ -230,44 +235,83 @@ class EdgesTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
                     E.scan(self.repo, cfg)
 
-    def test_a_root_literal_listed_by_comma_outside_a_path_call_is_metadata(self):
-        """Outside a path-construction call a `,` lists values, so a root literal there is metadata: never a read and
-        never a refusal (a refusal plans FULL for every change). Controls: the same literal inside a path call or after
-        a pathlib `/` (or a bare join imported from node:path) IS a read, and a list naming two roots, or a one-element
-        tuple of one, is a walker's root list, read as every package under each."""
+    def test_a_root_literal_is_metadata_only_with_positive_evidence(self):
+        """Root's principle (2026-10-26): METADATA needs POSITIVE evidence (an object key or value, a subscript key, a
+        comparison, a .sql file, or a literal list that is assigned, an object value or compared); EVERYTHING ELSE
+        REFUSES, which plans FULL. Controls: the same literal in a path call or after a pathlib `/` IS a read, and a
+        walker's root list reads every package under each root."""
         cfg = json.loads(json.dumps(CFG))
         cfg["edge_scan"]["roots"] = ["services", "apps"]
         cfg["workspace"]["packages"]["web"] = {"dir": "apps/web", "deps": []}
         (self.repo / "apps/web").mkdir(parents=True)
         (self.repo / "apps/web/page.tsx").write_text("export default 1\n")
+
+        def scan(src, ext):
+            for old in (self.repo / "services/a").glob("probe.*"):
+                old.unlink()
+            (self.repo / f"services/a/probe.{ext}").write_text(src + "\n")
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            return E.scan(self.repo, cfg)[0]["a"]
+
         metadata = (
-            "{ key: 'services', label: 'Capabilities', icon: Server },",
-            '"policy_id": "services",',
-            "const tabs = ['services', 'providers', 'upstreams'];",
-            'record = make("services", version="1", digest=value)',
-            "VALUES ('apps', 'dns_iac', NULL),",
-            '"services"',
-            'count = manifest["services"][0]',
+            ("{ key: 'services', label: 'Capabilities', icon: Server },", "js"),
+            ('{\n  "policy_id": "services",\n  "version": "1"\n}', "json"),
+            ("const tabs = ['services', 'providers', 'upstreams'];", "js"),
+            ("useQuery({\n  queryKey: ['monitoring', 'services'],\n  queryFn: load,\n});", "js"),
+            ("INSERT INTO t VALUES ('apps', 'dns_iac', NULL);", "sql"),
+            ('count = manifest["services"][0]', "py"),
+            ('if kind == "services":\n    pass', "py"),
+            ("if (obligation === 'services') run();", "js"),
+            ('if part not in ("services", "docs"):\n    pass', "py"),
+            # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
+            ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
+             "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
         )
-        for line in metadata:
-            with self.subTest(line=line):
-                (self.repo / "services/a/app.py").write_text(line + "\n")
-                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
-                self.assertEqual(E.scan(self.repo, cfg)[0]["a"], set(), line)
+        for src, ext in metadata:
+            with self.subTest(metadata=src):
+                self.assertEqual(scan(src, ext), set(), src)
+        refused = (
+            ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
+            ('policy_ref = dict(policy_id="services", version="1")', "py"),
+            ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
+            ('"services"', "py"),
+            ('kind = "services"', "py"),
+            ('def walk(root="services"):\n    pass', "py"),
+            ("const p = web ? 'apps' : 'services';", "js"),
+            ("const o = { dir: web ? other : 'services' };", "js"),  # a ternary branch is not an object value
+            ("spawn('pytest', ['-q'], { cwd: 'services' });", "js"),  # an exec call's options are its argv's context
+            ('const r = /"services"/;', "js"),  # a root inside a regex literal is not a token the classifier reads
+            ('broken = (]\nTABS = ["services", "docs"]', "py"),  # a file whose brackets do not close is untrusted
+            ('TABS = ["services", "docs"]\nbroken = (', "py"),
+            ('p = os.path.join(ROOT, "services" + "/../../packages/shared")', "py"),  # not alone: `..` hides inside
+            ('name = ("services", "docs")[i]', "py"),  # a subscripted collection is one root value, not a label list
+            ("- 'services'", "yaml"),
+        )
+        for src, ext in refused:
+            with self.subTest(refused=src):
+                with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
+                    scan(src, ext)
         reads = {
-            'P = os.path.join(ROOT, "services", "b")': {"b"},
-            'P = ROOT / "services" / name': {"b"},
-            'for root in ("services", "apps"):': {"b", "web"},
-            'walk(ROOT / "apps")': {"web"},
-            'P = Path(ROOT, "apps", name)': {"web"},
-            "const p = join(ROOT, 'services', cap, 'dist');": {"b"},
-            'for root in ("services",):': {"b"},
+            ('P = os.path.join(ROOT, "services", "b")', "py"): {"b"},
+            ('P = ROOT / "services" / name', "py"): {"b"},
+            ('for root in ("services", "apps"):\n    pass', "py"): {"b", "web"},
+            ('walk(ROOT / "apps")', "py"): {"web"},
+            ('P = Path(ROOT, "apps", name)', "py"): {"web"},
+            ("const p = join(ROOT, 'services', cap, 'dist');", "js"): {"b"},
+            ('for root in ("services",):\n    pass', "py"): {"b"},
+            ("for (const root of ['services', 'docs']) walk(root);", "js"): {"b"},
+            ("for (const [dir, job] of [['services', 'build'], ['docs', 'docs']]) run(dir, job);", "js"): {"b"},
+            # A root named inside a string (prose, SQL, a glob, an f-string) is a walker read beneath it, not metadata.
+            ('"""Walks the "services" tree."""', "py"): {"b"},
+            ('cur.execute("INSERT INTO t VALUES (\'services\')")', "py"): {"b"},
+            ('for m in glob.glob("services/*/migrations"):\n    pass', "py"): {"b"},
+            ('p = f"{ROOT}/services/{name}/x.json"', "py"): {"b"},
+            ("const p = `${root}/services/${name}`;", "js"): {"b"},
+            ('p = os.path.join(ROOT, "services", "{a,b}", "x")', "py"): {"b"},  # a brace glob is computed, not a name
         }
-        for line, expected in reads.items():
-            with self.subTest(line=line):
-                (self.repo / "services/a/app.py").write_text(line + "\n")
-                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
-                self.assertEqual(E.scan(self.repo, cfg)[0]["a"], expected, line)
+        for (src, ext), expected in reads.items():
+            with self.subTest(read=src):
+                self.assertEqual(scan(src, ext), expected, src)
 
 
     # The independent review of 1.4.1 (root, 2026-10-26): 60 adversarial reader lines against this graph. A result
@@ -279,49 +323,7 @@ class EdgesTest(unittest.TestCase):
         "shared": {"dir": "packages/shared", "deps": []}}},
         "edge_scan": {"roots": ["services", "apps"], "reader_dirs": [], "reader_job": "root"},
         "jobs": {"root": {"packages": []}}}
-    SVC = ["a", "b", "b2", "nest"]
-    REVIEW_CASES = {
-        # F1: base found these reads; 1.4.1 read nothing
-        "A03 multi-line args": ('p = os.path.join(\n    ROOT, "services", "b", "cfg.json"\n)', ["b"], "py"),
-        "A05 closed nested call": ('p = os.path.join(get_root(), "services", "b", "x.json")', ["b"], "py"),
-        "A06 literal tuple": ('TTS = ("services", "b")\np = Path(ROOT, *TTS)', ["b"], "py"),
-        # F2: base refused these; 1.4.1 read nothing
-        "A01 one arg per line": ('p = os.path.join(\n    ROOT,\n    "services",\n    name,\n)', SVC, "py"),
-        "A02 one arg per line, literal": ('p = os.path.join(\n    ROOT,\n    "services",\n    "b",\n    "cfg.json",\n)', ["b"], "py"),
-        "A04 dirname call": ('p = os.path.join(os.path.dirname(__file__), "services", name)', SVC, "py"),
-        "A07 parts list": ('parts = ["services", name, "config.json"]\nopen(os.path.join(ROOT, *parts))', SVC, "py"),
-        "A08 js array join": ("const p = [root, 'services', name].join('/');", SVC, "js"),
-        "A09 helper": ('cfg = repo_path("services", name, "cfg.json")', SVC, "py"),
-        "A10 aliased join": ('from os.path import join as pjoin\np = pjoin(ROOT, "services", name)', SVC, "py"),
-        "A11 Path subclass": ('p = UPath(ROOT, "services", name)', SVC, "py"),
-        "A14 js resolve": ("const d = path.resolve(here(), 'services', name);", SVC, "js"),
-        "A15 dirname dotdot": ('p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "services", name)', SVC, "py"),
-        "A28 helper joinpath": ('p = safe_joinpath(ROOT, "services", name)', SVC, "py"),
-        "A29 new URL": ('const u = new URL("services", import.meta.url);', SVC, "js"),
-        "A13 argv (exec context)": ('subprocess.run(["pytest", "services", "-q"], cwd=ROOT)', SVC, "py"),
-        # F3: walker root lists
-        "W05 bare tuple": ('ROOTS = "services",', SVC, "py"),
-        "W06 starred sibling": ('ROOTS = ("services", *EXTRA)', SVC, "py"),
-        "W07 multi-line roots": ('ROOTS = (\n    "services",\n    "apps",\n)', SVC + ["web"], "py"),
-        "W08 non-root top-level dir": ('for top in ("services", "packages"):', SVC + ["shared"], "py"),
-        "W09 computed sibling": ('for top in ("services", extra_root):', SVC, "py"),
-        "W11 one-tuple, comment": ('ROOTS = ("services",  # the walk root\n)', SVC, "py"),
-        # F4: a computed tail under an owned prefix also reads the packages nested beneath it
-        "B01 slash under owned prefix": ('p = ROOT / "services" / "b" / sub', ["b", "nest"], "py"),
-        "B03 join under owned prefix": ('p = os.path.join(ROOT, "services", "b", sub, "x.json")', ["b", "nest"], "py"),
-        # F5: a parent step after a computed component
-        "C01 dotdot after computed": ('p = os.path.join(ROOT, "services", name, "..", "..", "packages", "shared")', ["shared"], "py"),
-        "C02 slash dotdot": ('p = ROOT / "services" / name / ".." / ".." / "packages" / "shared"', ["shared"], "py"),
-        "C03 .parent": ('p = (ROOT / "services" / name).parent.parent / "packages" / "shared"', ["shared"], "py"),
-        "C04 os.pardir": ('p = os.path.join(ROOT, "services", name, os.pardir, os.pardir, "packages", "shared")', ["shared"], "py"),
-        # path-call vectors (resolve, joinpath, spread, sep.join) and the walkers that already worked
-        "A27 joinpath": ('p = Path(ROOT).joinpath("services", name)', SVC, "py"),
-        "A20 spread into join": ("const p = path.join(...['services', x]);", SVC, "js"),
-        "A30 os.sep.join": ('p = os.sep.join(["services", name])', SVC, "py"),
-        "W02 one-tuple": ('for root in ("services",):', SVC, "py"),
-        "W03 one-element list": ('for root in ["services"]:', SVC, "py"),
-        "W04 one-element set": ('ROOTS = {"services"}', SVC, "py"),
-    }
+    REVIEW_VECTORS = json.loads(Path(__file__).with_name("test_edges_review_vectors.json").read_text())["cases"]
 
     def review_scan(self, src, ext):
         repo = Path(self._td.name) / ("review-" + str(abs(hash(src)))[:10])
@@ -336,17 +338,74 @@ class EdgesTest(unittest.TestCase):
         except ValueError:
             return "REFUSE"
 
-    def test_review_inputs_find_the_read_or_refuse(self):
-        for label, (src, truth, ext) in self.REVIEW_CASES.items():
+    def vector_scan(self, repo, case, revision=False):
+        """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
+        --revision`) through an immutable commit whose working tree has since changed."""
+        subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "services/r"], check=True)
+        for f in sorted((repo / "services/r").rglob("*"), reverse=True):
+            if f.is_file() and f.name != "keep.txt":
+                f.unlink()
+        rel = case.get("file") or "services/r/x." + case["ext"]
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_bytes(case["src"].encode("utf-8"))
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
+        rev = None
+        if revision:
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
+                            "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
+            rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            (repo / rel).write_text("# the working tree differs from the scanned revision\n")
+        try:
+            return sorted(E.scan(repo, cfg, revision=rev)[0]["r"])
+        except ValueError:
+            return "REFUSE"
+
+    def vector_repo(self, name):
+        repo = Path(self._td.name) / name
+        for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared", ".github"):
+            (repo / d).mkdir(parents=True, exist_ok=True)
+            (repo / d / "keep.txt").write_text("k\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return repo
+
+    def judge(self, label, case, got):
+        truth, expect = case["truth"], case["expect"]
+        if expect == "refuse":
+            self.assertEqual(got, "REFUSE", label)
+        elif expect != "residual":
+            self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
+            if expect == "read":
+                self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
+
+    def test_review_vectors_read_their_truth_or_refuse(self):
+        """All 124 inputs of root's two independent reviews (rounds 1 and 2): none may read less than its truth without
+        refusing, and those resolvable today must keep reading. Only the residuals root's metadata ruling accepts are
+        exempt, and they are exactly these five."""
+        repo = self.vector_repo("vectors")
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
-                got = self.review_scan(src, ext)
-                self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
-        # Precision where a read is resolvable: these READ (not merely refuse).
-        for label in ("A03 multi-line args", "A05 closed nested call", "A06 literal tuple", "A01 one arg per line",
-                      "A04 dirname call", "B01 slash under owned prefix", "B03 join under owned prefix", "W07 multi-line roots",
-                      "W08 non-root top-level dir", "A27 joinpath", "A14 js resolve", "W03 one-element list"):
+                self.judge(label, case, self.vector_scan(repo, case))
+        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
+                         ["A12_dict_value_as_path", "N08_dict_values_walked", "N11_dict_key_walked",
+                          "N16_lint_paths_list", "N28_cmd_var_then_run"])
+
+    def test_the_action_path_reads_the_scanned_revision(self):
+        """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a
+        later working tree. The round-2 cases whose lines span or shift, plus positive controls that must READ."""
+        repo = self.vector_repo("revision")
+        for label in ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
+                      "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
+                      "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
+                      "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
+                      "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
+                      "W07_multiline_roots"):
+            with self.subTest(label):
+                case = self.REVIEW_VECTORS[label]
+                self.judge(label, case, self.vector_scan(repo, case, revision=True))
+        for label in ("A01_multiline_join_computed", "A02_multiline_join_literal", "N52_formfeed_above_multiline_join"):
             with self.subTest(precision=label):
-                self.assertNotEqual(self.review_scan(*self.REVIEW_CASES[label][::2]), "REFUSE")
+                self.assertNotEqual(self.vector_scan(repo, self.REVIEW_VECTORS[label], revision=True), "REFUSE")
         # Controls: metadata stays metadata, and a keyword named `parents` is not a parent step.
         self.assertEqual(self.review_scan("{ key: 'services', label: 'Capabilities', icon: Server },", "js"), [])
         self.assertEqual(self.review_scan('(Path(tmp) / "services" / "a" / sub).mkdir(parents=True)', "py"), ["a"])

@@ -42,35 +42,66 @@ Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now inc
 
 ## Reader scan (1.4.1)
 
-`edges.py` classifies each quoted workspace-root literal (`"services"`, `"apps"`, ...) by the source around it. A
-construct opened on an earlier line is read as one logical line (up to 40 lines back), with brackets balanced.
+`edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
+backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
+brackets across lines. Lines are split on `\n` only, as `git grep` numbers them.
 
-1. **In a path, the literal is joined.** That means after a pathlib `/`, as an argument of a path call (`join`,
-   `resolve`, `joinpath`, `Path(...)`, found by balanced brackets, so `join(get_root(), "services", x)` and black's
-   one-argument-per-line output both count), or in a list spread into one, passed to `sep.join(`, or `.join(`-ed.
-   - A literal prefix that a package owns reads that package. When a computed component follows, it also reads every
-     package nested beneath that prefix.
-   - A prefix that no package owns reads every package beneath it.
-   - A `..`, `.parent` or `os.pardir` after a computed component REFUSES, and so does a literal `.` or `..` component.
-   - An unowned path with nothing beneath it needs no edge, because a change to it is unmapped and plans FULL. When the
-     caller's `inert_globs` or `extra_edges` cover it, that is no longer true, and the read REFUSES.
-2. **A comma-listed literal outside a path call is metadata ONLY with positive evidence:** an object key or value, a
-   subscript (`m["services"]`), SQL (`VALUES (`, or any `.sql` file).
-   - Or when its list closes on the line and EVERY sibling is a string literal or a `name=` argument naming no package.
-   - A sibling that names a package (`("services", "b")`) or a package-owning top-level directory
-     (`("services", "packages")`) is a read.
-   - A list or set holding only the root (`["services"]`, `("services",)`) is a walker over it.
-   - An argv list passed to an exec call (`subprocess.run([...])`) refuses.
-3. **Everything else REFUSES, as 1.4.0 did:** a computed or starred sibling, a bare tuple, an unrecognised call
-   (`repo_path("services", name)`), or a list that runs past the line. A literal that is neither comma-listed nor in a
-   path stays metadata, as before.
+The rule is root's principle (2026-10-26): **metadata needs positive evidence; everything else refuses.** A refusal plans
+FULL.
 
-Before 1.4.1, ANY root literal followed by `,` or `/` that could not be resolved refused, so a JSON field or a UI
-label made every plan FULL. 1.4.1 narrows only where the evidence is positive. An independent review ran 60
-adversarial readers through it: every input either reads the truth or refuses. Two residuals were accepted by the
-2026-10-26 ruling: a dict value later used as a path, and (closed here by the exec rule) an argv list. Template and
-f-strings, `+` concatenation, `glob`/`listdir`, and lines that begin with `*` read nothing, here and in 1.4.0. They are
-listed for a follow-up.
+1. **A read, in a path.** The literal reads a path when it is:
+   - after a pathlib `/`;
+   - ALONE as an argument of `join`, `resolve`, `joinpath` or `Path(...)`;
+   - in a list spread into one (`*[...]`, `...[...]`);
+   - the sole argument of `sep.join(...)`;
+   - or `[...].join(...)`-ed.
+
+   Then:
+   - The literal components that follow are joined, and the owning package is read.
+   - A computed or glob component (`*`, `?`, `[`, `{`), or a walk of the result (`glob`, `rglob`, `iterdir`,
+     `os.walk`, `readdir`, ...), also reads every package beneath the literal prefix.
+   - A parent step after the root REFUSES: `..`, `.parent`, `os.pardir` or `dirname(...)`. It counts in the root's own
+     argument, in a later argument of an enclosing path call, in a call around it, and later in its statement (nested
+     blocks and objects excepted).
+   - An unowned path normally needs no edge, because its change plans FULL. If the caller's `inert_globs` or
+     `extra_edges` cover it, that no longer holds, so the read REFUSES.
+2. **A read, as a walker.** These read every package beneath the root:
+   - a collection holding only the root;
+   - a loop over a collection holding it, or over pairs that hold it;
+   - a method called on such a collection.
+
+   A root named INSIDE a string also reads every package beneath its literal prefix, unless a `..` follows in the same
+   path run. That covers an f-string, a template, a glob, SQL text or prose: `f"{ROOT}/services/{x}"`,
+   `"services/*/migrations"`.
+
+   A substitution is opaque, so a computed string REFUSES when it holds a parent step anywhere (`..`, `pardir`,
+   `parent`, `dirname`) or nests code naming a root: `f"{os.path.join(ROOT, 'services', x, '..')}"`.
+3. **Metadata, only with positive evidence:**
+   - an object key or value, never a ternary branch;
+   - a subscript key (`m["services"]`);
+   - a comparison (`==`, `===`, `in`, `not in`, `case`);
+   - any `.sql` file;
+   - a list, tuple or set of literals that is assigned in a statement (`ROOTS = (...)`), an object value, compared, or
+     nested in such a collection. Even then, a sibling naming a package (`("services", "b")`) or a package-owning
+     top-level directory (`("services", "packages")`) is read.
+4. **Everything else REFUSES**, including:
+   - a root not alone in a path argument (`"services" + os.sep + x`, `"apps" if web else "services"`);
+   - a subscripted list in a path call;
+   - a direct argument of any other call (`make("services", v=1)`, `shutil.copytree("services", ...)`,
+     `pytest.main(["services"])`). There is deliberately no allowlist of metadata calls; a caller rewrites such a line
+     as a literal or a named constant;
+   - a keyword argument or default parameter;
+   - a bare assignment (`kind = "services"`);
+   - an argv element of an exec call, or its options;
+   - a root inside a regex literal;
+   - any file whose brackets do not close;
+   - any file type the tokenizer does not parse. Only Python, JS/TS and JSON are parsed; `.sql` is metadata.
+
+The workspace manifest `pnpm-workspace.yaml` defines the graph, so it is not scanned. A change to it already plans FULL.
+
+`test_edges_review_vectors.json` holds the 124 adversarial readers from root's two independent reviews. Each one reads its
+truth or refuses, except five residuals that root's 2026-10-26 metadata ruling accepts: an object value or key, or an
+assigned label list, later used as a path. The scanner reads lexically and does not follow a value through variables.
 
 ## Compatibility and validation
 

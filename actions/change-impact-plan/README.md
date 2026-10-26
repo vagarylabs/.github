@@ -40,6 +40,30 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
 
+## Reader scan (1.4.1)
+
+`edges.py` reads a workspace-root literal (`"services"`, `"apps"`, ...) by where it stands.
+
+- **Outside a path-construction call, after a `,`, it is metadata.** That covers a JSON field, an object key, an
+  array of labels, SQL `VALUES` and keyword arguments. It is never a read and never a refusal. Before 1.4.1 such a
+  line raised, and the check failed, so every plan for the repository was FULL.
+  - One exception reads MORE: a list naming two or more roots (`("services", "apps")`) is a walker's root list. It
+    reads every package under each root it names.
+- **In a path,** meaning inside `os.path.join`, `path.join`/`path.resolve`, `joinpath` or `Path(...)`, or after a
+  pathlib `/`, the literal components are joined.
+  - A path whose literal prefix a package owns reads that package, even when a computed component follows.
+  - A computed component under a prefix no package owns (`ROOT / "services" / cap`) reads EVERY package beneath that
+    prefix. So does a literal directory above packages, such as a root itself.
+  - A literal path with no package beneath it is unowned content. A change to it is unmapped and plans FULL, so it
+    needs no edge.
+  - A `..` component still refuses.
+
+**The metadata rule narrows on purpose.** Such a line used to refuse, which made every plan FULL. Now it reads
+nothing, because a listed value is not a path. The path and walker rules only widen: before 1.4.1 a computed join
+refused, and now it reads every package under its literal prefix, which is a superset of anything a computed
+component other than `..` can reach. A bare `join(...)`/`resolve(...)` imported from `node:path` counts as a path
+call, so a computed walker in package code keeps its edge.
+
 ## Compatibility and validation
 
 Legacy `mode`, `run` and `matrices` behavior is preserved. Disabling reader checks does not authorize narrower validation. Existing callers must explicitly adopt the new immutable version; changing this repository does not migrate their pins.

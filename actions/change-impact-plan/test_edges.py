@@ -202,20 +202,72 @@ class EdgesTest(unittest.TestCase):
                 self.assertEqual(self.run_check()[0], 0)
                 cfg["jobs"]["root"]["packages"] = []
 
-    def test_unresolved_or_dynamic_workspace_component_joins_refuse(self):
+    def test_computed_or_unowned_component_joins_read_every_package_beneath_their_literal_prefix(self):
+        """A computed component cannot be resolved statically, so the join reads EVERY package under its literal
+        prefix: an over-approximation, which only runs more. A literal path no package owns reads the packages beneath
+        it; with none beneath it, it is unowned content, whose change is unmapped and plans FULL, so it needs no edge.
+        A `..` component still refuses."""
         cfg = self.pnpm_fixture()
-        for expression in (
-            'path.join(root, "packages", "plugins")',
-            'path.join(root, "packages", "plugins", "missing", "index.js")',
-            'path.join(root, "packages", pluginName, "index.js")',
-            'path.join(root, "packages", "plugins", "sdk", selectedFile)',
-            'ROOT / "packages" / pluginName',
-        ):
+        cfg["edge_scan"].update(reader_dirs=["scripts"], reader_job="root")
+        cases = {
+            'path.join(root, "packages", "plugins")': {"sdk", "plugin"},
+            'path.join(root, "packages", "plugins", "missing", "index.js")': set(),
+            'path.join(root, "packages", pluginName, "index.js")': {"sdk", "plugin"},
+            'path.join(root, "packages", "plugins", "sdk", selectedFile)': {"sdk"},
+            'ROOT / "packages" / pluginName': {"sdk", "plugin"},
+            'ROOT / "server" / name': {"server"},
+            'os.path.join(ROOT, "server")': {"server"},
+        }
+        for expression, expected in cases.items():
+            with self.subTest(expression=expression):
+                (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                self.assertEqual(E.scan(self.repo, cfg)[1]["scripts"], expected)
+        for expression in ('ROOT / "packages" / ".." / "server"', 'path.join(root, "packages", "../server")'):
             with self.subTest(expression=expression):
                 (self.repo / "scripts/read.js").write_text("read(" + expression + ");\n")
                 subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
                 with self.assertRaisesRegex(ValueError, "workspace-root reader expression"):
                     E.scan(self.repo, cfg)
+
+    def test_a_root_literal_listed_by_comma_outside_a_path_call_is_metadata(self):
+        """Outside a path-construction call a `,` lists values, so a root literal there is metadata: never a read and
+        never a refusal (a refusal plans FULL for every change). Controls: the same literal inside a path call or after
+        a pathlib `/` (or a bare join imported from node:path) IS a read, and a list naming two roots, or a one-element
+        tuple of one, is a walker's root list, read as every package under each."""
+        cfg = json.loads(json.dumps(CFG))
+        cfg["edge_scan"]["roots"] = ["services", "apps"]
+        cfg["workspace"]["packages"]["web"] = {"dir": "apps/web", "deps": []}
+        (self.repo / "apps/web").mkdir(parents=True)
+        (self.repo / "apps/web/page.tsx").write_text("export default 1\n")
+        metadata = (
+            "{ key: 'services', label: 'Capabilities', icon: Server },",
+            '"policy_id": "services",',
+            "const tabs = ['services', 'providers', 'upstreams'];",
+            'record = make("services", version="1", digest=value)',
+            "VALUES ('apps', 'dns_iac', NULL),",
+            '"services"',
+            'count = manifest["services"][0]',
+        )
+        for line in metadata:
+            with self.subTest(line=line):
+                (self.repo / "services/a/app.py").write_text(line + "\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                self.assertEqual(E.scan(self.repo, cfg)[0]["a"], set(), line)
+        reads = {
+            'P = os.path.join(ROOT, "services", "b")': {"b"},
+            'P = ROOT / "services" / name': {"b"},
+            'for root in ("services", "apps"):': {"b", "web"},
+            'walk(ROOT / "apps")': {"web"},
+            'P = Path(ROOT, "apps", name)': {"web"},
+            "const p = join(ROOT, 'services', cap, 'dist');": {"b"},
+            'for root in ("services",):': {"b"},
+        }
+        for line, expected in reads.items():
+            with self.subTest(line=line):
+                (self.repo / "services/a/app.py").write_text(line + "\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                self.assertEqual(E.scan(self.repo, cfg)[0]["a"], expected, line)
 
 
     def test_reader_scan_uses_immutable_revision_not_later_working_tree(self):

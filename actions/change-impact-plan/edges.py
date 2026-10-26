@@ -75,6 +75,10 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     join_root = re.compile(r"[\"'](" + alt + r")[\"']")
     component = re.compile(r"([\"'])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)\1")
     rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
+    # An unclosed path-construction call before a root literal (os.path.join, path.join/resolve, a bare join/resolve
+    # imported from node:path, joinpath, Path(...)), or a pathlib `/` right before it, puts that literal in a path.
+    # A string join (", ".join) matches too: that over-approximates, which only runs more.
+    path_call = re.compile(r"\b(?:join|resolve|joinpath|(?:Pure(?:Posix|Windows)?)?Path)\([^)]*$|/\s*$")
     reader_dirs = set(es.get("reader_dirs") or [])
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
@@ -99,27 +103,42 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
         for m in lit.finditer(t):
             targets.add(owner(m.group(1)))
         for m in join_root.finditer(t):
+            first = re.match(r"\s*([/,])\s*", t[m.end():])
+            constructed = path_call.search(t[:m.start()]) is not None
+            if not constructed and (first is None or first.group(1) == ","):
+                # Outside a path-construction call a `,` lists values (a JSON field, an object key, an array of labels,
+                # SQL VALUES, keyword arguments); it never joins path components, so a root literal there is
+                # metadata. The one exception reads MORE: a list naming two or more roots ("services", "apps"), or a
+                # one-element tuple of one, is a walker's root list, read as every package under each root it names.
+                listed, cursor = [m.group(1)], m.end()
+                while (separator := re.match(r"\s*,\s*", t[cursor:])) and (
+                        part := component.match(t, cursor + separator.end())):
+                    listed.append(part.group(2))
+                    cursor = part.end()
+                named = {item for item in listed if item in roots}
+                # A one-element tuple of a root, ("services",), is the same walker shape.
+                one_tuple = re.search(r"\(\s*$", t[:m.start()]) and re.match(r"\s*,\s*\)", t[m.end():])
+                if len(named) >= 2 or one_tuple:
+                    targets |= {by_dir[d] for d in by_dir if d.split("/", 1)[0] in named}
+                continue
             cursor, components = m.end(), [m.group(1)]
-            joined = False
-            while True:
-                separator = re.match(r"\s*([/,])\s*", t[cursor:])
-                if not separator:
-                    break
-                joined = True
-                cursor += separator.end()
-                part = component.match(t, cursor)
+            while separator := re.match(r"\s*([/,])\s*", t[cursor:]):
+                part = component.match(t, cursor + separator.end())
                 if part is None:
-                    raise ValueError(f"unsupported workspace-root reader expression in {path}")
+                    break  # a computed component: the path is <literal prefix>/<anything>
                 components.append(part.group(2))
                 cursor = part.end()
-            # A root alone is metadata unless used as a path-construction argument.
-            constructed = re.search(r"(?:\.join|\.resolve|joinpath)\([^)]*$", t[:m.start()])
-            if joined or constructed:
-                resolved = posixpath.normpath("/".join(components))
-                target = owner(resolved)
-                if target is None or any(part in (".", "..") for item in components for part in item.split("/")):
-                    raise ValueError(f"unresolved workspace-root reader expression in {path}")
-                targets.add(target)
+            if any(item in (".", "..") for component_text in components for item in component_text.split("/")):
+                raise ValueError(f"unresolved workspace-root reader expression in {path}")
+            prefix = posixpath.normpath("/".join(components))
+            target = owner(prefix)
+            if target is not None:
+                targets.add(target)  # a computed tail below a package's own dir stays inside that package
+                continue
+            # No package owns the literal prefix. A computed tail, or a directory above packages (a root itself),
+            # reads every package beneath it: an over-approximation, which only runs more. A literal path with no
+            # package beneath it is unowned content; a change to it is unmapped and plans FULL, so it needs no edge.
+            targets |= {by_dir[d] for d in by_dir if d.startswith(prefix + "/")}
         for m in rel.finditer(t):
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))
             targets.add(owner(resolved))

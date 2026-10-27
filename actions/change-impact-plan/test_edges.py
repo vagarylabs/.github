@@ -945,6 +945,56 @@ class ImportAttributionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "may leave its package"):
                     self.scan(cfg)
 
+    def test_pathlib_edits_evaluate_and_the_floor_judges_the_evaluated_prefix(self):
+        # vagary-core's evidence app vendors a package INSIDE itself: PACKAGE / "scripts/..." is its own subdirectory,
+        # not the top-level scripts/ (spine, 2026-10-27; a rewrite to the repo-root copy would have broken the service).
+        self.files(**{"services__a__app__contract.py": "import importlib.util\nfrom pathlib import Path\n"
+                                                        'PACKAGE = Path(__file__).with_name("_vendored")\n'
+                                                        'spec = importlib.util.spec_from_file_location("m", PACKAGE / "scripts/x.py")\n',
+                      "services__a__app___vendored__scripts__x.py": 'P = "services/b/x.json"\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(report["computed_imports_unused"], [])
+        self.assertNotIn("services/a/app/_vendored/scripts/x.py", report["imports"], "inside the importing package: no edge")
+        # The same shape with a prefix that does not evaluate still refuses: nothing says where "scripts" is.
+        self.files(**{"services__a__app__contract.py": "import importlib.util\n"
+                                                        'spec = importlib.util.spec_from_file_location("m", PKG / "scripts/x.py")\n'})
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan()
+        # An evaluated prefix OUTSIDE the package (the repo root's scripts/) with a computed tail refuses, even declared.
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        root_tail = 'ROOT / "scripts" / x'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        "ROOT = Path(__file__).resolve().parents[3]\n"
+                                                        f"runpy.run_path({root_tail})\n"})
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": root_tail, "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan(cfg)
+        # An evaluated in-package prefix with a computed tail is declarable, as reach "package" only.
+        inside_tail = 'PACKAGE / "scripts" / x'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        'PACKAGE = Path(__file__).with_name("_vendored")\n'
+                                                        f"runpy.run_path({inside_tail})\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": inside_tail, "reach": "external"}]
+        with self.assertRaisesRegex(ValueError, 'must be declared reach "package"'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "package"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        # An evaluated prefix inside ANOTHER package with a computed tail is declarable, and a dep on that package.
+        other_tail = 'PLANE / (name + ".py")'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        'PLANE = Path(__file__).resolve().parents[2] / "c" / "app"\n'
+                                                        f"runpy.run_path({other_tail})\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": other_tail, "reach": "external"}]
+        self.assertIn("c", self.scan(cfg)[0]["a"], "the prefix's package c is a dep (only the vendored file reads b)")
+        # joinpath evaluates too: a sys.path entry into package b through it is a dep.
+        self.files(**{"services__a__app__contract.py": "import sys\nfrom pathlib import Path\n"
+                                                        'sys.path.insert(0, str(Path(__file__).resolve().parents[2].joinpath("b", "app")))\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
     def test_a_loop_over_a_literal_is_literal_names_and_anything_short_of_it_refuses(self):
         # vagary-core's observability.py: `for mod_name, cls in ((<const>, <const>), ...): import_module(mod_name)`.
         loads = {

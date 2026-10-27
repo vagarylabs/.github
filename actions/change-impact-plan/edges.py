@@ -1884,6 +1884,21 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 if base is UNKNOWN or base is FILE or len(parts) != len(node.args) - 1:
                     return UNKNOWN
                 return posixpath.normpath(posixpath.join(base, *parts))
+            # pathlib's literal edits on an evaluated path (spine, 2026-10-27: vagary-core's evidence app binds
+            # `PACKAGE = Path(__file__).with_name("_qualification_contract")`, a package vendored inside it).
+            if name in ("with_name", "with_suffix", "joinpath") and isinstance(f, ast.Attribute):
+                base = ev(f.value, depth + 1)
+                consts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                if base is UNKNOWN or node.keywords or len(consts) != len(node.args) or (name != "joinpath" and len(consts) != 1):
+                    return UNKNOWN
+                current = path if base is FILE else base
+                if name == "with_name":
+                    if "/" in consts[0] or not consts[0]:
+                        return UNKNOWN  # pathlib refuses a name with a separator
+                    return posixpath.normpath(posixpath.join(posixpath.dirname(current), consts[0]))
+                if name == "with_suffix":
+                    return posixpath.splitext(current)[0] + consts[0]
+                return posixpath.normpath(posixpath.join(current, *consts))
             return UNKNOWN
         if isinstance(node, ast.Attribute) and node.attr == "parent":
             inner = ev(node.value, depth + 1)
@@ -1902,6 +1917,37 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
 
     def source(node) -> str:
         return " ".join((ast.get_source_segment(text, node) or ast.dump(node)).split())
+
+    def evaluated_prefix(node):
+        """For a path that does not evaluate: its longest evaluated leading part and the parts after it, or None when
+        even its base does not evaluate (spine, 2026-10-27: `PACKAGE / \"scripts\" / x` under an in-package PACKAGE)."""
+        while isinstance(node, ast.Call) and len(node.args) == 1 and call_name(node.func) in ("str", "Path", "PurePath", "fspath"):
+            node = node.args[0]
+        parts = []
+        while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            parts.insert(0, node.right)
+            node = node.left
+        if isinstance(node, ast.Call) and call_name(node.func) == "join" and node.args:
+            parts = list(node.args[1:]) + parts
+            node = node.args[0]
+        base = ev(node)
+        if base is UNKNOWN:
+            return None
+        current = here if base is FILE else base
+        while parts and isinstance(parts[0], ast.Constant) and isinstance(parts[0].value, str):
+            current = posixpath.normpath(posixpath.join(current, parts.pop(0).value))
+        return current, parts
+
+    def path_site(arg):
+        target = resolved(arg)
+        if target is not None:
+            return ("path", source(arg), target, None)
+        found = evaluated_prefix(arg)
+        if found is None:
+            return ("path", source(arg), None, None)
+        prefix, rest = found
+        stepping = any(isinstance(n, ast.Constant) and isinstance(n.value, str) and PARENT_STEP.search(n.value) for n in rest)
+        return ("path", source(arg), None, (prefix, stepping))
 
     def resolved(node) -> str | None:
         value = ev(node)
@@ -2003,7 +2049,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         return None
 
     names: set[str] = set()
-    sites: list[tuple[str, str, str | None]] = []
+    sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
@@ -2033,18 +2079,18 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 elif looped is not None:
                     names |= {value.split(".")[0] for value in looped}  # resolved by name, like any import
                 else:
-                    sites.append(("module", source(arg), None))
+                    sites.append(("module", source(arg), None, None))
             elif name in ("spec_from_file_location", "run_path"):
                 arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
                     if name == "spec_from_file_location" else (node.args[0] if node.args else None)
                 if arg is not None:
-                    sites.append(("path", source(arg), resolved(arg)))
+                    sites.append(path_site(arg))
             elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
                 inner = node.args[0]  # exec(open(p).read())
                 if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
                         and call_name(inner.func.value.func) == "open" and inner.func.value.args:
                     arg = inner.func.value.args[0]
-                    sites.append(("path", source(arg), resolved(arg)))
+                    sites.append(path_site(arg))
     return entries, names, sites
 
 
@@ -2551,19 +2597,32 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
-        for kind, expr, target in sites:
+        for kind, expr, target, prefix in sites:
             if kind == "path" and target is not None:
                 if not (target == ".." or target.startswith("../")):
                     reach_from(path, target)
                 continue
-            if kind == "path" and escapes_by_text(expr):
+            own = package_dir.get(owner(path)) if owner(path) else None
+            inside = prefix is not None and own is not None and not prefix[1] and (prefix[0] == own or prefix[0].startswith(own + "/"))
+            # A prefix inside ANOTHER package loads that package's modules: declarable, and a dep on it (billing's
+            # `plane_app / (name + ".py")`). Only a prefix outside every package, or a parent step after it, escapes.
+            other = owner(prefix[0]) if prefix is not None and not prefix[1] and not inside else None
+            if kind == "path" and prefix is not None and not inside and other is None:
+                raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
+                                 "write it from __file__ with literal parts, which the scan maps")
+            if kind == "path" and prefix is None and escapes_by_text(expr):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
             entry = by_site.get((path, expr))
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
                                  f"edge_scan.computed_imports) in {path}")
+            if inside and entry["reach"] != "package":
+                raise ValueError(f"unresolved (a computed Python load under its own package, `{expr}`, must be declared "
+                                 f"reach \"package\") in {path}")
             used.add((path, expr))
+            if other is not None and owner(path) is not None and other != owner(path):
+                deps[owner(path)].add(other)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reach_from(path, posixpath.normpath(target))

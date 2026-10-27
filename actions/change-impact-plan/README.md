@@ -301,8 +301,15 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **By path:** `importlib.util.spec_from_file_location(name, p)` (where `module_from_spec` then loads),
      `runpy.run_path(p)` and `exec(open(p).read())`. The path `p` is evaluated as in rule 6:
      - evaluated, it is a literal load, an edge with no declaration;
-     - not evaluated, it needs a declaration, and one whose text holds a parent step or names a scan root or an
-       outside top-level directory refuses even when declared.
+     - not evaluated, the floor judges its longest EVALUATED prefix:
+       - a prefix inside the importing package (no parent step after it) is declarable, as `reach: "package"`;
+       - a prefix inside ANOTHER package is declarable, and that package becomes a dep;
+       - a prefix outside every package refuses even when declared;
+       - with no evaluated prefix, text holding a parent step or naming a scan root or an outside top-level
+         directory refuses even when declared.
+       A `scripts` segment under an in-package prefix is that package's own subdirectory. pathlib's `with_name`,
+       `with_suffix` and `joinpath` with literals evaluate, like `/` (vagary-core's evidence app vendors
+       `Path(__file__).with_name("_qualification_contract")`).
    - The same holds in a reached Python file.
    - **A loop over a literal is literal names.** `for m[, x] in (<constants or tuples of constants>): import_module(m)`
      loads exactly those constants, and so does a comprehension over the same. The conditions:

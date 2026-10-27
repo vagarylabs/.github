@@ -40,7 +40,7 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
 
-## Reader scan (1.4.1)
+## Reader scan (1.4.1; 1.5.0 adds imported files)
 
 `edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
 backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
@@ -204,7 +204,57 @@ The scanner REFUSES every declaration that could hide a read that selects:
 
 The CONSUMER proves the premise this rests on: no selected job, and no matrix it builds, executes a file in the
 directory. A file that a selected job runs (a test runner script, say) must not live in a declared directory. If one does,
-the declaration is unsound, and nothing in this scanner can see it.
+the declaration is unsound, and nothing in this scanner can see it. One case it CAN see refuses since 1.5.0: a package
+that imports a file in the directory runs it wherever the package runs, so the declaration refuses.
+
+### Imported files outside every package (1.5.0)
+
+Before 1.5.0 a relative path that resolved outside every package was dropped. So a test in package `a` that imported
+`../../scripts/x.mjs`, where `x.mjs` reads `packages/b`, gave `deps(a) = []`. The read was credited only to the reader
+job, and a change to `b` never selected `a`'s tests. A package now reads what the files it reaches read.
+
+1. **The edge.** It comes from two places:
+   - a relative path on a non-comment line of a package file (a `../` path, as before) that resolves to a tracked path
+     outside every package;
+   - every `./` or `../` string in a file outside every package that a package already reaches. That includes a shell
+     `source`, a `. ` or a `$(dirname "$0")/` path, and a same-directory Python import. Such a file is read IN FULL,
+     because a `./` import never matches the scan's grep.
+
+   Resolution:
+   - an extensionless specifier resolves as Node and Python do (`x.js`, `x.ts`, ..., `x.py`);
+   - a symlink resolves by its target;
+   - a directory is every tracked file beneath it, and a package nested there is a dep, not a reached file.
+2. **The credit.** Per importing package, the transitive closure credits the package with every read the scan finds in
+   each reached file. Cycles end. A file two packages reach credits both. The reader job keeps its own credit, so nothing
+   is ever narrower.
+   - A `.md` file is prose: its edge is recorded and nothing is credited.
+   - A data file is credited, which only over-approximates, but imports nothing.
+   - Only code (JS/TS, Python, shell) is followed further.
+3. **Fail closed.** A reached path under `always_reader_dirs` refuses. So does a reached CODE file the scan excludes,
+   since its reads cannot be credited, and a symlink loop.
+4. **Computed imports: refuse unless declared** (spine's D2). A non-literal `import(...)` or `require(...)` in a package
+   file, or in a reached file, refuses. The exception is an `edge_scan.computed_imports` entry that declares it:
+   `{"file", "expr", "reach"}`, where `expr` is the exact argument text with whitespace collapsed. `reach` is one of:
+   - `"package"`: inside the importing package;
+   - `"external"`: npm or the standard library, by name;
+   - `"fixture"`: a test temp directory;
+   - a list of repo paths, each of which then becomes an edge.
+
+   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal. An expression that holds a parent
+   step, or a literal naming a top-level directory outside every package, refuses even when declared: an escape has to be
+   written as a literal path, which the scan maps. The declaration list is reviewed like the secret-scan registry.
+5. **Declared, then verified** (spine's D5). `check` fails:
+   - on an imported path that no `extra_edges` glob maps to at least its importers;
+   - on a `computed_imports` entry that matches no site.
+
+   A declared edge then selects the importers through `plan.classify_paths`, as any `extra_edges` glob does. An
+   undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
+   assessment carry `imports`: each imported path with its importers.
+
+Not closed (documented residuals):
+- an import by module NAME into a directory outside every package (Python `sys.path` plus `import x`, a tsconfig
+  `paths` alias, a bundler alias). Python `sys.path` escapes are the next change;
+- a data-driven read (code that reads a manifest, then the paths in it).
 
 `test_edges_review_vectors.json` holds 554 adversarial readers:
 - 245 from root's first three independent reviews;

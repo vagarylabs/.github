@@ -31,7 +31,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest      # the external vantage: public repo, GitHub-hosted, outside the fleet
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     strategy:
       fail-fast: false
       matrix:

@@ -496,7 +496,14 @@ class ManifestTests(unittest.TestCase):
 
     def test_the_manifest_floor_is_six_minutes_report_only(self):
         tf = classify.validate_manifest(json.loads(MANIFEST.read_text()))["timeout_floor"]
-        self.assertEqual(tf, {"minutes": 6, "mode": "report", "exemptions": []})
+        self.assertEqual((tf["minutes"], tf["mode"]), (6, "report"))
+        # The exemption list is pinned: a new exemption is a reviewed change to this test, never a quiet manifest edit.
+        # The only two are secret-scan.yml's input-driven timeouts, each held by the guard test its reason names.
+        self.assertEqual(sorted((e["repo"], e["workflow"], e["job"], e["minutes"]) for e in tf["exemptions"]),
+                         [("vagarylabs/.github", ".github/workflows/secret-scan.yml", job,
+                           "$" + "{{ inputs.timeout-minutes }}") for job in ("gitleaks", "trufflehog")])
+        for e in tf["exemptions"]:
+            self.assertIn("test_secret_scan_timeout_floor.py SecretScanTimeoutInput", e["reason"])
 
     def test_rejects_malformed_timeout_floor(self):
         ok = {"repo": REPO, "workflow": ".github/workflows/x.yml", "job": "a", "minutes": EXPR, "reason": "r",

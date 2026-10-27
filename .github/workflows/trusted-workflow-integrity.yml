@@ -2048,7 +2048,28 @@ jobs:
                 "ratchet_files": ["scripts/test-ci-hosted-routing.py"]
               }
             },
-            "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []}
+            "timeout_floor": {
+              "minutes": 6,
+              "mode": "report",
+              "exemptions": [
+                {
+                  "repo": "vagarylabs/.github",
+                  "workflow": ".github/workflows/secret-scan.yml",
+                  "job": "gitleaks",
+                  "minutes": "\u0024{{ inputs.timeout-minutes }}",
+                  "reason": "timeout-minutes is secret-scan.yml's workflow_call input (a number, default 10): callers pass none or a longer one (the sweep passes 30). Held by trusted/tests/test_secret_scan_timeout_floor.py SecretScanTimeoutInput, which fails if the default or any caller in this repo drops under the floor.",
+                  "record": "lanes/root/reviews/github-34.md (root R4, 2026-10-27): pair each exemption with that test"
+                },
+                {
+                  "repo": "vagarylabs/.github",
+                  "workflow": ".github/workflows/secret-scan.yml",
+                  "job": "trufflehog",
+                  "minutes": "\u0024{{ inputs.timeout-minutes }}",
+                  "reason": "timeout-minutes is secret-scan.yml's workflow_call input (a number, default 10): callers pass none or a longer one (the sweep passes 30). Held by trusted/tests/test_secret_scan_timeout_floor.py SecretScanTimeoutInput, which fails if the default or any caller in this repo drops under the floor.",
+                  "record": "lanes/root/reviews/github-34.md (root R4, 2026-10-27): pair each exemption with that test"
+                }
+              ]
+            }
           }
           TRUSTED_MANIFEST_JSON
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
@@ -4046,7 +4067,28 @@ jobs:
                 "ratchet_files": ["scripts/test-ci-hosted-routing.py"]
               }
             },
-            "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []}
+            "timeout_floor": {
+              "minutes": 6,
+              "mode": "report",
+              "exemptions": [
+                {
+                  "repo": "vagarylabs/.github",
+                  "workflow": ".github/workflows/secret-scan.yml",
+                  "job": "gitleaks",
+                  "minutes": "\u0024{{ inputs.timeout-minutes }}",
+                  "reason": "timeout-minutes is secret-scan.yml's workflow_call input (a number, default 10): callers pass none or a longer one (the sweep passes 30). Held by trusted/tests/test_secret_scan_timeout_floor.py SecretScanTimeoutInput, which fails if the default or any caller in this repo drops under the floor.",
+                  "record": "lanes/root/reviews/github-34.md (root R4, 2026-10-27): pair each exemption with that test"
+                },
+                {
+                  "repo": "vagarylabs/.github",
+                  "workflow": ".github/workflows/secret-scan.yml",
+                  "job": "trufflehog",
+                  "minutes": "\u0024{{ inputs.timeout-minutes }}",
+                  "reason": "timeout-minutes is secret-scan.yml's workflow_call input (a number, default 10): callers pass none or a longer one (the sweep passes 30). Held by trusted/tests/test_secret_scan_timeout_floor.py SecretScanTimeoutInput, which fails if the default or any caller in this repo drops under the floor.",
+                  "record": "lanes/root/reviews/github-34.md (root R4, 2026-10-27): pair each exemption with that test"
+                }
+              ]
+            }
           }
           TRUSTED_MANIFEST_JSON
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.

@@ -2107,7 +2107,27 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         def inside(target: str) -> bool:
             return own is not None and (target == own or target.startswith(own + "/"))
 
-        pardir = any(t[0] == "word" and t[3] == "pardir" for t in tokens)
+        def steps_up_word(j: int) -> bool:
+            """A parent step spelled as a word (root's R4 of #33, fix 3): `pardir`, `.parent`/`.parents`, and every
+            `dirname(...)` except the file's own directory, `dirname(fileURLToPath(import.meta.url))`, `dirname(__filename)`
+            and the like, which is the anchor. So `dirname(dirname(__dirname))` steps up twice."""
+            t = tokens[j]
+            if t[0] != "word" or t[3] not in PARENT_WORDS:
+                return False
+            if t[3] == "pardir":
+                return True
+            if t[3] in ("parent", "parents"):
+                return j > 0 and tokens[j - 1][0] == "op" and tokens[j - 1][3] in (".", "?.")
+            if j + 1 >= len(tokens) or tokens[j + 1][0] != "open":
+                return False
+            c = src.match.get(at + j + 1)
+            inner = [x[3] for x in tokens[j + 2:c - at]] if c is not None else None
+            if inner and len(inner) >= 2 and inner[1] == "." and inner[0] in ("path", "url", "posix"):
+                inner = inner[2:]
+            return inner not in (["fileURLToPath", "(", "import", ".", "meta", ".", "url", ")"], ["__filename"],
+                                 ["import", ".", "meta", ".", "filename"], ["__file__"])
+
+        pardir = any(steps_up_word(j) for j in range(len(tokens)))
         # Unwrap `pathToFileURL(<chain>).href` / `.pathname`, the usual way an anchored path reaches import().
         k = 2 if len(tokens) >= 3 and tokens[1][0] == "op" and tokens[1][3] == "." and tokens[0][0] == "word" else 0
         if len(tokens) > k + 1 and tokens[k][0] == "word" and tokens[k][3] == "pathToFileURL" and tokens[k + 1][0] == "open":
@@ -2143,6 +2163,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                         t[0] == "str" and steps_up(t[3][0]) for arg in rest for t in arg):
                     return "escape", None  # an absolute segment, or a parent step after the first non-literal
                 target = posixpath.normpath(posixpath.join(here, *lits))
+                if c is not None and any(t[0] == "str" and steps_up(t[3][0]) for t in tokens[c - at + 1:]):
+                    return "escape", None  # a parent step after the chain's closing bracket (fix 3)
                 if not rest and c == at + len(tokens) - 1:
                     return "literal", target  # every component literal: a literal import, resolved and mapped
                 if not any(steps_up(x) for x in lits):

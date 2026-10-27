@@ -951,6 +951,30 @@ class ImportAttributionTest(unittest.TestCase):
         cfg["edge_scan"]["computed_imports"][0]["reach"] = "external"
         self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [], "control: another reach is accepted")
 
+    def test_root_r4_an_escape_can_never_be_declared_away(self):
+        # Root's R4 of #33, fix 3: a parent step after the join's closing bracket, and nested dirname() calls, escape.
+        f = "services/a/load.mjs"
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        for escaping in ('import(path.join(__dirname, "lib") + "/../../../scripts/x.mjs")',
+                         'import(path.join(dirname(dirname(__dirname)), "x", n))',
+                         'import(join(path.dirname(here), "lib", n))'):
+            for reach in ("package", "external"):
+                with self.subTest(escaping, reach=reach):
+                    self.files(**{"services__a__load.mjs": f"export const load = (n, here) => {escaping};\n"})
+                    cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": escaping[escaping.index("(") + 1:-1],
+                                                             "reach": reach}]
+                    with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                        self.scan(cfg)
+        # Controls: the file's own directory is the anchor, not a step up, and a literal tail without `..` is no escape.
+        for fine in ('import(path.join(dirname(fileURLToPath(import.meta.url)), "lib", n))',
+                     'import(path.join(path.dirname(__filename), "lib", n))',
+                     'import(path.join(__dirname, "lib") + ".mjs")'):
+            with self.subTest(fine):
+                self.files(**{"services__a__load.mjs": f"export const load = (n) => {fine};\n"})
+                cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": fine[fine.index("(") + 1:-1],
+                                                         "reach": "external"}]
+                self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

@@ -221,12 +221,26 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      because a `./` import never matches the scan's grep.
 
    Resolution:
+   - a `.js`, `.jsx`, `.mjs` or `.cjs` specifier names its TypeScript source as TypeScript resolves it (`.ts`, `.tsx`,
+     `.d.ts`; `.tsx`; `.mts`, `.d.mts`; `.cts`, `.d.cts`), the house style for ESM imports of TypeScript. When both the
+     `.js` file and its source are tracked, both are read;
    - an extensionless specifier resolves as Node and Python do (`x.js`, `x.ts`, ..., `x.py`);
    - a symlink resolves by its target;
    - a directory is every tracked file beneath it, and a package nested there is a dep, not a reached file.
+   - **Nothing is dropped** (root's R4 of #33). An untracked path inside a package, such as its `dist/` output, stands
+     for that package: a dep. An untracked path outside every package REFUSES when it is named in a module position:
+     an import or export-from specifier, a loader call's literal argument or computed target,
+     `new URL(x, import.meta.url)`, or a shell file's relative operand. A relative string anywhere else is data that
+     may name nothing (a test's `"../../etc/passwd"`). It stays a non-edge, and `derive`'s report lists it under
+     `unresolved_data_names`.
 2. **The credit.** Per importing package, the transitive closure credits the package with every read the scan finds in
    each reached file. Cycles end. A file two packages reach credits both. The reader job keeps its own credit, so nothing
    is ever narrower.
+   - **A caller outside every package** (root's R4 of #33, fix 2, in spine's binding shape). Its computed imports are
+     checked whether or not a package reaches it. A target it loads is keyed by the caller's own path, so every package
+     that reaches the caller is credited with it. The caller also maps to its own selection unit: its reader
+     directory's job, or `<unmapped>` when no reader directory holds it, which fails `check` (FULL). The report lists
+     each one under `unowned_callers`, with its unit and the packages it reaches.
    - A `.md` file is prose: its edge is recorded and nothing is credited.
    - A data file is credited, which only over-approximates, but imports nothing.
    - Only code (JS/TS, Python, shell) is followed further.
@@ -237,7 +251,8 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    `import.meta.resolve(`, `module.require(`, `createRequire(...)(`, and a name bound to `createRequire(...)`. The
    exception is an `edge_scan.computed_imports` entry that declares it: `{"file", "expr", "reach"}`, where `expr` is the
    exact argument text with whitespace collapsed. `reach` is one of:
-   - `"package"`: inside the importing package;
+   - `"package"`: inside the importing package. It refuses for a file outside every package, where it names and
+     credits nothing; the same `owner()` result decides this and the credit above;
    - `"external"`: npm or the standard library, by name;
    - `"fixture"`: a test temp directory;
    - a list of repo paths, each of which then becomes an edge.
@@ -254,10 +269,21 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      package's own directory, as in `` import(`../dist/${m}`) ``. The declaration must say `reach: "package"`, and the
      reviewer owns the claim that the substituted part cannot step out.
    - **Any other parent step refuses**, even when declared. So does a literal naming a top-level directory outside every
-     package where nothing anchors it. An escape has to be written as a literal path, which the scan maps.
+     package where nothing anchors it. An escape has to be written as a literal path, which the scan maps. A parent step
+     is a `..` anywhere in the argument, including after a chain's closing bracket
+     (`path.join(__dirname, "lib") + "/../../x"`), or a word: `pardir`, `.parent`, `.parents`, or any `dirname(...)`
+     except the file's own directory (`dirname(fileURLToPath(import.meta.url))`, `dirname(__filename)`), which is the
+     anchor. So `dirname(dirname(__dirname))` steps up.
 5. **Declared, then verified** (spine's D5). `check` fails:
    - on an imported path that no `extra_edges` glob maps to at least its importers;
+   - on an imported path an `inert_globs` glob matches ("inert import"). `plan.classify_paths` applies `inert_globs`
+     before `extra_edges`, so such a path would select nothing when it changes;
    - on a `computed_imports` entry that matches no site.
+
+   **Never narrower, end to end** (root's R4 of #33). For every imported path in vagary-core and vagaris, the REAL
+   `plan.classify_paths` under exactly the mapping `check` requests selects at least the importers an independent oracle
+   finds. The oracle resolves every quoted `./`/`../` string in package code with every extension form, transitively.
+   A path whose own `check` fails plans FULL.
 
    A declared edge then selects the importers through `plan.classify_paths`, as any `extra_edges` glob does. An
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
@@ -328,7 +354,15 @@ Not closed (documented residuals):
 - `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
   default exclude);
 - an import by module name through a tsconfig `paths` alias or a bundler alias;
-- a data-driven read (code that reads a manifest, then the paths in it).
+- a data-driven read (code that reads a manifest, then the paths in it);
+- a relative DATA string (not a module position) that names an untracked path: it stays a non-edge and is listed under
+  `unresolved_data_names`, so a file a build writes there is not attributed to the build's sources;
+- Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
+  `import x` / `from x import` is followed;
+- a shell `source "$VAR/x"`: a substituted prefix is not resolved;
+- a symlink inside a package that points outside every package (it predates 1.5.0);
+- a chain across reader directories (`tools/a.mjs` loads `scripts/b.mjs`, which reads a package): each file's reads
+  are credited to its own reader directory, not to the directory of the file that reaches it.
 
 `test_edges_review_vectors.json` holds 555 adversarial readers:
 - 245 from root's first three independent reviews;

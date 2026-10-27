@@ -1035,6 +1035,158 @@ class ImportAttributionTest(unittest.TestCase):
         self.files(**{"scripts__helper.py": 'import importlib\nP = "services/b/x.json"\nm = importlib.import_module(name)\n'})
         with self.assertRaisesRegex(ValueError, "undeclared computed import `name`.* in scripts/helper.py"):
             self.scan()
+    def check(self, cfg):
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+        return rc, buf.getvalue()
+
+    def test_root_r4_counterexample_a_js_specifier_of_a_ts_file_is_never_dropped(self):
+        # root's R4 of #33 (2026-10-27): c imported scripts/x.ts as ../../scripts/x.js and was DROPPED, so the mapping
+        # check requested ({"scripts/x.ts": ["a"]}) passed and a change to x.ts selected only a, narrower than FULL.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.ts";\n',
+                      "services__c__t.mjs": 'import { x } from "../../scripts/x.js";\n',
+                      "scripts__x.ts": "export const x = 1;\n"})
+        self.assertEqual(self.scan()[2]["imports"], {"scripts/x.ts": ["a", "c"]})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/x.ts": ["a"]}
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "the narrowing mapping no longer passes")
+        self.assertIn("undeclared import edge: c imports scripts/x.ts", out)
+        cfg["extra_edges"] = {"scripts/x.ts": ["a", "c"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        selected = plan.classify_paths(["scripts/x.ts"], cfg, E.workspace_graph(self.repo, cfg))
+        self.assertEqual(sorted(selected["affected"]), ["a", "c"])
+
+    def test_every_typescript_source_form_resolves(self):
+        cases = {"x.jsx": "scripts/x.tsx", "x.mjs": "scripts/x.mts", "x.cjs": "scripts/x.cts", "y.js": "scripts/y.d.ts"}
+        for spec, source in cases.items():
+            with self.subTest(spec):
+                self.files(**{"services__a__t.mjs": f'import "../../scripts/{spec}";\n',
+                              source.replace("/", "__"): "export {};\n"})
+                self.assertIn(source, self.scan()[2]["imports"])
+
+    def test_a_path_that_names_nothing_refuses_and_an_untracked_path_in_a_package_maps_to_it(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/gone.js";\n'})
+        with self.assertRaisesRegex(ValueError, "a reaches scripts/gone.js, which names no tracked file or directory"):
+            self.scan()
+        # A build output in a package (untracked dist/) stands for that package: a dep, never dropped. tools/run.mjs
+        # names it as ./pkg/dist/index.js, a line with no root and no ../, so only the whole-file read sees it.
+        self.files(**{"services__a__t.mjs": 'import "../../tools/run.mjs";\n',
+                      "tools__run.mjs": 'export { p } from "./pkg/dist/index.js";\n'})
+        self.assertEqual(self.scan()[0]["a"], {"tp"})
+
+    def test_spine_control_an_unowned_caller_selects_its_own_unit_and_credits_its_importers(self):
+        # spine's binding control for fix 2 (2026-10-27): a root-level scripts/x.mjs loads services/b/src/y.ts through
+        # a declared computed import. Touching y must select x's unit (the reader job), and a package that imports x
+        # is credited with b. Before fix 2 an unowned caller's computed import credited nothing.
+        decl = [{"file": "scripts/x.mjs", "expr": "pathToFileURL(f).href", "reach": ["services/b/src/y.ts"]}]
+        self.files(**{"scripts__x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n",
+                      "services__a__t.mjs": 'import { load } from "../../scripts/x.mjs";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = decl
+        cfg["jobs"] = {"root": {"packages": []}}
+        deps, readers, report = self.scan(cfg)
+        self.assertEqual(readers["scripts"], {"b"}, "x's own unit, the scripts/ reader job, reads b")
+        self.assertEqual(deps["a"], {"b"}, "a reaches x, so a is credited with what x loads")
+        self.assertEqual(report["unowned_callers"], {"scripts/x.mjs": {"unit": "scripts", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/ reads b, but job 'root' does not list it", out)
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        affected = plan.classify_paths(["services/b/src/y.ts"], cfg, E.workspace_graph(self.repo, cfg))["affected"]
+        self.assertEqual(plan.rule_matches(cfg["jobs"]["root"], affected)[0], True, "touching y selects x's unit")
+
+    def test_an_unowned_caller_outside_every_reader_dir_maps_to_unmapped_and_plans_full(self):
+        self.files(**{"x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "x.mjs", "expr": "pathToFileURL(f).href",
+                                                 "reach": ["services/b/src/y.ts"]}]
+        _, readers, report = self.scan(cfg)
+        self.assertEqual(readers["<unmapped>"], {"b"})
+        self.assertEqual(report["unowned_callers"], {"x.mjs": {"unit": "<unmapped>", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "no unit runs x.mjs, so check fails and the plan is FULL, never a drop")
+        self.assertIn("unmapped source readers require a declared obligation: b", out)
+
+    def test_an_unowned_files_undeclared_computed_import_refuses(self):
+        self.files(**{"scripts__x.mjs": "export const load = (name) => import(name);\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+
+    def test_reach_package_outside_every_package_refuses(self):
+        # Root's R4 of #33, fix 4: reach "package" for a file outside every package names and credits nothing.
+        self.files(**{"scripts__x.mjs": "export const load = (name) => import(name);\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/x.mjs", "expr": "name", "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, 'declared reach "package", but scripts/x.mjs is outside every package'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "external"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [], "control: another reach is accepted")
+
+    def test_root_r4_an_escape_can_never_be_declared_away(self):
+        # Root's R4 of #33, fix 3: a parent step after the join's closing bracket, and nested dirname() calls, escape.
+        f = "services/a/load.mjs"
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        for escaping in ('import(path.join(__dirname, "lib") + "/../../../scripts/x.mjs")',
+                         'import(path.join(dirname(dirname(__dirname)), "x", n))',
+                         'import(join(path.dirname(here), "lib", n))'):
+            for reach in ("package", "external"):
+                with self.subTest(escaping, reach=reach):
+                    self.files(**{"services__a__load.mjs": f"export const load = (n, here) => {escaping};\n"})
+                    cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": escaping[escaping.index("(") + 1:-1],
+                                                             "reach": reach}]
+                    with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                        self.scan(cfg)
+        # Controls: the file's own directory is the anchor, not a step up, and a literal tail without `..` is no escape.
+        for fine in ('import(path.join(dirname(fileURLToPath(import.meta.url)), "lib", n))',
+                     'import(path.join(path.dirname(__filename), "lib", n))',
+                     'import(path.join(__dirname, "lib") + ".mjs")'):
+            with self.subTest(fine):
+                self.files(**{"services__a__load.mjs": f"export const load = (n) => {fine};\n"})
+                cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": fine[fine.index("(") + 1:-1],
+                                                         "reach": "external"}]
+                self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+
+    def test_an_anchored_literal_join_followed_by_a_computed_tail_is_no_literal_import(self):
+        # Kills root's m3 (`if not rest:`): the chain closes, then `+ name` is computed, so it must be declared.
+        self.files(**{"services__a__load.mjs": 'export const load = (name) => import(path.join(__dirname, "lib") + name);\n'})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+
+    def test_check_fails_on_an_imported_path_that_inert_globs_hides(self):
+        # The end-to-end selection census (2026-10-27): vagaris's candidate config makes docs/** inert, and the server
+        # imports docs/docs.json, so a change to it selected NOTHING though check had asked for extra_edges.
+        self.files(**{"services__a__t.mjs": 'import data from "../../scripts/data/x.json";\n',
+                      "scripts__data__x.json": "{}\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/data/x.json": ["a"]}
+        cfg["inert_globs"] = ["scripts/data/**"]
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("inert import: scripts/data/x.json is imported by a, but inert_globs 'scripts/data/**'", out)
+        import plan
+        self.assertEqual(plan.classify_paths(["scripts/data/x.json"], cfg, E.workspace_graph(self.repo, cfg))["affected"],
+                         set(), "the hole itself: inert wins over extra_edges")
+        cfg["inert_globs"] = ["scripts/data/*.md"]
+        self.assertEqual(self.check(cfg)[0], 0, "control: a glob that leaves the import out is accepted")
+
+    def test_a_trailing_slash_exclude_names_its_directory(self):
+        # Root's R4 of #33 (non-blocking): `vendor/` never matched in excluded(), though git's pathspec excludes it.
+        self.files(**{"services__a__t.mjs": 'import "../../third/x.mjs";\n', "third__x.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["exclude"] = ["*.md", "docs", ".github", "third/"]
+        with self.assertRaisesRegex(ValueError, "a reaches third/x.mjs, code the scan excludes"):
+            self.scan(cfg)
 
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{

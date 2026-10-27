@@ -240,9 +240,19 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - `"fixture"`: a test temp directory;
    - a list of repo paths, each of which then becomes an edge.
 
-   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal. An expression that holds a parent
-   step, or a literal naming a top-level directory outside every package, refuses even when declared: an escape has to be
-   written as a literal path, which the scan maps. The declaration list is reviewed like the secret-scan registry.
+   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal. The declaration list is reviewed
+   like the secret-scan registry. **The floor**, refined in spine's pre-review, decides parent steps:
+   - **An anchored, all-literal path is a literal import.** It is anchored when it starts at the file's own directory:
+     `__dirname`, `import.meta.dirname`, or a name bound to `dirname(fileURLToPath(import.meta.url))`.
+     `pathToFileURL(...).href` is unwrapped. Every component is literal, as in
+     `require(path.resolve(__dirname, '..', 'dist', 'ssrf.js'))`. Such a path is resolved and mapped, with no
+     declaration.
+   - **A parent step inside the package is allowed, if declared.** Every parent step must sit in the LEADING literal
+     prefix, before the first substitution or non-literal argument, and that prefix must resolve inside the importing
+     package's own directory, as in `` import(`../dist/${m}`) ``. The declaration must say `reach: "package"`, and the
+     reviewer owns the claim that the substituted part cannot step out.
+   - **Any other parent step refuses**, even when declared. So does a literal naming a top-level directory outside every
+     package where nothing anchors it. An escape has to be written as a literal path, which the scan maps.
 5. **Declared, then verified** (spine's D5). `check` fails:
    - on an imported path that no `extra_edges` glob maps to at least its importers;
    - on a `computed_imports` entry that matches no site.

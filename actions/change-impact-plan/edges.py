@@ -1744,9 +1744,16 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #      file the scan excludes refuses (its reads cannot be credited); so does a symlink loop.
 #   4. COMPUTED (D2, strict by declaration): a non-literal `import(...)` or `require(...)` in a package file or a reached
 #      file refuses unless an `edge_scan.computed_imports` entry declares it ({file, expr, reach}, `expr` the exact
-#      argument text, whitespace collapsed). `reach` is "package" (inside the importing package), "external" (npm or
-#      stdlib by name), "fixture" (a test temp dir), or a list of repo paths, each then an edge. One holding a parent step
-#      or naming a top-level directory outside every package refuses even when declared: an escape has to be mapped.
+#      argument text, whitespace collapsed).
+#      `reach` is "package" (inside the importing package), "external" (npm or stdlib by name), "fixture" (a test temp
+#      dir), or a list of repo paths, each then an edge. THE FLOOR (refined in spine's pre-review):
+#      - every component literal and anchored at the file's own directory (`__dirname`, `import.meta.dirname`, a name
+#        bound to `dirname(fileURLToPath(import.meta.url))`; `pathToFileURL(...).href` unwrapped): a literal import,
+#        resolved and mapped, with no declaration;
+#      - a parent step only in the LEADING literal prefix, that prefix resolving inside the importing package's own
+#        directory: allowed, declared reach "package" (the reviewer owns the claim about the substituted part);
+#      - any other parent step, or a literal naming a top-level directory outside every package where nothing anchors
+#        it: refuses even when declared. An escape has to be written as a literal path, which the scan maps.
 #   5. DECLARED (D5): `check` fails on an imported path no `extra_edges` glob maps to at least its importers, so a change
 #      to it selects them through plan.classify_paths, and on a computed_imports entry that matches no live site.
 CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
@@ -1772,22 +1779,29 @@ def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[s
     return entries
 
 
-def computed_import_sites(src: Source):
-    """Each `import(...)`/`require(...)` whose first argument is not one plain string literal: (expr, argument tokens).
-    A string token's value is (text, plain, start): `plain` is False for a template or f-string with substitutions."""
+def loader_call_opens(src: Source):
+    """The index of the `(` of every `import(` and `require(` call (not some object's `.require(` method)."""
     code = src.code
     for j, tok in enumerate(code):
-        if tok[0] != "word" or tok[3] not in ("import", "require") or j + 1 >= len(code) or code[j + 1][0] != "open" \
-                or code[j + 1][3] != "(":
+        if j + 1 >= len(code) or code[j + 1][0] != "open" or code[j + 1][3] != "(":
             continue
-        if j and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?."):
-            continue  # `x.require(...)` is some object's method, not the module loader
-        close = src.match.get(j + 1)
+        member = j >= 1 and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?.")
+        if tok[0] == "word" and tok[3] in ("import", "require") and not member:
+            yield j + 1
+
+
+def computed_import_sites(src: Source):
+    """Each loader call (loader_call_opens) whose first argument is not one plain string literal:
+    (expr, argument tokens, index of the first argument token in src.code).
+    A string token's value is (text, plain, start): `plain` is False for a template or f-string with substitutions."""
+    code = src.code
+    for o in loader_call_opens(src):
+        close = src.match.get(o)
         if close is None:
-            yield "<unclosed>", []
+            yield "<unclosed>", [], o
             continue
         depth, first = 0, []
-        for t in code[j + 2:close]:
+        for t in code[o + 1:close]:
             if t[0] == "open":
                 depth += 1
             elif t[0] == "close":
@@ -1799,7 +1813,7 @@ def computed_import_sites(src: Source):
                 len(first) == 1 or (first[1][0] == "word" and first[1][3] in ("as", "satisfies"))):
             continue  # a plain literal, also under a TypeScript cast (`import("redis" as string)` loads "redis")
         expr = " ".join(src.text[first[0][1]:first[-1][2]].split()) if first else ""
-        yield expr, first
+        yield expr, first, o + 1
 
 
 def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
@@ -2020,17 +2034,89 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         beneath = [p for p in tracked if p.startswith(target + "/")]
         return sorted(beneath)  # a path that is no tracked file or directory names nothing
 
-    def escapes(tokens) -> bool:
-        for t in tokens:
-            if t[0] == "word" and t[3] == "pardir":
-                return True
-            if t[0] == "str":
-                text = t[3][0]
-                if PARENT_STEP.search(text) or text.strip() == "..":
-                    return True
-                if re.sub(r"^(?:\./|\$\{[^}]*\}/)+", "", text).split("/")[0] in outside_tops:
-                    return True
-        return False
+    package_dir = {name: d for d, name in by_dir.items()}
+
+    def steps_up(text: str) -> bool:
+        return bool(PARENT_STEP.search(text)) or text.strip() == ".."
+
+    def call_args(src: Source, o: int) -> list[list] | None:
+        """The top-level arguments of the call whose `(` is code[o]; None when it does not close."""
+        c = src.match.get(o)
+        if c is None:
+            return None
+        args, cur, depth = [], [], 0
+        for t in src.code[o + 1:c]:
+            if t[0] == "open":
+                depth += 1
+            elif t[0] == "close":
+                depth -= 1
+            if depth == 0 and t[0] == "comma":
+                args.append(cur)
+                cur = []
+            else:
+                cur.append(t)
+        return args + ([cur] if cur else [])
+
+    def parent_verdict(path: str, src: Source, tokens: list, at: int) -> tuple[str, str | None]:
+        """Rule 4's floor, refined in spine's pre-review (2026-10-27): ("literal", target) for an all-literal path the
+        file's own directory anchors; ("inside", None) for a parent step that stays in the LEADING literal prefix and
+        resolves inside the importing package's own directory (allowed only under a reach "package" declaration);
+        ("escape", None) for any other parent step, or a literal naming a top-level directory outside every package
+        where nothing anchors it; ("none", None) otherwise."""
+        own = package_dir.get(owner(path))
+        here = posixpath.dirname(path)
+
+        def inside(target: str) -> bool:
+            return own is not None and (target == own or target.startswith(own + "/"))
+
+        pardir = any(t[0] == "word" and t[3] == "pardir" for t in tokens)
+        # Unwrap `pathToFileURL(<chain>).href` / `.pathname`, the usual way an anchored path reaches import().
+        k = 2 if len(tokens) >= 3 and tokens[1][0] == "op" and tokens[1][3] == "." and tokens[0][0] == "word" else 0
+        if len(tokens) > k + 1 and tokens[k][0] == "word" and tokens[k][3] == "pathToFileURL" and tokens[k + 1][0] == "open":
+            c = src.match.get(at + k + 1)
+            tail = [t[3] for t in tokens[c - at + 1:]] if c is not None else None
+            if tail in ([".", "href"], [".", "pathname"]):
+                return parent_verdict(path, src, tokens[k + 2:c - at], at + k + 2)
+        # A relative specifier: a template or string led by ./ or ../, maybe followed by `+` concatenation.
+        if tokens and tokens[0][0] == "str" and tokens[0][3][0].startswith(("./", "../")):
+            text, plain = tokens[0][3][0], tokens[0][3][1] is True
+            prefix = text if plain or "${" not in text else text[:text.index("${")]
+            later = ([] if plain else [text[len(prefix):]]) + [t[3][0] for t in tokens[1:] if t[0] == "str"]
+            if pardir or any(steps_up(x) for x in later):
+                return "escape", None  # a parent step after the first substitution
+            if not steps_up(prefix):
+                return "none", None
+            return ("inside", None) if inside(posixpath.normpath(posixpath.join(here, prefix))) else ("escape", None)
+        # A path chain anchored at the file's own directory: [path.](join|resolve)(<anchor>, <literal>..., <rest>...).
+        k = 2 if len(tokens) >= 3 and tokens[1][0] == "op" and tokens[1][3] == "." and tokens[0][0] == "word" else 0
+        if len(tokens) > k + 1 and tokens[k][0] == "word" and tokens[k][3] in ("join", "resolve") and tokens[k + 1][0] == "open":
+            args = call_args(src, at + k + 1)
+            c = src.match.get(at + k + 1)
+            anchors = {"__dirname"} | set(re.findall(
+                r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?dirname\(\s*(?:[\w$]+\.)?fileURLToPath\(\s*"
+                r"import\.meta\.url\s*\)\s*\)", src.text))
+            first = args[0] if args else []
+            dirname_word = [t[3] for t in first] == ["import", ".", "meta", ".", "dirname"]
+            if (len(first) == 1 and first[0][0] == "word" and first[0][3] in anchors) or dirname_word:
+                rest, lits = args[1:], []
+                while rest and len(rest[0]) == 1 and rest[0][0][0] == "str" and rest[0][0][3][1] is True:
+                    lits.append(rest.pop(0)[0][3][0])
+                if any(x.startswith("/") for x in lits) or pardir or any(
+                        t[0] == "str" and steps_up(t[3][0]) for arg in rest for t in arg):
+                    return "escape", None  # an absolute segment, or a parent step after the first non-literal
+                target = posixpath.normpath(posixpath.join(here, *lits))
+                if not rest and c == at + len(tokens) - 1:
+                    return "literal", target  # every component literal: a literal import, resolved and mapped
+                if not any(steps_up(x) for x in lits):
+                    return "none", None
+                return ("inside", None) if inside(target) else ("escape", None)
+        # Nothing anchors it at the file: any parent step escapes, and so does naming an outside top-level directory.
+        if pardir or any(t[0] == "str" and steps_up(t[3][0]) for t in tokens):
+            return "escape", None
+        if any(t[0] == "str" and re.sub(r"^(?:\./|\$\{[^}]*\}/)+", "", t[3][0]).split("/")[0] in outside_tops
+               for t in tokens):
+            return "escape", None
+        return "none", None
 
     declared = es.get("computed_imports")
     if declared is None:
@@ -2062,22 +2148,32 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if not src.ok:
             raise ValueError(f"unresolved (the bracket structure of {path} cannot be trusted, so its import calls cannot "
                              "be read)")
-        for expr, tokens in computed_import_sites(src):
-            entry = by_site.get((path, expr))
-            if escapes(tokens):
+        def reaches(target: str) -> None:
+            found = owner(target)
+            if found is None:
+                edges.setdefault(path, set()).add(target)
+            elif found != owner(path) and owner(path) is not None:
+                deps[owner(path)].add(found)
+
+        for expr, tokens, at in computed_import_sites(src):
+            verdict, target = parent_verdict(path, src, tokens, at)
+            if verdict == "literal":
+                reaches(target)  # an all-literal anchored path is a literal import: no declaration needed
+                continue
+            if verdict == "escape":
                 raise ValueError(f"unresolved (a computed import that steps outside its package: `{expr}`) in {path}; "
                                  "write it as a literal path, which the scan maps")
+            entry = by_site.get((path, expr))
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
                                  f"edge_scan.computed_imports) in {path}")
+            if verdict == "inside" and entry["reach"] != "package":
+                raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
+                                 f"declared reach \"package\") in {path}")
             used.add((path, expr))
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
-                    found = owner(posixpath.normpath(target))
-                    if found is None:
-                        edges.setdefault(path, set()).add(posixpath.normpath(target))
-                    elif found != owner(path) and owner(path) is not None:
-                        deps[owner(path)].add(found)
+                    reaches(posixpath.normpath(target))
 
     # Every computed import in a package's own code: a dedicated grep, since such a line names no root and no `../`.
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",

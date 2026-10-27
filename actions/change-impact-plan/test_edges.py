@@ -757,6 +757,41 @@ class ImportAttributionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "steps outside its package"):
                     self.scan(cfg)
 
+    def test_a_parent_step_inside_the_package_needs_a_package_declaration_and_an_escape_never_passes(self):
+        # vagary-core identity's contract-drift test: `import(\`../dist/${m}\`)` stays inside its own package.
+        f = "services/a/test/drift.mjs"
+        self.files(**{"services__a__test__drift.mjs": "export const d = (m) => import(`../dist/${m}`);\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": "`../dist/${m}`", "reach": "external"}]
+        with self.assertRaisesRegex(ValueError, 'must be declared reach "package"'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "package"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for escaping in ("import(`../../x/${m}`)", "import(`${base}/../x`)", "import(`../dist/${m}/../../../scripts/y.mjs`)",
+                         "require(path.resolve(__dirname, '..', '..', 'scripts', x))",
+                         "require(path.join(__dirname, x, '..', '..', '..', 'scripts', 'y.mjs'))"):
+            with self.subTest(escaping):
+                (self.repo / f).write_text(f"export const d = () => {escaping};\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": escaping[escaping.index("(") + 1:-1],
+                                                         "reach": "package"}]
+                with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                    self.scan(cfg)
+
+    def test_an_all_literal_path_anchored_at_the_file_is_a_literal_import(self):
+        # vagary-core webhook-egress's ssrf test: require(path.resolve(__dirname, '..', 'dist', 'ssrf.js')).
+        self.files(**{
+            "services__a__test__ssrf.test.mjs": "const { v } = require(path.resolve(__dirname, '..', 'dist', 'ssrf.js'));\n"
+                                                "const here = dirname(fileURLToPath(import.meta.url));\n"
+                                                "const x = await import(pathToFileURL(join(here, '..', '..', '..', "
+                                                "'scripts', 'x.mjs')).href);\n",
+            "scripts__x.mjs": 'export const x = "services/b/x.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"}, "the anchored literal chain to scripts/x.mjs is an edge, and its reads credit a")
+        self.assertIn("scripts/x.mjs", report["imports"])
+
     def test_a_literal_under_a_typescript_cast_is_a_literal_and_a_cast_name_is_not(self):
         # vagary-core's services/*/src/observability.ts load `import("@opentelemetry/sdk-node" as string)`: a literal.
         self.files(**{"services__a__obs.ts": 'const m = await import("redis" as string);\n'})

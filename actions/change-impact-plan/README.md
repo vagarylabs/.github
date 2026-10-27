@@ -304,6 +304,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - not evaluated, it needs a declaration, and one whose text holds a parent step or names a scan root or an
        outside top-level directory refuses even when declared.
    - The same holds in a reached Python file.
+   - **A loop over a literal is literal names.** `for m[, x] in (<constants or tuples of constants>): import_module(m)`
+     loads exactly those constants, and so does a comprehension over the same. The conditions:
+     - the iterable is a literal, or a module-level name bound exactly once to one and never mutated;
+     - the loop variable is not rebound in the body;
+     - the argument is that variable itself (no f-string or concatenation).
+
+     The names then resolve by name like any import, so they are not assumed external. An iterable from a call
+     (`sorted(x)`, `.split()`) stays computed.
 
 Not closed (documented residuals):
 - an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment

@@ -1919,6 +1919,89 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
     def call_name(f) -> str | None:
         return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
 
+    # A loop over a literal (spine's pre-review, 2026-10-27): `for m[, x] in (("a", ...), ...): import_module(m)` loads
+    # exactly those constants, so they are LITERAL names (vagary-core: 28 observability.py loops over opentelemetry
+    # instrumentations). Exact or nothing; anything short of the conditions below stays a computed site.
+    parent: dict = {}
+    for outer in ast.walk(tree):
+        for child in ast.iter_child_nodes(outer):
+            parent[child] = outer
+    MUTATORS = {"append", "extend", "insert", "add", "update", "remove", "pop", "clear", "discard", "setdefault", "sort",
+                "reverse", "__setitem__", "__iadd__"}
+
+    def binds(node, name: str) -> bool:
+        """`node` binds `name` anywhere (an assignment of any form, a loop, `with ... as`, a walrus, `del`, `global`)."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id == name and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                return True
+            if isinstance(sub, (ast.Global, ast.Nonlocal)) and name in sub.names:
+                return True
+        return False
+
+    def literal_strings(node, position=None):
+        """The string constants a literal tuple/list/set holds (at `position` of each inner tuple), else None."""
+        if not isinstance(node, (ast.Tuple, ast.List, ast.Set)) or not node.elts:
+            return None
+        values = []
+        for element in node.elts:
+            if position is not None:
+                if not isinstance(element, (ast.Tuple, ast.List)) or position >= len(element.elts):
+                    return None
+                element = element.elts[position]
+            if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+                return None
+            values.append(element.value)
+        return values
+
+    def unmutated_module_literal(name: str):
+        """The module-level literal `name` is bound to exactly once and never mutated or rebound, else None."""
+        stores = [sub for sub in ast.walk(tree) if isinstance(sub, ast.Name) and sub.id == name and isinstance(sub.ctx, (ast.Store, ast.Del))]
+        if len(stores) != 1 or any(isinstance(sub, (ast.Global, ast.Nonlocal)) and name in sub.names for sub in ast.walk(tree)):
+            return None
+        bound = parent.get(stores[0])
+        if not (isinstance(bound, ast.Assign) and parent.get(bound) is tree and bound.targets == [stores[0]]):
+            return None
+        for sub in ast.walk(tree):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr in MUTATORS \
+                    and isinstance(sub.func.value, ast.Name) and sub.func.value.id == name:
+                return None
+            if isinstance(sub, (ast.Subscript, ast.Attribute)) and isinstance(sub.ctx, (ast.Store, ast.Del)) \
+                    and isinstance(sub.value, ast.Name) and sub.value.id == name:
+                return None
+        return bound.value
+
+    def loop_literal_names(call, arg) -> list[str] | None:
+        if not isinstance(arg, ast.Name):
+            return None  # an f-string, a concatenation or any other expression stays computed
+        node = call
+        while node in parent:
+            node = parent[node]
+            loops = [node] if isinstance(node, ast.For) else list(node.generators) if isinstance(
+                node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)) else []
+            for loop in loops:
+                target, iterable = loop.target, loop.iter
+                position = None
+                if isinstance(target, ast.Name) and target.id == arg.id:
+                    pass
+                elif isinstance(target, ast.Tuple) and any(isinstance(t, ast.Name) and t.id == arg.id for t in target.elts):
+                    if not all(isinstance(t, ast.Name) for t in target.elts):
+                        return None
+                    position = [t.id for t in target.elts].index(arg.id)
+                else:
+                    continue
+                if isinstance(iterable, ast.Name):
+                    iterable = unmutated_module_literal(iterable.id)
+                    if iterable is None:
+                        return None
+                values = literal_strings(iterable, position)
+                if values is None:
+                    return None
+                body = node.body if isinstance(node, ast.For) else [node.elt] + ([node.value] if isinstance(node, ast.DictComp) else [])
+                if any(binds(statement, arg.id) for statement in body):
+                    return None  # the loop variable is rebound in the body
+                return values
+        return None
+
     names: set[str] = set()
     sites: list[tuple[str, str, str | None]] = []
     for node in ast.walk(tree):
@@ -1944,8 +2027,11 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                         entry(item)
             elif name in ("import_module", "__import__", "run_module") and node.args:
                 arg = node.args[0]
+                looped = loop_literal_names(node, arg)
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     names.add(arg.value.split(".")[0])
+                elif looped is not None:
+                    names |= {value.split(".")[0] for value in looped}  # resolved by name, like any import
                 else:
                     sites.append(("module", source(arg), None))
             elif name in ("spec_from_file_location", "run_path"):
@@ -2483,6 +2569,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     reach_from(path, posixpath.normpath(target))
 
     outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
+    parsed_names: dict[str, set[str]] = {}  # package -> names its parsed files import, loop literals included
 
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry") -> None:
         if kind == "unknown":
@@ -2509,7 +2596,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         package = owner(path)
         if package is None:
             continue
-        entries, _, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+        entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+        parsed_names.setdefault(package, set()).update(file_names)
         for kind, value in entries:
             apply_entry(package, path, kind, value, path)
         check_python_sites(path, sites)
@@ -2559,6 +2647,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 names.add(m.group(1))
             elif m:
                 names |= {part.strip().split(".")[0].split()[0] for part in m.group(1).split(",") if part.strip()}
+        names |= parsed_names.get(package, set())
         for source, directory in entries:
             for name in sorted(names):
                 for candidate in (f"{directory}/{name}.py", f"{directory}/{name}"):

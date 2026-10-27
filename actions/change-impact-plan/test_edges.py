@@ -945,6 +945,36 @@ class ImportAttributionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "may leave its package"):
                     self.scan(cfg)
 
+    def test_a_loop_over_a_literal_is_literal_names_and_anything_short_of_it_refuses(self):
+        # vagary-core's observability.py: `for mod_name, cls in ((<const>, <const>), ...): import_module(mod_name)`.
+        loads = {
+            "a literal tuple of pairs": 'for mod_name, cls in (("redis", "R"), ("dns", "D")):\n    m = importlib.import_module(mod_name)\n',
+            "a module-level name bound once": 'MODS = ("redis", "dns")\nfor m in MODS:\n    importlib.import_module(m)\n',
+            "a comprehension": 'mods = [importlib.import_module(m) for m in ("redis",)]\n',
+        }
+        for why, body in loads.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": "import importlib\n" + body})
+                self.assertEqual(self.scan()[2]["computed_imports_unused"], [], "no declaration needed")
+        refused = {
+            "the literal mutated after binding": 'MODS = ["redis"]\nMODS.append(x)\nfor m in MODS:\n    importlib.import_module(m)\n',
+            "the loop variable rebound in the body": 'for m in ("redis",):\n    m = other\n    importlib.import_module(m)\n',
+            "an f-string argument": 'for m in ("redis",):\n    importlib.import_module(f"x.{m}")\n',
+            "an iterable from a call": 'for m in sorted(("redis",)):\n    importlib.import_module(m)\n',
+            "a name bound twice": 'MODS = ("a",)\nMODS = ("b",)\nfor m in MODS:\n    importlib.import_module(m)\n',
+        }
+        for why, body in refused.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": "import importlib\n" + body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+        # The names resolve by name like any import: through a sys.path entry they are edges, and credited.
+        self.files(**{"services__a__load.py": "import importlib, os, sys\n"
+                                               'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))\n'
+                                               'for m in ("helper",):\n    importlib.import_module(m)\n',
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
     def test_a_literal_loader_name_resolves_through_a_sys_path_entry(self):
         self.files(**{"services__a__t.py": "import os, sys\n"
                                             'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))\n'

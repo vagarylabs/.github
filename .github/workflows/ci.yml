@@ -10,7 +10,7 @@ jobs:
   actionlint:
     # Approved public-repository Ubuntu profile (2026-10-13); private caller placement remains separate.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -72,7 +72,7 @@ jobs:
 
   planner-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -84,7 +84,7 @@ jobs:
 
   fetch-release-asset-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -94,7 +94,7 @@ jobs:
 
   secret-scan-scope-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -126,7 +126,7 @@ jobs:
 
   trusted-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -137,7 +137,7 @@ jobs:
   no-hosted-runners-guard:
     # The reusable no-hosted-runners guard: its self-test, and that the copy embedded in the workflow matches its source.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

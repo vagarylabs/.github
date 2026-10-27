@@ -43,7 +43,7 @@ jobs:
     name: no hosted runs-on
     # Public caller -> hosted, never the bridge. Private caller -> the given self-hosted runner.
     runs-on: ${{ github.event.repository.private == true && (startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner) || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

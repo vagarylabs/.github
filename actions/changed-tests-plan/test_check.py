@@ -11,13 +11,16 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import check  # noqa: E402
 
+HEAD = "1" * 40
+OTHER = "2" * 40
+BASE = "a" * 40
 SELECTED = {
-    "version": 1, "mode": "selected", "whole_groups": ["db"],
+    "version": 1, "head_sha": HEAD, "base_sha": BASE, "mode": "selected", "whole_groups": ["db"],
     "partitions": {"server": ["server/src/__tests__/a.test.ts"], "other": []},
     "e2e": True, "deleted_tests": ["server/src/__tests__/old.test.ts"],
     "source_paths": ["server/src/a.ts"], "reasons": ["a.test.ts changed"],
 }
-NONE = {"version": 1, "mode": "none", "whole_groups": [], "partitions": {}, "e2e": False,
+NONE = {"version": 1, "head_sha": HEAD, "base_sha": BASE, "mode": "none", "whole_groups": [], "partitions": {}, "e2e": False,
         "deleted_tests": [], "source_paths": ["README.md"], "reasons": ["docs only"]}
 
 
@@ -52,8 +55,17 @@ class ShapeTests(unittest.TestCase):
         self.assertTrue(check.validate(plan(whole_groups="db")))
         self.assertTrue(check.validate(plan(partitions={"server": "a.test.ts"})))
 
+    def test_commits_are_bound_and_exact(self):
+        for key in ("head_sha", "base_sha"):
+            for bad in ("1" * 39, "A" * 40, "g" * 40, "1" * 40 + "\n", 1):
+                self.assertTrue(check.validate(plan(**{key: bad})), (key, bad))
+            p = plan()
+            del p[key]
+            self.assertIn(f"plan: missing required key {key!r}", check.validate(p))
+
     def test_names_and_uniqueness(self):
         self.assertTrue(check.validate(plan(whole_groups=["Db"])))
+        self.assertTrue(check.validate(plan(whole_groups=["db\n"])))
         self.assertTrue(check.validate(plan(whole_groups=["db", "db"])))
         self.assertTrue(check.validate(plan(partitions={"Server": ["a.test.ts"]})))
         self.assertTrue(check.validate(plan(partitions={"server": ["a.test.ts", "a.test.ts"]})))
@@ -98,12 +110,23 @@ class TierTests(unittest.TestCase):
         self.assertEqual(check.check_tier(None, "full"), [])
         self.assertEqual(check.check_tier(NONE, "full"), [])
 
+    def test_head_binding(self):
+        self.assertEqual(check.check_tier(SELECTED, "fast", HEAD), [])
+        self.assertEqual(check.check_tier(SELECTED, "fast", OTHER), [f"plan was computed for head {HEAD}, not {OTHER}"])
+        self.assertEqual(check.check_tier(NONE, "full", OTHER), [f"plan was computed for head {HEAD}, not {OTHER}"])
+        self.assertEqual(check.check_tier(SELECTED, "fast", "main"), ["--head 'main' is not a 40-hex commit"])
+
     def test_selected_plan_outside_the_fast_tier_is_refused(self):
         self.assertEqual(check.check_tier(SELECTED, "full"), ["a selected changed_tests plan outside the fast tier"])
 
 
 class GradeTests(unittest.TestCase):
-    ALL_GREEN = {"server": "success", "db": "success", "e2e": "success", "other": "skipped"}
+    LANES = {"server": "success", "db": "success", "e2e": "success", "other": "skipped"}
+    ALL_GREEN = {"head_sha": HEAD, "lanes": LANES}
+
+    @classmethod
+    def at(cls, head=HEAD, **lanes):
+        return {"head_sha": head, "lanes": dict(cls.LANES, **lanes)}
 
     def test_required_lanes(self):
         # `other` lists nothing, so it is not required.
@@ -116,25 +139,35 @@ class GradeTests(unittest.TestCase):
     def test_a_planted_failing_lane_is_refused(self):
         for lane in ("server", "db", "e2e"):
             for outcome in ("failure", "skipped", "cancelled", "neutral"):
-                results = dict(self.ALL_GREEN, **{lane: outcome})
+                results = self.at(**{lane: outcome})
                 self.assertEqual(check.grade(SELECTED, results),
                                  [f"required changed-tests lane {lane!r} concluded {outcome}"], (lane, outcome))
 
     def test_a_missing_required_lane_is_refused(self):
-        results = dict(self.ALL_GREEN)
-        del results["e2e"]
+        results = self.at()
+        del results["lanes"]["e2e"]
         self.assertEqual(check.grade(SELECTED, results),
                          ["required changed-tests lane 'e2e' concluded nothing (missing)"])
 
     def test_none_needs_no_lane(self):
-        self.assertEqual(check.grade(NONE, {}), [])
+        self.assertEqual(check.grade(NONE, {"head_sha": HEAD, "lanes": {}}), [])
+
+    def test_green_results_from_another_head_never_grade_the_plan(self):
+        self.assertEqual(check.grade(SELECTED, self.at(head=OTHER)),
+                         [f"results ran at head {OTHER}, but the plan is for head {HEAD}"])
+
+    def test_results_without_a_head_are_refused(self):
+        self.assertTrue(check.grade(SELECTED, {"lanes": self.LANES}))
+        self.assertTrue(check.grade(SELECTED, self.LANES))
+        self.assertTrue(check.grade(SELECTED, {"head_sha": HEAD[:-1], "lanes": self.LANES}))
+        self.assertTrue(check.grade(SELECTED, {"head_sha": HEAD, "lanes": self.LANES, "extra": 1}))
 
     def test_an_invalid_plan_never_grades_green(self):
         self.assertTrue(check.grade(plan(mode="none"), self.ALL_GREEN))
 
     def test_malformed_results_are_refused(self):
         self.assertTrue(check.grade(SELECTED, ["server"]))
-        self.assertTrue(check.grade(SELECTED, {"server": True}))
+        self.assertTrue(check.grade(SELECTED, {"head_sha": HEAD, "lanes": {"server": True}}))
 
 
 class CommandLineTests(unittest.TestCase):
@@ -152,7 +185,8 @@ class CommandLineTests(unittest.TestCase):
             bad = self.write(d, "bad.json", plan(mode="none"))
             torn = self.write(d, "torn.json", "{")
             green = self.write(d, "green.json", GradeTests.ALL_GREEN)
-            red = self.write(d, "red.json", dict(GradeTests.ALL_GREEN, server="failure"))
+            red = self.write(d, "red.json", GradeTests.at(server="failure"))
+            stale = self.write(d, "stale.json", GradeTests.at(head=OTHER))
             self.assertEqual(self.run_cli("plan", "--tier", "fast", good).returncode, 0)
             self.assertEqual(self.run_cli("plan", "--tier", "fast", bad).returncode, 1)
             self.assertEqual(self.run_cli("plan", "--tier", "fast", torn).returncode, 1)
@@ -162,6 +196,9 @@ class CommandLineTests(unittest.TestCase):
             out = self.run_cli("grade", "--plan", good, "--results", red)
             self.assertEqual(out.returncode, 1)
             self.assertIn("REFUSE: required changed-tests lane 'server' concluded failure", out.stdout)
+            self.assertEqual(self.run_cli("grade", "--plan", good, "--results", stale).returncode, 1)
+            self.assertEqual(self.run_cli("plan", "--tier", "fast", "--head", HEAD, good).returncode, 0)
+            self.assertEqual(self.run_cli("plan", "--tier", "fast", "--head", OTHER, good).returncode, 1)
             self.assertEqual(self.run_cli("bogus").returncode, 2)
 
 

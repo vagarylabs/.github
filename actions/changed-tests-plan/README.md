@@ -17,9 +17,18 @@ Land's admission check and each repository's aggregate read a plan the same way.
 ## The plan, v1
 
 ```json
-{"version": 1, "mode": "none" | "selected", "whole_groups": [], "partitions": {"<lane>": ["repo/path"]},
+{"version": 1, "head_sha": "<40-hex>", "base_sha": "<40-hex>", "mode": "none" | "selected", "whole_groups": [], "partitions": {"<lane>": ["repo/path"]},
  "e2e": false, "deleted_tests": [], "source_paths": [], "reasons": []}
 ```
+
+## Commit binding
+
+A plan names the `head_sha` it was computed for and the `base_sha` its diff was taken against. Results take the shape `{"head_sha": "<40-hex>", "lanes": {"<lane>": "<conclusion>"}}`.
+
+Land and audits read plans and results from outside the producing run, so this binding is what stops an older head's green results from grading a newer head's plan:
+
+- `grade` refuses results whose `head_sha` differs from the plan's.
+- `plan --head <sha>` refuses a plan computed for another head.
 
 ## Rules
 
@@ -49,7 +58,7 @@ Each lane must conclude `success`. Missing, skipped, cancelled, neutral and fail
 ## Usage
 
 ```
-python3 -I check.py plan --tier fast plan.json
+python3 -I check.py plan --tier fast --head "$HEAD_SHA" plan.json
 python3 -I check.py grade --plan plan.json --results results.json
 ```
 

@@ -12,6 +12,11 @@ the JSON Schema subset that file uses (type, const, enum, required, additionalPr
 uniqueItems, pattern, minLength, maxLength, local $ref) with the standard library only, because neither the runners
 nor land have the jsonschema package.
 
+COMMIT BINDING. A plan names the head_sha it was computed for (and the base_sha its diff was taken against), and
+results name the head_sha they ran at. Land and audits read plans and results from OUTSIDE the producing run, so
+without the binding a green result from an older head could grade a newer head's plan. grade() refuses a head
+mismatch, and `plan --head` refuses a plan computed for another head.
+
 CROSS-FIELD RULES (a JSON Schema cannot state these):
   - mode "none" lists no work: no whole group, no partition path, e2e false. A "none" that lists work is refused.
   - mode "selected" lists at least one unit of work.
@@ -19,18 +24,19 @@ CROSS-FIELD RULES (a JSON Schema cannot state these):
     trailing "/", no control character.
   - a deleted test is never also planned to run.
 
-TIER RULE (`plan --tier`):
+TIER RULE (`plan --tier`, with an optional `--head` the plan must be bound to):
   - fast: the plan must exist and be valid. A fast tier without a valid v1 plan is refused.
   - full: no plan, or a plan of mode "none". A selected plan outside the fast tier is refused, because the full tier
     already runs everything and a plan there would only blur which tier produced the evidence.
 
-GRADING (`grade`): the required lanes are every partition with at least one planned path, every whole group, and
-"e2e" when e2e is true. Each must have concluded "success". Missing, skipped, cancelled, neutral or failed is red.
-The caller builds the results map with exactly those lane names, because how a group maps to a job is the
-repository's business. Lanes the plan does not require are ignored.
+GRADING (`grade`): results are {"head_sha": <the head the lanes ran at>, "lanes": {<lane>: <conclusion>}}, and
+their head_sha must equal the plan's. The required lanes are every partition with at least one planned path, every
+whole group, and "e2e" when e2e is true. Each must have concluded "success". Missing, skipped, cancelled, neutral or
+failed is red. The caller builds the lanes map with exactly those lane names, because how a group maps to a job is
+the repository's business. Lanes the plan does not require are ignored.
 
 Usage:
-  check.py plan --tier fast|full PLAN.json        exit 0 valid; 1 refused
+  check.py plan --tier fast|full [--head SHA] PLAN.json   exit 0 valid; 1 refused
   check.py grade --plan PLAN.json --results RESULTS.json   exit 0 every required lane succeeded; 1 refused
 Exit 2 is a usage error. Refusals are printed one per line as "REFUSE: <reason>".
 """
@@ -45,11 +51,19 @@ from typing import Any
 
 SCHEMA_PATH = Path(__file__).with_name("schema-v1.json")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+SHA = re.compile(r"[0-9a-f]{40}")
 TYPES = {"object": dict, "array": list, "string": str, "boolean": bool}
 
 
 def load_schema(path: Path = SCHEMA_PATH) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _pattern_matches(pattern: str, value: str) -> bool:
+    # A fully anchored pattern is a full match: Python's `$` also matches before a trailing newline.
+    if pattern.startswith("^") and pattern.endswith("$"):
+        return re.fullmatch(pattern[1:-1], value) is not None
+    return re.search(pattern, value) is not None
 
 
 def _resolve(node: dict, schema: dict) -> dict:
@@ -81,7 +95,7 @@ def _validate(value: Any, node: dict, schema: dict, where: str, errors: list[str
             errors.append(f"{where}: shorter than {node['minLength']}")
         if "maxLength" in node and len(value) > node["maxLength"]:
             errors.append(f"{where}: longer than {node['maxLength']}")
-        if "pattern" in node and not re.search(node["pattern"], value):
+        if "pattern" in node and not _pattern_matches(node["pattern"], value):
             errors.append(f"{where}: does not match {node['pattern']}")
     if isinstance(value, list):
         if node.get("uniqueItems") and len({json.dumps(v, sort_keys=True) for v in value}) != len(value):
@@ -152,15 +166,17 @@ def required_lanes(plan: dict) -> list[str]:
     return sorted(set(lanes))
 
 
-def check_tier(plan: Any | None, tier: str) -> list[str]:
-    if tier == "fast":
-        if plan is None:
-            return ["fast tier without a changed_tests plan"]
-        return validate(plan)
+def check_tier(plan: Any | None, tier: str, head: str | None = None) -> list[str]:
+    if head is not None and not SHA.fullmatch(head):
+        return [f"--head {head!r} is not a 40-hex commit"]
     if plan is None:
-        return []
+        return ["fast tier without a changed_tests plan"] if tier == "fast" else []
     errors = validate(plan)
-    if not errors and plan["mode"] != "none":
+    if errors:
+        return errors
+    if head is not None and plan["head_sha"] != head:
+        errors.append(f"plan was computed for head {plan['head_sha']}, not {head}")
+    if tier == "full" and plan["mode"] != "none":
         errors.append("a selected changed_tests plan outside the fast tier")
     return errors
 
@@ -169,11 +185,16 @@ def grade(plan: Any, results: Any) -> list[str]:
     errors = validate(plan)
     if errors:
         return errors
-    if not isinstance(results, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in results.items()):
-        return ["results: must be a JSON object of lane name to conclusion string"]
+    lanes = results.get("lanes") if isinstance(results, dict) else None
+    if (not isinstance(results, dict) or set(results) != {"head_sha", "lanes"} or not isinstance(lanes, dict)
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in lanes.items())):
+        return ['results: must be {"head_sha": <40-hex>, "lanes": {<lane>: <conclusion>}}']
+    # The plan's head_sha is a validated 40-hex commit, so equality also proves the results' head is well formed.
+    if results["head_sha"] != plan["head_sha"]:
+        return [f"results ran at head {results['head_sha']}, but the plan is for head {plan['head_sha']}"]
     refused = []
     for lane in required_lanes(plan):
-        conclusion = results.get(lane)
+        conclusion = lanes.get(lane)
         if conclusion != "success":
             refused.append(f"required changed-tests lane {lane!r} concluded {conclusion or 'nothing (missing)'}")
     return refused
@@ -191,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_plan = sub.add_parser("plan")
     p_plan.add_argument("--tier", choices=("fast", "full"), required=True)
+    p_plan.add_argument("--head", help="the head commit the plan must be bound to")
     p_plan.add_argument("plan")
     p_grade = sub.add_parser("grade")
     p_grade.add_argument("--plan", required=True)
@@ -198,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "plan":
-            errors = check_tier(_load(args.plan, optional=True), args.tier)
+            errors = check_tier(_load(args.plan, optional=True), args.tier, args.head)
         else:
             errors = grade(_load(args.plan), _load(args.results))
     except (OSError, ValueError) as exc:  # unreadable or malformed JSON is a refusal, never a pass

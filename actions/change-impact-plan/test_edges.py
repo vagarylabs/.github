@@ -163,6 +163,13 @@ class EdgesTest(unittest.TestCase):
                 mutate(cfg)
                 with self.assertRaises(ValueError):
                     E.scan(self.repo, cfg)
+        # 1.5.0: a package that imports a file in the directory runs it in every job that runs the package, so the
+        # directory is not always-only, whatever the config says (cli, 2026-10-27: vagaris server imports scripts/).
+        (self.repo / "services/a/uses.mjs").write_text('import { h } from "../../scripts/helper.mjs";\n')
+        (self.repo / "scripts/helper.mjs").write_text("export const h = 1;\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        with self.assertRaisesRegex(ValueError, "always_reader_dirs"):
+            E.scan(self.repo, self.always_cfg())
 
     def test_a_change_inside_an_always_reader_dir_still_plans_full(self):
         """Leaving the directory out of the scan scopes its READS only; its own files stay unmapped."""
@@ -604,6 +611,151 @@ class EdgesTest(unittest.TestCase):
         (self.repo / "cli/package.json").write_text('{"name":"server"}')
         with self.assertRaises(ValueError):
             E.workspace_graph(self.repo, cfg)
+
+
+IMPORT_CFG = {
+    "schema": 1,
+    "workspace": {"type": "declared", "packages": {
+        "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []},
+        "c": {"dir": "services/c", "deps": []},
+        "tp": {"dir": "tools/pkg", "deps": []},
+    }},
+    "edge_scan": {"roots": ["services"], "reader_dirs": ["scripts", "tools"], "reader_job": "root",
+                  "exclude": ["*.md", "docs", ".github", "vendor"]},
+    "jobs": {"root": "always"},
+}
+
+
+class ImportAttributionTest(unittest.TestCase):
+    """1.5.0: a package is credited with the reads of the files outside every package it imports (cli, 2026-10-27).
+    Before it, a relative path resolving outside every package was dropped, so deps(a) missed what scripts/x.mjs read."""
+
+    def setUp(self):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.repo = Path(self._td.name)
+        for d in ("services/a", "services/b", "services/c", "tools/pkg", "scripts", ".github"):
+            (self.repo / d).mkdir(parents=True)
+        for d in ("services/b", "services/c", "tools/pkg"):
+            (self.repo / d / "app.py").write_text("x = 1\n")
+        (self.repo / "services/a/app.py").write_text("x = 1\n")
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+
+    def files(self, **files):
+        for path, text in files.items():
+            target = self.repo / path.replace("__", "/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+
+    def scan(self, cfg=None):
+        report = {}
+        deps, readers = E.scan(self.repo, cfg or IMPORT_CFG, report=report)
+        return deps, readers, report
+
+    def test_one_hop_import_credits_the_imported_files_reads(self):
+        self.files(**{"services__a__t.test.mjs": 'import { x } from "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'export const x = () => readFileSync("services/b/data.json");\n'})
+        deps, readers, report = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(readers["scripts"], {"b"}, "the reader job keeps its credit: nothing is ever narrower")
+        self.assertEqual(report["imports"], {"scripts/x.mjs": ["a"]})
+
+    def test_a_dot_slash_import_inside_a_reached_file_is_followed_though_the_grep_never_sees_it(self):
+        # y.mjs is reached only through `./y.mjs`, a line with no root and no `../`: only the whole-file read finds it.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'import { y } from "./y.mjs";\nexport { y };\n',
+                      "scripts__y.mjs": 'export const y = "services/c/z.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"c"})
+        self.assertEqual(sorted(report["imports"]), ["scripts/x.mjs", "scripts/y.mjs"])
+
+    def test_cycles_terminate_and_two_importers_are_both_credited(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "services__b__t.mjs": 'import "../../scripts/y.mjs";\n',
+                      "scripts__x.mjs": 'import "./y.mjs";\nconst p = "services/c/q.json";\n',
+                      "scripts__y.mjs": 'import "./x.mjs";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual((deps["a"], deps["b"]), ({"c"}, {"c"}))
+        self.assertEqual(report["imports"], {"scripts/x.mjs": ["a", "b"], "scripts/y.mjs": ["a", "b"]})
+
+    def test_extensionless_require_python_sibling_and_shell_source_resolve(self):
+        self.files(**{"services__a__t.cjs": 'const m = require("../../scripts/m");\n',
+                      "scripts__m.js": 'module.exports = 1;\nrequire("./run.py");\n',
+                      "scripts__run.py": "import helper\n",
+                      "scripts__helper.py": 'P = "services/b/x.json"\n',
+                      "services__c__t.mjs": 'import "../../scripts/r.sh";\n',
+                      "scripts__r.sh": '#!/bin/bash\nsource "$(dirname "$0")/lib.sh"\n',
+                      "scripts__lib.sh": "cat services/a/data.txt\n"})
+        deps, _, _ = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(deps["c"], {"a"})
+
+    def test_a_symlinked_file_or_directory_resolves_to_its_target(self):
+        self.files(**{"tools__real.mjs": 'export const r = "services/b/x.json";\n',
+                      "services__a__t.mjs": 'import "../../scripts/link.mjs";\nimport "../../scripts/dirlink/real.mjs";\n'})
+        os.symlink("../tools/real.mjs", self.repo / "scripts/link.mjs")
+        os.symlink("../tools", self.repo / "scripts/dirlink")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertIn("tools/real.mjs", report["imports"])
+
+    def test_a_directory_target_reads_its_files_and_a_nested_package_is_a_dep(self):
+        self.files(**{"services__a__t.mjs": 'const dir = new URL("../../tools/", import.meta.url);\n',
+                      "tools__z.mjs": 'export const z = "services/c/z.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"c", "tp"}, "tools/pkg is package tp: an edge to it is a dep, not a closure file")
+        self.assertNotIn("tools/pkg/app.py", report["imports"])
+
+    def test_data_targets_are_credited_markdown_is_edge_only_and_data_imports_nothing(self):
+        self.files(**{"services__a__t.mjs": 'read("../../scripts/data.json"); read("../../scripts/notes.md");\n',
+                      "scripts__data.json": '{"dir": "services/b/x", "next": "./more.mjs"}\n',
+                      "scripts__more.mjs": 'export const m = "services/c/m.json";\n',
+                      "scripts__notes.md": "see services/c\n"})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"}, "the data file is credited; its ./more.mjs string is not an import")
+        self.assertEqual(sorted(report["imports"]), ["scripts/data.json", "scripts/notes.md"])
+
+    def test_fail_closed_on_an_excluded_or_always_only_code_target(self):
+        self.files(**{"services__a__t.mjs": 'import "../../vendor/v.mjs";\n', "vendor__v.mjs": "export {};\n"})
+        with self.assertRaisesRegex(ValueError, "excludes"):
+            self.scan()
+        (self.repo / "services/a/t.mjs").write_text('import "../../scripts/s.mjs";\n')
+        self.files(**{"scripts__s.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["always_reader_dirs"] = ["scripts"]
+        with self.assertRaisesRegex(ValueError, "always_reader_dirs"):
+            self.scan(cfg)
+
+    def test_a_refusal_inside_a_reached_file_refuses(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'export const p = path.join(ROOT, "services", "..", "b");\n'})
+        with self.assertRaises(ValueError):
+            self.scan()
+
+    def test_adversarial_forms_aimed_at_the_rule(self):
+        self.files(**{
+            # CRLF: the whole-file read must still find the ./ import.
+            "services__a__t.mjs": 'import "../../scripts/crlf.mjs";\r\n',
+            "scripts__crlf.mjs": 'import "./tail.mjs";\r\nexport {};\r\n',
+            "scripts__tail.mjs": 'export const t = "services/b/t.json";\r\n',
+            # A top-level directory whose name extends a package directory's: outside every package, so an edge.
+            "services__b__t.mjs": 'import "../../services-x/u.mjs";\n',
+            "services-x__u.mjs": 'export const u = "services/c/u.json";\n',
+            # The root package.json is a file outside every package: a data target.
+            "services__c__t.mjs": 'read("../../package.json");\n',
+            "package.json": '{"scripts": {"t": "pytest services/a"}}\n',
+        })
+        deps, _, report = self.scan()
+        self.assertEqual((deps["a"], deps["b"], deps["c"]), ({"b"}, {"c"}, {"a"}))
+        self.assertIn("services-x/u.mjs", report["imports"])
 
 
 if __name__ == "__main__":

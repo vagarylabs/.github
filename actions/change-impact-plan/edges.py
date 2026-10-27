@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import fnmatch
 import json
 import os
 import posixpath
@@ -1726,7 +1727,44 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
     return set(declared)
 
 
-def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+# ---------- imported files outside every package (1.5.0) ----------
+# A package file that imports a file outside every package runs that file's code, so what the file reads, the package
+# reads. Before 1.5.0 a relative path resolving outside every package was dropped (`targets - {None}`): a test in package
+# a that imported ../../scripts/x.mjs, where x.mjs reads packages/b, gave deps(a) = [] and credited b only to the reader
+# job, so a change to b never selected a's tests (cli, 2026-10-27; spine's rulings D2/D3/D5 the same day).
+#   1. EDGE: a relative path on a non-comment line of a package file (`../`, as `rel` matches) that resolves to a
+#      tracked path outside every package; and, from a file outside every package already reached, every `./` or `../`
+#      string (a shell `source`, `. ` or `$(dirname "$0")/` path too), read from the WHOLE file, since a `./` import
+#      never matches the scan's grep. A symlink resolves by its target. A directory is every tracked file beneath it,
+#      and a package nested there is a read of that package.
+#   2. CREDIT: per importing package, the transitive closure (cycles end) credits it every read the scan found in each
+#      reached file. A `.md` file is prose: its edge is recorded, nothing is credited. A data file is credited (that only
+#      over-approximates) but imports nothing; only code (JS/TS, Python, shell) is followed further.
+#   3. FAIL CLOSED: a reached path under `always_reader_dirs` refuses (that directory is not always-only); a reached CODE
+#      file the scan excludes refuses (its reads cannot be credited); so does a symlink loop.
+CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
+SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
+SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
+                            r"/([A-Za-z0-9_.@+/-]+)")
+PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*))", re.M)
+
+
+def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
+    """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
+    args = ["ls-tree", "-r", "-z", "--full-tree", revision] if revision else ["ls-files", "-s", "-z"]
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), *args], capture_output=True, timeout=60, env=environment)
+    if out.returncode:
+        raise ValueError("reader scan cannot list the tracked files at the scanned revision")
+    entries = {}
+    for record in out.stdout.decode("utf-8", errors="replace").split("\0"):
+        if record:
+            meta, _, path = record.partition("\t")
+            entries[path] = meta.split()[0]
+    return entries
+
+
+def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
+         report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
     pkgs = workspace_graph(manifest_root or repo, cfg)
@@ -1746,7 +1784,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
     reader_dirs = set(es.get("reader_dirs") or [])
     # Directories that run only in `always` jobs are not scanned (always_reader_dirs, validated above all else).
-    excludes += [f":!{name}" for name in sorted(always_reader_dirs(es, cfg, by_dir, roots, reader_dirs))]
+    always = always_reader_dirs(es, cfg, by_dir, roots, reader_dirs)
+    excludes += [f":!{name}" for name in sorted(always)]
     if (cfg.get("workspace") or {}).get("type") == "pnpm":
         # The workspace manifest DEFINES the graph (its quoted roots are package globs, not reads), and any change to
         # it already plans FULL (plan.py BUILTIN_FULL_GLOBS).
@@ -1771,6 +1810,17 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     scripts_read: set = set()
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
+    outside: dict[str, set[str]] = {}  # a scanned file outside every package -> the packages its lines read (1.5.0)
+    edges: dict[str, set[str]] = {}  # a file -> the repo paths outside every package its relative paths name (1.5.0)
+
+    def relative_target(path: str, spec: str) -> str | None:
+        """`spec` resolved from `path`'s directory: the package that owns it, or None (recorded as an edge when it
+        stays inside the repository)."""
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
+        found = owner(target)
+        if found is None and target not in (".", "..") and not target.startswith("../"):
+            edges.setdefault(path, set()).add(target)
+        return found
 
     def literal_read(path_text: str) -> str | None:
         found = owner(path_text)
@@ -1850,7 +1900,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                     targets |= classify.literal_path(src, m.start(), m.group(1))
             for m in rel.finditer(src.text, a, b):
                 if not src.in_comment(m.start()):
-                    targets.add(owner(posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))))
+                    targets.add(relative_target(path, m.group(1)))
         else:
             t = text.strip()
             if t.startswith(COMMENT_PREFIXES):
@@ -1870,7 +1920,9 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             for m in lit.finditer(t):
                 targets.add(literal_read(m.group(1)))
             for m in rel.finditer(t):
-                targets.add(owner(posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))))
+                targets.add(relative_target(path, m.group(1)))
+        if reader is None:
+            outside.setdefault(path, set()).update(targets - {None})
         for target in targets - {None, reader}:
             if reader:
                 deps[reader].add(target)
@@ -1880,7 +1932,132 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 readers.setdefault("<unmapped>", set()).add(target)
     if pending:
         finish(pending.pop())
+    imports = import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges,
+                                     outside, deps)
+    if report is not None:
+        report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
     return deps, readers
+
+
+def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps):
+    """Rules 1-3 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
+    {path: importing packages}; refuses where it cannot see."""
+    tracked = tracked_paths(repo, revision, environment)
+    patterns = [x[2:] for x in excludes if x.startswith(":!")]
+
+    def excluded(path: str) -> bool:
+        # git pathspec without magic: a wildcard pattern matches the whole path (`*` crosses `/`); a plain one matches
+        # the path or anything beneath it.
+        return any(fnmatch.fnmatchcase(path, p) if any(c in p for c in "*?[") else path == p or path.startswith(p + "/")
+                   for p in patterns)
+
+    def resolve_links(path: str) -> str:
+        for _ in range(40):
+            parts = path.split("/")
+            for k in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:k])
+                if tracked.get(prefix) == "120000":
+                    link = (read_source(repo, prefix, revision, environment) if revision
+                            else os.readlink(repo / prefix))
+                    path = posixpath.normpath(posixpath.join(posixpath.dirname(prefix), link.strip(), *parts[k:]))
+                    break
+            else:
+                return path
+        raise ValueError(f"unresolved (a symlink loop) at {path}")
+
+    def files_of(target: str) -> list[str]:
+        target = resolve_links(target)
+        if target in tracked:
+            return [target]
+        # An extensionless module specifier resolves the way Node and Python do (`require("../x")` is x.js, x.ts, ...).
+        # A directory (x/index.js included) is every tracked file beneath it, which only over-approximates.
+        for suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".jsx", ".json", ".py"):
+            if resolve_links(target + suffix) in tracked:
+                return [resolve_links(target + suffix)]
+        beneath = [p for p in tracked if p.startswith(target + "/")]
+        return sorted(beneath)  # a path that is no tracked file or directory names nothing
+
+    sources: dict[str, Source] = {}
+
+    def code_source(path: str) -> Source | None:
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext not in JS_EXT | PY_EXT:
+            return None
+        if path not in sources:
+            sources[path] = Source(read_source(repo, path, revision, environment), ext)
+        return sources[path]
+
+    def named_paths(path: str) -> set[str]:
+        """Rule 1, the whole file: every relative path a reached code file names."""
+        here, found = posixpath.dirname(path), set()
+        src = code_source(path)
+        if src is not None:
+            if not src.ok:
+                raise ValueError(f"unresolved (the bracket structure of {path}, a file a package reaches, cannot be "
+                                 "trusted)")
+            for t in src.code:
+                if t[0] == "str" and t[3][1] is True and t[3][0].startswith(("./", "../")):
+                    found.add(posixpath.normpath(posixpath.join(here, t[3][0])))
+            if src.py:
+                for m in PY_IMPORT.finditer(src.text):
+                    for name in re.split(r"\s*,\s*", m.group(1) or m.group(2)):
+                        sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
+                        if sibling in tracked:
+                            found.add(sibling)
+            return found
+        for line in read_source(repo, path, revision, environment).split("\n"):
+            t = line.strip()
+            if t.startswith("#"):
+                continue
+            for pattern in (SHELL_RELATIVE, SHELL_SELF_DIR):
+                for m in pattern.finditer(t):
+                    spec = m.group(1) if pattern is SHELL_RELATIVE else "./" + m.group(1)
+                    found.add(posixpath.normpath(posixpath.join(here, spec)))
+        return found
+
+    def is_code(path: str) -> bool:
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext in CODE_EXT:
+            return True
+        if ext:
+            return False
+        head = read_source(repo, path, revision, environment)[:200]
+        return head.startswith("#!") and re.search(r"\b(?:ba|z|da)?sh\b|\bnode\b|\bpython", head.split("\n")[0]) is not None
+
+    imports: dict[str, set[str]] = {}
+    named: dict[str, set[str]] = {}
+    for package in sorted({owner(p) for p in edges} - {None}):
+        queue = sorted({t for p, ts in edges.items() if owner(p) == package for t in ts})
+        seen: set = set()
+        while queue:
+            target = queue.pop(0)
+            if target in seen:
+                continue
+            seen.add(target)
+            for path in files_of(target):
+                found = owner(path)
+                if found is not None:
+                    if found != package:
+                        deps[package].add(found)  # a package nested in a reached directory, or a link into one
+                    continue
+                imports.setdefault(path, set()).add(package)
+                if any(path == d or path.startswith(d + "/") for d in always):
+                    raise ValueError(f"unresolved ({package} reaches {path}, under edge_scan.always_reader_dirs: that "
+                                     "directory is not always-only)")
+                if path.lower().endswith(".md"):
+                    continue
+                code = is_code(path)
+                if excluded(path):
+                    if code:
+                        raise ValueError(f"unresolved ({package} reaches {path}, code the scan excludes, so its reads "
+                                         "cannot be credited)")
+                    continue
+                deps[package] |= outside.get(path, set()) - {package}
+                if code:
+                    if path not in named:
+                        named[path] = named_paths(path) | edges.get(path, set())
+                    queue.extend(sorted(named[path] - seen))
+    return imports
 
 
 def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path) -> dict:
@@ -1929,10 +2106,12 @@ def main(argv=None) -> int:
     repo = Path(a.repo)
     cfg = json.loads((repo / a.config).read_text())
     manifest_root = Path(a.manifest_root) if a.manifest_root else repo
-    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision)
+    report: dict = {}
+    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report)
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
-                          "readers": {k: sorted(v) for k, v in sorted(readers.items())}}, indent=1))
+                          "readers": {k: sorted(v) for k, v in sorted(readers.items())},
+                          "imports": report["imports"]}, indent=1))
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
     assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config)

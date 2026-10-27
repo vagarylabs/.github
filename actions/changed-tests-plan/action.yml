@@ -1,0 +1,42 @@
+# changed-tests-plan: validate a pull request's `changed_tests` v1 plan, or grade its required lanes.
+# One contract for every repository (schema-v1.json); the mapping from a diff to a plan stays per repository.
+#
+#   - uses: vagarylabs/.github/actions/changed-tests-plan@<sha>
+#     with: {command: plan, tier: fast, plan: ${{ runner.temp }}/changed-tests.json}
+#   - uses: vagarylabs/.github/actions/changed-tests-plan@<sha>
+#     with: {command: grade, plan: ..., results: ...}   # results: {"<lane>": "<conclusion>"}
+#
+# A refusal fails the step and prints "REFUSE: <reason>" lines. Method and rules: check.py's docstring.
+name: changed-tests-plan
+description: Validate a changed_tests v1 plan against its tier, or grade its required lanes
+inputs:
+  command:
+    description: "plan or grade"
+    required: true
+  tier:
+    description: "plan only: fast or full"
+    required: false
+    default: ""
+  plan:
+    description: "path to the plan JSON"
+    required: true
+  results:
+    description: "grade only: path to a JSON object of lane name to conclusion"
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CTP_COMMAND: ${{ inputs.command }}
+        CTP_TIER: ${{ inputs.tier }}
+        CTP_PLAN: ${{ inputs.plan }}
+        CTP_RESULTS: ${{ inputs.results }}
+      run: |
+        set -euo pipefail
+        case "$CTP_COMMAND" in
+          plan)  python3 -I "$GITHUB_ACTION_PATH/check.py" plan --tier "$CTP_TIER" "$CTP_PLAN" ;;
+          grade) python3 -I "$GITHUB_ACTION_PATH/check.py" grade --plan "$CTP_PLAN" --results "$CTP_RESULTS" ;;
+          *) echo "::error::changed-tests-plan: command must be plan or grade, not '$CTP_COMMAND'"; exit 2 ;;
+        esac

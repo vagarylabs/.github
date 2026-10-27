@@ -42,7 +42,18 @@ jobs:
           [ "$negative_status" -eq 1 ] || { echo "Expected actionlint lint rejection, not a tool failure" >&2; exit 1; }
           grep -F 'property "proof_missing_step" is not defined' "$RUNNER_TEMP/actionlint-invalid.log"
           grep -F '[expression]' "$RUNNER_TEMP/actionlint-invalid.log"
-          "$lint" -color
+          # The two workflows that inline trusted/classify.py carry run scripts over 64 KiB. actionlint writes a script
+          # to the stdin of its shellcheck process before starting that process (process.go, cmdExecution.run), so a
+          # script larger than the pipe buffer blocks it forever. Lint those two without the shellcheck integration;
+          # the trusted-tests job runs the same check on every run script of theirs (test_trusted.py).
+          shopt -s nullglob
+          inline=(.github/workflows/trusted-workflow-integrity.yml .github/workflows/trusted-protected-paths.yml)
+          rest=()
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            case " ${inline[*]} " in *" $f "*) ;; *) rest+=("$f") ;; esac
+          done
+          "$lint" -color "${rest[@]}"
+          "$lint" -color -shellcheck= "${inline[@]}"
 
   planner-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

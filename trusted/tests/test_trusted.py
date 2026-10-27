@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -266,6 +267,30 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):
                     self.assertRegex(use, r"@[0-9a-f]{40}$")
+
+    def test_inline_workflow_run_scripts_pass_shellcheck(self):
+        # ci.yml lints these two with actionlint -shellcheck=: actionlint fills shellcheck's stdin before starting it,
+        # and their classifier run scripts are over the 64 KiB pipe buffer. This is that shellcheck pass, given the
+        # same dedented scripts through a pipe that is read while it is written. Skipped, like actionlint's own
+        # integration, where shellcheck is not installed.
+        sc = shutil.which("shellcheck")
+        if not sc:
+            self.skipTest("shellcheck is not on PATH")
+        sizes = []
+        for name in ("trusted-workflow-integrity", "trusted-protected-paths"):
+            text = WORKFLOWS[name].read_text()
+            scripts = [(len(m.group(1)) + 2, m.group(2))
+                       for m in re.finditer(r"\n( +)run: \|\n((?:\1  .*\n|\n)+)", text)]
+            self.assertGreaterEqual(len(scripts), 3, name)
+            for i, (ind, body) in enumerate(scripts):
+                script = "".join(l[ind:] + "\n" for l in body.split("\n")[:-1])
+                self.assertNotIn("$" + "{{", script)
+                sizes.append(len(script.encode()))
+                with self.subTest(workflow=name, script=i):
+                    r = subprocess.run([sc, "--norc", "--shell=bash", "-"], input=script, capture_output=True, text=True,
+                                       timeout=120)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertGreater(max(sizes), 65536)  # the reason for the split in ci.yml; drop it if this ever fails
 
     def test_tool_pins_match_release_assets_lock(self):
         lock = {}

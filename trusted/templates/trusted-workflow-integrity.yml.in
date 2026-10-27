@@ -19,6 +19,17 @@
 # and byte budget (a file over the blob cap is never diffed); running out is INCOMPLETE too, never a red job and
 # never a silent pass. A quarantine or approval reference is listed and never honoured until a verifier for
 # those records exists.
+#
+# timeout-floor (a SEPARATE job, same trust posture: same repository guard, bridge runner, read-only permissions,
+# exact SHAs from the event payload, the PR head checked out as data, the same inline classifier and manifest) reads
+# every .github/workflows/*.yml and *.yaml of the HEAD tree as data and checks each job's timeout-minutes against the
+# manifest's completion floor (timeout_floor.minutes, 6): a runner's CompleteJob call can stall 100 s and retry, and a
+# job whose timeout runs out meanwhile is cancelled after it succeeded. Under the floor or an expression is a
+# violation unless an exemption in the manifest names it exactly; a job-level `uses:` is skipped; what the stdlib
+# reader cannot judge is INCOMPLETE, never a pass. The job summary lists every finding and carries a TSV block (one
+# row per job) for diffing against the timeout census. Mode `report` (today) fails only on integrity errors, as the
+# job above does; mode `enforce` also fails on an unexempted violation or anything INCOMPLETE. The integrity job's
+# contract above is unchanged.
 name: trusted-workflow-integrity
 
 on:
@@ -56,4 +67,31 @@ jobs:
           TRUSTED_MANIFEST_JSON
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" integrity --manifest "$d/manifest.json" \
+            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
+
+  timeout-floor:
+    name: timeout-floor
+    # Same guard, runner and timeout as the job above; it inherits the workflow's read-only permissions.
+    if: github.repository != 'vagarylabs/.github'
+    runs-on: [self-hosted, Linux, X64, vl-light]
+    timeout-minutes: 10
+    steps:
+{{INCLUDE:_shas.yml.in}}
+      - name: Check every job's timeout-minutes against the completion floor (HEAD tree)
+        env:
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
+          python3 -I "$d/classify.py" timeout-floor --manifest "$d/manifest.json" \
             --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"

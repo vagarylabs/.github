@@ -13,7 +13,11 @@ Integrity mode also REPORTS the FL-4 test-weakening predicates: content predicat
 the PR's diff (a test skip, a retry, continue-on-error, a swallowed test failure, a deleted test with no
 successor, a loosened budget or timeout). The report never changes the exit code; see weakening_report().
 
-Exit codes: 0 pass, 1 policy refusal (protected-paths, once fail-closed), 2 integrity error.
+Timeout-floor mode checks every job's timeout-minutes in the head tree's workflows against the manifest's
+completion floor (timeout_floor); see the timeout floor section and run_timeout_floor().
+
+Exit codes: 0 pass, 1 policy refusal (protected-paths, once fail-closed; timeout-floor in enforce mode),
+2 integrity error.
 """
 import argparse
 import ast
@@ -88,7 +92,36 @@ def validate_manifest(m):
         rf = e.get("ratchet_files")
         if not isinstance(rf, list) or not all(isinstance(x, str) and x for x in rf):
             raise IntegrityError("manifest: %s.ratchet_files must be a list of paths" % name)
+    validate_timeout_floor(m.get("timeout_floor"))
     return m
+
+
+# An exemption names one job exactly: repo, workflow path, job id and the timeout-minutes text it declares (a literal
+# or an expression, as the TSV prints it), plus why and the record that approved it. An expression's `$` is written
+# as \u0024 in manifest.json: the manifest is inlined into a workflow run block, where Actions would expand it, and
+# trusted/render.py refuses to inline one.
+FLOOR_EXEMPTION_FIELDS = ("repo", "workflow", "job", "minutes", "reason", "record")
+
+
+def validate_timeout_floor(tf):
+    if not isinstance(tf, dict):
+        raise IntegrityError("manifest: timeout_floor must be an object")
+    mins = tf.get("minutes")
+    if isinstance(mins, bool) or not isinstance(mins, int) or mins < 1:
+        raise IntegrityError("manifest: timeout_floor.minutes must be a positive integer")
+    if tf.get("mode") not in ("report", "enforce"):
+        raise IntegrityError("manifest: timeout_floor.mode must be report or enforce")
+    ex = tf.get("exemptions")
+    if not isinstance(ex, list):
+        raise IntegrityError("manifest: timeout_floor.exemptions must be a list")
+    for i, e in enumerate(ex):
+        if not isinstance(e, dict) or not all(isinstance(e.get(f), str) and e[f].strip()
+                                              for f in FLOOR_EXEMPTION_FIELDS):
+            raise IntegrityError("manifest: timeout_floor exemption %d needs non-empty strings %s"
+                                 % (i, ", ".join(FLOOR_EXEMPTION_FIELDS)))
+        if not _FLOOR_FILE.match(e["workflow"]):
+            raise IntegrityError("manifest: timeout_floor exemption %d: workflow must be a "
+                                 ".github/workflows/<name>.yml or .yaml path" % i)
 
 
 def repo_entry(m, repo):
@@ -187,10 +220,11 @@ def changed_paths(mb, head):
 # line in the same file is a move, and a rule's added matches are offset by its removed matches.
 # Numeric rules pair a key's removed and added values in file order and report only the direction that
 # accepts more (a higher timeout, retry or upper bound; a lower coverage floor, assertion count or lower
-# bound). A `vagaris-quarantine: <id>` or `vagaris-approval: <id>` marker on or just above the line, or
-# the same as a commit trailer, is LISTED with the finding and never clears it: no quarantine or approval
-# verifier exists yet. Whether a workflow job backs a required check is not readable with this job's
-# token, so continue-on-error is reported on every job and step.
+# bound). A workflow timeout-minutes raised no higher than the completion floor (manifest timeout_floor.minutes) is
+# listed as a floor raise, not a weakening. A `vagaris-quarantine: <id>` or `vagaris-approval: <id>` marker on or
+# just above the line, or the same as a commit trailer, is LISTED with the finding and never clears it: no
+# quarantine or approval verifier exists yet. Whether a workflow job backs a required check is not readable
+# with this job's token, so continue-on-error is reported on every job and step.
 #
 # The PR decides how much git prints (a huge file, thousands of paths, a long commit message), so every git read
 # of the scan runs against ONE budget (ScanBudget): wall time to a single deadline and a total of bytes read
@@ -456,6 +490,10 @@ NUMERIC_RULES = [
     ("budget-loosened", "timeout", "py",
      r"@pytest\.mark\.(?P<k>timeout)\s*\(\s*(?:timeout\s*=\s*)?(?P<v>[^,)\n]+)", "up", None),
     ("budget-loosened", "timeout", "pytest-ini", r"^\s*(?P<k>timeout)\s*=\s*(?P<v>[^\s#;]+)", "up", None),
+    # A workflow job's or step's timeout-minutes. A raise whose new value is at or under the completion floor
+    # (manifest timeout_floor.minutes) is the floor being met, not a weakening: numeric_findings files it under
+    # FLOOR_RAISE_RULE instead.
+    ("budget-loosened", "timeout", "workflow", r"^\s*(?:-\s+)?(?P<k>timeout-minutes)\s*:\s*(?P<v>[^#\n]+)", "up", None),
     ("budget-loosened", "coverage", "coverage-config",
      r"[\"']?\b(?P<k>lines|branches|functions|statements)[\"']?\s*:\s*(?P<v>[^,}\n]+)", "down", "removal"),
     ("budget-loosened", "coverage", "py-test-config",
@@ -772,7 +810,12 @@ def token_findings(path, scopes, added, removed):
     return out
 
 
-def numeric_findings(path, scopes, added, removed, first_line):
+FLOOR_RAISE_RULE = "timeout-floor-raise"
+FLOOR_RAISE_EFFECT = "ci-policy:completion-floor"
+
+
+def numeric_findings(path, scopes, added, removed, first_line, floor=None):
+    """floor: the completion floor in minutes, or None. A timeout-minutes raise to at most it is a floor raise."""
     out = []
     for rule, family, scope, rx, direction, absent in NUMERIC_RULES:
         if scope not in scopes:
@@ -802,7 +845,14 @@ def numeric_findings(path, scopes, added, removed, first_line):
                         continue
                     if (direction == "up" and v > o) or (direction == "down" and v < o):
                         verb = "raises" if direction == "up" else "lowers"
-                        out.append(_finding(rule, path, n, "%s %s `%s` %s -> %s" % (verb, family, key, _fmt(o), _fmt(v))))
+                        detail = "%s %s `%s` %s -> %s" % (verb, family, key, _fmt(o), _fmt(v))
+                        if k == "timeout-minutes" and floor is not None and v <= floor:
+                            f = _finding(FLOOR_RAISE_RULE, path, n, "%s, raised to the completion floor (%d minutes)"
+                                         % (detail, floor))
+                            f["effect"] = FLOOR_RAISE_EFFECT
+                            out.append(f)
+                        else:
+                            out.append(_finding(rule, path, n, detail))
                 elif i < len(nv):
                     n, v = nv[i]
                     if absent == 0 and (v is None or v > 0):
@@ -1011,7 +1061,7 @@ def enrich(budget, listed, heads, incomplete):
                               % (md_code(path), WEAKENING_MAX_LINE))
 
 
-def scan_file(row, patch, incomplete):
+def scan_file(row, patch, incomplete, floor=None):
     """Findings for one in-scope file from its patch text (None: the diff was over WEAKENING_MAX_PATCH_BYTES)."""
     path, scopes = row[3], row[4]
     if patch is None:
@@ -1024,10 +1074,10 @@ def scan_file(row, patch, incomplete):
         incomplete.append("%s: %d changed lines over %d chars not scanned" % (md_code(path), too_long, WEAKENING_MAX_LINE))
         added = [(n, t) for n, t in added if len(t) <= WEAKENING_MAX_LINE]
         removed = [(n, t) for n, t in removed if len(t) <= WEAKENING_MAX_LINE]
-    return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first)
+    return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first, floor)
 
 
-def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room):
+def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room, floor=None):
     """Fill results[i] for every i in todo; the stop kind, or None when every file was read. Once the files scanned hold
     room findings, the next file stops the scan ("findings"): a PR of `it.skip(` makes ~125k findings per MB of diff.
 
@@ -1042,7 +1092,7 @@ def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room):
     def scan(i, patch):
         if kept[0] >= room:
             raise Exhausted("findings")
-        results[i] = scan_file(scoped[i], patch, incomplete)
+        results[i] = scan_file(scoped[i], patch, incomplete, floor)
         kept[0] += len(results[i])
     try:
         for batch in pathspec_batches([(i, {scoped[i][1], scoped[i][2]}) for i in todo]):
@@ -1070,9 +1120,9 @@ def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room):
     return None
 
 
-def weakening_scan(mb, head):
+def weakening_scan(mb, head, floor=None):
     """(findings, incomplete reasons, files in scope). Every git read is bounded by one ScanBudget; a git failure or
-    an undecodable path raises, and the caller reports that as INCOMPLETE."""
+    an undecodable path raises, and the caller reports that as INCOMPLETE. floor: see numeric_findings."""
     budget = ScanBudget(WEAKENING_DEADLINE_SECONDS, WEAKENING_MAX_TOTAL_BYTES)
     incomplete = []
     rows, listing_stop = census(budget, mb, head)
@@ -1109,7 +1159,8 @@ def weakening_scan(mb, head):
                 results[i] = []
             else:
                 todo.append(i)
-        stop = scan_patches(budget, mb, head, scoped, todo, results, incomplete, WEAKENING_MAX_FINDINGS - len(findings))
+        stop = scan_patches(budget, mb, head, scoped, todo, results, incomplete, WEAKENING_MAX_FINDINGS - len(findings),
+                            floor)
     if stop:
         incomplete.append("%s after %d of %d files in scope; the rest were not scanned"
                           % (_stop_reason(stop), len(results), in_scope))
@@ -1136,21 +1187,29 @@ def _cmd_prop(text):
     return _cmd_data(text).replace(":", "%3A").replace(",", "%2C")
 
 
-def weakening_report(mb, head):
-    """Summary lines for the FL-4 section, plus warning annotations. Never raises; never sets an exit code."""
+def weakening_report(mb, head, floor=None):
+    """Summary lines for the FL-4 section, plus warning annotations. Never raises; never sets an exit code.
+    A timeout-minutes raise to the completion floor is listed on its own line: no annotation, not a weakening."""
     lines = ["", "### Test-weakening predicates (FL-4 `%s`, report-only)" % WEAKENING_VERSION]
     try:
-        findings, incomplete, in_scope = weakening_scan(mb, head)
+        findings, incomplete, in_scope = weakening_scan(mb, head, floor)
     except Exception as exc:  # report-only: a scan failure is INCOMPLETE, never a pass and never a red job
         lines.append("- INCOMPLETE: the scan failed (%s); no weakening verdict for this PR" % type(exc).__name__)
         print("::warning title=test weakening (FL-4)::scan incomplete (%s)" % _cmd_data(type(exc).__name__))
         return lines
+    raises = [f for f in findings if f["rule"] == FLOOR_RAISE_RULE]
+    findings = [f for f in findings if f["rule"] != FLOOR_RAISE_RULE]
     for f in findings[:WEAKENING_MAX_LISTED]:
         where = f["path"] if not f["line"] else "%s:%d" % (f["path"], f["line"])
         ref = ("references %s (unverified)" % ", ".join(f["refs"])) if f["refs"] else "no quarantine or approval reference"
         lines.append("- WEAKENING %s %s %s; %s" % (f["rule"], md_code(where), f["detail"], ref))
     if len(findings) > WEAKENING_MAX_LISTED:
         lines.append("- ... and %d more findings" % (len(findings) - WEAKENING_MAX_LISTED))
+    for f in raises[:WEAKENING_MAX_LISTED]:
+        where = md_code("%s:%d" % (f["path"], f["line"]))
+        lines.append("- FLOOR RAISE %s %s; not a test weakening" % (where, f["detail"]))
+    if len(raises) > WEAKENING_MAX_LISTED:
+        lines.append("- ... and %d more floor raises" % (len(raises) - WEAKENING_MAX_LISTED))
     for f in findings[:WEAKENING_MAX_ANNOTATIONS]:
         loc = "file=%s" % _cmd_prop(f["path"]) + (",line=%d" % f["line"] if f["line"] else "")
         print("::warning %s,title=test weakening (FL-4)::%s: %s" % (loc, f["rule"], _cmd_data(f["detail"])))
@@ -1173,6 +1232,488 @@ def weakening_report(mb, head):
     elif not incomplete:
         lines.append("No test-weakening pattern added (%d changed files in scope)." % in_scope)
     return lines
+
+
+# --- timeout floor ---------------------------------------------------------------------------
+#
+# A runner reports a finished job to GitHub with one HTTP call, CompleteJob. actions/runner v2.338.0 sends it through
+# RunnerService.RetryRequest (src/Runner.Common/RunnerService.cs: 5 attempts, a random 5-15 s backoff) with a 100 s
+# timeout per attempt. When the job's timeout-minutes runs out while that call stalls, GitHub cancels a job that had
+# already succeeded: on 2026-10-27 a platform test-gate (timeout-minutes: 2) finished green at 04:27:03Z, its
+# CompleteJob attempt timed out after 100 s, and the job was cancelled at the 2-minute limit. So every job needs at
+# least ceil((p95 + 30 s + 2 * 100 s + 15 s) / 60) minutes, one stalled attempt and a retry on top of its p95 run
+# time, and never under 6. The p95 part needs run telemetry and lives in a separate census; this mode checks the
+# static part, the absolute floor (manifest timeout_floor.minutes) for every job.
+#
+# The scan reads every .github/workflows/*.yml and *.yaml of the HEAD tree (the whole tree, not the diff: a job that
+# was under the floor before the PR is still under it) as data, with one `git ls-tree` and a `git cat-file blob` per
+# file under one ScanBudget, as FL-4 does. Nothing from the PR runs. Running out of budget is INCOMPLETE.
+#
+# No YAML library on this path. A stdlib reader built on indentation needs three levels only: the top-level `jobs:`
+# key, the job ids under it, and each job's own keys. It still follows every construct whose content may sit at a
+# shallow indentation (block scalars; quoted scalars and flow collections over several lines; plain scalars continued
+# on the next line), so a line inside one is never read as a key. A step's timeout-minutes does not matter: the
+# completion call is per job. What the reader cannot judge safely (a merge key; an anchor, alias or tag on a job or
+# its timeout; a flow-style job or jobs block; a tab in the indentation; a second `jobs:` or YAML document) makes the
+# job or the whole file INCOMPLETE rather than a guess. Keys compare case-insensitively, which can only add findings.
+#
+# Verdicts: no timeout-minutes passes (GitHub's default is 360); a literal number passes at or over the floor and is a
+# violation under it; an expression is a violation (nothing static bounds it) unless an exemption names it exactly;
+# a job-level `uses:` calls a reusable workflow, which cannot set timeout-minutes, and is skipped. Mode `report` exits
+# 0 whatever it finds; mode `enforce` exits 1 on an unexempted violation or anything INCOMPLETE.
+
+FLOOR_DEADLINE_SECONDS = 120       # the whole scan, every git call included; the job's own timeout is 10 minutes
+FLOOR_MAX_TOTAL_BYTES = 16000000   # everything the scan reads from git
+FLOOR_MAX_LISTING_BYTES = 1000000  # the .github/workflows listing
+FLOOR_MAX_BLOB_BYTES = 2000000     # one workflow file; a larger one is not read: INCOMPLETE
+FLOOR_MAX_FILES = 500              # workflow files judged; the rest: INCOMPLETE
+FLOOR_MAX_JOBS = 2000              # rows; reaching it stops the scan: INCOMPLETE
+FLOOR_MAX_VALUE = 200              # a longer timeout-minutes value is not judged: INCOMPLETE
+FLOOR_MAX_REASONS = 3              # reasons named per INCOMPLETE row; the rest are counted
+FLOOR_MAX_LISTED = 200             # summary lines; the TSV block carries every row
+FLOOR_MAX_ANNOTATIONS = 8          # GitHub keeps 10 per level and step: room for the two pointers
+FLOOR_TSV_HEADER = "repo\tworkflow_path\tjob_key\ttimeout_minutes_declared\tverdict"
+
+# Built from two parts, never written as one literal: this file is inlined into a workflow run block.
+_EXPR_OPEN = "$" + "{{"
+_FLOOR_FILE = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
+_FLOOR_JOB_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,199}$")
+_FLOOR_NUMBER = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+_FLOOR_PROPS = re.compile(r"(?:[&!]\S*[ \t]*)+")
+_FLOOR_QKEY = re.compile(r"\"((?:[^\"\\]|\\.)*)\"[ \t]*:(?=[ \t]|$)|'((?:[^']|'')*)'[ \t]*:(?=[ \t]|$)")
+_FLOOR_DOC = re.compile(r"^(?:---|\.\.\.)(?=[ \t]|$)")
+_FLOOR_INDICATORS = frozenset("-?:,[]{}#&*!|>'\"%@`")
+_FLOOR_KINDS = {"|": "block", ">": "block", '"': "quoted", "'": "quoted", "[": "flow", "{": "flow", "*": "alias"}
+
+
+def _floor_plain_key(rest):
+    """(key, end) for a plain `key:` at the start of rest, else None: a plain key starts with no indicator and ends at
+    the first colon followed by a space or the line end; ` #` before that colon starts a comment."""
+    if not rest or rest[0] in _FLOOR_INDICATORS:
+        return None
+    i = 0
+    while True:
+        j = rest.find(":", i)
+        if j < 0:
+            return None
+        if j + 1 == len(rest) or rest[j + 1] in " \t":
+            key = rest[:j]
+            if " #" in key or "\t#" in key:
+                return None
+            return key.rstrip(" \t"), j + 1
+        i = j + 1
+
+
+def _floor_split(line, ind):
+    """(dashes, key or None, node column, value) of a structural line indented ind spaces. dashes counts leading
+    `- ` sequence entries; the node column is the key's, else the last dash's (a scalar's body is indented past it);
+    value is the text after `key:`, or after the dashes. A double-quoted key keeps its escapes, so a key with a
+    backslash is never mistaken for a plain one."""
+    col, rest, dashes, node = ind, line[ind:], 0, ind - 1
+    while rest[:1] == "-" and (len(rest) == 1 or rest[1] in " \t"):
+        node = col
+        nxt = rest[1:].lstrip(" \t")
+        col += len(rest) - len(nxt)
+        rest, dashes = nxt, dashes + 1
+    m = _FLOOR_QKEY.match(rest)
+    if m:
+        key = m.group(1) if m.group(1) is not None else m.group(2).replace("''", "'")
+        return dashes, key, col, rest[m.end():].lstrip(" \t")
+    pk = _floor_plain_key(rest)
+    if pk:
+        return dashes, pk[0], col, rest[pk[1]:].lstrip(" \t")
+    return dashes, None, node, rest
+
+
+def _floor_node(value):
+    """(kind, props, body) of the node value starts: kind is "empty", "block", "quoted", "flow", "alias" or "plain";
+    props are the anchors (&a) and tags (!t) in front of it; body is the text from the node on."""
+    m = _FLOOR_PROPS.match(value)
+    props = m.group(0).split() if m else []
+    body = value[m.end():] if m else value
+    if not body or body.startswith("#"):
+        return "empty", props, body
+    return _FLOOR_KINDS.get(body[0], "plain"), props, body
+
+
+def _flow_scan(text, state):
+    """Advance a quoted scalar or flow collection over text: None once it closes, else the state for the next line.
+    state is (open quote or None, bracket depth, whether a node may start here). Linear in the text."""
+    q, depth, start = state
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if q == '"':
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                q, start = None, False
+                if depth == 0:
+                    return None
+        elif q == "'":
+            if c == "'":
+                if text[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                q, start = None, False
+                if depth == 0:
+                    return None
+        elif c == "#" and (i == 0 or text[i - 1] in " \t"):
+            break
+        elif c in "[{":
+            depth, start = depth + 1, True
+        elif c in "]}":
+            depth, start = depth - 1, False
+            if depth <= 0:
+                return None
+        elif c in ",?:":
+            start = True
+        elif c in "\"'" and start:
+            q = c
+        elif c not in " \t":
+            start = False
+        i += 1
+    return (q, depth, start)
+
+
+def parse_workflow(text):
+    """([job], [file-level reason]) for one workflow's text. A job is a dict: id, line, timeout (None, or (kind, props,
+    node text, line) of its job-level timeout-minutes), uses (a job-level `uses:`), reasons (why it cannot be judged).
+    A file-level reason makes every job of the file INCOMPLETE."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    jobs, bad, ids = [], [], set()
+    flow, flow_at = None, 0   # a quoted scalar or flow collection still open, and the line that opened it
+    flow_ind = 0              # that line's indentation: a continuation left of it is not followed
+    # (column, job or None) after a scalar value: lines indented past column belong to it (job: it is that job's
+    # timeout). That covers block scalars (|, > and their indicators) too: YAML indents every body line of one past
+    # its parent's column (the key's, or the `- `'s), so a body line is never read as a key, a tab or a quote.
+    plain = None
+    started = seen = False    # a `---` was read; a structural line was read
+    top_seq = False           # the last top-level key has no value, so a `- ` at column 0 is its sequence
+    last_top = None           # that key, lower-cased
+    jobs_keys, in_jobs, id_ind, job = 0, False, None, None
+    for no, raw in enumerate(text.split("\n"), 1):
+        line = raw[:-1] if raw.endswith("\r") else raw
+        if flow is not None:
+            s = line.lstrip(" ")
+            if s and not (flow[0] is None and s.startswith("#")) and len(line) - len(s) < flow_ind:
+                bad.append("line %d: a quoted scalar or flow collection continues left of the line that opened it" % no)
+            flow = _flow_scan(line, flow)
+            continue
+        if not line.strip():
+            continue
+        ind = len(line) - len(line.lstrip(" "))
+        stripped = line.lstrip(" \t")
+        if stripped.startswith("#"):
+            continue
+        if plain is not None:
+            if ind > plain[0]:
+                if plain[1] is not None:
+                    plain[1]["reasons"].append("line %d: the timeout-minutes value continues on this line" % no)
+                    plain = (plain[0], None)
+                continue
+            plain = None
+        if "\t" in line[:len(line) - len(stripped)]:
+            bad.append("line %d: a tab in the indentation" % no)
+            continue
+        if ind == 0 and (_FLOOR_DOC.match(line) or line.startswith("%")):
+            tail = line[3:].strip(" \t")
+            if line.startswith("---") and not (started or seen) and (not tail or tail.startswith("#")):
+                started = True
+            else:
+                bad.append("line %d: a second YAML document, a document end or a directive" % no)
+            continue
+        seen = True
+        dashes, key, node, value = _floor_split(line, ind)
+        kind, props, body = _floor_node(value)
+        opened = _flow_scan(body, (None, 0, True)) if kind in ("quoted", "flow") else None
+        lkey = key.lower() if key is not None else None
+        plain_job = None
+        if ind == 0:
+            if dashes:
+                if last_top == "jobs":
+                    bad.append("line %d: `jobs:` holds a sequence, not a mapping of job ids" % no)
+                elif not top_seq:
+                    bad.append("line %d: a top-level sequence entry; the workflow is not a block mapping" % no)
+            else:
+                in_jobs, job, top_seq, last_top = False, None, kind == "empty", lkey
+                if key is None or "\\" in key:
+                    bad.append("line %d: a top-level line that is not a plain `key:` entry" % no)
+                elif lkey == "<<":
+                    bad.append("line %d: a merge key (<<) at the top level" % no)
+                elif lkey == "jobs":
+                    top_seq = False
+                    jobs_keys += 1
+                    if jobs_keys > 1:
+                        bad.append("line %d: a second `jobs:`" % no)
+                    if kind != "empty" or props:
+                        bad.append("line %d: `jobs:` is not a plain block mapping (flow style, an anchor, alias or "
+                                   "tag, or a scalar)" % no)
+                    else:
+                        in_jobs, id_ind = True, None
+        elif in_jobs:
+            if id_ind is None:
+                id_ind = ind
+            if ind < id_ind:
+                bad.append("line %d: a line inside `jobs:` left of the job ids" % no)
+            elif ind == id_ind:
+                if dashes:
+                    bad.append("line %d: a sequence entry where `jobs:` needs job ids" % no)
+                elif key is None or "\\" in key:
+                    bad.append("line %d: a line at the job-id level that is not a plain `job-id:` entry" % no)
+                elif lkey == "<<":
+                    bad.append("line %d: a merge key (<<) in `jobs:`" % no)
+                else:
+                    job = {"id": key, "line": no, "timeout": None, "uses": False, "reasons": [], "ind": None,
+                           "seq": False}
+                    jobs.append(job)
+                    why = []
+                    if not _FLOOR_JOB_ID.match(key):
+                        why.append("a job id GitHub does not accept")
+                    if key.lower() in ids:
+                        bad.append("line %d: a second job with the id %s" % (no, md_code(key)))
+                    ids.add(key.lower())
+                    if any(p.startswith("&") for p in props):
+                        why.append("an anchor on the job")
+                    if any(p.startswith("!") for p in props):
+                        why.append("a tag on the job")
+                    if kind == "alias":
+                        why.append("the job is an alias")
+                    elif kind == "flow":
+                        why.append("the job is a flow-style mapping")
+                    elif kind != "empty":
+                        why.append("the job is a scalar, not a mapping")
+                    job["reasons"] += ["line %d: %s" % (no, w) for w in why]
+            elif job is not None:
+                if job["ind"] is None:
+                    job["ind"] = ind
+                if ind < job["ind"]:
+                    job["reasons"].append("line %d: a job line left of the job's keys" % no)
+                elif ind == job["ind"]:
+                    if dashes:
+                        # `steps:` and its `- ` entries may share one indentation; any other entry here is not a key.
+                        if not job["seq"]:
+                            job["reasons"].append("line %d: a sequence entry where the job needs keys" % no)
+                    elif key is None or "\\" in key:
+                        job["reasons"].append("line %d: a job-level line that is not a plain `key:` entry (flow style, "
+                                              "an explicit or escaped key, a tag)" % no)
+                    else:
+                        job["seq"] = kind == "empty"
+                        if lkey == "<<":
+                            job["reasons"].append("line %d: a merge key (<<) in the job" % no)
+                        elif lkey == "timeout-minutes":
+                            if job["timeout"] is not None:
+                                job["reasons"].append("line %d: a second timeout-minutes" % no)
+                            else:
+                                job["timeout"] = (kind, props, body, no)
+                                plain_job = job
+                                if opened is not None:
+                                    job["reasons"].append("line %d: the timeout-minutes value runs over several "
+                                                          "lines" % no)
+                        elif lkey == "uses":
+                            job["uses"] = True
+        if opened is not None:
+            flow, flow_at, flow_ind = opened, no, ind
+        elif kind != "empty":
+            plain = (node, plain_job)
+    if flow is not None:
+        bad.append("line %d: a quoted scalar or flow collection that never closes" % flow_at)
+    return jobs, bad
+
+
+def _floor_declared(t):
+    """(declared text, reason or None) of a job-level timeout-minutes: (kind, props, node text, line). The text is the
+    value without quotes or a trailing comment, as the TSV prints it and an exemption names it."""
+    kind, props, body, no = t
+    if props:
+        return body.strip(), "line %d: an anchor or tag on timeout-minutes" % no
+    if kind == "alias":
+        return body.strip(), "line %d: an alias as timeout-minutes" % no
+    if kind == "empty":
+        return "unknown", "line %d: no timeout-minutes value on its line" % no
+    if kind in ("block", "flow"):
+        return "unknown", "line %d: a block scalar or flow collection as timeout-minutes" % no
+    why = None
+    if kind == "quoted":
+        q, i, escaped, end = body[0], 1, False, -1
+        while i < len(body):
+            if q == '"' and body[i] == "\\":
+                escaped, i = True, i + 2
+                continue
+            if body[i] == q:
+                if q == "'" and body[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                end = i
+                break
+            i += 1
+        if end < 0:
+            return "unknown", "line %d: the quoted timeout-minutes value does not close on its line" % no
+        text = body[1:end].replace("''", "'") if q == "'" else body[1:end]
+        tail = body[end + 1:].strip(" \t")
+        if escaped:
+            why = "line %d: an escape in the quoted timeout-minutes value" % no
+        elif tail and not tail.startswith("#"):
+            why = "line %d: text after the quoted timeout-minutes value" % no
+    else:
+        cut = min([i for i in (body.find(" #"), body.find("\t#")) if i >= 0] or [len(body)])
+        text = body[:cut].rstrip(" \t")
+    if len(text) > FLOOR_MAX_VALUE:
+        return text[:FLOOR_MAX_VALUE] + "...", "line %d: a timeout-minutes value over %d chars" % (no, FLOOR_MAX_VALUE)
+    return text, why
+
+
+def _floor_verdict(job, floor):
+    """(verdict, declared, detail) of a job no reason blocks, before exemptions."""
+    if job["uses"]:
+        return "skipped-reusable", "n/a", "calls a reusable workflow, which cannot set timeout-minutes"
+    if job["timeout"] is None:
+        return "pass", "default 360", "no timeout-minutes (GitHub's default is 360)"
+    declared, why = _floor_declared(job["timeout"])
+    if why:
+        return "incomplete", declared, why
+    if _EXPR_OPEN in declared:
+        return "violation", declared, ("timeout-minutes is an expression, %s, which cannot be checked against the "
+                                       "%d-minute floor" % (md_code(declared), floor))
+    if _FLOOR_NUMBER.match(declared):
+        if float(declared) >= floor:
+            return "pass", declared, "timeout-minutes %s" % md_code(declared)
+        return "violation", declared, "timeout-minutes %s is below the %d-minute floor" % (md_code(declared), floor)
+    return "incomplete", declared, ("line %d: timeout-minutes %s is neither a number nor an expression"
+                                    % (job["timeout"][3], md_code(declared)))
+
+
+def _floor_row(path, job, line, declared, verdict, detail):
+    return {"path": path, "job": job, "line": line, "declared": declared, "verdict": verdict, "detail": detail,
+            "exemption": None}
+
+
+def _floor_reasons(reasons):
+    shown = reasons[:FLOOR_MAX_REASONS]
+    more = len(reasons) - len(shown)
+    return "; ".join(shown) + ("; and %d more" % more if more else "")
+
+
+def _floor_rows(path, jobs, bad, floor):
+    """One row per job of a parsed file; a file-level reason makes every row INCOMPLETE, or the file's one row."""
+    if not jobs:
+        return [_floor_row(path, "*", None, "unknown", "incomplete", _floor_reasons(bad))] if bad else []
+    rows = []
+    for j in jobs:
+        line = j["timeout"][3] if j["timeout"] else j["line"]
+        if bad or j["reasons"]:
+            if j["timeout"]:
+                declared = _floor_declared(j["timeout"])[0]
+            else:
+                declared = "n/a" if j["uses"] else "default 360"
+            rows.append(_floor_row(path, j["id"], line, declared, "incomplete", _floor_reasons(j["reasons"] + bad)))
+        else:
+            verdict, declared, detail = _floor_verdict(j, floor)
+            rows.append(_floor_row(path, j["id"], line, declared, verdict, detail))
+    return rows
+
+
+def _floor_stop(kind):
+    if kind == "time":
+        return "the %ds scan budget ran out" % FLOOR_DEADLINE_SECONDS
+    return "the %d-byte read budget ran out" % FLOOR_MAX_TOTAL_BYTES
+
+
+def timeout_floor_scan(head, floor):
+    """(rows, scan-wide INCOMPLETE reasons, workflow files, files without jobs). A row is a dict: path, job, line,
+    declared, verdict, detail, exemption; a file that cannot be read or parsed gives one row with job "*". A git that
+    fails raises IntegrityError (the tree is unreadable); running out of budget is INCOMPLETE."""
+    budget = ScanBudget(FLOOR_DEADLINE_SECONDS, FLOOR_MAX_TOTAL_BYTES)
+    try:
+        raw = git_read(budget, ("ls-tree", "-l", "-z", "--full-tree", head, "--", ".github/workflows/"),
+                       FLOOR_MAX_LISTING_BYTES)
+    except Exhausted as exc:
+        why = ("the workflow listing is over %d bytes" % FLOOR_MAX_LISTING_BYTES if exc.kind == "cap"
+               else _floor_stop(exc.kind))
+        return [], ["%s; no workflow file was judged" % why], [], []
+    files = []
+    for rec in raw.split(b"\0"):
+        meta, _, name = rec.partition(b"\t")
+        path = name.decode("utf-8", "replace")
+        if rec and _FLOOR_FILE.match(path):
+            mode, otype, sha, size = meta.decode("ascii", "replace").split()
+            files.append((mode, otype, sha, size, path))
+    rows, reasons, nojobs = [], [], []
+    if len(files) > FLOOR_MAX_FILES:
+        reasons.append("%d workflow files; only the first %d were judged" % (len(files), FLOOR_MAX_FILES))
+    for k, (mode, otype, sha, size, path) in enumerate(files[:FLOOR_MAX_FILES]):
+        if len(rows) >= FLOOR_MAX_JOBS or budget.time_left() <= 0:
+            reasons.append("%s after %d of %d workflow files; the rest were not judged" % (
+                "the %d-job cap was reached" % FLOOR_MAX_JOBS if len(rows) >= FLOOR_MAX_JOBS
+                else _floor_stop("time"), k, len(files)))
+            break
+        if mode == "120000":
+            rows.append(_floor_row(path, "*", None, "unknown", "incomplete", "a symbolic link, which this reader "
+                                   "does not follow"))
+            continue
+        if otype != "blob":
+            continue
+        if int(size) > FLOOR_MAX_BLOB_BYTES:
+            rows.append(_floor_row(path, "*", None, "unknown", "incomplete", "larger than %d bytes, not read"
+                                   % FLOOR_MAX_BLOB_BYTES))
+            continue
+        try:
+            data = git_read(budget, ("cat-file", "blob", sha), FLOOR_MAX_BLOB_BYTES)
+        except Exhausted as exc:
+            reasons.append("%s after %d of %d workflow files; the rest were not judged" % (
+                _floor_stop(exc.kind), k, len(files)))
+            break
+        try:
+            jobs, bad = parse_workflow(data.decode("utf-8"))
+        except UnicodeDecodeError:
+            rows.append(_floor_row(path, "*", None, "unknown", "incomplete", "not valid UTF-8"))
+            continue
+        except Exception as exc:  # a reader bug is INCOMPLETE for that file, never a pass
+            rows.append(_floor_row(path, "*", None, "unknown", "incomplete", "the reader failed (%s)"
+                                   % type(exc).__name__))
+            continue
+        if not jobs and not bad:
+            nojobs.append(path)
+        rows += _floor_rows(path, jobs, bad, floor)
+    return rows, reasons, [f[4] for f in files], nojobs
+
+
+def apply_exemptions(rows, exemptions, repo):
+    """Mark each violation an exemption names exactly (repo, workflow, job, declared text) exempt. Returns the
+    exemptions for this repo that exempted nothing, as [(exemption, why)]: STALE, reported and never enforced."""
+    index = {}
+    for e in exemptions:
+        if e["repo"] == repo:
+            index.setdefault((e["workflow"], e["job"], e["minutes"]), []).append(e)
+    used = set()
+    for r in rows:
+        hit = index.get((r["path"], r["job"], r["declared"])) if r["verdict"] == "violation" else None
+        if hit:
+            r["verdict"], r["exemption"] = "exempt", hit[0]
+            used.update(id(e) for e in hit)
+    by_job = {(r["path"], r["job"]): r for r in rows}
+    stale = []
+    for e in exemptions:
+        if e["repo"] != repo or id(e) in used:
+            continue
+        r = by_job.get((e["workflow"], e["job"]))
+        if r is None:
+            why = ("the workflow was not judged" if (e["workflow"], "*") in by_job
+                   else "no such job in the head tree's workflows")
+        elif r["verdict"] == "incomplete":
+            why = "the job could not be judged"
+        elif r["declared"] != e["minutes"]:
+            why = "the job now declares %s" % md_code(r["declared"])
+        else:
+            why = "the job passes without it"
+        stale.append((e, why))
+    return stale
+
+
+def _tsv(text):
+    return re.sub(r"[\t\r\n]", " ", str(text)).replace("`", "'")
 
 
 # --- reporting -------------------------------------------------------------------------------
@@ -1212,7 +1753,7 @@ def run_integrity(m, repo, base, head):
                 print("::notice title=ratchet constant %s::%s %s" % (kind, rf, name))
     if len(lines) == 2:
         lines.append("No protected workflow or ratchet change.")
-    lines += weakening_report(mb, head)
+    lines += weakening_report(mb, head, m["timeout_floor"]["minutes"])
     summary(lines)
     return 0
 
@@ -1233,9 +1774,80 @@ def run_protected(m, repo, base, head):
     return code
 
 
+def run_timeout_floor(m, repo, base, head):
+    tf = m["timeout_floor"]
+    floor, mode = tf["minutes"], tf["mode"]
+    resolve(base, head)
+    rows, scan_wide, files, nojobs = timeout_floor_scan(head, floor)
+    stale = apply_exemptions(rows, tf["exemptions"], repo)
+    count = {}
+    for r in rows:
+        count[r["verdict"]] = count.get(r["verdict"], 0) + 1
+    violations, incomplete = count.get("violation", 0), count.get("incomplete", 0) + len(scan_wide)
+    lines = ["## Timeout floor: %s" % repo,
+             "Every job-level `timeout-minutes` in the %d workflow files of head `%s`, against the %d-minute "
+             "completion floor (manifest `timeout_floor`, mode `%s`)." % (len(files), head, floor, mode)]
+    level = "error" if mode == "enforce" else "warning"
+    listed = annotated = 0
+    for r in rows:
+        if r["verdict"] not in ("violation", "exempt", "incomplete"):
+            continue
+        where = md_code(r["path"] if r["line"] is None else "%s:%d" % (r["path"], r["line"]))
+        what = "the file" if r["job"] == "*" else "job %s" % md_code(r["job"])
+        if r["verdict"] == "exempt":
+            e = r["exemption"]
+            text = "timeout-minutes %s, exempt by record %s: %s" % (md_code(r["declared"]), md_code(e["record"]),
+                                                                    md_code(e["reason"]))
+        else:
+            text = r["detail"]
+        if listed < FLOOR_MAX_LISTED:
+            lines.append("- %s %s %s: %s" % (r["verdict"].upper(), where, what, text))
+        listed += 1
+        if r["verdict"] != "exempt" and annotated < FLOOR_MAX_ANNOTATIONS:
+            loc = "file=%s" % _cmd_prop(r["path"]) + (",line=%d" % r["line"] if r["line"] else "")
+            print("::%s %s,title=timeout floor::%s: %s" % (level, loc, _cmd_data(what), _cmd_data(text)))
+            annotated += 1
+    if listed > FLOOR_MAX_LISTED:
+        lines.append("- ... and %d more; every row is in the TSV block below" % (listed - FLOOR_MAX_LISTED))
+    for e, why in stale[:FLOOR_MAX_LISTED]:
+        lines.append("- STALE EXEMPTION job %s in %s declaring %s (record %s): %s; reported, not enforced"
+                     % (md_code(e["job"]), md_code(e["workflow"]), md_code(e["minutes"]), md_code(e["record"]), why))
+        if annotated < FLOOR_MAX_ANNOTATIONS:
+            print("::warning title=timeout floor stale exemption::%s"
+                  % _cmd_data("job %s in %s (record %s): %s" % (e["job"], e["workflow"], e["record"], why)))
+            annotated += 1
+    if len(stale) > FLOOR_MAX_LISTED:
+        lines.append("- ... and %d more stale exemptions" % (len(stale) - FLOOR_MAX_LISTED))
+    unannotated = count.get("violation", 0) + count.get("incomplete", 0) + len(stale) - annotated
+    if unannotated > 0:
+        print("::%s title=timeout floor::%d more in the job summary" % (level, unannotated))
+    for reason in scan_wide:
+        lines.append("- INCOMPLETE: %s" % reason)
+    if scan_wide:
+        print("::%s title=timeout floor::scan incomplete; see the job summary" % level)
+    if nojobs:
+        more = " and %d more" % (len(nojobs) - 10) if len(nojobs) > 10 else ""
+        lines.append("- No `jobs:` in %s%s: no job to judge" % (", ".join(md_code(p) for p in nojobs[:10]), more))
+    if not violations and not incomplete:
+        lines.append("All %d jobs meet the %d-minute floor, are exempt, or call a reusable workflow."
+                     % (len(rows), floor))
+    elif mode == "enforce":
+        lines.append("Refused (mode `enforce`): %d violations, %d INCOMPLETE. Raise each listed timeout-minutes to at "
+                     "least %d, or record an exemption in the trusted manifest." % (violations, incomplete, floor))
+    else:
+        lines.append("Report-only (mode `report`): %d violations and %d INCOMPLETE are listed, not enforced; "
+                     "INCOMPLETE is never a pass." % (violations, incomplete))
+    lines += ["", "One row per job, for diffing against the timeout census (same first four columns):", "", "```tsv",
+              FLOOR_TSV_HEADER]
+    lines += ["\t".join(_tsv(x) for x in (repo, r["path"], r["job"], r["declared"], r["verdict"])) for r in rows]
+    lines.append("```")
+    summary(lines)
+    return 1 if mode == "enforce" and (violations or incomplete) else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("integrity", "protected-paths"))
+    ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor"))
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", required=True)
@@ -1244,7 +1856,7 @@ def main(argv=None):
     try:
         with open(a.manifest, encoding="utf-8") as fh:
             m = validate_manifest(json.load(fh))
-        fn = run_integrity if a.mode == "integrity" else run_protected
+        fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:
         print("::error title=trusted %s::%s" % (a.mode, exc))

@@ -237,15 +237,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(render.main(["--check"]), 0)
 
     def test_inline_copies_are_byte_identical(self):
+        # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        for name in ("trusted-workflow-integrity", "trusted-protected-paths"):
+        for name, copies in (("trusted-workflow-integrity", 2), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
-            m = re.search(r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n",
-                          text, re.S)
-            self.assertIsNotNone(m, name)
-            indent = m.group(1)
-            body = "\n".join(l[len(indent):] if l.startswith(indent) else l for l in m.group(2).split("\n"))
-            self.assertEqual(body + "\n", src, name)
+            found = list(re.finditer(
+                r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))
+            self.assertEqual(len(found), copies, name)
+            for m in found:
+                indent = m.group(1)
+                body = "\n".join(l[len(indent):] if l.startswith(indent) else l for l in m.group(2).split("\n"))
+                self.assertEqual(body + "\n", src, name)
 
     def test_invariants(self):
         for name, path in WORKFLOWS.items():

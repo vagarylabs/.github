@@ -853,6 +853,50 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
                          "a change to the imported file selects its importer, not FULL")
 
+    def check(self, cfg):
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+        return rc, buf.getvalue()
+
+    def test_root_r4_counterexample_a_js_specifier_of_a_ts_file_is_never_dropped(self):
+        # root's R4 of #33 (2026-10-27): c imported scripts/x.ts as ../../scripts/x.js and was DROPPED, so the mapping
+        # check requested ({"scripts/x.ts": ["a"]}) passed and a change to x.ts selected only a, narrower than FULL.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.ts";\n',
+                      "services__c__t.mjs": 'import { x } from "../../scripts/x.js";\n',
+                      "scripts__x.ts": "export const x = 1;\n"})
+        self.assertEqual(self.scan()[2]["imports"], {"scripts/x.ts": ["a", "c"]})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/x.ts": ["a"]}
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "the narrowing mapping no longer passes")
+        self.assertIn("undeclared import edge: c imports scripts/x.ts", out)
+        cfg["extra_edges"] = {"scripts/x.ts": ["a", "c"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        selected = plan.classify_paths(["scripts/x.ts"], cfg, E.workspace_graph(self.repo, cfg))
+        self.assertEqual(sorted(selected["affected"]), ["a", "c"])
+
+    def test_every_typescript_source_form_resolves(self):
+        cases = {"x.jsx": "scripts/x.tsx", "x.mjs": "scripts/x.mts", "x.cjs": "scripts/x.cts", "y.js": "scripts/y.d.ts"}
+        for spec, source in cases.items():
+            with self.subTest(spec):
+                self.files(**{"services__a__t.mjs": f'import "../../scripts/{spec}";\n',
+                              source.replace("/", "__"): "export {};\n"})
+                self.assertIn(source, self.scan()[2]["imports"])
+
+    def test_a_path_that_names_nothing_refuses_and_an_untracked_path_in_a_package_maps_to_it(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/gone.js";\n'})
+        with self.assertRaisesRegex(ValueError, "a reaches scripts/gone.js, which names no tracked file or directory"):
+            self.scan()
+        # A build output in a package (untracked dist/) stands for that package: a dep, never dropped. tools/run.mjs
+        # names it as ./pkg/dist/index.js, a line with no root and no ../, so only the whole-file read sees it.
+        self.files(**{"services__a__t.mjs": 'import "../../tools/run.mjs";\n',
+                      "tools__run.mjs": 'export { p } from "./pkg/dist/index.js";\n'})
+        self.assertEqual(self.scan()[0]["a"], {"tp"})
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

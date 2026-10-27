@@ -1786,8 +1786,13 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #   - pytest's `pythonpath` (pytest.ini, pyproject.toml [tool.pytest.ini_options], tox.ini [pytest], setup.cfg
 #     [tool:pytest]; the nearest config walking up from the package, pytest.ini first in one directory) is an entry
 #     relative to its config's directory, for every package that holds Python files. An unreadable one refuses.
-# The lines a package Python file can change its import path on.
-PY_FACTS_GREP = r"sys\.path"
+#   - Python's loaders (spine's pre-review): `importlib.import_module`, `__import__` and `runpy.run_module` with a
+#     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `spec_from_file_location`,
+#     `runpy.run_path` and `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the
+#     declaration, and one whose text holds a parent step or names a root or outside directory refuses even declared.
+#     The same holds in a reached Python file.
+# The lines a package Python file can change its import path or load a module by name or path on.
+PY_FACTS_GREP = r"sys\.path|import_module|__import__|spec_from_file_location|run_path|run_module|exec[[:space:]]*\("
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
@@ -1826,8 +1831,12 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository) or ("unknown", its
       source text).
-    - The names are every top-level module imported by name: `import x`, `from x import y`.
-    - The loader sites are filled in by the loaders change (rule 8); empty here.
+    - The names are every top-level module imported by name: `import x`, `from x import y`, and a LITERAL
+      `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
+    - A loader site (spine's pre-review of 1.5.1) is ("module", expr, None) for one of those three with a non-literal
+      name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
+      `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). module_from_spec loads
+      what spec_from_file_location built, so the path is read at the latter.
     Raises ValueError when the file does not parse."""
     import ast
     try:
@@ -1933,6 +1942,23 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 elif f.attr == "extend" and len(node.args) == 1:
                     for item in (node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]):
                         entry(item)
+            elif name in ("import_module", "__import__", "run_module") and node.args:
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    names.add(arg.value.split(".")[0])
+                else:
+                    sites.append(("module", source(arg), None))
+            elif name in ("spec_from_file_location", "run_path"):
+                arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
+                    if name == "spec_from_file_location" else (node.args[0] if node.args else None)
+                if arg is not None:
+                    sites.append(("path", source(arg), resolved(arg)))
+            elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
+                inner = node.args[0]  # exec(open(p).read())
+                if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
+                        and call_name(inner.func.value.func) == "open" and inner.func.value.args:
+                    arg = inner.func.value.args[0]
+                    sites.append(("path", source(arg), resolved(arg)))
     return entries, names, sites
 
 
@@ -2392,6 +2418,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 if t[0] == "str" and t[3][1] is True and t[3][0].startswith(("./", "../")):
                     found.add(posixpath.normpath(posixpath.join(here, t[3][0])))
             if src.py:
+                _, loaded, sites = python_file_facts(src.text, path)
+                check_python_sites(path, sites)
+                for name in sorted(loaded):
+                    sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
+                    if sibling in tracked:
+                        found.add(sibling)
                 for m in PY_IMPORT.finditer(src.text):
                     for name in re.split(r"\s*,\s*", m.group(1) or m.group(2)):
                         sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
@@ -2431,6 +2463,25 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         literals = re.findall(r"""["']([^"']*)["']""", expr)
         return bool(PARENT_STEP.search(expr)) or any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
 
+    def check_python_sites(path: str, sites) -> None:
+        """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
+        for kind, expr, target in sites:
+            if kind == "path" and target is not None:
+                if not (target == ".." or target.startswith("../")):
+                    reach_from(path, target)
+                continue
+            if kind == "path" and escapes_by_text(expr):
+                raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
+                                 "write it from __file__ with literal parts, which the scan maps")
+            entry = by_site.get((path, expr))
+            if entry is None:
+                raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
+                                 f"edge_scan.computed_imports) in {path}")
+            used.add((path, expr))
+            if isinstance(entry["reach"], list):
+                for target in entry["reach"]:
+                    reach_from(path, posixpath.normpath(target))
+
     outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
 
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry") -> None:
@@ -2461,6 +2512,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         entries, _, sites = python_file_facts(read_source(repo, path, revision, environment), path)
         for kind, value in entries:
             apply_entry(package, path, kind, value, path)
+        check_python_sites(path, sites)
     # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
     # each entry relative to that config's directory, applied like a sys.path entry.
     python_packages = sorted({owner(p) for p in tracked if p.endswith(".py")} - {None})
@@ -2493,7 +2545,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
         found = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
-                                r"^[[:space:]]*(import|from)[[:space:]]",
+                                r"^[[:space:]]*(import|from)[[:space:]]|import_module\(|__import__\(|run_module\(",
                                 *([revision] if revision else []), "--", f"{package_dir[package]}/*.py"],
                                capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
         if found.returncode not in (0, 1):
@@ -2501,6 +2553,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         names = set()
         for line in found.stdout.decode("utf-8", errors="replace").split("\n"):
             line = re.sub(r"^[0-9a-f]{40}:", "", line)
+            names |= set(re.findall(r"""(?:import_module|__import__|run_module)\(\s*["']([A-Za-z_]\w*)""", line))
             m = re.match(r"\s*from\s+([A-Za-z_]\w*)[\w.]*\s+import\b", line) or re.match(r"\s*import\s+(.+)", line)
             if m and line.lstrip().startswith("from"):
                 names.add(m.group(1))

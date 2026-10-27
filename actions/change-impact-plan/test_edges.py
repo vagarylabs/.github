@@ -918,6 +918,44 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not parse"):
             self.scan()
 
+    def test_python_loaders_by_computed_name_or_path_are_held_to_the_declaration_rule(self):
+        self.files(**{"services__a__load.py": "import importlib\nm = importlib.import_module(name)\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py", "expr": "name", "reach": "external"}]
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for why, body in (("__import__", "m = __import__(name)\n"), ("runpy.run_module", "import runpy\nrunpy.run_module(name)\n"),
+                          ("exec(open(p).read())", "exec(open(p).read())\n")):
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+        # A path from __file__ with literal parts is a literal load: an edge, credited, with no declaration.
+        self.files(**{"services__a__load.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
+                                               '"m", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "m.py"))\n',
+                      "scripts__m.py": 'P = "services/b/m.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # An unevaluated path naming a parent step or an outside top-level directory refuses even when declared.
+        for escaping in ('runpy.run_path(os.path.join(ROOT, "scripts", "x.py"))', 'runpy.run_path("../../x.py")'):
+            with self.subTest(escaping):
+                self.files(**{"services__a__load.py": f"import os, runpy\n{escaping}\n"})
+                cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py",
+                                                         "expr": escaping[escaping.index("(") + 1:-1], "reach": "package"}]
+                with self.assertRaisesRegex(ValueError, "may leave its package"):
+                    self.scan(cfg)
+
+    def test_a_literal_loader_name_resolves_through_a_sys_path_entry(self):
+        self.files(**{"services__a__t.py": "import os, sys\n"
+                                            'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))\n'
+                                            'mod = __import__("helper")\n',
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # A reached Python file's own computed loader is held to the same rule.
+        self.files(**{"scripts__helper.py": 'import importlib\nP = "services/b/x.json"\nm = importlib.import_module(name)\n'})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`.* in scripts/helper.py"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

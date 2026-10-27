@@ -288,10 +288,30 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root or a top-level
      directory outside every package. A cwd-relative string literal like `"../../shared-sdks/py"` is one;
    - a package Python file that changes `sys.path` and does not parse refuses.
+7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.1.
+   - It is read from the config pytest would read: the nearest directory walking up from the package that holds one of
+     `pytest.ini` (it wins in its directory, even with no `[pytest]` section), `pyproject.toml`
+     (`[tool.pytest.ini_options]`), `tox.ini` (`[pytest]`) or `setup.cfg` (`[tool:pytest]`).
+   - Each entry is relative to that config's directory and is applied, as in rule 6, to every package that holds
+     Python files.
+   - A config that does not parse refuses. So does `pyproject.toml` pytest options on a Python without `tomllib`.
+8. **Python's loaders.** These are the `require.resolve` analog, under rule 4.
+   - **By name:** `importlib.import_module(x)`, `__import__(x)` and `runpy.run_module(x)`. A literal name is an import
+     by name, resolved through the package's entries. A non-literal name needs a `computed_imports` declaration.
+   - **By path:** `importlib.util.spec_from_file_location(name, p)` (where `module_from_spec` then loads),
+     `runpy.run_path(p)` and `exec(open(p).read())`. The path `p` is evaluated as in rule 6:
+     - evaluated, it is a literal load, an edge with no declaration;
+     - not evaluated, it needs a declaration, and one whose text holds a parent step or names a scan root or an
+       outside top-level directory refuses even when declared.
+   - The same holds in a reached Python file.
 
 Not closed (documented residuals):
 - an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
   variable);
+- a `sys.path` entry or pytest config inside a reached file outside every package (only its loaders are checked
+  there);
+- `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
+  default exclude);
 - an import by module name through a tsconfig `paths` alias or a bundler alias;
 - a data-driven read (code that reads a manifest, then the paths in it).
 

@@ -792,6 +792,20 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual(deps["a"], {"b"}, "the anchored literal chain to scripts/x.mjs is an edge, and its reads credit a")
         self.assertIn("scripts/x.mjs", report["imports"])
 
+    def test_every_module_loader_form_is_held_to_the_declaration_rule(self):
+        forms = {"require.resolve": "const p = require.resolve(name);\n",
+                 "import.meta.resolve": "const p = import.meta.resolve(name);\n",
+                 "createRequire(...)(x)": "const m = createRequire(import.meta.url)(name);\n",
+                 "a createRequire binding": "const r = createRequire(import.meta.url);\nconst m = r(name);\n",
+                 "module.require": "const m = module.require(name);\n"}
+        for why, body in forms.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+                    self.scan()
+        self.files(**{"services__a__load.mjs": "const m = registry.require(name);\n"})
+        self.assertEqual(self.scan()[2]["computed_imports_unused"], [], "control: an object's own `require` is no loader")
+
     def test_a_literal_under_a_typescript_cast_is_a_literal_and_a_cast_name_is_not(self):
         # vagary-core's services/*/src/observability.ts load `import("@opentelemetry/sdk-node" as string)`: a literal.
         self.files(**{"services__a__obs.ts": 'const m = await import("redis" as string);\n'})

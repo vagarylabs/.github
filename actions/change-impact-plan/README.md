@@ -232,9 +232,11 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - Only code (JS/TS, Python, shell) is followed further.
 3. **Fail closed.** A reached path under `always_reader_dirs` refuses. So does a reached CODE file the scan excludes,
    since its reads cannot be credited, and a symlink loop.
-4. **Computed imports: refuse unless declared** (spine's D2). A non-literal `import(...)` or `require(...)` in a package
-   file, or in a reached file, refuses. The exception is an `edge_scan.computed_imports` entry that declares it:
-   `{"file", "expr", "reach"}`, where `expr` is the exact argument text with whitespace collapsed. `reach` is one of:
+4. **Computed imports: refuse unless declared** (spine's D2). A module-loading call whose argument is not one plain
+   literal, in a package file or in a reached file, refuses. The calls are `import(`, `require(`, `require.resolve(`,
+   `import.meta.resolve(`, `module.require(`, `createRequire(...)(`, and a name bound to `createRequire(...)`. The
+   exception is an `edge_scan.computed_imports` entry that declares it: `{"file", "expr", "reach"}`, where `expr` is the
+   exact argument text with whitespace collapsed. `reach` is one of:
    - `"package"`: inside the importing package;
    - `"external"`: npm or the standard library, by name;
    - `"fixture"`: a test temp directory;

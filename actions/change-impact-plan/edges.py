@@ -1742,9 +1742,10 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #      over-approximates) but imports nothing; only code (JS/TS, Python, shell) is followed further.
 #   3. FAIL CLOSED: a reached path under `always_reader_dirs` refuses (that directory is not always-only); a reached CODE
 #      file the scan excludes refuses (its reads cannot be credited); so does a symlink loop.
-#   4. COMPUTED (D2, strict by declaration): a non-literal `import(...)` or `require(...)` in a package file or a reached
-#      file refuses unless an `edge_scan.computed_imports` entry declares it ({file, expr, reach}, `expr` the exact
-#      argument text, whitespace collapsed).
+#   4. COMPUTED (D2, strict by declaration): a module-loading call whose argument is not one plain literal, in a package
+#      file or a reached file, refuses unless an `edge_scan.computed_imports` entry declares it ({file, expr, reach},
+#      `expr` the exact argument text, whitespace collapsed). The calls: `import(`, `require(`, `require.resolve(`,
+#      `import.meta.resolve(`, `module.require(`, `createRequire(...)(` and a name bound to `createRequire(...)`.
 #      `reach` is "package" (inside the importing package), "external" (npm or stdlib by name), "fixture" (a test temp
 #      dir), or a list of repo paths, each then an edge. THE FLOOR (refined in spine's pre-review):
 #      - every component literal and anchored at the file's own directory (`__dirname`, `import.meta.dirname`, a name
@@ -1758,7 +1759,10 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #      to it selects them through plan.classify_paths, and on a computed_imports entry that matches no live site.
 CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
 COMPUTED_REACH = frozenset({"package", "external", "fixture"})
-IMPORT_CALL_GREP = r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\("
+# Every line a loader call can start on (loader_call_opens decides). A name bound to createRequire(...) lives in a file
+# that names createRequire, so that word finds its file.
+IMPORT_CALL_GREP = (r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\(|(require|import\.meta)\.resolve[[:space:]]*\("
+                    r"|module\.require[[:space:]]*\(|createRequire")
 SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
 SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
                             r"/([A-Za-z0-9_.@+/-]+)")
@@ -1779,15 +1783,35 @@ def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[s
     return entries
 
 
+CREATE_REQUIRE_BINDING = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?createRequire\s*\(")
+
+
 def loader_call_opens(src: Source):
-    """The index of the `(` of every `import(` and `require(` call (not some object's `.require(` method)."""
+    """The index of the `(` of every call that loads or resolves a module by path: `import(`, `require(`,
+    `require.resolve(`, `import.meta.resolve(`, `module.require(`, `createRequire(...)(`, and a name bound to
+    `createRequire(...)` (spine's pre-review, 2026-10-27: each loads or resolves by a path the argument names)."""
     code = src.code
+    bound = set(CREATE_REQUIRE_BINDING.findall(src.text))
     for j, tok in enumerate(code):
         if j + 1 >= len(code) or code[j + 1][0] != "open" or code[j + 1][3] != "(":
             continue
+        word = tok[3] if tok[0] == "word" else None
         member = j >= 1 and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?.")
-        if tok[0] == "word" and tok[3] in ("import", "require") and not member:
+        receiver = code[j - 2][3] if member and j >= 2 and code[j - 2][0] == "word" else None
+        if word in ("import", "require") and not member:
             yield j + 1
+        elif word == "require" and receiver == "module":
+            yield j + 1  # `module.require(x)` is the loader under another name
+        elif word == "resolve" and receiver == "require":
+            yield j + 1
+        elif word == "resolve" and receiver == "meta" and j >= 4 and code[j - 3][3] == "." and code[j - 4][3] == "import":
+            yield j + 1
+        elif word in bound and not member:
+            yield j + 1
+        elif tok[0] == "close" and tok[3] == ")":
+            opener = src.opener.get(j)
+            if opener is not None and opener >= 1 and code[opener - 1][0] == "word" and code[opener - 1][3] == "createRequire":
+                yield j + 1  # `createRequire(import.meta.url)(x)`
 
 
 def computed_import_sites(src: Source):

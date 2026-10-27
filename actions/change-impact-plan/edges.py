@@ -2013,16 +2013,20 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 readers.setdefault("<unmapped>", set()).add(target)
     if pending:
         finish(pending.pop())
+    unowned: dict[str, dict] = {}
     imports, unused, unresolved_data = import_closure(repo, es, roots, owner, by_dir, revision, environment,
-                                                      excludes, always, edges, outside, deps)
+                                                      excludes, always, edges, outside, deps, readers, unowned)
     if report is not None:
         report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
+        report["unowned_callers"] = {path: {"unit": row["unit"], "reaches": sorted(row["reaches"])}
+                                     for path, row in sorted(unowned.items())}
         report["computed_imports_unused"] = unused
         report["unresolved_data_names"] = unresolved_data
     return deps, readers
 
 
-def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps):
+def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
+                   readers, unowned):
     """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
     ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
@@ -2165,6 +2169,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                          "fixture or a non-empty list of repo paths")
     by_site = {(d["file"], " ".join(d["expr"].split())): d for d in declared}
     loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
+    reader_dirs = set(es.get("reader_dirs") or [])
     used: set = set()
     sources: dict[str, Source] = {}
 
@@ -2183,13 +2188,25 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if not src.ok:
             raise ValueError(f"unresolved (the bracket structure of {path} cannot be trusted, so its import calls cannot "
                              "be read)")
+        # ONE owner() result decides both the credit below and the reach "package" floor (spine, fix 2 with fix 4).
+        caller = owner(path)
+        unit = path.split("/")[0] if path.split("/")[0] in reader_dirs and "/" in path else "<unmapped>"
+
         def reaches(target: str) -> None:
             loader_targets.add(target)
             found = owner(target)
-            if found is None:
+            if caller is None:
+                # Root's R4 of #33, fix 2: a caller outside every package keys the edge by its own path, so every package
+                # that reaches it is credited with the target. It also maps to its own selection unit, never a
+                # free-floating key (spine): its reader directory's job, or <unmapped>, which plans FULL.
                 edges.setdefault(path, set()).add(target)
-            elif found != owner(path) and owner(path) is not None:
-                deps[owner(path)].add(found)
+                if found is not None:
+                    readers.setdefault(unit, set()).add(found)
+                    unowned.setdefault(path, {"unit": unit, "reaches": set()})["reaches"].add(found)
+            elif found is None:
+                edges.setdefault(path, set()).add(target)
+            elif found != caller:
+                deps[caller].add(found)
 
         for expr, tokens, at in computed_import_sites(src):
             verdict, target = parent_verdict(path, src, tokens, at)
@@ -2211,7 +2228,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 for target in entry["reach"]:
                     reaches(posixpath.normpath(target))
 
-    # Every computed import in a package's own code: a dedicated grep, since such a line names no root and no `../`.
+    # Every computed import in tracked code, a package's or not (fix 2): a dedicated grep, since such a line names no
+    # root and no `../`.
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                           IMPORT_CALL_GREP, *([revision] if revision else []), "--",
                           *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
@@ -2221,8 +2239,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     for path in out.stdout.decode("utf-8", errors="replace").split("\0"):
         if path and revision:
             path = path[len(revision) + 1:]
-        if path and owner(path) is not None:
-            check_computed(path)
+        if path:
+            check_computed(path)  # a file outside every package too: its unit runs it, so its loads select that unit
 
     def named_paths(path: str) -> set[str]:
         """Rule 1, the whole file: every relative path a reached code file names."""

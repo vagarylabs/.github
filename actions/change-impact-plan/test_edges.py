@@ -897,6 +897,50 @@ class ImportAttributionTest(unittest.TestCase):
                       "tools__run.mjs": 'export { p } from "./pkg/dist/index.js";\n'})
         self.assertEqual(self.scan()[0]["a"], {"tp"})
 
+    def test_spine_control_an_unowned_caller_selects_its_own_unit_and_credits_its_importers(self):
+        # spine's binding control for fix 2 (2026-10-27): a root-level scripts/x.mjs loads services/b/src/y.ts through
+        # a declared computed import. Touching y must select x's unit (the reader job), and a package that imports x
+        # is credited with b. Before fix 2 an unowned caller's computed import credited nothing.
+        decl = [{"file": "scripts/x.mjs", "expr": "pathToFileURL(f).href", "reach": ["services/b/src/y.ts"]}]
+        self.files(**{"scripts__x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n",
+                      "services__a__t.mjs": 'import { load } from "../../scripts/x.mjs";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = decl
+        cfg["jobs"] = {"root": {"packages": []}}
+        deps, readers, report = self.scan(cfg)
+        self.assertEqual(readers["scripts"], {"b"}, "x's own unit, the scripts/ reader job, reads b")
+        self.assertEqual(deps["a"], {"b"}, "a reaches x, so a is credited with what x loads")
+        self.assertEqual(report["unowned_callers"], {"scripts/x.mjs": {"unit": "scripts", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/ reads b, but job 'root' does not list it", out)
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        affected = plan.classify_paths(["services/b/src/y.ts"], cfg, E.workspace_graph(self.repo, cfg))["affected"]
+        self.assertEqual(plan.rule_matches(cfg["jobs"]["root"], affected)[0], True, "touching y selects x's unit")
+
+    def test_an_unowned_caller_outside_every_reader_dir_maps_to_unmapped_and_plans_full(self):
+        self.files(**{"x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "x.mjs", "expr": "pathToFileURL(f).href",
+                                                 "reach": ["services/b/src/y.ts"]}]
+        _, readers, report = self.scan(cfg)
+        self.assertEqual(readers["<unmapped>"], {"b"})
+        self.assertEqual(report["unowned_callers"], {"x.mjs": {"unit": "<unmapped>", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "no unit runs x.mjs, so check fails and the plan is FULL, never a drop")
+        self.assertIn("unmapped source readers require a declared obligation: b", out)
+
+    def test_an_unowned_files_undeclared_computed_import_refuses(self):
+        self.files(**{"scripts__x.mjs": "export const load = (name) => import(name);\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

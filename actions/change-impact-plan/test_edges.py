@@ -975,6 +975,12 @@ class ImportAttributionTest(unittest.TestCase):
                                                          "reach": "external"}]
                 self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
 
+    def test_an_anchored_literal_join_followed_by_a_computed_tail_is_no_literal_import(self):
+        # Kills root's m3 (`if not rest:`): the chain closes, then `+ name` is computed, so it must be declared.
+        self.files(**{"services__a__load.mjs": 'export const load = (name) => import(path.join(__dirname, "lib") + name);\n'})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

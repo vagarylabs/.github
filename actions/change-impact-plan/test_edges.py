@@ -981,6 +981,23 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "undeclared computed import"):
             self.scan()
 
+    def test_check_fails_on_an_imported_path_that_inert_globs_hides(self):
+        # The end-to-end selection census (2026-10-27): vagaris's candidate config makes docs/** inert, and the server
+        # imports docs/docs.json, so a change to it selected NOTHING though check had asked for extra_edges.
+        self.files(**{"services__a__t.mjs": 'import data from "../../scripts/data/x.json";\n',
+                      "scripts__data__x.json": "{}\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/data/x.json": ["a"]}
+        cfg["inert_globs"] = ["scripts/data/**"]
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("inert import: scripts/data/x.json is imported by a, but inert_globs 'scripts/data/**'", out)
+        import plan
+        self.assertEqual(plan.classify_paths(["scripts/data/x.json"], cfg, E.workspace_graph(self.repo, cfg))["affected"],
+                         set(), "the hole itself: inert wins over extra_edges")
+        cfg["inert_globs"] = ["scripts/data/*.md"]
+        self.assertEqual(self.check(cfg)[0], 0, "control: a glob that leaves the import out is accepted")
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

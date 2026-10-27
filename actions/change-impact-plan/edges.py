@@ -35,7 +35,8 @@ from pathlib import Path
 # -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
 if sys.flags.isolated:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex
+from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex, \
+    first_match
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
@@ -2399,7 +2400,15 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
     imports = imports or {}
     # 1.5.0 rule 5: a change to an imported file must select its importers, so extra_edges must map it to them.
     edge_globs = [(glob_to_regex(glob), set(targets)) for glob, targets in sorted((cfg.get("extra_edges") or {}).items())]
+    inert = list(cfg.get("inert_globs") or [])
     for path, importers in sorted(imports.items()):
+        # plan.classify_paths applies inert_globs before extra_edges, so an inert imported path selects NOTHING when it
+        # changes, whatever extra_edges maps (found by the end-to-end selection census, vagaris docs/**, 2026-10-27).
+        rule = first_match(path, inert)
+        if rule:
+            failures.append(f"inert import: {path} is imported by {', '.join(sorted(importers))}, but inert_globs "
+                            f"{rule!r} makes a change to it select nothing (narrow the glob so it leaves {path} out)")
+            continue
         mapped = set().union(*[targets for regex, targets in edge_globs if regex.match(path)])
         for name in sorted(set(importers) - mapped):
             failures.append(f"undeclared import edge: {name} imports {path} (map it in extra_edges, so a change to it "

@@ -2034,7 +2034,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
-    patterns = [x[2:] for x in excludes if x.startswith(":!")]
+    # A trailing slash names a directory, exactly as git's pathspec reads `:!vendor/` (root's R4 of #33): strip it.
+    patterns = [x[2:].rstrip("/") if not any(c in x for c in "*?[") else x[2:] for x in excludes if x.startswith(":!")]
 
     def excluded(path: str) -> bool:
         # git pathspec without magic: a wildcard pattern matches the whole path (`*` crosses `/`); a plain one matches

@@ -998,6 +998,14 @@ class ImportAttributionTest(unittest.TestCase):
         cfg["inert_globs"] = ["scripts/data/*.md"]
         self.assertEqual(self.check(cfg)[0], 0, "control: a glob that leaves the import out is accepted")
 
+    def test_a_trailing_slash_exclude_names_its_directory(self):
+        # Root's R4 of #33 (non-blocking): `vendor/` never matched in excluded(), though git's pathspec excludes it.
+        self.files(**{"services__a__t.mjs": 'import "../../third/x.mjs";\n', "third__x.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["exclude"] = ["*.md", "docs", ".github", "third/"]
+        with self.assertRaisesRegex(ValueError, "a reaches third/x.mjs, code the scan excludes"):
+            self.scan(cfg)
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

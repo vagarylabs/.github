@@ -1779,21 +1779,61 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #   - Inside the package's own directory: nothing. Inside ANOTHER package: a dep (imports by name from it). Outside every
 #     package: each module the package's Python files import by name that exists there is an edge, so its reads are
 #     credited (rule 2). The entry applies to every Python file of the package (a conftest.py entry serves all tests).
-#   - An entry that cannot be evaluated refuses when its text holds a parent step or names a top-level directory outside
-#     every package; any other unresolved entry (an environment variable, `os.getcwd()`) is a documented residual.
+#   - An entry that cannot be evaluated refuses when its text holds a parent step or names a scan root or a top-level
+#     directory outside every package; any other unresolved entry (an environment variable, `os.getcwd()`) is a
+#     documented residual.
 #   - A package Python file that changes sys.path and does not parse refuses.
-SYS_PATH_GREP = r"sys\.path"
+#   - pytest's `pythonpath` (pytest.ini, pyproject.toml [tool.pytest.ini_options], tox.ini [pytest], setup.cfg
+#     [tool:pytest]; the nearest config walking up from the package, pytest.ini first in one directory) is an entry
+#     relative to its config's directory, for every package that holds Python files. An unreadable one refuses.
+# The lines a package Python file can change its import path on.
+PY_FACTS_GREP = r"sys\.path"
+# pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
+PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
 
-def python_sys_path_entries(text: str, path: str) -> tuple[list[tuple[str, str]], set[str]]:
-    """([(kind, value)], imported names) for one Python file. kind "dir": value is a repo-relative directory (it may
-    start with `../` when it leaves the repository); kind "unknown": value is the entry's source text. Raises ValueError
-    when the file does not parse."""
+def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
+    """The `pythonpath` entries a pytest config file sets (spine's pre-review of 1.5.1: the config-level sys.path
+    insert); None when the file is not a pytest config, so pytest keeps looking. Refuses a pytest config it cannot read."""
+    if name == "pyproject.toml":
+        try:
+            import tomllib
+        except ImportError:  # Python < 3.11
+            if "[tool.pytest.ini_options]" in text:
+                raise ValueError(f"unresolved (pytest options in {path} cannot be read on this Python)") from None
+            return None
+        try:
+            options = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
+        except tomllib.TOMLDecodeError:
+            raise ValueError(f"unresolved ({path} does not parse, so its pytest pythonpath cannot be read)") from None
+        if options is None:
+            return None
+        value = options.get("pythonpath", [])
+        return value.split() if isinstance(value, str) else [str(v) for v in value]
+    import configparser
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        raise ValueError(f"unresolved ({path} does not parse, so its pytest pythonpath cannot be read)") from None
+    section = "tool:pytest" if name == "setup.cfg" else "pytest"
+    if not parser.has_section(section):
+        return [] if name == "pytest.ini" else None
+    return parser.get(section, "pythonpath", fallback="").split()
+
+
+def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[str], list[tuple[str, str, str | None]]]:
+    """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
+    - An entry is ("dir", repo-relative directory, which may start with `../` above the repository) or ("unknown", its
+      source text).
+    - The names are every top-level module imported by name: `import x`, `from x import y`.
+    - The loader sites are filled in by the loaders change (rule 8); empty here.
+    Raises ValueError when the file does not parse."""
     import ast
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError) as error:
-        raise ValueError(f"unresolved (a Python file that changes sys.path does not parse: {path}: {error})") from None
+        raise ValueError(f"unresolved (a Python file the scan must read does not parse: {path}: {error})") from None
     assigned: dict[str, list] = {}
     for node in ast.walk(tree):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
@@ -1851,41 +1891,49 @@ def python_sys_path_entries(text: str, path: str) -> tuple[list[tuple[str, str]]
             return posixpath.normpath(posixpath.join(base, node.right.value))
         return UNKNOWN
 
+    def source(node) -> str:
+        return " ".join((ast.get_source_segment(text, node) or ast.dump(node)).split())
+
+    def resolved(node) -> str | None:
+        value = ev(node)
+        return None if value is UNKNOWN else here if value is FILE else value
+
     entries: list[tuple[str, str]] = []
 
     def entry(node):
-        value = ev(node)
-        if value is UNKNOWN or value is FILE:
-            entries.append(("unknown", ast.get_source_segment(text, node) or ast.dump(node)))
-        else:
-            entries.append(("dir", value))
+        value = resolved(node)
+        entries.append(("unknown", source(node)) if value is None else ("dir", value))
 
     def is_sys_path(node):
         return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
 
+    def call_name(f) -> str | None:
+        return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+
+    names: set[str] = set()
+    sites: list[tuple[str, str, str | None]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and is_sys_path(node.func.value):
-            if node.func.attr == "insert" and len(node.args) == 2:
-                entry(node.args[1])
-            elif node.func.attr == "append" and len(node.args) == 1:
-                entry(node.args[0])
-            elif node.func.attr == "extend" and len(node.args) == 1:
-                items = node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]
-                for item in items:
-                    entry(item)
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
         elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in node.targets):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names |= {alias.name.split(".")[0] for alias in node.names}
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names.add(node.module.split(".")[0])
-    return entries, names
+        elif isinstance(node, ast.Call):
+            f, name = node.func, call_name(node.func)
+            if isinstance(f, ast.Attribute) and is_sys_path(f.value):
+                if f.attr == "insert" and len(node.args) == 2:
+                    entry(node.args[1])
+                elif f.attr == "append" and len(node.args) == 1:
+                    entry(node.args[0])
+                elif f.attr == "extend" and len(node.args) == 1:
+                    for item in (node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]):
+                        entry(item)
+    return entries, names, sites
 
 
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
@@ -2143,6 +2191,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
+    named_tops = outside_tops | set(roots)  # what an unevaluated path may not name (rule 6)
     patterns = [x[2:] for x in excludes if x.startswith(":!")]
 
     def excluded(path: str) -> bool:
@@ -2369,35 +2418,72 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         head = read_source(repo, path, revision, environment)[:200]
         return head.startswith("#!") and re.search(r"\b(?:ba|z|da)?sh\b|\bnode\b|\bpython", head.split("\n")[0]) is not None
 
-    # 1.5.1: a package's Python sys.path entries (python_sys_path_entries), before the closure walks the edges.
+    # 1.5.1: a package's Python import path (sys.path entries, its pytest `pythonpath`) and its Python loaders by name or
+    # path (python_file_facts), before the closure walks the edges.
+    def reach_from(path: str, target: str) -> None:
+        found = owner(target)
+        if found is None:
+            edges.setdefault(path, set()).add(target)
+        elif found != owner(path) and owner(path) is not None:
+            deps[owner(path)].add(found)
+
+    def escapes_by_text(expr: str) -> bool:
+        literals = re.findall(r"""["']([^"']*)["']""", expr)
+        return bool(PARENT_STEP.search(expr)) or any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
+
+    outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
+
+    def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry") -> None:
+        if kind == "unknown":
+            if escapes_by_text(value):
+                raise ValueError(f"unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) "
+                                 f"in {where}")
+            return  # an entry naming no parent step and no top-level directory: a documented residual
+        if value == ".." or value.startswith("../"):
+            return  # above the repository: nothing tracked is imported from there
+        found = owner(value)
+        if found == package:
+            return
+        if found is not None:
+            deps[package].add(found)  # modules imported by name from another package's directory
+            return
+        outside_entries.setdefault(package, []).append((source, value))
+
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                          SYS_PATH_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
+                          PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     if out.returncode not in (0, 1):
         raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
-    named_tops = outside_tops | set(roots)
-    outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the file holding the entry, its directory)]
     for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
         package = owner(path)
         if package is None:
             continue
-        entries, _ = python_sys_path_entries(read_source(repo, path, revision, environment), path)
+        entries, _, sites = python_file_facts(read_source(repo, path, revision, environment), path)
         for kind, value in entries:
-            if kind == "unknown":
-                literals = re.findall(r"""["']([^"']*)["']""", value)
-                if PARENT_STEP.search(value) or any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals):
-                    raise ValueError(f"unresolved (a sys.path entry that may leave its package, `{value}`, cannot be "
-                                     f"evaluated) in {path}")
-                continue  # an entry naming no parent step and no top-level directory: a documented residual
-            if value == ".." or value.startswith("../"):
-                continue  # above the repository: nothing tracked is imported from there
-            found = owner(value)
-            if found == package:
-                continue
-            if found is not None:
-                deps[package].add(found)  # modules imported by name from another package's directory
-                continue
-            outside_entries.setdefault(package, []).append((path, value))
+            apply_entry(package, path, kind, value, path)
+    # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
+    # each entry relative to that config's directory, applied like a sys.path entry.
+    python_packages = sorted({owner(p) for p in tracked if p.endswith(".py")} - {None})
+    for package in python_packages:
+        d = package_dir[package]
+        while True:
+            config = None
+            for name in PYTEST_CONFIGS:
+                candidate = posixpath.join(d, name) if d not in ("", ".") else name
+                if candidate in tracked:
+                    values = pytest_pythonpath(read_source(repo, candidate, revision, environment), name, candidate)
+                    if values is not None:
+                        config = (candidate, values)
+                        break
+            if config is not None:
+                base = posixpath.dirname(config[0])
+                for value in config[1]:
+                    apply_entry(package, package_dir[package], "dir",
+                                posixpath.normpath(posixpath.join(base, value)), config[0], "pytest pythonpath entry")
+                break
+            if d in ("", "."):
+                break
+            d = posixpath.dirname(d)
     tracked_dirs = {posixpath.dirname(p) for p in tracked}
     for d in list(tracked_dirs):
         while d:
@@ -2407,8 +2493,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
         found = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
-                                r"^[[:space:]]*(import|from)[[:space:]]", *([revision] if revision else []), "--",
-                                f"{package_dir[package]}/*.py"],
+                                r"^[[:space:]]*(import|from)[[:space:]]",
+                                *([revision] if revision else []), "--", f"{package_dir[package]}/*.py"],
                                capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
         if found.returncode not in (0, 1):
             raise SystemExit(f"edges: git grep failed (exit {found.returncode})")
@@ -2420,11 +2506,11 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 names.add(m.group(1))
             elif m:
                 names |= {part.strip().split(".")[0].split()[0] for part in m.group(1).split(",") if part.strip()}
-        for path, directory in entries:
+        for source, directory in entries:
             for name in sorted(names):
                 for candidate in (f"{directory}/{name}.py", f"{directory}/{name}"):
                     if candidate in tracked or candidate in tracked_dirs:
-                        edges.setdefault(path, set()).add(candidate)
+                        edges.setdefault(source, set()).add(candidate)
                         break
 
     imports: dict[str, set[str]] = {}

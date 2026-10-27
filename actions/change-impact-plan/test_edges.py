@@ -893,6 +893,31 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not parse"):
             self.scan()
 
+    def test_pytest_pythonpath_is_a_sys_path_entry_from_the_config_pytest_would_pick(self):
+        # Root-level configs with no `../` in them, so only rule 6 can see the entry (a package file's `../` path is a
+        # rule-1 edge on its own). A root pyproject.toml puts scripts/ on every package's path.
+        self.files(**{"pyproject.toml": '[tool.pytest.ini_options]\npythonpath = ["scripts"]\n',
+                      "services__a__test_x.py": "import helper\n",
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # In one directory pytest.ini wins over pyproject.toml, even with no [pytest] section.
+        self.files(**{"pytest.ini": "# empty: still the config\n"})
+        self.assertEqual(self.scan()[0]["a"], set())
+        # An entry into package c is a dep of every other Python package the config serves.
+        (self.repo / "pytest.ini").unlink()
+        self.files(**{"pyproject.toml": '[tool.pytest.ini_options]\npythonpath = ["services/c/app"]\n'})
+        deps = self.scan()[0]
+        self.assertEqual((deps["a"], deps["b"], deps["c"]), ({"c"}, {"c"}, set()))
+        # The NEAREST config wins: a's own pytest.ini (an entry inside a) shadows the root's entry into c for a only.
+        self.files(**{"services__a__pytest.ini": "[pytest]\npythonpath = sub\n"})
+        deps = self.scan()[0]
+        self.assertEqual((deps["a"], deps["b"]), (set(), {"c"}))
+        (self.repo / "services/a/pytest.ini").unlink()
+        # The package's own unreadable setup.cfg is the one pytest would read, so it refuses.
+        self.files(**{"services__a__setup.cfg": "[tool:pytest\npythonpath = x\n"})
+        with self.assertRaisesRegex(ValueError, "does not parse"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

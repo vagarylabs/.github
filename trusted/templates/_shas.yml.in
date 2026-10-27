@@ -1,21 +1,4 @@
-      # The PR is DATA: exact SHAs come from the event payload, never from the PR's files.
-      - name: Resolve exact base and head SHAs
-        id: shas
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          MG_BASE: ${{ github.event.merge_group.base_sha }}
-          MG_HEAD: ${{ github.event.merge_group.head_sha }}
-        run: |
-          set -euo pipefail
-          case "$EVENT" in
-            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
-            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
-            *) echo "::error::unsupported event $EVENT (ruleset workflows run on pull_request and merge_group)"; exit 1 ;;
-          esac
-          [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected exact 40-hex base and head SHAs"; exit 1; }
-          { echo "base=$base"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
+{{INCLUDE:_resolve_shas.yml.in}}
       - name: Check out the PR head as data (no credentials kept, nothing executed)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

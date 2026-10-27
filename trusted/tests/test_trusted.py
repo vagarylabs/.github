@@ -268,6 +268,27 @@ class WorkflowTests(unittest.TestCase):
                 for use in re.findall(r"uses: (\S+)", text):
                     self.assertRegex(use, r"@[0-9a-f]{40}$")
 
+    def test_ci_reports_the_inlined_classifier_size_and_never_re_enables_shellcheck_for_it(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        # The size is printed to the step summary on every run, next to the limit it is measured against.
+        self.assertIn('size=$(wc -c < trusted/classify.py', ci)
+        self.assertIn("is ${size} bytes inline (the shellcheck stdin pipe buffer is 65536)", ci)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', ci)
+        # The two inline-classifier workflows stay off actionlint's shellcheck integration (the deadlock), and the
+        # warning that says so stays with them.
+        self.assertIn('"$lint" -color -shellcheck= "${inline[@]}"', ci)
+        self.assertIn("Do NOT re-enable the shellcheck", ci)
+
+    def test_ci_scans_this_repo_with_the_timeout_floor(self):
+        # The ruleset's trusted job skips this repo, so the floor sees it only through this self-scan.
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("\n  timeout-floor-self-scan:\n", ci)
+        job = ci.split("\n  timeout-floor-self-scan:\n", 1)[1].split("\n  trusted-tests:\n", 1)[0]
+        self.assertIn("python3 -I trusted/classify.py timeout-floor --manifest trusted/manifest.json", job)
+        self.assertIn('--repo "$GITHUB_REPOSITORY"', job)
+        self.assertIn("fetch-depth: 0", job)
+        self.assertNotIn("vagarylabs/.github'", job)  # no repository guard: this job exists for this repo
+
     def test_inline_workflow_run_scripts_pass_shellcheck(self):
         # ci.yml lints these two with actionlint -shellcheck=: actionlint fills shellcheck's stdin before starting it,
         # and their classifier run scripts are over the 64 KiB pipe buffer. This is that shellcheck pass, given the

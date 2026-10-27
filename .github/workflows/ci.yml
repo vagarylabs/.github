@@ -44,8 +44,10 @@ jobs:
           grep -F '[expression]' "$RUNNER_TEMP/actionlint-invalid.log"
           # The two workflows that inline trusted/classify.py carry run scripts over 64 KiB. actionlint writes a script
           # to the stdin of its shellcheck process before starting that process (process.go, cmdExecution.run), so a
-          # script larger than the pipe buffer blocks it forever. Lint those two without the shellcheck integration;
-          # the trusted-tests job runs the same check on every run script of theirs (test_trusted.py).
+          # script larger than the pipe buffer blocks it forever. REPRODUCED with actionlint 1.7.12 on the ~93 KB run
+          # script: no shellcheck child is ever started and actionlint never returns. Do NOT re-enable the shellcheck
+          # integration for these two: coverage is equal without it, because the trusted-tests job shellchecks every
+          # run script of theirs directly (test_trusted.py), and an injected shellcheck error fails that job.
           shopt -s nullglob
           inline=(.github/workflows/trusted-workflow-integrity.yml .github/workflows/trusted-protected-paths.yml)
           rest=()
@@ -54,6 +56,12 @@ jobs:
           done
           "$lint" -color "${rest[@]}"
           "$lint" -color -shellcheck= "${inline[@]}"
+          # The inlined classifier's size, every run: the number the split above exists for, in plain sight.
+          size=$(wc -c < trusted/classify.py | tr -d ' ')
+          {
+            echo "### Inlined classifier size"
+            echo "trusted/classify.py is ${size} bytes inline (the shellcheck stdin pipe buffer is 65536)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   planner-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -86,6 +94,33 @@ jobs:
           persist-credentials: false
       - name: secret-scan-scope tests (local bare origin; git and python3 only, no scanners, no network)
         run: bash actions/secret-scan-scope/test_scope.sh
+
+  timeout-floor-self-scan:
+    # The floor's own repo. The org ruleset's trusted timeout-floor job skips vagarylabs/.github (this public repo has
+    # no bridge runner), so without this job the rule would never see the one repo that defines it. Same classify.py
+    # mode and manifest, on this repo's HEAD tree, in the manifest's mode (report today: fails only on an integrity
+    # error, exactly as in every other repo).
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: timeout floor on this repo's HEAD tree
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then base="$PR_BASE"; head="$PR_HEAD"; else base="$PUSH_BEFORE"; head="$PUSH_SHA"; fi
+          # A branch's first push has no previous commit (all zeros): the mode reads only the head tree, so use it twice.
+          if [[ ! "$base" =~ ^[0-9a-f]{40}$ ]] || [[ "$base" =~ ^0+$ ]]; then base="$head"; fi
+          python3 -I trusted/classify.py timeout-floor --manifest trusted/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --base "$base" --head "$head"
 
   trusted-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

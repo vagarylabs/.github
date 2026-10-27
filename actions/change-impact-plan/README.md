@@ -40,7 +40,7 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
 
-## Reader scan (1.4.1; 1.5.0 adds imported files)
+## Reader scan (1.4.1; 1.5.0 adds imported files; 1.5.1 Python sys.path)
 
 `edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
 backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
@@ -263,12 +263,39 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
    assessment carry `imports`: each imported path with its importers.
 
+### Python `sys.path` entries (1.5.1)
+
+Package Python code that puts a directory on `sys.path` imports from it by NAME, so no relative path names those
+modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__file__), "..", "app")`,
+`str(Path(__file__).resolve().parents[1] / "app")`, a name bound to either, or `REPO / "scripts"`.
+
+6. **Each entry is evaluated from the file's AST.** The evaluator understands:
+   - `__file__`;
+   - `dirname`, `abspath`, `realpath`, `normpath`, `str`, `Path`, `.resolve()` and `.absolute()`;
+   - `.parent` and `.parents[N]`;
+   - `os.path.join` and `/` with string constants;
+   - names assigned exactly once.
+
+   It reads `sys.path.insert`, `.append`, `.extend`, `+=` and slice assignment. Where the entry lands decides the
+   effect:
+   - **inside the package's own directory:** nothing;
+   - **inside another package:** a dep, since the package imports by name from that package's directory;
+   - **outside every package:** each module that any of the package's Python files imports by name, and that exists
+     there, is an edge (rule 1), so its reads are credited (rule 2). An entry in a `conftest.py` serves every test, so
+     the names come from the whole package.
+
+   **Fail closed:**
+   - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root or a top-level
+     directory outside every package. A cwd-relative string literal like `"../../shared-sdks/py"` is one;
+   - a package Python file that changes `sys.path` and does not parse refuses.
+
 Not closed (documented residuals):
-- an import by module NAME into a directory outside every package (Python `sys.path` plus `import x`, a tsconfig
-  `paths` alias, a bundler alias). Python `sys.path` escapes are the next change;
+- an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
+  variable);
+- an import by module name through a tsconfig `paths` alias or a bundler alias;
 - a data-driven read (code that reads a manifest, then the paths in it).
 
-`test_edges_review_vectors.json` holds 554 adversarial readers:
+`test_edges_review_vectors.json` holds 555 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7;
@@ -285,6 +312,9 @@ Not closed (documented residuals):
 - 9 for round 8: the seventh review's R7B1a-R7B1d and R7V14, and R8T01-R8T04 (the working-directory wording's
   edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads);
 - 2 for the 64-level nesting bound: R8T05 (100 deep) refuses on every Python, R8T06 (exactly 64) reads.
+- 1 for 1.5.1: R6V29b keeps R6V29's rule-7 precision (a `..` with no working-directory change reads) outside a
+  `sys.path` entry, because R6V29 itself now refuses under rule 6 (its entry `os.path.join(HERE, "..")` cannot be
+  evaluated and holds a parent step).
 
 Each one reads its truth or refuses, except the named residuals. Each residual records `reads`, its reading when
 pinned, and the suite asserts it exactly, so a residual that reads less (or more) fails until the pin is re-derived:

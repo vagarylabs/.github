@@ -1769,6 +1769,125 @@ SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*))", re.M)
 
 
+# ---------- Python sys.path entries (1.5.1) ----------
+# A package's Python code that puts a directory on sys.path imports modules from it BY NAME, so no relative path names
+# them (vagary-core: 482 files; `sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))`,
+# `str(Path(__file__).resolve().parents[1] / "app")`, a name bound to either, `REPO / "scripts"`). Spine's follow-up to
+# 1.5.0 (2026-10-27): resolve the entry, and credit what the package then imports from it.
+#   - The entry is evaluated from the file's AST: `__file__`, dirname/abspath/realpath/normpath/str/Path/resolve/
+#     absolute, `.parent`, `.parents[N]`, os.path.join and `/` with string constants, and names assigned exactly once.
+#   - Inside the package's own directory: nothing. Inside ANOTHER package: a dep (imports by name from it). Outside every
+#     package: each module the package's Python files import by name that exists there is an edge, so its reads are
+#     credited (rule 2). The entry applies to every Python file of the package (a conftest.py entry serves all tests).
+#   - An entry that cannot be evaluated refuses when its text holds a parent step or names a top-level directory outside
+#     every package; any other unresolved entry (an environment variable, `os.getcwd()`) is a documented residual.
+#   - A package Python file that changes sys.path and does not parse refuses.
+SYS_PATH_GREP = r"sys\.path"
+
+
+def python_sys_path_entries(text: str, path: str) -> tuple[list[tuple[str, str]], set[str]]:
+    """([(kind, value)], imported names) for one Python file. kind "dir": value is a repo-relative directory (it may
+    start with `../` when it leaves the repository); kind "unknown": value is the entry's source text. Raises ValueError
+    when the file does not parse."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError) as error:
+        raise ValueError(f"unresolved (a Python file that changes sys.path does not parse: {path}: {error})") from None
+    assigned: dict[str, list] = {}
+    for node in ast.walk(tree):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        for t in targets:
+            if isinstance(t, ast.Name) and getattr(node, "value", None) is not None:
+                assigned.setdefault(t.id, []).append(node.value)
+    here = posixpath.dirname(path)
+    FILE, UNKNOWN = ("file",), None
+
+    def up(value, n=1):
+        if value is FILE:
+            value, n = here, n - 1
+        for _ in range(n):
+            value = posixpath.dirname(value) if value not in ("", ".") else ".."
+            value = posixpath.normpath(value) if value else "."
+        return value
+
+    def ev(node, depth=0):
+        if depth > 40:
+            return UNKNOWN
+        if isinstance(node, ast.Name):
+            if node.id == "__file__":
+                return FILE
+            values = assigned.get(node.id, [])
+            return ev(values[0], depth + 1) if len(values) == 1 else UNKNOWN
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
+            if name in ("abspath", "realpath", "normpath", "str", "Path", "PurePath", "PosixPath", "fspath") and len(node.args) == 1:
+                return ev(node.args[0], depth + 1)
+            if name in ("resolve", "absolute") and isinstance(f, ast.Attribute) and not node.args:
+                return ev(f.value, depth + 1)
+            if name == "dirname" and len(node.args) == 1:
+                inner = ev(node.args[0], depth + 1)
+                return UNKNOWN if inner is UNKNOWN else up(inner)
+            if name == "join" and node.args:
+                base = ev(node.args[0], depth + 1)
+                parts = [a.value for a in node.args[1:] if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                if base is UNKNOWN or base is FILE or len(parts) != len(node.args) - 1:
+                    return UNKNOWN
+                return posixpath.normpath(posixpath.join(base, *parts))
+            return UNKNOWN
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            inner = ev(node.value, depth + 1)
+            return UNKNOWN if inner is UNKNOWN else up(inner)
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "parents":
+            inner, index = ev(node.value.value, depth + 1), node.slice
+            if inner is UNKNOWN or not (isinstance(index, ast.Constant) and isinstance(index.value, int)) or index.value < 0:
+                return UNKNOWN
+            return up(inner, index.value + 1)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            base = ev(node.left, depth + 1)
+            if base is UNKNOWN or base is FILE or not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+                return UNKNOWN
+            return posixpath.normpath(posixpath.join(base, node.right.value))
+        return UNKNOWN
+
+    entries: list[tuple[str, str]] = []
+
+    def entry(node):
+        value = ev(node)
+        if value is UNKNOWN or value is FILE:
+            entries.append(("unknown", ast.get_source_segment(text, node) or ast.dump(node)))
+        else:
+            entries.append(("dir", value))
+
+    def is_sys_path(node):
+        return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and is_sys_path(node.func.value):
+            if node.func.attr == "insert" and len(node.args) == 2:
+                entry(node.args[1])
+            elif node.func.attr == "append" and len(node.args) == 1:
+                entry(node.args[0])
+            elif node.func.attr == "extend" and len(node.args) == 1:
+                items = node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]
+                for item in items:
+                    entry(item)
+        elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
+            for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
+                entry(item)
+        elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in node.targets):
+            for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
+                entry(item)
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return entries, names
+
+
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
     """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
     args = ["ls-tree", "-r", "-z", "--full-tree", revision] if revision else ["ls-files", "-s", "-z"]
@@ -2249,6 +2368,64 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             return False
         head = read_source(repo, path, revision, environment)[:200]
         return head.startswith("#!") and re.search(r"\b(?:ba|z|da)?sh\b|\bnode\b|\bpython", head.split("\n")[0]) is not None
+
+    # 1.5.1: a package's Python sys.path entries (python_sys_path_entries), before the closure walks the edges.
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+                          SYS_PATH_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
+                         capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if out.returncode not in (0, 1):
+        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    named_tops = outside_tops | set(roots)
+    outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the file holding the entry, its directory)]
+    for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
+        package = owner(path)
+        if package is None:
+            continue
+        entries, _ = python_sys_path_entries(read_source(repo, path, revision, environment), path)
+        for kind, value in entries:
+            if kind == "unknown":
+                literals = re.findall(r"""["']([^"']*)["']""", value)
+                if PARENT_STEP.search(value) or any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals):
+                    raise ValueError(f"unresolved (a sys.path entry that may leave its package, `{value}`, cannot be "
+                                     f"evaluated) in {path}")
+                continue  # an entry naming no parent step and no top-level directory: a documented residual
+            if value == ".." or value.startswith("../"):
+                continue  # above the repository: nothing tracked is imported from there
+            found = owner(value)
+            if found == package:
+                continue
+            if found is not None:
+                deps[package].add(found)  # modules imported by name from another package's directory
+                continue
+            outside_entries.setdefault(package, []).append((path, value))
+    tracked_dirs = {posixpath.dirname(p) for p in tracked}
+    for d in list(tracked_dirs):
+        while d:
+            d = posixpath.dirname(d)
+            tracked_dirs.add(d)
+    for package, entries in sorted(outside_entries.items()):
+        # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
+        # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
+        found = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
+                                r"^[[:space:]]*(import|from)[[:space:]]", *([revision] if revision else []), "--",
+                                f"{package_dir[package]}/*.py"],
+                               capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+        if found.returncode not in (0, 1):
+            raise SystemExit(f"edges: git grep failed (exit {found.returncode})")
+        names = set()
+        for line in found.stdout.decode("utf-8", errors="replace").split("\n"):
+            line = re.sub(r"^[0-9a-f]{40}:", "", line)
+            m = re.match(r"\s*from\s+([A-Za-z_]\w*)[\w.]*\s+import\b", line) or re.match(r"\s*import\s+(.+)", line)
+            if m and line.lstrip().startswith("from"):
+                names.add(m.group(1))
+            elif m:
+                names |= {part.strip().split(".")[0].split()[0] for part in m.group(1).split(",") if part.strip()}
+        for path, directory in entries:
+            for name in sorted(names):
+                for candidate in (f"{directory}/{name}.py", f"{directory}/{name}"):
+                    if candidate in tracked or candidate in tracked_dirs:
+                        edges.setdefault(path, set()).add(candidate)
+                        break
 
     imports: dict[str, set[str]] = {}
     named: dict[str, set[str]] = {}

@@ -853,6 +853,46 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
                          "a change to the imported file selects its importer, not FULL")
 
+    def test_python_sys_path_entries_credit_what_the_package_imports_by_name(self):
+        # 1.5.1. The entry sits in conftest.py, and the import in another test file: sys.path is process-wide.
+        self.files(**{
+            "services__a__test__conftest.py": "import os, sys\n"
+                                              'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))\n',
+            "services__a__test__test_x.py": "import helper\n",
+            "scripts__helper.py": 'P = "services/b/x.json"\n',
+            "scripts__unused.py": 'Q = "services/c/q.json"\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"}, "only a module the package imports by name is credited")
+        self.assertIn("scripts/helper.py", report["imports"])
+        self.assertNotIn("scripts/unused.py", report["imports"])
+
+    def test_a_sys_path_entry_into_another_package_is_a_dep_and_into_its_own_is_nothing(self):
+        self.files(**{"services__a__t.py": "import sys\nfrom pathlib import Path\n"
+                                            'APP = Path(__file__).resolve().parent / "app"\n'
+                                            'OTHER = Path(__file__).resolve().parents[1] / "b" / "app"\n'
+                                            "sys.path.insert(0, str(APP))\nsys.path.insert(0, str(OTHER))\n"})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
+    def test_an_unresolved_sys_path_entry_refuses_when_it_may_leave_its_package(self):
+        for entry in ('os.environ.get("X", "../scripts")', 'os.path.join(ROOT, "scripts")', 'os.path.join(REPO, "services", "b")'):
+            with self.subTest(entry):
+                self.files(**{"services__a__t.py": f"import os, sys\nsys.path.insert(0, {entry})\n"})
+                with self.assertRaisesRegex(ValueError, "sys.path entry"):
+                    self.scan()
+        self.files(**{"services__a__t.py": "import os, sys\nsys.path.insert(0, os.getcwd())\n"})
+        self.assertEqual(self.scan()[0]["a"], set(), "control: no parent step, no top-level name: a documented residual")
+
+    def test_every_sys_path_form_and_an_unparseable_file(self):
+        entry = 'os.path.join(os.path.dirname(__file__), "..", "..", "scripts")'
+        for form in ("sys.path.append(E)", "sys.path.extend([E])", "sys.path += [E]", "sys.path[0:0] = [E]"):
+            with self.subTest(form):
+                self.files(**{"services__a__t.py": f"import os, sys\n{form.replace('E', entry)}\nimport helper\n",
+                              "scripts__helper.py": 'P = "services/b/x.json"\n'})
+                self.assertEqual(self.scan()[0]["a"], {"b"})
+        self.files(**{"services__a__t.py": "import sys\nsys.path.insert(0, 'x'\n"})
+        with self.assertRaisesRegex(ValueError, "does not parse"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

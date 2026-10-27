@@ -844,10 +844,12 @@ def reader_assessment_check(readers, *, revision, policy_hash, pkgs: dict, cfg: 
             or any(not isinstance(row, str) for row in readers["failures"] + readers["stale"]) \
             or any(not isinstance(readers.get(key), dict) or any(not isinstance(name, str)
                    or not isinstance(values, list) or any(not isinstance(value, str) for value in values)
-                   or values != sorted(set(values)) for name, values in readers[key].items()) for key in ("deps", "readers")):
+                   or values != sorted(set(values)) for name, values in readers[key].items()) for key in ("deps", "readers", "imports")):
         return out
+    # `imports` (1.5.0): each imported path outside every package, with the packages that reach it.
     if set(readers["deps"]) != set(pkgs) or any(set(values) - set(pkgs) for values in readers["deps"].values()) \
-            or any(set(values) - set(pkgs) for values in readers["readers"].values()):
+            or any(set(values) - set(pkgs) for values in readers["readers"].values()) \
+            or any(not values or set(values) - set(pkgs) for values in readers["imports"].values()):
         return out
     edge_scan = cfg.get("edge_scan") or {}
     directories = edge_scan.get("reader_dirs", []) if isinstance(edge_scan, dict) else None

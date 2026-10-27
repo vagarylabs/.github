@@ -177,7 +177,10 @@ class FrozenScope(unittest.TestCase):
     def test_rehashed_reader_identity_or_roster_tampering_is_unknown(self):
         for key, value in (("revision", self.head), ("policy_config_sha256", "0" * 64),
                            ("graph_sha256", "0" * 64), ("scanner_source_sha256", "0" * 64),
-                           ("deps", {}), ("deps", None), ("readers", []), ("failures", None)):
+                           ("deps", {}), ("deps", None), ("readers", []), ("failures", None),
+                           # 1.5.0: `imports` maps each imported path to a sorted, non-empty list of known packages.
+                           ("imports", None), ("imports", []), ("imports", {"scripts/x.mjs": []}),
+                           ("imports", {"scripts/x.mjs": ["not-a-package"]}), ("imports", {"scripts/x.mjs": ["ui", "server"]})):
             with self.subTest(key=key):
                 result, _ = self.canonical_plan(with_readers=True, reader_change=lambda record: record.update({key: value}))
                 self.assertEqual(result["impact"]["status"], "unknown")

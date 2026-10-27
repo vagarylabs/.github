@@ -1747,6 +1747,8 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #      argument text, whitespace collapsed). `reach` is "package" (inside the importing package), "external" (npm or
 #      stdlib by name), "fixture" (a test temp dir), or a list of repo paths, each then an edge. One holding a parent step
 #      or naming a top-level directory outside every package refuses even when declared: an escape has to be mapped.
+#   5. DECLARED (D5): `check` fails on an imported path no `extra_edges` glob maps to at least its importers, so a change
+#      to it selects them through plan.classify_paths, and on a computed_imports entry that matches no live site.
 CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
 COMPUTED_REACH = frozenset({"package", "external", "fixture"})
 IMPORT_CALL_GREP = r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\("
@@ -2166,8 +2168,16 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
 
 def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path,
-           computed_unused: list | None = None) -> dict:
+           imports: dict | None = None, computed_unused: list | None = None) -> dict:
     failures, stale = [], []
+    imports = imports or {}
+    # 1.5.0 rule 5: a change to an imported file must select its importers, so extra_edges must map it to them.
+    edge_globs = [(glob_to_regex(glob), set(targets)) for glob, targets in sorted((cfg.get("extra_edges") or {}).items())]
+    for path, importers in sorted(imports.items()):
+        mapped = set().union(*[targets for regex, targets in edge_globs if regex.match(path)])
+        for name in sorted(set(importers) - mapped):
+            failures.append(f"undeclared import edge: {name} imports {path} (map it in extra_edges, so a change to it "
+                            f"selects {name})")
     for entry in computed_unused or []:
         failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):
@@ -2197,6 +2207,7 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
               "graph_sha256": graph_digest(pkgs), "scanner_source_sha256": sha256_file(Path(__file__)),
               "deps": {name: sorted(values) for name, values in sorted(deps.items())},
               "readers": {name: sorted(values) for name, values in sorted(readers.items())},
+              "imports": {path: sorted(values) for path, values in sorted(imports.items())},
               "failures": failures, "stale": stale}
     result["assessment_sha256"] = canonical_digest(result)
     return result
@@ -2223,7 +2234,7 @@ def main(argv=None) -> int:
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
     assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config,
-                        computed_unused=report["computed_imports_unused"])
+                        imports=report["imports"], computed_unused=report["computed_imports_unused"])
     failures, stale = assessment["failures"], assessment["stale"]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")

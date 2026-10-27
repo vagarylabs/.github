@@ -781,6 +781,29 @@ class ImportAttributionTest(unittest.TestCase):
                               computed_unused=report["computed_imports_unused"])
         self.assertIn("stale computed_imports entry: services/a/gone.mjs: x matches no import call", assessment["failures"])
 
+    def test_check_fails_on_an_undeclared_import_edge_until_extra_edges_maps_it(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+
+        def check(c):
+            (self.repo / ".github/ci-plan.json").write_text(json.dumps(c))
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+            return rc, buf.getvalue()
+
+        rc, out = check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("undeclared import edge: a imports scripts/x.mjs", out)
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        self.assertEqual(check(cfg)[0], 0)
+        import plan
+        pkgs = E.workspace_graph(self.repo, cfg)
+        selected = plan.classify_paths(["scripts/x.mjs"], cfg, pkgs)
+        self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
+                         "a change to the imported file selects its importer, not FULL")
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

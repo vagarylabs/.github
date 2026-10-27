@@ -1742,7 +1742,14 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #      over-approximates) but imports nothing; only code (JS/TS, Python, shell) is followed further.
 #   3. FAIL CLOSED: a reached path under `always_reader_dirs` refuses (that directory is not always-only); a reached CODE
 #      file the scan excludes refuses (its reads cannot be credited); so does a symlink loop.
+#   4. COMPUTED (D2, strict by declaration): a non-literal `import(...)` or `require(...)` in a package file or a reached
+#      file refuses unless an `edge_scan.computed_imports` entry declares it ({file, expr, reach}, `expr` the exact
+#      argument text, whitespace collapsed). `reach` is "package" (inside the importing package), "external" (npm or
+#      stdlib by name), "fixture" (a test temp dir), or a list of repo paths, each then an edge. One holding a parent step
+#      or naming a top-level directory outside every package refuses even when declared: an escape has to be mapped.
 CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
+COMPUTED_REACH = frozenset({"package", "external", "fixture"})
+IMPORT_CALL_GREP = r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\("
 SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
 SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
                             r"/([A-Za-z0-9_.@+/-]+)")
@@ -1761,6 +1768,36 @@ def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[s
             meta, _, path = record.partition("\t")
             entries[path] = meta.split()[0]
     return entries
+
+
+def computed_import_sites(src: Source):
+    """Each `import(...)`/`require(...)` whose first argument is not one plain string literal: (expr, argument tokens).
+    A string token's value is (text, plain, start): `plain` is False for a template or f-string with substitutions."""
+    code = src.code
+    for j, tok in enumerate(code):
+        if tok[0] != "word" or tok[3] not in ("import", "require") or j + 1 >= len(code) or code[j + 1][0] != "open" \
+                or code[j + 1][3] != "(":
+            continue
+        if j and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?."):
+            continue  # `x.require(...)` is some object's method, not the module loader
+        close = src.match.get(j + 1)
+        if close is None:
+            yield "<unclosed>", []
+            continue
+        depth, first = 0, []
+        for t in code[j + 2:close]:
+            if t[0] == "open":
+                depth += 1
+            elif t[0] == "close":
+                depth -= 1
+            elif depth == 0 and t[0] == "comma":
+                break  # `import("x", { with: ... })`: only the specifier decides
+            first.append(t)
+        if first and first[0][0] == "str" and first[0][3][1] is True and (
+                len(first) == 1 or (first[1][0] == "word" and first[1][3] in ("as", "satisfies"))):
+            continue  # a plain literal, also under a TypeScript cast (`import("redis" as string)` loads "redis")
+        expr = " ".join(src.text[first[0][1]:first[-1][2]].split()) if first else ""
+        yield expr, first
 
 
 def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
@@ -1932,17 +1969,21 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 readers.setdefault("<unmapped>", set()).add(target)
     if pending:
         finish(pending.pop())
-    imports = import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges,
+    imports, unused = import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges,
                                      outside, deps)
     if report is not None:
         report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
+        report["computed_imports_unused"] = unused
     return deps, readers
 
 
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps):
-    """Rules 1-3 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
-    {path: importing packages}; refuses where it cannot see."""
+    """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
+    ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
+    package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
+    # Top-level directories outside every package: the tracked ones, and every declared reader directory.
+    outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
     patterns = [x[2:] for x in excludes if x.startswith(":!")]
 
     def excluded(path: str) -> bool:
@@ -1977,6 +2018,31 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         beneath = [p for p in tracked if p.startswith(target + "/")]
         return sorted(beneath)  # a path that is no tracked file or directory names nothing
 
+    def escapes(tokens) -> bool:
+        for t in tokens:
+            if t[0] == "word" and t[3] == "pardir":
+                return True
+            if t[0] == "str":
+                text = t[3][0]
+                if PARENT_STEP.search(text) or text.strip() == "..":
+                    return True
+                if re.sub(r"^(?:\./|\$\{[^}]*\}/)+", "", text).split("/")[0] in outside_tops:
+                    return True
+        return False
+
+    declared = es.get("computed_imports")
+    if declared is None:
+        declared = []
+    if not isinstance(declared, list) or any(
+            not isinstance(d, dict) or set(d) != {"file", "expr", "reach"} or not isinstance(d["file"], str)
+            or not isinstance(d["expr"], str)
+            or not (d["reach"] in COMPUTED_REACH if isinstance(d["reach"], str) else
+                    isinstance(d["reach"], list) and d["reach"] and all(isinstance(x, str) and x for x in d["reach"]))
+            for d in declared):
+        raise ValueError("edge_scan.computed_imports entries must be {file, expr, reach}, with reach package, external, "
+                         "fixture or a non-empty list of repo paths")
+    by_site = {(d["file"], " ".join(d["expr"].split())): d for d in declared}
+    used: set = set()
     sources: dict[str, Source] = {}
 
     def code_source(path: str) -> Source | None:
@@ -1986,6 +2052,43 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if path not in sources:
             sources[path] = Source(read_source(repo, path, revision, environment), ext)
         return sources[path]
+
+    def check_computed(path: str) -> None:
+        src = code_source(path)
+        if src is None or src.ext not in JS_EXT:
+            return
+        if not src.ok:
+            raise ValueError(f"unresolved (the bracket structure of {path} cannot be trusted, so its import calls cannot "
+                             "be read)")
+        for expr, tokens in computed_import_sites(src):
+            entry = by_site.get((path, expr))
+            if escapes(tokens):
+                raise ValueError(f"unresolved (a computed import that steps outside its package: `{expr}`) in {path}; "
+                                 "write it as a literal path, which the scan maps")
+            if entry is None:
+                raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
+                                 f"edge_scan.computed_imports) in {path}")
+            used.add((path, expr))
+            if isinstance(entry["reach"], list):
+                for target in entry["reach"]:
+                    found = owner(posixpath.normpath(target))
+                    if found is None:
+                        edges.setdefault(path, set()).add(posixpath.normpath(target))
+                    elif found != owner(path) and owner(path) is not None:
+                        deps[owner(path)].add(found)
+
+    # Every computed import in a package's own code: a dedicated grep, since such a line names no root and no `../`.
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+                          IMPORT_CALL_GREP, *([revision] if revision else []), "--",
+                          *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
+                         capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if out.returncode not in (0, 1):
+        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    for path in out.stdout.decode("utf-8", errors="replace").split("\0"):
+        if path and revision:
+            path = path[len(revision) + 1:]
+        if path and owner(path) is not None:
+            check_computed(path)
 
     def named_paths(path: str) -> set[str]:
         """Rule 1, the whole file: every relative path a reached code file names."""
@@ -2004,6 +2107,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                         sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
                         if sibling in tracked:
                             found.add(sibling)
+            check_computed(path)
             return found
         for line in read_source(repo, path, revision, environment).split("\n"):
             t = line.strip()
@@ -2057,11 +2161,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     if path not in named:
                         named[path] = named_paths(path) | edges.get(path, set())
                     queue.extend(sorted(named[path] - seen))
-    return imports
+    unused = [f"{d['file']}: {d['expr']}" for d in declared if (d["file"], " ".join(d["expr"].split())) not in used]
+    return imports, unused
 
 
-def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path) -> dict:
+def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path,
+           computed_unused: list | None = None) -> dict:
     failures, stale = [], []
+    for entry in computed_unused or []:
+        failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):
         failures.append("unmapped source readers require a declared obligation: " + ", ".join(sorted(readers["<unmapped>"])))
     for name, found in deps.items():
@@ -2114,7 +2222,8 @@ def main(argv=None) -> int:
                           "imports": report["imports"]}, indent=1))
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
-    assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config)
+    assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config,
+                        computed_unused=report["computed_imports_unused"])
     failures, stale = assessment["failures"], assessment["stale"]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")

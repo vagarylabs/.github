@@ -740,6 +740,47 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.scan()
 
+    def test_computed_imports_refuse_unless_declared_and_an_escape_refuses_even_declared(self):
+        self.files(**{"services__a__load.mjs": "export const load = (name) => import(name);\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.mjs", "expr": "name", "reach": "external"}]
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for escaping in ('import(path.join(here, "..", name))', 'import("../../" + name)', "import(`../../scripts/${n}.mjs`)",
+                         'require(join(root, "scripts", n))'):
+            with self.subTest(escaping):
+                (self.repo / "services/a/load.mjs").write_text(f"export const load = () => {escaping};\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                expr = escaping[escaping.index("(") + 1:-1]
+                cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.mjs", "expr": expr, "reach": "external"}]
+                with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                    self.scan(cfg)
+
+    def test_a_literal_under_a_typescript_cast_is_a_literal_and_a_cast_name_is_not(self):
+        # vagary-core's services/*/src/observability.ts load `import("@opentelemetry/sdk-node" as string)`: a literal.
+        self.files(**{"services__a__obs.ts": 'const m = await import("redis" as string);\n'})
+        self.assertEqual(self.scan()[2]["computed_imports_unused"], [])
+        (self.repo / "services/a/obs.ts").write_text("const m = await import(name as string);\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name as string`"):
+            self.scan()
+
+    def test_a_declared_reach_list_is_an_edge_and_a_stale_declaration_fails_check(self):
+        self.files(**{"services__a__load.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "scripts__x.mjs": 'export const x = "services/b/x.json";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [
+            {"file": "services/a/load.mjs", "expr": "pathToFileURL(f).href", "reach": ["scripts/x.mjs"]},
+            {"file": "services/a/gone.mjs", "expr": "x", "reach": "package"}]
+        deps, _, report = self.scan(cfg)
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(report["computed_imports_unused"], ["services/a/gone.mjs: x"])
+        assessment = E.assess(E.workspace_graph(self.repo, cfg), cfg, deps, {"scripts": set(), "tools": set()},
+                              revision=None, config_path=Path(__file__),
+                              computed_unused=report["computed_imports_unused"])
+        self.assertIn("stale computed_imports entry: services/a/gone.mjs: x matches no import call", assessment["failures"])
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

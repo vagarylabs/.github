@@ -2520,6 +2520,30 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     by_site = {(d["file"], " ".join(d["expr"].split())): d for d in declared}
     loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
     reader_dirs = set(es.get("reader_dirs") or [])
+
+    def unit_of(path: str) -> str:
+        top = path.split("/")[0]
+        return top if "/" in path and top in reader_dirs else "<unmapped>"
+
+    def credit_package(path: str, caller: str | None, found: str) -> None:
+        """A load by `path` (owned by `caller`) of package `found`. A caller outside every package maps to its own
+        selection unit, its reader directory's job or <unmapped> (FULL), never a free-floating key (spine, fix 2)."""
+        if caller is None:
+            unit = unit_of(path)
+            readers.setdefault(unit, set()).add(found)
+            unowned.setdefault(path, {"unit": unit, "reaches": set()})["reaches"].add(found)
+        elif found != caller:
+            deps[caller].add(found)
+
+    def credit_load(path: str, caller: str | None, target: str) -> None:
+        """Root's R4 of #33: a loaded path is a module position (fix 1), and a caller outside every package keys the
+        edge by its own path, so every package that reaches it is credited with the target (fix 2)."""
+        loader_targets.add(target)
+        found = owner(target)
+        if caller is None or found is None:
+            edges.setdefault(path, set()).add(target)
+        if found is not None:
+            credit_package(path, caller, found)
     used: set = set()
     sources: dict[str, Source] = {}
 
@@ -2540,23 +2564,9 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                              "be read)")
         # ONE owner() result decides both the credit below and the reach "package" floor (spine, fix 2 with fix 4).
         caller = owner(path)
-        unit = path.split("/")[0] if path.split("/")[0] in reader_dirs and "/" in path else "<unmapped>"
 
         def reaches(target: str) -> None:
-            loader_targets.add(target)
-            found = owner(target)
-            if caller is None:
-                # Root's R4 of #33, fix 2: a caller outside every package keys the edge by its own path, so every package
-                # that reaches it is credited with the target. It also maps to its own selection unit, never a
-                # free-floating key (spine): its reader directory's job, or <unmapped>, which plans FULL.
-                edges.setdefault(path, set()).add(target)
-                if found is not None:
-                    readers.setdefault(unit, set()).add(found)
-                    unowned.setdefault(path, {"unit": unit, "reaches": set()})["reaches"].add(found)
-            elif found is None:
-                edges.setdefault(path, set()).add(target)
-            elif found != caller:
-                deps[caller].add(found)
+            credit_load(path, caller, target)
 
         for expr, tokens, at in computed_import_sites(src):
             verdict, target = parent_verdict(path, src, tokens, at)
@@ -2646,11 +2656,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # 1.5.1: a package's Python import path (sys.path entries, its pytest `pythonpath`) and its Python loaders by name or
     # path (python_file_facts), before the closure walks the edges.
     def reach_from(path: str, target: str) -> None:
-        found = owner(target)
-        if found is None:
-            edges.setdefault(path, set()).add(target)
-        elif found != owner(path) and owner(path) is not None:
-            deps[owner(path)].add(found)
+        credit_load(path, owner(path), target)  # the same credit as a JS loader's (fix 1 and fix 2)
 
     def escapes_by_text(expr: str) -> bool:
         literals = re.findall(r"""["']([^"']*)["']""", expr)
@@ -2678,12 +2684,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
                                  f"edge_scan.computed_imports) in {path}")
+            if entry["reach"] == "package" and owner(path) is None:
+                raise ValueError(f"unresolved (`{expr}` is declared reach \"package\", but {path} is outside every "
+                                 "package, where that names and credits nothing; declare the paths it loads)")
             if inside and entry["reach"] != "package":
                 raise ValueError(f"unresolved (a computed Python load under its own package, `{expr}`, must be declared "
                                  f"reach \"package\") in {path}")
             used.add((path, expr))
-            if other is not None and owner(path) is not None and other != owner(path):
-                deps[owner(path)].add(other)
+            if other is not None:
+                credit_package(path, owner(path), other)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reach_from(path, posixpath.normpath(target))
@@ -2715,6 +2724,9 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
         package = owner(path)
         if package is None:
+            # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
+            # sys.path entries stay a documented residual.
+            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
             continue
         entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
         parsed_names.setdefault(package, set()).update(file_names)

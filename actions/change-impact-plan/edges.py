@@ -2220,6 +2220,9 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
                                  f"edge_scan.computed_imports) in {path}")
+            if entry["reach"] == "package" and caller is None:
+                raise ValueError(f"unresolved (`{expr}` is declared reach \"package\", but {path} is outside every "
+                                 "package, where that names and credits nothing; declare the paths it loads)")
             if verdict == "inside" and entry["reach"] != "package":
                 raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
                                  f"declared reach \"package\") in {path}")

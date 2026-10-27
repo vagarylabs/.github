@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ from test_weakening import Repo, git  # noqa: E402  (the shared temp-git-repo he
 
 MANIFEST = ROOT / "trusted" / "manifest.json"
 REPO = "vagarylabs/vagaris"
+SHORT = "vagaris"  # the TSV's repo column: the census names repos without their owner
 EXPR = "$" + "{{ inputs.minutes || 30 }}"
 # The base commit's .github/workflows/ci.yml has one job, `test`, with no timeout-minutes.
 BASE_ROW = (".github/workflows/ci.yml", "test", "default 360", "pass")
@@ -63,25 +65,28 @@ class FloorCase(unittest.TestCase):
         p.write_text(json.dumps(m))
         return str(p)
 
-    def run_floor(self, head, mode="report", exemptions=(), repo=REPO, base=None):
+    def run_floor(self, head, mode="report", exemptions=(), repo=REPO, base=None, cwd=None):
+        """base None: the repo's base; base False: no --base at all."""
         out = io.StringIO()
-        cwd = os.getcwd()
+        here = os.getcwd()
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        args = ["timeout-floor", "--manifest", self.manifest(mode, exemptions), "--repo", repo, "--head", head]
+        if base is not False:
+            args += ["--base", base or self.repo.base]
         try:
-            os.chdir(self.repo.d)
+            os.chdir(cwd or self.repo.d)
             with contextlib.redirect_stdout(out):
-                code = classify.main(["timeout-floor", "--manifest", self.manifest(mode, exemptions), "--repo", repo,
-                                      "--base", base or self.repo.base, "--head", head])
+                code = classify.main(args)
         finally:
-            os.chdir(cwd)
+            os.chdir(here)
         return code, out.getvalue()
 
-    def rows(self, out):
+    def rows(self, out, short=SHORT):
         header, rows = tsv(out)
         self.assertEqual(header, "repo\tworkflow_path\tjob_key\ttimeout_minutes_declared\tverdict")
         for r in rows:
             self.assertEqual(len(r), 5, r)
-            self.assertEqual(r[0], REPO)
+            self.assertEqual(r[0], short)
         return {(r[1], r[2]): (r[3], r[4]) for r in rows}
 
     def both_modes(self, head, exemptions=()):
@@ -322,12 +327,45 @@ class FileTests(FloorCase):
         self.assertEqual(block.split("\n")[:6], [
             "```tsv",
             "repo\tworkflow_path\tjob_key\ttimeout_minutes_declared\tverdict",
-            "%s\t.github/workflows/a.yml\tz\t5\tviolation" % REPO,
-            "%s\t.github/workflows/a.yml\ty\tn/a\tskipped-reusable" % REPO,
-            "%s\t.github/workflows/b.yml\tx\t%s\tviolation" % (REPO, EXPR),
-            "%s\t.github/workflows/ci.yml\ttest\tdefault 360\tpass" % REPO,
+            "%s\t.github/workflows/a.yml\tz\t5\tviolation" % SHORT,
+            "%s\t.github/workflows/a.yml\ty\tn/a\tskipped-reusable" % SHORT,
+            "%s\t.github/workflows/b.yml\tx\t%s\tviolation" % (SHORT, EXPR),
+            "%s\t.github/workflows/ci.yml\ttest\tdefault 360\tpass" % SHORT,
         ])
         self.assertEqual(block.split("\n")[6], "```")
+
+    def test_tsv_repo_column_is_the_census_short_name(self):
+        # execnode's census writes .github, vagary-core, vagaris: the owner is dropped there and here, kept in the heading.
+        head = self.repo.case({".github/workflows/a.yml": wf("  a:\n    timeout-minutes: 5\n")})
+        for repo, short in (("vagarylabs/.github", ".github"), ("vagarylabs/vagary-core", "vagary-core"), (REPO, SHORT)):
+            with self.subTest(repo=repo):
+                out = self.run_floor(head, repo=repo)[1]
+                self.assertIn("## Timeout floor: %s\n" % repo, out)
+                self.assertEqual(self.rows(out, short)[(".github/workflows/a.yml", "a")], ("5", "violation"))
+                self.assertNotIn("\n%s\t" % repo, out)
+
+    def test_line_breaks_other_than_lf_are_incomplete(self):
+        # YAML (and PyYAML) also break lines at a lone CR, NEL, LS and PS: "runs-on: x<CR>    timeout-minutes: 2" is a
+        # timeout of 2 there. The reader splits on LF only, so each makes the whole file INCOMPLETE, never a pass.
+        breaks = {"cr": "\r", "nel": "\x85", "ls": "\u2028", "ps": "\u2029"}
+        files = {".github/workflows/%s.yml" % k: wf("  a:\n    runs-on: x%s    timeout-minutes: 2\n" % b)
+                 for k, b in breaks.items()}
+        files[".github/workflows/cr-only.yml"] = "name: w\ron: push\rjobs:\r  a:\r    timeout-minutes: 2\r"
+        files[".github/workflows/crlf.yml"] = wf("  a:\n    runs-on: x\n    timeout-minutes: 2\n").replace("\n", "\r\n")
+        head = self.repo.case(files)
+        code, enforce, out, rows = self.both_modes(head)
+        self.assertEqual((code, enforce), (0, 1), out)
+        for k in breaks:
+            with self.subTest(line_break=k):
+                path = ".github/workflows/%s.yml" % k
+                # The timeout sits inside the runs-on line here, so the job reads as having none: INCOMPLETE, not PASS.
+                self.assertEqual(rows[(path, "a")], ("default 360", "incomplete"))
+                self.assertIn("- INCOMPLETE `%s:4` job `a`: line 5: a line break other than LF or CRLF" % path, out)
+        # A CR-only file is one line here: no job, but its row is INCOMPLETE and counted.
+        self.assertEqual(rows[(".github/workflows/cr-only.yml", "*")], ("unknown", "incomplete"))
+        self.assertIn("5 INCOMPLETE", out)
+        # The control: CRLF is an ordinary line break, judged as usual.
+        self.assertEqual(rows[(".github/workflows/crlf.yml", "a")], ("2", "violation"))
 
     def test_crlf_bom_comments_and_quoted_keys(self):
         text = ("\ufeffname: w\r\non: push\r\njobs: # all of them\r\n# a comment at column 0\r\n  \"quoted\":\r\n"
@@ -390,6 +428,34 @@ class FileTests(FloorCase):
             code = classify.main(["timeout-floor", "--manifest", str(p), "--repo", REPO, "--base", self.repo.base,
                                   "--head", head])
         self.assertEqual(code, 2, out.getvalue())
+        # The other modes still need a base.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(classify.main(["integrity", "--manifest", str(MANIFEST), "--repo", REPO, "--head", head]), 2)
+
+    def test_reads_the_head_alone_the_base_is_never_resolved(self):
+        head = self.repo.case({".github/workflows/a.yml": wf("  a:\n    timeout-minutes: 5\n")})
+        absent = "e" * 40
+        for base in (absent, False):
+            with self.subTest(base=base):
+                code, out = self.run_floor(head, "enforce", base=base)
+                self.assertEqual(code, 1, out)  # judged: the violation refuses, no integrity error
+                self.assertEqual(self.rows(out)[(".github/workflows/a.yml", "a")], ("5", "violation"))
+
+    def test_works_in_a_depth_1_clone_without_the_base(self):
+        # What the job checks out: the head commit alone (fetch-depth 1). The base is not in that object store.
+        head = self.repo.case({".github/workflows/a.yml": wf("  a:\n    timeout-minutes: 30\n")})
+        with tempfile.TemporaryDirectory() as d:
+            clone = os.path.join(d, "clone")
+            git(d, "clone", "-q", "--depth", "1", "--branch", "case-%d" % self.repo.n, "file://" + self.repo.d, clone)
+            self.assertEqual(git(clone, "rev-parse", "HEAD"), head)
+            for where, present in ((self.repo.d, True), (clone, False)):  # the positive control, then the clone
+                r = subprocess.run(["git", "cat-file", "-e", self.repo.base + "^{commit}"], cwd=where, capture_output=True)
+                self.assertEqual(r.returncode == 0, present, where)
+            code, out = self.run_floor(head, "enforce", cwd=clone)
+            self.assertEqual(code, 0, out)
+            rows = self.rows(out)
+            self.assertEqual(rows[(".github/workflows/a.yml", "a")], ("30", "pass"))
+            self.assertEqual(rows[BASE_ROW[:2]], BASE_ROW[2:])
 
 
 class ParserTests(unittest.TestCase):
@@ -477,9 +543,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("\n    if: github.repository != 'vagarylabs/.github'\n", job)
             self.assertIn("\n    runs-on: [self-hosted, Linux, X64, vl-light]\n    timeout-minutes: 10\n", job)
             self.assertIn("persist-credentials: false", job)
-            self.assertIn("fetch-depth: 0", job)
             self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", job)
             self.assertNotIn("\n    permissions:", job)
+        # The integrity job keeps the full history and the merge-base; the floor job reads the head tree only, so it
+        # checks out the head commit alone and never binds a merge-base.
+        self.assertIn("fetch-depth: 0", integrity)
+        self.assertIn("merge_base=", integrity)
+        self.assertIn("ref: ${{ steps.shas.outputs.head }}\n          fetch-depth: 1\n          persist-credentials: false",
+                      floor)
+        self.assertNotIn("fetch-depth: 0", floor)
+        self.assertNotIn("merge-base", floor.split("TRUSTED_CLASSIFY_PY", 1)[0])
         self.assertIn('python3 -I "$d/classify.py" integrity --manifest', integrity)
         self.assertNotIn("timeout-floor --manifest", integrity)
         self.assertIn('python3 -I "$d/classify.py" timeout-floor --manifest "$d/manifest.json"', floor)
@@ -541,6 +614,42 @@ class WeakeningFloorTests(unittest.TestCase):
         self.assertNotIn("- WEAKENING", out)
         self.assertNotIn("::warning", out)
         self.assertIn("No test-weakening pattern added", out)
+
+    def test_raise_toward_the_floor_is_not_called_meeting_it(self):
+        base, head = self.raise_to(4, "toward-floor")
+        got, incomplete, _ = self.scan(base, head, 6)
+        self.assertEqual(incomplete, [])
+        self.assertEqual([(f["rule"], f["detail"]) for f in got], [
+            (classify.FLOOR_RAISE_RULE, "raises timeout `timeout-minutes` 2 -> 4, raised toward the completion floor "
+                                        "(6 minutes), still under it")])
+        self.assertNotIn("raised to the completion floor", got[0]["detail"])
+
+    def test_a_step_raise_to_the_floor_is_still_a_weakening(self):
+        # The floor is per job: a pytest step's own timeout raised 1 -> 6 loosens that step, it meets no floor.
+        d = self.repo.d
+        path = ".github/workflows/gate.yml"
+        text = wf("  gate:\n    runs-on: x\n    timeout-minutes: 30\n    steps:\n      - run: pytest\n"
+                  "        timeout-minutes: %s\n")
+        before = self.repo.case({path: text % 1})
+        git(d, "checkout", "-q", "-b", "step-to-floor", before)
+        pathlib.Path(d, path).write_text(text % 6)
+        git(d, "commit", "-q", "-am", "raise the step")
+        got, incomplete, _ = self.scan(before, git(d, "rev-parse", "HEAD"), 6)
+        self.assertEqual(incomplete, [])
+        self.assertEqual([(f["rule"], f["effect"], f["line"], f["detail"]) for f in got], [
+            ("budget-loosened", "ci-policy:test-weakening", 9, "raises timeout `timeout-minutes` 1 -> 6")])
+
+    def test_a_raise_in_a_file_the_reader_cannot_judge_stays_a_weakening(self):
+        d = self.repo.d
+        path = ".github/workflows/gate.yml"
+        text = wf("  gate:\n    <<: *defaults\n    timeout-minutes: %s\n")
+        before = self.repo.case({path: text % 2})
+        git(d, "checkout", "-q", "-b", "unjudged-raise", before)
+        pathlib.Path(d, path).write_text(text % 6)
+        git(d, "commit", "-q", "-am", "raise")
+        got = self.scan(before, git(d, "rev-parse", "HEAD"), 6)[0]
+        self.assertEqual([f["rule"] for f in got], ["budget-loosened"])
+        self.assertTrue(all("raise" not in f for f in got))
 
     def test_raise_past_the_floor_is_still_a_weakening(self):
         base, head = self.raise_to(30, "past-floor")

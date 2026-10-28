@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import datetime
 import fnmatch
 import json
@@ -31,6 +32,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 # -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
@@ -291,10 +293,74 @@ def structure(code: list) -> tuple[dict, list, bool]:
     return match, enclosing, not stack
 
 
+class BlobReader:
+    """One `git cat-file --batch` process for a scan's reads at its revision. A scan reads thousands of files, and one
+    `git show` each was 110 of 157 s on vagary-core. A blob comes back byte for byte; anything else (a missing path, a
+    tree, a path with a newline, a reader that died or stalled) falls back to `git show`, which refuses as before."""
+
+    TIMEOUT = 60  # seconds for one object: a stalled reader is killed, and the read falls back
+
+    def __init__(self, repo: Path, environment: dict):
+        self.proc = subprocess.Popen(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "--batch"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     env=environment)
+
+    def read(self, spec: str) -> bytes | None:
+        if "\n" in spec or self.proc.poll() is not None:
+            return None
+        timer = threading.Timer(self.TIMEOUT, self.proc.kill)
+        timer.start()
+        try:
+            self.proc.stdin.write(spec.encode("utf-8", errors="surrogateescape") + b"\n")
+            self.proc.stdin.flush()
+            header = self.proc.stdout.readline().split()
+            if len(header) != 3 or not header[2].isdigit():
+                return None  # "<spec> missing" / "ambiguous", or the reader died
+            size = int(header[2])
+            data = self.proc.stdout.read(size)
+            if len(data) != size or self.proc.stdout.read(1) != b"\n":
+                self.proc.kill()
+                return None
+            return data if header[1] == b"blob" else None
+        except OSError:
+            return None
+        finally:
+            timer.cancel()
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.stdin.close()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+_BLOB_READERS: dict[tuple[str, str], BlobReader] = {}
+
+
+@contextlib.contextmanager
+def batch_reads(repo: Path, revision: str | None, environment: dict):
+    """Serve read_source's revision reads from one BlobReader for the duration of a scan."""
+    if revision is None or (str(repo), revision) in _BLOB_READERS:
+        yield
+        return
+    key = (str(repo), revision)
+    _BLOB_READERS[key] = BlobReader(repo, environment)
+    try:
+        yield
+    finally:
+        _BLOB_READERS.pop(key).close()
+
+
 def read_source(repo: Path, path: str, revision: str | None, environment: dict) -> str:
     """The scanned revision's bytes of one file (the working tree's when no revision is pinned)."""
     if revision is None:
         return (repo / path).read_bytes().decode("utf-8", errors="replace")  # no newline translation (CRLF)
+    reader = _BLOB_READERS.get((str(repo), revision))
+    data = reader.read(f"{revision}:{path}") if reader else None
+    if data is not None:
+        return data.decode("utf-8", errors="replace")
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "show", f"{revision}:{path}"],
                          capture_output=True, timeout=15, env=environment)
     if out.returncode:
@@ -2044,6 +2110,18 @@ def computed_import_sites(src: Source):
 def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
          policy_files: tuple = (),
          report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The reader scan; at a revision, every file read goes through one `git cat-file --batch` process."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("reader scan revision must be an immutable commit")
+    with batch_reads(repo, revision, environment):
+        return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files, report=report)
+
+
+def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
+          policy_files: tuple = (),
+          report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
     pkgs = workspace_graph(manifest_root or repo, cfg)

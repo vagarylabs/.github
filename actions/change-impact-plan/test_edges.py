@@ -1139,6 +1139,47 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"services/a/t.py names \.\./\.\., the repository root or above it"):
             self.scan()
 
+    def test_one_batch_reader_serves_a_scans_revision_reads_byte_for_byte(self):
+        # perf: one `git cat-file --batch` per scan, not one `git show` per file; the bytes are git show's exactly.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\r\n",
+                      "scripts__bin.txt": "caf\u00e9\n"})
+        (self.repo / "scripts/raw.txt").write_bytes(b"ok \xff\xfe\n")
+        os.symlink("x.mjs", self.repo / "scripts/link.mjs")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit",
+                        "-qm", "r", "--no-gpg-sign"], check=True)
+        rev = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        shown = lambda path: subprocess.run(["git", "-C", str(self.repo), "show", f"{rev}:{path}"], capture_output=True,
+                                            check=True).stdout.decode("utf-8", errors="replace")
+        real_popen, real_run, spawned, shows = subprocess.Popen, subprocess.run, [], []
+        def counting(*a, **k):
+            spawned.append(a[0])
+            return real_popen(*a, **k)
+        def run_counting(*a, **k):
+            if "show" in a[0]:
+                shows.append(a[0])
+            return real_run(*a, **k)
+        paths = ("scripts/x.mjs", "scripts/bin.txt", "scripts/raw.txt", "scripts/link.mjs", "scripts/x.mjs")
+        expected = {path: shown(path) for path in paths}  # before the counters go on
+        with patch.object(E.subprocess, "Popen", counting), patch.object(E.subprocess, "run", run_counting), \
+                E.batch_reads(self.repo, rev, env):
+            for path in paths:
+                self.assertEqual(E.read_source(self.repo, path, rev, env), expected[path], path)
+            self.assertEqual(len([c for c in spawned if "cat-file" in c]), 1, "one reader for every read")
+            self.assertEqual(shows, [], "no per-file git show while the reader serves")
+            with self.assertRaisesRegex(ValueError, "cannot read scripts/gone.mjs at the scanned revision"):
+                E.read_source(self.repo, "scripts/gone.mjs", rev, env)  # missing: falls back to git show, which refuses
+            with self.assertRaisesRegex(ValueError, "cannot read scripts/a\nb at the scanned revision"):
+                E.read_source(self.repo, "scripts/a\nb", rev, env)  # a newline cannot go through --batch
+            E._BLOB_READERS[(str(self.repo), rev)].proc.kill()
+            E._BLOB_READERS[(str(self.repo), rev)].proc.wait()
+            self.assertEqual(E.read_source(self.repo, "scripts/x.mjs", rev, env), expected["scripts/x.mjs"],
+                             "a dead reader falls back to git show")
+        self.assertNotIn((str(self.repo), rev), E._BLOB_READERS, "the reader closes with its scan")
+        deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=rev)  # a whole scan through the reader
+        self.assertIn("a", deps)
+
     def test_the_action_judges_the_candidate_with_the_base_config_only(self):
         # A PR cannot use its own new registry entries: action.yml runs `check` with the BASE copy of the config and the
         # base manifests, never the candidate's (root's ruling on #33 round 3).

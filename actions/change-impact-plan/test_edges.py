@@ -945,6 +945,31 @@ class ImportAttributionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "may leave its package"):
                     self.scan(cfg)
 
+    def test_python_loaders_get_fix_1_and_fix_2_shape(self):
+        # Root's R4 of #33 carried into 1.5.1's Python loaders: an unowned file's loaders are checked and select its
+        # own unit, a literal load naming no tracked file refuses, and reach "package" refuses outside every package.
+        self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        self.files(**{"scripts__x.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
+                                       '"m", os.path.join(os.path.dirname(__file__), "..", "services", "b", "m.py"))\n',
+                      "services__b__m.py": "M = 1\n",
+                      "services__a__run.sh": "#!/bin/bash\npython3 ../../scripts/x.py\n"})
+        deps, readers, report = self.scan()
+        self.assertEqual(readers["scripts"], {"b"}, "x.py's own unit, the scripts/ reader job, loads b")
+        self.assertEqual(deps["a"], {"b"}, "a runs x.py, so a is credited with what it loads")
+        self.assertEqual(report["unowned_callers"], {"scripts/x.py": {"unit": "scripts", "reaches": ["b"]}})
+        self.files(**{"services__a__load.py": "import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(__file__), "
+                                               '"..", "..", "scripts", "gone.py"))\n'})
+        with self.assertRaisesRegex(ValueError, "a reaches scripts/gone.py, which names no tracked file"):
+            self.scan()
+        (self.repo / "services/a/load.py").unlink()
+        self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/x.py", "expr": "name", "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, 'declared reach "package", but scripts/x.py is outside every package'):
+            self.scan(cfg)
+
     def test_pathlib_edits_evaluate_and_the_floor_judges_the_evaluated_prefix(self):
         # vagary-core's evidence app vendors a package INSIDE itself: PACKAGE / "scripts/..." is its own subdirectory,
         # not the top-level scripts/ (spine, 2026-10-27; a rewrite to the repo-root copy would have broken the service).

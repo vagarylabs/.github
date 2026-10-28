@@ -93,6 +93,9 @@ def validate_manifest(m):
         if not isinstance(rf, list) or not all(isinstance(x, str) and x for x in rf):
             raise IntegrityError("manifest: %s.ratchet_files must be a list of paths" % name)
     validate_timeout_floor(m.get("timeout_floor"))
+    sr = m.get("sibling_read")
+    if not isinstance(sr, dict) or sr.get("mode") not in ("report", "enforce"):
+        raise IntegrityError("manifest: sibling_read.mode must be report or enforce")
     return m
 
 
@@ -1777,6 +1780,104 @@ def summary(lines):
     sys.stdout.write(text)
 
 
+# ---------- sibling-read (root's class fix, 2026-10-27) ----------
+# A freshly minted App installation token is not visible everywhere at once: a clone about a second later can be
+# answered "Repository not found" with nothing wrong (vagaris #825, core #920). The ONE way to read a sibling repository
+# with a fresh token is vagarylabs/.github/actions/sibling-repo-read, which waits for readiness. So a job that mints
+# with actions/create-github-app-token itself and then reads a sibling (an actions/checkout of another repository, or a
+# git clone/fetch/ls-remote while the job names a github.com URL) is refused. A mint alone (Renovate's) is not.
+_SR_MINT = re.compile(r"^\s*(?:-\s+)?uses\s*:\s*['\"]?actions/create-github-app-token@")
+_SR_CHECKOUT = re.compile(r"^\s*(?:-\s+)?uses\s*:\s*['\"]?actions/checkout@")
+_SR_STEP = re.compile(r"^\s*-\s")
+_SR_REPOSITORY = re.compile(r"^\s+repository\s*:\s*['\"]?(?P<v>[^'\"#\s][^'\"#]*?)['\"]?\s*(?:#.*)?$")
+_SR_GIT_READ = re.compile(r"\bgit\b[^\n]*?\s(?:clone|fetch|ls-remote|pull)\b")
+_SR_GITHUB_URL = re.compile(r"https://github\.com/")
+# The checkout's own remote is no sibling: `git fetch origin main` reads the repository under test.
+_SR_OWN_REMOTE = re.compile(r"\s(?:fetch|pull|ls-remote)\s+(?:-\S+\s+)*origin(?:\s|$)")
+_SR_JOB = re.compile(r"^  ([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(?:#.*)?$")
+_SR_FILE = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$|(?:^|/)action\.ya?ml$")
+
+
+def _sr_units(text):
+    """(job id, first line number, lines) per job of a workflow, or one ("steps", 1, lines) unit for a composite action."""
+    lines = text.split("\n")
+    jobs_at = next((i for i, l in enumerate(lines) if re.match(r"^jobs\s*:\s*(?:#.*)?$", l)), None)
+    if jobs_at is None:
+        return [("steps", 1, lines)]
+    units, current, start = [], None, 0
+    for i in range(jobs_at + 1, len(lines)):
+        line = lines[i]
+        if line and not line.startswith((" ", "#")):
+            break  # the next top-level key ends jobs:
+        job = _SR_JOB.match(line)
+        if job:
+            if current is not None:
+                units.append((current, start + 1, lines[start:i]))
+            current, start = job.group(1), i
+    if current is not None:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i] and not lines[i].startswith((" ", "#"))), len(lines))
+        units.append((current, start + 1, lines[start:end]))
+    return units
+
+
+def sibling_read_findings(text):
+    """[(job, line, what)] for one workflow or composite action text (see the sibling-read note above)."""
+    findings = []
+    for job, first, lines in _sr_units(text):
+        mint = next((i for i, l in enumerate(lines) if _SR_MINT.match(l)), None)
+        if mint is None:
+            continue
+        # Logical lines: a shell line continued with a trailing backslash is one command (`git -c ... \\` then
+        # `clone ... https://github.com/...` on the next line is one clone).
+        after, k = [], mint + 1
+        while k < len(lines):
+            start, text = k, lines[k]
+            while text.endswith("\\") and k + 1 < len(lines):
+                k += 1
+                text = text[:-1] + " " + lines[k].strip()
+            after.append((start, text))
+            k += 1
+        names_github = any(_SR_GITHUB_URL.search(l) for _, l in after)
+        in_checkout = False
+        for k, line in after:
+            n = first + k
+            if _SR_STEP.match(line):
+                in_checkout = False  # a new step; `uses:` may be its first line or follow `- name:`
+            if _SR_CHECKOUT.match(line):
+                in_checkout = True
+            repo = _SR_REPOSITORY.match(line) if in_checkout else None
+            if repo and "github.repository" not in repo.group("v"):
+                findings.append((job, n, "actions/checkout of %s after a raw create-github-app-token" % repo.group("v")))
+            elif names_github and _SR_GIT_READ.search(line) and not _SR_OWN_REMOTE.search(line) \
+                    and not line.lstrip().startswith("#"):
+                findings.append((job, n, "a git read of a github.com repository after a raw create-github-app-token"))
+    return findings
+
+
+def run_sibling_read(m, repo, base, head):
+    mode = m["sibling_read"]["mode"]
+    resolve_head(base, head)
+    files = [p for p in git("ls-tree", "-r", "--name-only", head).splitlines() if _SR_FILE.search(p)]
+    rows = []
+    for path in files:
+        text = blob(head, path)
+        for job, line, what in sibling_read_findings(text or ""):
+            rows.append((path, job, line, what))
+    level = "error" if mode == "enforce" else "warning"
+    lines = ["## Sibling reads with a fresh App token: %s" % repo,
+             "%d workflow/action files read at head `%s` (manifest `sibling_read`, mode `%s`)." % (len(files), head, mode)]
+    for path, job, line, what in rows:
+        lines.append("- `%s` job `%s` line %d: %s. Use vagarylabs/.github/actions/sibling-repo-read, which waits until "
+                     "the token can see the repository." % (path, job, line, what))
+        print("::%s file=%s,line=%d,title=sibling read without readiness::%s" % (level, path, line, what))
+    if not rows:
+        lines.append("No raw create-github-app-token is followed by a sibling read.")
+    elif mode == "report":
+        lines.append("Report-only (mode `report`): %d listed, not enforced." % len(rows))
+    summary(lines)
+    return 1 if mode == "enforce" and rows else 0
+
+
 def run_integrity(m, repo, base, head):
     entry = repo_entry(m, repo)
     mb = resolve(base, head)
@@ -1899,18 +2000,19 @@ def run_timeout_floor(m, repo, base, head):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor"))
+    ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor", "sibling-read"))
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", help="required, except in timeout-floor mode (which reads the head tree only)")
     ap.add_argument("--head", required=True)
     a = ap.parse_args(argv)
     try:
-        if a.base is None and a.mode != "timeout-floor":
+        if a.base is None and a.mode not in ("timeout-floor", "sibling-read"):
             raise IntegrityError("--base is required in %s mode" % a.mode)
         with open(a.manifest, encoding="utf-8") as fh:
             m = validate_manifest(json.load(fh))
-        fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor}[a.mode]
+        fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor,
+              "sibling-read": run_sibling_read}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:
         print("::error title=trusted %s::%s" % (a.mode, exc))

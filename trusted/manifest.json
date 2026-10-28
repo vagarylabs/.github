@@ -24,6 +24,7 @@
       "ratchet_files": ["scripts/test-ci-hosted-routing.py"]
     }
   },
+  "sibling_read": {"mode": "report"},
   "timeout_floor": {
     "minutes": 6,
     "mode": "report",

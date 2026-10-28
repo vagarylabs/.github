@@ -103,3 +103,14 @@ jobs:
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" timeout-floor --manifest "$d/manifest.json" \
             --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
+      # The same trusted bytes the step above wrote: a fresh App token reads a sibling repository only through
+      # vagarylabs/.github/actions/sibling-repo-read, which waits until the token can see it (root, 2026-10-27).
+      - name: Check that a fresh App token reads a sibling only through sibling-repo-read (HEAD tree)
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          python3 -I "$d/classify.py" sibling-read --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA"

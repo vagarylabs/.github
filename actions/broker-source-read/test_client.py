@@ -484,7 +484,7 @@ class OutputTests(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertEqual(stat.S_IMODE(pathlib.Path(f"{td}/sub/t").stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(pathlib.Path(f"{td}/sub").stat().st_mode), 0o700)
-            self.assertEqual(gh_out.read_text(), f"token={tok}\n")
+            self.assertEqual(gh_out.read_text(), f"token={tok}\ncached=unknown\n")
             masks = [l for l in out.splitlines() if l.startswith("::add-mask::")]
             # every credential of the chain is masked, in the order received, the install token last
             self.assertEqual(masks, [f"::add-mask::{v}" for v in (CREDS["oidc"], CREDS["access"], CREDS["id"], tok)])
@@ -546,8 +546,9 @@ class RevokeOnFailureTests(unittest.TestCase):
             fake, original = Fake(), Sentinel("the write failed")
             seen_at_failure = []
 
-            def deliver(tokens):
-                self.assertEqual(tokens, {"vagarylabs/vagary-core": self.TOKEN})
+            def deliver(tokens, cached):
+                self.assertEqual((tokens, cached), ({"vagarylabs/vagary-core": self.TOKEN},
+                                                    {"vagarylabs/vagary-core": "unknown"}))
                 seen_at_failure.append(list(fake.deletes()))
                 raise original
             exc, err = self.mint_direct(purpose, fake, deliver)
@@ -567,7 +568,7 @@ class RevokeOnFailureTests(unittest.TestCase):
                           (DeleteBlowsUp(), "NOT revoked (unexpected RuntimeError)")):
             original = Sentinel("the write failed")
 
-            def deliver(tokens):
+            def deliver(tokens, cached):
                 raise original
             exc, err = self.mint_direct("image_pull", fake, deliver)
             self.assertIs(exc, original, why)
@@ -659,6 +660,69 @@ class RevokeOnFailureTests(unittest.TestCase):
             self.assertIn("unexpected RuntimeError", err)
             self.assertEqual(fake.deletes(), [f"token {install_token('vagarylabs/a')}"])
             self.assertFalse(pathlib.Path(f"{td}/d").exists())
+
+
+class CachedEchoTests(unittest.TestCase):
+    """`cached` repeats the broker's word, in the step output and the log line: true or false when its reply carries a
+    JSON boolean `cached`, unknown otherwise. Today's reply has no such field, so today it is unknown; never
+    inferred (not from expires_at, not from the purpose)."""
+
+    def mint(self, fake, env_extra=None, **kw):
+        with tmpdir() as td:
+            gh_out = pathlib.Path(td) / "gh-out"
+            gh_out.write_text("")
+            kw.setdefault("token_file", f"{td}/t")
+            rc, out, err, _ = run(mint_args(**kw), fake, env={**ENV, "GITHUB_OUTPUT": str(gh_out), **(env_extra or {})})
+            self.assertEqual(rc, 0, err)
+            outputs = dict(l.split("=", 1) for l in gh_out.read_text().splitlines())
+        return outputs, err
+
+    def test_no_cached_field_is_unknown_for_every_purpose(self):
+        for purpose in client.PURPOSES:
+            outputs, err = self.mint(Fake(), purpose=purpose)
+            self.assertEqual(outputs, {"cached": "unknown"}, purpose)
+            self.assertIn(f"vagarylabs/vagary-core minted for {purpose} (", err)
+            self.assertIn("; cached: unknown (the broker's reply does not say); echo checked; visible", err)
+
+    def test_an_expiry_or_a_purpose_never_stands_in_for_it(self):
+        # A token about to expire (the shape of a cache hit) and a never-cached purpose both stay unknown.
+        for purpose in ("build_checkout", "image_pull"):
+            outputs, _ = self.mint(Fake(echo={"vagarylabs/vagary-core": {"expires_at": "2026-01-01T00:00:01Z"}}),
+                                   purpose=purpose)
+            self.assertEqual(outputs["cached"], "unknown", purpose)
+
+    def test_a_boolean_cached_field_is_echoed(self):
+        for value, word in ((True, "true"), (False, "false")):
+            outputs, err = self.mint(Fake(echo={"vagarylabs/vagary-core": {"cached": value}}))
+            self.assertEqual(outputs, {"cached": word})
+            self.assertIn(f"; cached: {word}; echo checked; visible", err)
+
+    def test_a_cached_field_that_is_not_a_json_boolean_is_unknown(self):
+        for value in ("true", "yes", 1, 0, {}, []):
+            outputs, _ = self.mint(Fake(echo={"vagarylabs/vagary-core": {"cached": value}}))
+            self.assertEqual(outputs, {"cached": "unknown"}, value)
+
+    def test_several_repositories_give_their_common_value_or_mixed(self):
+        repos = "vagarylabs/a vagarylabs/b"
+        for echo, want in (({}, "unknown"),
+                           ({"vagarylabs/a": {"cached": True}, "vagarylabs/b": {"cached": True}}, "true"),
+                           ({"vagarylabs/a": {"cached": True}, "vagarylabs/b": {"cached": False}}, "mixed"),
+                           ({"vagarylabs/a": {"cached": False}}, "mixed")):
+            with tmpdir() as td:
+                outputs, err = self.mint(Fake(echo=echo), repos=repos, token_file="", token_dir=f"{td}/d")
+            self.assertEqual(outputs, {"cached": want}, echo)
+            self.assertEqual(len(re.findall(r"minted for build_checkout .*; cached: ", err)), 2)
+
+    def test_the_token_output_and_the_cached_output_share_the_file(self):
+        outputs, _ = self.mint(Fake(echo={"vagarylabs/vagary-core": {"cached": True}}), github_output="token")
+        self.assertEqual(outputs, {"token": install_token("vagarylabs/vagary-core"), "cached": "true"})
+
+    def test_without_github_output_the_log_line_still_says(self):
+        with tmpdir() as td:
+            env = {k: v for k, v in ENV.items() if k != "GITHUB_OUTPUT"}
+            rc, _, err, _ = run(mint_args(token_file=f"{td}/t"), Fake(), env=env)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("; cached: unknown (the broker's reply does not say);", err)
 
 
 class RevokeTests(unittest.TestCase):
@@ -948,6 +1012,11 @@ class ActionTests(unittest.TestCase):
         names = re.findall(r"^  ([a-z_-]+):$", block, re.M)
         self.assertEqual(names, ["mode", "purpose", "repository", "provider", "service_account", "audience",
                                  "token-file", "token-dir", "output", "readiness-seconds"])
+
+    def test_outputs(self):
+        block = self.text.split("\noutputs:\n", 1)[1].split("\nruns:\n", 1)[0]
+        self.assertEqual(re.findall(r"^  ([a-z_-]+):$", block, re.M), ["token", "cached"])
+        self.assertIn("value: ${{ steps.mint.outputs.cached }}", block)
 
     def test_no_expression_inside_a_run_script(self):
         in_run, bad = False, []

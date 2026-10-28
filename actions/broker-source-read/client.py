@@ -22,6 +22,9 @@ mint    The chain, every leg keyless and short-lived:
         repository) and/or, masked, to $GITHUB_OUTPUT (--github-output NAME, one repository). Never printed, never
         logged, never in argv. Every one of those paths must be absolute and strictly inside $RUNNER_TEMP once
         resolved (no `..`, no symlink leading out); RUNNER_TEMP unset is refused. Both modes, before any call.
+        `cached`: whether the broker says it handed back a token from its cache, in the log line and (when
+        $GITHUB_OUTPUT is set) the step output `cached`: true, false, or unknown when the reply does not say (see
+        cached_echo: today's broker never says).
 revoke  Reads each token from its 0600 file (never argv). For a revocable purpose it calls DELETE
         <api>/installation/token: 204 is revoked; 401 or 404 means the token is already gone. The file is removed
         either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller. Each file
@@ -235,6 +238,26 @@ def echo_problems(body: dict, repository: str, purpose: str) -> list[str]:
     return problems
 
 
+def cached_echo(body: dict) -> str:
+    """The broker's own word on whether this token came from its cache: 'true' or 'false' when the reply carries a JSON
+    boolean `cached`, else 'unknown'. Never inferred: expires_at cannot stand in for it (a cache hit minted a second
+    ago looks fresh), nor can the purpose.
+
+    The broker does not say today. vps-ansible origin/main 2aac710f: source_read() answers {schema, repository, token,
+    permissions, expires_at, request_id} (source_delivery_broker.py:1083-1085), and Minter.token() returns a cache hit
+    as (token, granted, expires) (:616-618), the same shape as a fresh mint (:658), so the handler cannot tell either.
+    To make this true/false the broker needs: Minter.token() to report whether it served the scope from its cache, and
+    source_read() to add `"cached": <bool>` to its 200 (additive under source_read/v1, as `permissions` was)."""
+    value = body.get("cached")
+    return "true" if value is True else "false" if value is False else "unknown"
+
+
+def cached_output(cached: dict[str, str]) -> str:
+    """The step output for several repositories: their common value, or 'mixed'."""
+    values = set(cached.values())
+    return values.pop() if len(values) == 1 else "mixed"
+
+
 def revoke_token(token: str, api: str, http: Callable, sleep: Callable) -> str:
     """DELETE <api>/installation/token with the token itself: 'revoked' (204) or 'already gone' (401/404); any other
     answer, after the bounded retry, raises LegFailed."""
@@ -285,9 +308,9 @@ def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, s
 
 def mint(purpose: str, repositories: list[str], resource: str, service_account: str, audience: str, api: str,
          readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out,
-         deliver: Callable[[dict[str, str]], None] = lambda tokens: None) -> dict[str, str]:
-    """{repository: token}, every one echo-checked, visible and handed to `deliver` (which writes them); or the
-    failure.
+         deliver: Callable[[dict[str, str], dict[str, str]], None] = lambda tokens, cached: None) -> dict[str, str]:
+    """{repository: token}, every one echo-checked, visible and handed to `deliver` (which writes them) with
+    {repository: cached_echo}; or the failure.
 
     Each token is recorded the moment it is received and masked. From then on ANY failure (an echo mismatch, a
     readiness timeout, a transport error, a write error in `deliver`, an unexpected exception, an interrupt) first
@@ -302,6 +325,7 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
     access = federated_access_token(resource, oidc, http, sleep, out)
     id_token = broker_id_token(service_account, audience, access, http, sleep, out)
     obtained: dict[str, str] = {}
+    cached: dict[str, str] = {}
     try:
         for repo in repositories:
             leg = f"broker source.read {repo} ({purpose})"
@@ -313,8 +337,9 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
             if problems:
                 outcome = _revoke_noting(obtained.pop(repo), api, http, sleep)
                 raise LegFailed(f"{leg}: echo check failed: {'; '.join(problems)}; the token was {outcome}")
+            cached[repo] = cached_echo(body)
         wait_ready(obtained, api, readiness, http, sleep, clock)
-        deliver(obtained)
+        deliver(obtained, cached)
     except BaseException as err:
         if PURPOSES[purpose]["revocable"]:
             for repo, tok in obtained.items():
@@ -398,9 +423,10 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
     if a.github_output:
         inside_runner_temp(env["GITHUB_OUTPUT"], "GITHUB_OUTPUT file the token is written to", env)
 
-    def deliver(tokens: dict[str, str]) -> None:
-        """Write every token, all or nothing: on any failure each file already written is removed again, then the
-        failure goes on to mint(), which revokes and re-raises it. An OSError becomes LegFailed naming its type."""
+    def deliver(tokens: dict[str, str], cached: dict[str, str]) -> None:
+        """Write every token, then the step outputs, all or nothing: on any failure each file already written is
+        removed again, then the failure goes on to mint(), which revokes and re-raises it. An OSError becomes LegFailed
+        naming its type. Last, one log line per repository."""
         written: list[pathlib.Path] = []
         try:
             if a.token_file:
@@ -413,9 +439,11 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
                 for repo, token in tokens.items():
                     written.append(d / repo.replace("/", "__"))
                     _write_secret(written[-1], token)
-            if a.github_output:
+            if env.get("GITHUB_OUTPUT"):
                 with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-                    fh.write(f"{a.github_output}={tokens[repos[0]]}\n")
+                    if a.github_output:
+                        fh.write(f"{a.github_output}={tokens[repos[0]]}\n")
+                    fh.write(f"cached={cached_output(cached)}\n")
         except BaseException as err:
             for p in written:
                 try:
@@ -428,12 +456,14 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
             if isinstance(err, OSError):
                 raise LegFailed(f"writing the token failed ({type(err).__name__})") from None
             raise
+        perms = ",".join(f"{k}:{v}" for k, v in sorted(PURPOSES[purpose]["permissions"].items()))
+        for repo in repos:
+            said = "" if cached[repo] != "unknown" else " (the broker's reply does not say)"
+            print(f"broker-source-read: {repo} minted for {purpose} ({perms}); cached: {cached[repo]}{said}; echo "
+                  "checked; visible", file=sys.stderr)
 
     mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env, http, sleep,
          clock, out, deliver)
-    perms = ",".join(f"{k}:{v}" for k, v in sorted(PURPOSES[purpose]["permissions"].items()))
-    for repo in repos:
-        print(f"broker-source-read: {repo} minted for {purpose} ({perms}); echo checked; visible", file=sys.stderr)
     return 0
 
 

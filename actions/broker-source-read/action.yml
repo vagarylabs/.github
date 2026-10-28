@@ -34,6 +34,8 @@
 #   - readiness: GET /repos/<owner>/<name> answers 200 within `readiness-seconds` (a fresh installation token is not
 #     visible everywhere at once; same bound and backoff as sibling-repo-read).
 # All or nothing: on any failure nothing is written, and tokens already minted for a revocable purpose are revoked.
+# The `cached` output and log line repeat the broker's word on whether the token came from its cache: true, false,
+# or unknown when the reply does not say (today it never does).
 #
 # Revoke reads the token from its file and removes the file. It calls DELETE /installation/token for image_pull and
 # repository_census (minted uncached, one per request). A build_checkout token is NOT deleted: the broker caches it
@@ -88,6 +90,9 @@ outputs:
   token:
     description: The minted token, only when `output` is true (masked). Prefer token-file.
     value: ${{ steps.mint.outputs.token }}
+  cached:
+    description: mint only. Whether the broker handed back a token from its cache, as the broker says it. true, false, or unknown when its reply does not say, which is every reply today (the source_read/v1 answer carries no cached field; client.py cached_echo names what the broker must add). Several repositories give their common value, or mixed.
+    value: ${{ steps.mint.outputs.cached }}
 runs:
   using: composite
   steps:

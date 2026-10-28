@@ -93,6 +93,16 @@ jobs:
       - name: fetch-release-asset tests (curl stubbed; private temp cache) and release-assets.lock lint
         run: bash actions/fetch-release-asset/test_fetch.sh
 
+  sibling-repo-read-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: sibling-repo-read tests (a localhost API stub and local bare remotes; no network, no real token)
+        run: python3 -m unittest discover -s actions/sibling-repo-read -p 'test_*.py' -v
+
   secret-scan-scope-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)

@@ -24,7 +24,9 @@ mint    The chain, every leg keyless and short-lived:
         resolved (no `..`, no symlink leading out); RUNNER_TEMP unset is refused. Both modes, before any call.
 revoke  Reads each token from its 0600 file (never argv). For a revocable purpose it calls DELETE
         <api>/installation/token: 204 is revoked; 401 or 404 means the token is already gone. The file is removed
-        either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller.
+        either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller. Each file
+        is handled on its own: one that cannot be read (unreadable, vanished), revoked or removed is reported, the rest
+        are still revoked, and the exit is 1 at the end.
 
 Failure is loud and never a pass. Any leg that does not succeed exits 1 and names the leg and the HTTP status. 429,
 5xx and transport errors (a refused or dropped connection, a body cut short, a garbled status line) are retried with a
@@ -441,23 +443,35 @@ def _token_files(a, env: dict) -> list[pathlib.Path]:
     if a.token_file:
         return [inside_runner_temp(a.token_file, "token-file", env)]
     d = inside_runner_temp(a.token_dir, "token-dir", env)
-    if not d.exists():
-        return []
-    if d.is_symlink() or not d.is_dir():
-        raise LegFailed(f"revoke: {d} is not a directory")
-    files = sorted(d.iterdir())
+    try:
+        if not (d.exists() or d.is_symlink()):
+            return []
+        if d.is_symlink() or not d.is_dir():
+            raise LegFailed(f"revoke: {d} is not a directory")
+        files = sorted(d.iterdir())
+    except OSError as err:
+        raise LegFailed(f"revoke: {d} cannot be listed ({type(err).__name__})") from None
     stray = [p.name for p in files if not TOKEN_FILE_RE.fullmatch(p.name)]
     if stray:
         raise LegFailed(f"revoke: {d} holds a file that is not a token file: {stray[0]!r}")
     return files
 
 
+def _present(path: pathlib.Path) -> bool:
+    try:
+        return path.exists() or path.is_symlink()
+    except OSError:
+        return True                                # cannot tell: the per-file handler reports it
+
+
 def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
+    """Each file on its own: one that cannot be read (unreadable, vanished, not UTF-8), revoked or removed is
+    reported as it happens, the remaining files are still revoked and removed, and the exit is 1 at the end."""
     purpose = _purpose(a.purpose)
     api = _api(env)
     files = _token_files(a, env)
-    revocable, rc = PURPOSES[purpose]["revocable"], 0
-    present = [p for p in files if p.exists() or p.is_symlink()]
+    revocable, failed = PURPOSES[purpose]["revocable"], []
+    present = [p for p in files if _present(p)]
     if not present:
         print("broker-source-read: no token file, so nothing to revoke (the mint did not write one)", file=sys.stderr)
     for path in present:
@@ -473,15 +487,29 @@ def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
                       "file is removed", file=out, flush=True)
         except LegFailed as err:
             print(f"::error::broker-source-read: {err}", file=sys.stderr)
-            rc = 1
+            failed.append(path.name)
+        except (OSError, ValueError) as err:       # ValueError: UnicodeDecodeError, a file that is not UTF-8
+            print(f"::error::broker-source-read: revoke {path.name}: the token file could not be read "
+                  f"({type(err).__name__}); the remaining files are still revoked", file=sys.stderr)
+            failed.append(path.name)
         finally:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as err:
+                print(f"::error::broker-source-read: revoke {path.name}: the file could not be removed "
+                      f"({type(err).__name__})", file=sys.stderr)
+                if path.name not in failed:
+                    failed.append(path.name)
     if a.token_dir:
         try:
             pathlib.Path(a.token_dir).rmdir()
         except OSError:
             pass
-    return rc
+    if failed:
+        print(f"::error::broker-source-read: revoke: {len(failed)} of {len(present)} token file(s) failed: "
+              f"{', '.join(failed)}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str], env: dict | None = None, http: Callable = _http,

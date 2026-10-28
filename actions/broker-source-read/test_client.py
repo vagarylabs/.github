@@ -10,6 +10,7 @@ import http.client
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import socketserver
@@ -725,6 +726,74 @@ class RevokeTests(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertEqual(sorted(fake.deletes()), ["token fixture-token-a", "token fixture-token-b"])
             self.assertFalse(d.exists())
+
+    def three_files(self, td) -> pathlib.Path:
+        d = pathlib.Path(td) / "tokens"
+        for n in ("a", "b", "c"):
+            self.write(d / f"vagarylabs__{n}", f"fixture-token-{n}")
+        return d
+
+    def revoke_dir(self, d, fake):
+        return run(["revoke", "--purpose", "image_pull", "--token-dir", str(d)], fake)
+
+    def test_one_unreadable_or_vanished_file_is_reported_and_the_rest_are_still_revoked(self):
+        real_read = pathlib.Path.read_text
+
+        def unreadable(path, *a, **kw):
+            if path.name == "vagarylabs__b":
+                raise PermissionError(13, "Permission denied")   # chmod 000 proves nothing when CI runs as root
+            return real_read(path, *a, **kw)
+
+        def vanished(path, *a, **kw):
+            if path.name == "vagarylabs__b":
+                os.unlink(path)                                   # gone between the listing and the read
+            return real_read(path, *a, **kw)
+        for fault, why in ((unreadable, "PermissionError"), (vanished, "FileNotFoundError")):
+            with tmpdir() as td:
+                d, fake = self.three_files(td), Fake()
+                with mock.patch.object(pathlib.Path, "read_text", fault):
+                    rc, _, err, _ = self.revoke_dir(d, fake)
+                self.assertEqual(rc, 1, why)
+                self.assertEqual(fake.deletes(), ["token fixture-token-a", "token fixture-token-c"], why)
+                self.assertIn(f"revoke vagarylabs__b: the token file could not be read ({why})", err)
+                self.assertIn("revoke: 1 of 3 token file(s) failed: vagarylabs__b", err)
+                self.assertFalse(d.exists(), why)                 # every file removed, then the directory
+
+    def test_a_token_file_that_is_not_utf8_is_reported_and_the_rest_are_still_revoked(self):
+        with tmpdir() as td:
+            d, fake = self.three_files(td), Fake()
+            (d / "vagarylabs__b").write_bytes(b"\xff\xfe-not-utf-8")
+            rc, _, err, _ = self.revoke_dir(d, fake)
+            self.assertEqual(rc, 1)
+            self.assertEqual(fake.deletes(), ["token fixture-token-a", "token fixture-token-c"])
+            self.assertIn("revoke vagarylabs__b: the token file could not be read (UnicodeDecodeError)", err)
+            self.assertFalse(d.exists())
+
+    def test_a_file_that_cannot_be_removed_is_reported_and_the_rest_are_still_revoked(self):
+        real_unlink = pathlib.Path.unlink
+
+        def stuck(path, *a, **kw):
+            if path.name == "vagarylabs__b":
+                raise PermissionError(1, "Operation not permitted")
+            return real_unlink(path, *a, **kw)
+        with tmpdir() as td:
+            d, fake = self.three_files(td), Fake()
+            with mock.patch.object(pathlib.Path, "unlink", stuck):
+                rc, _, err, _ = self.revoke_dir(d, fake)
+            self.assertEqual(rc, 1)
+            self.assertEqual(fake.deletes(), ["token fixture-token-a", "token fixture-token-b", "token fixture-token-c"])
+            self.assertIn("revoke vagarylabs__b: the file could not be removed (PermissionError)", err)
+            self.assertIn("revoke: 1 of 3 token file(s) failed: vagarylabs__b", err)
+            self.assertEqual([p.name for p in d.iterdir()], ["vagarylabs__b"])
+
+    def test_a_directory_that_cannot_be_listed_fails_named_without_a_traceback(self):
+        with tmpdir() as td:
+            d = self.three_files(td)
+            with mock.patch.object(pathlib.Path, "iterdir", side_effect=PermissionError(13, "Permission denied")):
+                rc, _, err, _ = self.revoke_dir(d, Fake())
+            self.assertEqual(rc, 1)
+            self.assertIn("cannot be listed (PermissionError)", err)
+            self.assertNotIn("unexpected", err)
 
     def test_no_file_is_nothing_to_revoke(self):
         fake = Fake()

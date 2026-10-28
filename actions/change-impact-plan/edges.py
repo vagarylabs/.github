@@ -36,7 +36,7 @@ from pathlib import Path
 if sys.flags.isolated:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex, \
-    first_match
+    first_match, classify_paths, rule_matches
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
@@ -1759,6 +1759,8 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
 #   5. DECLARED (D5): `check` fails on an imported path no `extra_edges` glob maps to at least its importers, so a change
 #      to it selects them through plan.classify_paths, and on a computed_imports entry that matches no live site.
 CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
+# Files that can import modules but that the scan does not parse (root's delta R4 of #33, N5): reaching one refuses.
+IMPORTING_UNPARSED_EXT = frozenset({"mdx", "astro", "vue", "svelte"})
 # TypeScript's own module resolution (NodeNext and bundler alike): a `.js` specifier names its `.ts`, `.tsx` or `.d.ts`
 # source, `.jsx` its `.tsx`, `.mjs` its `.mts` or `.d.mts`, `.cjs` its `.cts` or `.d.cts`. The house style writes every
 # ESM import of a TypeScript file that way (`import "../../scripts/x.js"` loads scripts/x.ts).
@@ -1771,13 +1773,6 @@ IMPORT_CALL_GREP = (r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\(|(require
 SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
 SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
                             r"/([A-Za-z0-9_.@+/-]+)")
-# Fix 1's shell module positions: the command word itself, or the script operand of an interpreter or `source`. A path
-# anywhere else on a shell line (a find -path pattern, an rm target, heredoc text) is data.
-SHELL_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-SHELL_RUNNERS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "source", ".", "node", "python", "python3", "tsx", "ts-node",
-                           "deno", "bun"})
-SHELL_PREFIXES = frozenset({"env", "time", "exec", "nice", "sudo", "command", "then", "do", "else", "elif", "if", "while",
-                            "until", "!", "{"})
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*))", re.M)
 
 
@@ -1906,8 +1901,11 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
         """`spec` resolved from `path`'s directory: the package that owns it, or None (recorded as an edge when it
         stays inside the repository)."""
         target = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
+        if target in (".", "..") or target.startswith("../"):
+            raise ValueError(f"unresolved ({path} names {spec}, the repository root or above it: that reaches every file, "
+                             "so no mapping of it can be narrower than FULL)")
         found = owner(target)
-        if found is None and target not in (".", "..") and not target.startswith("../"):
+        if found is None:
             edges.setdefault(path, set()).add(target)
         return found
 
@@ -2022,10 +2020,12 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     if pending:
         finish(pending.pop())
     unowned: dict[str, dict] = {}
-    imports, unused, unresolved_data = import_closure(repo, es, roots, owner, by_dir, revision, environment,
-                                                      excludes, always, edges, outside, deps, readers, unowned)
+    imports, unused, unresolved_data, unit_imports = import_closure(repo, es, roots, owner, by_dir, revision, environment,
+                                                                    excludes, always, edges, outside, deps, readers,
+                                                                    unowned)
     if report is not None:
         report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
+        report["unit_imports"] = {path: sorted(found) for path, found in sorted(unit_imports.items())}
         report["unowned_callers"] = {path: {"unit": row["unit"], "reaches": sorted(row["reaches"])}
                                      for path, row in sorted(unowned.items())}
         report["computed_imports_unused"] = unused
@@ -2182,7 +2182,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         # Nothing anchors it at the file: any parent step escapes, and so does naming an outside top-level directory.
         if pardir or any(t[0] == "str" and steps_up(t[3][0]) for t in tokens):
             return "escape", None
-        if any(t[0] == "str" and re.sub(r"^(?:\./|\$\{[^}]*\}/)+", "", t[3][0]).split("/")[0] in outside_tops
+        # A leading "/" is stripped too (root's delta R4 of #33, N2): `process.cwd() + "/scripts/x.mjs"` names scripts/.
+        if any(t[0] == "str" and re.sub(r"^(?:\./|/|\$\{[^}]*\}/)+", "", t[3][0]).split("/")[0] in outside_tops
                for t in tokens):
             return "escape", None
         return "none", None
@@ -2199,6 +2200,21 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         raise ValueError("edge_scan.computed_imports entries must be {file, expr, reach}, with reach package, external, "
                          "fixture or a non-empty list of repo paths")
     by_site = {(d["file"], " ".join(d["expr"].split())): d for d in declared}
+    # A name that resolves to no tracked file or directory is an UNRESOLVED ROUTE, in any position (root's delta R4 of
+    # #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
+    # to a scan that cannot run them. It refuses unless declared: {file, name, reach}, `name` the repo path it resolves
+    # to, `reach` "none" (it names nothing that runs: a test datum) or the tracked paths it stands for (each an edge).
+    names_declared = es.get("unresolved_names") or []
+    if not isinstance(names_declared, list) or any(
+            not isinstance(d, dict) or set(d) != {"file", "name", "reach"} or not isinstance(d["file"], str)
+            or not isinstance(d["name"], str) or not (d["reach"] == "none" if isinstance(d["reach"], str) else
+                                                      isinstance(d["reach"], list) and d["reach"]
+                                                      and all(isinstance(x, str) and x for x in d["reach"]))
+            for d in names_declared):
+        raise ValueError("edge_scan.unresolved_names entries must be {file, name, reach}, with reach \"none\" or a "
+                         "non-empty list of repo paths")
+    by_name = {(d["file"], posixpath.normpath(d["name"])): d for d in names_declared}
+    names_used: set = set()
     loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
     reader_dirs = set(es.get("reader_dirs") or [])
     used: set = set()
@@ -2318,134 +2334,114 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         head = read_source(repo, path, revision, environment)[:200]
         return head.startswith("#!") and re.search(r"\b(?:ba|z|da)?sh\b|\bnode\b|\bpython", head.split("\n")[0]) is not None
 
-    specifiers: dict[str, set[str]] = {}
-
-    def shell_module_names(path: str) -> set[str]:
-        """The shell lines' module positions (see SHELL_RUNNERS): the command word, or an interpreter's or `source`'s
-        script operand, with heredoc bodies skipped."""
-        here, found, end = posixpath.dirname(path), set(), None
-        for line in read_source(repo, path, revision, environment).split("\n"):
-            if end is not None:
-                if line.strip() == end:
-                    end = None
-                continue
-            t = line.strip()
-            if t.startswith("#"):
-                continue
-            heredoc = SHELL_HEREDOC.search(t)
-            for m in SHELL_SELF_DIR.finditer(t):
-                before = re.split(r"&&|\|\||[;|&(`]", t[:m.start()])[-1].replace('"', " ").replace("'", " ").split()
-                while before and (re.match(r"^\w+=", before[0]) or before[0] in SHELL_PREFIXES):
-                    before.pop(0)
-                if not before or (len(before) == 1 and before[0] in SHELL_RUNNERS):
-                    found.add(posixpath.normpath(posixpath.join(here, m.group(1))))
-            for command in re.split(r"&&|\|\||[;|&`()]|\$\(", SHELL_SELF_DIR.sub(" ", t)):
-                words = [w.strip("\"'") for w in command.split()]
-                i = 0
-                while i < len(words) and (re.match(r"^\w+=", words[i]) or words[i] in SHELL_PREFIXES):
-                    i += 1
-                if i >= len(words):
-                    continue
-                word = words[i]
-                if word in SHELL_RUNNERS:
-                    i += 1
-                    while i < len(words) and words[i].startswith("-"):
-                        i += 1
-                    word = words[i] if i < len(words) else ""
-                if word.startswith(("./", "../")):
-                    found.add(posixpath.normpath(posixpath.join(here, word)))
-            if heredoc:
-                end = heredoc.group(2)
-        return found
-
-    def module_names(path: str) -> set[str]:
-        """Fix 1's scope (root's R4 of #33, 2026-10-27): the targets `path` names in a MODULE position, where a name
-        that resolves to nothing refuses. That is an import or export-from specifier, a loader call's literal argument,
-        `new URL(x, import.meta.url)`'s first argument, and a shell line's command word or script operand. A relative
-        string anywhere else is data, which may name nothing (a test's "../../etc/passwd"); it stays a non-edge, and
-        the report lists it under unresolved_data_names."""
-        if path not in specifiers:
-            here, found = posixpath.dirname(path), set()
-            src = code_source(path)
-            if src is not None and src.ext in JS_EXT and src.ok:
-                code = src.code
-                firsts = {o + 1 for o in loader_call_opens(src)}
-                for j, t in enumerate(code):
-                    if t[0] != "str" or t[3][1] is not True or not t[3][0].startswith(("./", "../")):
-                        continue
-                    prev = code[j - 1] if j else None
-                    url = (j >= 2 and prev[0] == "open" and prev[3] == "(" and code[j - 2][0] == "word"
-                           and code[j - 2][3] == "URL")
-                    if j in firsts or url or (prev is not None and prev[0] == "word" and prev[3] in ("from", "import")):
-                        found.add(posixpath.normpath(posixpath.join(here, t[3][0])))
-            elif src is None and is_code(path):
-                found = shell_module_names(path)
-            specifiers[path] = found
-        return specifiers[path]
-
     imports: dict[str, set[str]] = {}
+    unit_imports: dict[str, set[str]] = {}  # a path outside every package -> the reader units whose files reach it
     named: dict[str, set[str]] = {}
     namers: dict[str, set[str]] = {}  # a target -> the files that name it
     for p, ts in edges.items():
         for t in ts:
             namers.setdefault(t, set()).add(p)
-    unresolved_data: set[str] = set()
-    for package in sorted({owner(p) for p in edges} - {None}):
-        queue = sorted({t for p, ts in edges.items() if owner(p) == package for t in ts})
-        seen: set = set()
+    unresolved_data: set[str] = set()  # the declared names that resolve to nothing (report only)
+
+    def closure(key: str, starts: list[str], credit, record: dict) -> None:
+        """Every route from `starts` to a fixed point. `credit(found)` credits a package read; `record[path]` gains `key`
+        for every reached file outside every package. A route that resolves to nothing refuses unless declared."""
+        queue, seen = sorted(set(starts)), set()
         while queue:
             target = queue.pop(0)
             if target in seen:
                 continue
             seen.add(target)
+            if target in (".", "..") or target.startswith("../"):
+                raise ValueError(f"unresolved ({key} reaches {target}, the repository root or above it: that reaches "
+                                 "every file, so no mapping of it can be narrower than FULL)")
             files = files_of(target)
             if not files:
-                # Never dropped: a path in a package (an untracked build output, its dist/) stands for that package's
-                # sources; one outside every package names nothing the scan can credit, so it refuses.
+                # A path in a package (an untracked build output, its dist/) stands for that package's sources.
                 found = owner(target)
                 if "node_modules" in target.split("/"):
                     continue  # an installed dependency, never tracked source: external (its manifests plan FULL)
-                if found is None:
-                    if target in loader_targets or any(target in module_names(f) for f in sorted(namers.get(target, ()))):
-                        raise ValueError(f"unresolved ({package} reaches {target}, which names no tracked file or "
-                                         "directory, so a change to what it stands for could not select it)")
+                if found is not None:
+                    credit(found)
+                    continue
+                if target in loader_targets or not namers.get(target):
+                    # A declared reach (a computed import's, or an unresolved name's) that itself names nothing.
+                    raise ValueError(f"unresolved ({key} reaches {target}, which names no tracked file or directory, so "
+                                     "a change to what it stands for could not select it)")
+                for f in sorted(namers.get(target, ())):
+                    entry = by_name.get((f, target))
+                    if entry is None:
+                        raise ValueError(f"unresolved ({f} names {target}, which is no tracked file or directory: a route "
+                                         "that resolves to nothing may stand for anything; declare it in "
+                                         "edge_scan.unresolved_names with reach \"none\" or the paths it stands for)")
+                    names_used.add((f, target))
                     unresolved_data.add(target)
-                elif found != package:
-                    deps[package].add(found)
+                    if isinstance(entry["reach"], list):
+                        queue.extend(sorted(posixpath.normpath(x) for x in entry["reach"]))
                 continue
             for path in files:
                 found = owner(path)
                 if found is not None:
-                    if found != package:
-                        deps[package].add(found)  # a package nested in a reached directory, or a link into one
+                    credit(found)  # a package nested in a reached directory, or a link into one
                     continue
-                imports.setdefault(path, set()).add(package)
+                record.setdefault(path, set()).add(key)
                 if any(path == d or path.startswith(d + "/") for d in always):
-                    raise ValueError(f"unresolved ({package} reaches {path}, under edge_scan.always_reader_dirs: that "
+                    raise ValueError(f"unresolved ({key} reaches {path}, under edge_scan.always_reader_dirs: that "
                                      "directory is not always-only)")
                 if path.lower().endswith(".md"):
                     continue
+                ext = posixpath.splitext(path)[1].lstrip(".").lower()
+                if ext in IMPORTING_UNPARSED_EXT:
+                    raise ValueError(f"unresolved ({key} reaches {path}, a .{ext} file that can import modules, which the "
+                                     "scan does not parse, so what it reaches could not select its importers)")
                 code = is_code(path)
                 if excluded(path):
                     if code:
-                        raise ValueError(f"unresolved ({package} reaches {path}, code the scan excludes, so its reads "
+                        raise ValueError(f"unresolved ({key} reaches {path}, code the scan excludes, so its reads "
                                          "cannot be credited)")
                     continue
-                deps[package] |= outside.get(path, set()) - {package}
+                for read in outside.get(path, set()):
+                    credit(read)
                 if code:
                     if path not in named:
                         named[path] = named_paths(path) | edges.get(path, set())
                         for t in named[path]:
                             namers.setdefault(t, set()).add(path)
                     queue.extend(sorted(named[path] - seen))
+
+    for package in sorted({owner(p) for p in edges} - {None}):
+        def credit_dep(found: str, package=package) -> None:
+            if found != package:
+                deps[package].add(found)
+        closure(package, [t for p, ts in edges.items() if owner(p) == package for t in ts], credit_dep, imports)
+    # root's delta R4 of #33, D5 (N3): a file outside every package runs in its reader directory's job (or nowhere
+    # declared, <unmapped>), so what it reaches is imported by that unit too: test/foo.test.mjs importing scripts/x.mjs.
+    units: dict[str, list[str]] = {}
+    for p, ts in edges.items():
+        if owner(p) is None and is_code(p) and not excluded(p):
+            unit = p.split("/")[0] if "/" in p and p.split("/")[0] in reader_dirs else "<unmapped>"
+            units.setdefault(unit, []).extend(ts)
+    for unit, starts in sorted(units.items()):
+        def credit_unit(found: str, unit=unit) -> None:
+            readers.setdefault(unit, set()).add(found)
+        closure(unit, starts, credit_unit, unit_imports)
+    # A reached file in a reader directory may itself be an executor its job runs (scripts/x.test.mjs): its own unit
+    # imports it too, so a mapping of it must still run that job.
+    for path in sorted(set(imports) | set(unit_imports)):
+        top = path.split("/")[0]
+        if "/" in path and top in reader_dirs:
+            unit_imports.setdefault(path, set()).add(top)
+    stale = [f"{f}: {n}" for (f, n) in sorted(by_name) if (f, n) not in names_used]
     unused = [f"{d['file']}: {d['expr']}" for d in declared if (d["file"], " ".join(d["expr"].split())) not in used]
-    return imports, unused, sorted(unresolved_data)
+    unused += [f"unresolved_names {entry}" for entry in stale]
+    return imports, unused, sorted(unresolved_data), unit_imports
 
 
 def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path,
-           imports: dict | None = None, computed_unused: list | None = None) -> dict:
+           imports: dict | None = None, computed_unused: list | None = None, unit_imports: dict | None = None) -> dict:
     failures, stale = [], []
     imports = imports or {}
+    unit_imports = unit_imports or {}
     # 1.5.0 rule 5: a change to an imported file must select its importers, so extra_edges must map it to them.
     edge_globs = [(glob_to_regex(glob), set(targets)) for glob, targets in sorted((cfg.get("extra_edges") or {}).items())]
     inert = list(cfg.get("inert_globs") or [])
@@ -2461,6 +2457,35 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
         for name in sorted(set(importers) - mapped):
             failures.append(f"undeclared import edge: {name} imports {path} (map it in extra_edges, so a change to it "
                             f"selects {name})")
+    # root's delta R4 of #33, D5 (N3): a path a file outside every package reaches is mappable only if the mapping still
+    # runs that file. The REAL plan.classify_paths decides: FULL (unmapped, or a full trigger) runs everything; otherwise
+    # the reader job's rule must match what the mapping selects. A file in no reader directory runs in no declared job,
+    # so nothing it reaches may be mapped.
+    es_cfg = cfg.get("edge_scan") or {}
+    reader_rule = (cfg.get("jobs") or {}).get(es_cfg.get("reader_job")) if es_cfg.get("reader_job") else None
+    for path, units in sorted(unit_imports.items()):
+        selection = classify_paths([path], cfg, pkgs)
+        if selection["error"] or selection["evidence"]["full_triggers"] or selection["evidence"]["unmapped"]:
+            continue  # FULL: every job runs (an error plans FULL too)
+        if selection["evidence"]["inert"]:
+            failures.append(f"inert import: {path} is imported from {', '.join(f'{u}/' for u in sorted(units))}, but "
+                            "inert_globs makes a change to it select nothing")
+            continue
+        for unit in sorted(units):
+            if unit == "<unmapped>":
+                failures.append(f"narrowed import: {path} is reached by a file outside every package and every reader "
+                                "directory, which no declared job runs, so mapping it can only narrow FULL (leave it "
+                                "unmapped, or put that file's directory in edge_scan.reader_dirs)")
+                continue
+            try:
+                runs = reader_rule is not None and rule_matches(reader_rule, selection["affected"])[0]
+            except ValueError:
+                runs = False
+            if not runs:
+                failures.append(f"narrowed import: {path} is reached from {unit}/, which reader job "
+                                f"'{es_cfg.get('reader_job')}' runs, but its mapping selects "
+                                f"{sorted(selection['affected']) or 'no package'} and not that job (map it to a package "
+                                "the job lists, or leave it unmapped so it plans FULL)")
     for entry in computed_unused or []:
         failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):
@@ -2491,6 +2516,7 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
               "deps": {name: sorted(values) for name, values in sorted(deps.items())},
               "readers": {name: sorted(values) for name, values in sorted(readers.items())},
               "imports": {path: sorted(values) for path, values in sorted(imports.items())},
+              "unit_imports": {path: sorted(values) for path, values in sorted(unit_imports.items())},
               "failures": failures, "stale": stale}
     result["assessment_sha256"] = canonical_digest(result)
     return result
@@ -2513,11 +2539,12 @@ def main(argv=None) -> int:
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
                           "readers": {k: sorted(v) for k, v in sorted(readers.items())},
-                          "imports": report["imports"]}, indent=1))
+                          "imports": report["imports"], "unit_imports": report["unit_imports"]}, indent=1))
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
     assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config,
-                        imports=report["imports"], computed_unused=report["computed_imports_unused"])
+                        imports=report["imports"], computed_unused=report["computed_imports_unused"],
+                        unit_imports=report["unit_imports"])
     failures, stale = assessment["failures"], assessment["stale"]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")

@@ -1476,6 +1476,86 @@ class ImportAttributionTest(unittest.TestCase):
                 (self.repo / f"tools/content/page.{ext}").unlink()
                 self.files(**{"services__a__t.mjs": "export {};\n"})
 
+    # ── 1.5.1: a shell script's relative paths resolve where it has `cd`'d to (spine's A2 census, FALSE-POSITIVES item 3)
+    def test_shell_cd_to_its_own_directory_moves_where_relative_paths_resolve(self):
+        base = {"scripts__ci-test-pg.sh": "#!/bin/bash\necho pg\n", "scripts__x.sh": "#!/bin/bash\n"}
+        cases = {
+            # spine's 22 runners: cd up from test/, then a path written relative to the package directory.
+            "runner": ('cd "$(dirname "$0")/.."\nPGPORT="$(bash ../../scripts/ci-test-pg.sh port)"\n', "scripts/ci-test-pg.sh"),
+            "same line": ('cd "$(dirname "$0")/.." && bash ../../scripts/ci-test-pg.sh wait\n', "scripts/ci-test-pg.sh"),
+            "BASH_SOURCE": ('cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "conditional": ('[ -d .git ] && cd "$(dirname "$0")/.."\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "before the cd": ('bash ../../../scripts/x.sh\ncd "$(dirname "$0")/.."\n', "scripts/x.sh"),
+            "identity control": ('bash "$(dirname "$0")/../../../scripts/ci-test-pg.sh" wait\n', "scripts/ci-test-pg.sh"),
+            "heredoc text": ('cat <<EOF\ncd /tmp\nEOF\nbash ../../../scripts/x.sh\n', "scripts/x.sh"),
+        }
+        for why, (body, target) in cases.items():
+            with self.subTest(why):
+                self.files(**base, **{"services__a__test__run.sh": "#!/bin/bash\n" + body})
+                _, _, report = self.scan()
+                self.assertIn("a", report["imports"].get(target, []), why)
+
+    def test_shell_a_cd_the_scan_cannot_follow_refuses_later_relative_paths(self):
+        for why, body in {"computed": 'cd "$WORKDIR"\nbash ../x.sh\n', "literal": "cd ../tools\nbash ./x.sh\n",
+                          "absolute": "cd /opt/app\nbash ../x.sh\n", "no argument": "cd\nbash ../x.sh\n",
+                          "dash": "cd -\nbash ../x.sh\n"}.items():
+            with self.subTest(why):
+                self.files(**{"services__a__test__run.sh": "#!/bin/bash\n" + body, "services__a__x.sh": "#!/bin/bash\n"})
+                with self.assertRaisesRegex(ValueError, "after a `cd` the scan cannot follow"):
+                    self.scan()
+        # A relative path BEFORE such a cd still resolves from the file's directory.
+        self.files(**{"services__a__test__run.sh": "#!/bin/bash\nbash ../../../scripts/x.sh\ncd \"$WORKDIR\"\necho done\n",
+                      "scripts__x.sh": "#!/bin/bash\n"})
+        self.assertIn("a", self.scan()[2]["imports"]["scripts/x.sh"])
+
+    def test_shell_a_reached_unowned_script_resolves_after_its_own_cd(self):
+        # tools/run.sh (outside every package) is reached from a; it cds to the repo root, then runs ./scripts/x.sh.
+        self.files(**{"services__a__t.mjs": 'import "../../tools/run.sh";\n',
+                      "tools__run.sh": '#!/bin/bash\ncd "$(dirname "$0")/.."\nbash ./scripts/x.sh\n',
+                      "scripts__x.sh": '#!/bin/bash\ncat services/b/data.json\n', "services__b__data.json": "{}\n"})
+        deps, _, report = self.scan()
+        self.assertIn("a", report["imports"]["scripts/x.sh"])
+
+    def test_an_unowned_js_caller_declares_a_top_level_literal_after_a_computed_base(self):
+        # spine's FALSE-POSITIVES item 4: e2e/adr179/journeys.mjs imports join(identityDir, 'test', 'x.mjs'), where 'test'
+        # is a top-level reader directory. From outside every package that is a load to declare, not an escape.
+        expr = "pathToFileURL(join(identityDir, 'test', 'webauthn-authenticator.mjs')).href"
+        self.files(**{"e2e__adr179__journeys.mjs": f"export const load = (identityDir) => import({expr});\n",
+                      "services__identity__test__webauthn-authenticator.mjs": "export {};\n", "test__keep.txt": "k\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["workspace"]["packages"]["identity"] = {"dir": "services/identity", "deps": []}
+        cfg["edge_scan"]["reader_dirs"] = ["scripts", "tools", "e2e", "test"]
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"] = [{"file": "e2e/adr179/journeys.mjs", "expr": expr,
+                                                 "reach": ["services/identity/test/webauthn-authenticator.mjs"]}]
+        _, readers, _ = self.scan(cfg)
+        self.assertIn("identity", readers["e2e"])
+        # The same expression in a PACKAGE still escapes, declared or not; so does a parent step from outside.
+        self.files(**{"services__a__load.mjs": f"export const load = (identityDir) => import({expr});\n"})
+        cfg["edge_scan"]["computed_imports"].append({"file": "services/a/load.mjs", "expr": expr, "reach": "external"})
+        with self.assertRaisesRegex(ValueError, "steps outside its package"):
+            self.scan(cfg)
+
+    def test_an_untracked_name_under_a_directory_reached_whole_adds_nothing(self):
+        # spine's FALSE-POSITIVES item 5: a's package.json depends on file:../../shared/sdk, which reaches that directory
+        # whole; the SDK's own test imports its untracked build output ../dist/server.js. Every tracked file the build
+        # compiles dist/ from is already credited, so the name adds nothing.
+        self.files(**{"services__a__package.json": '{"dependencies": {"sdk": "file:../../shared/sdk"}}\n',
+                      "services__a__x.mjs": "export {};\n",
+                      "shared__sdk__src__server.ts": "export const s = 1;\n",
+                      "shared__sdk__test__app.mjs": 'import "../dist/server.js";\n'})
+        _, _, report = self.scan()
+        self.assertIn("a", report["imports"]["shared/sdk/src/server.ts"])
+        # Reached only through the test file, the name still stands for shared/sdk, the directory it shares with its namer.
+        self.files(**{"services__a__package.json": '{"name": "a"}\n', "services__a__t.mjs": 'import "../../shared/sdk/test/app.mjs";\n'})
+        _, _, report = self.scan()
+        self.assertIn("a", report["imports"]["shared/sdk/src/server.ts"])
+        # A name sharing only a top-level directory with its namer refuses: shared/dist/x.js from shared/tools/run.mjs.
+        self.files(**{"shared__tools__run.mjs": 'import "../dist/x.js";\n', "services__a__u.mjs": 'import "../../shared/tools/run.mjs";\n'})
+        with self.assertRaisesRegex(ValueError, "names shared/dist/x.js, which is no tracked file or directory"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

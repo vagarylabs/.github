@@ -2,15 +2,18 @@
 Run: python3 -m unittest discover -s actions/sibling-repo-read -p 'test_*.py' -v
 """
 import http.server
+import importlib.util
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 READ = HERE / "read.py"
@@ -180,6 +183,76 @@ class Clone(unittest.TestCase):
         out, _ = self.clone("--checkout", "no-colon-here")
         self.assertIn("wants repo:path", out.stderr)
 
+    def test_a_checkout_goes_into_a_fresh_directory(self):
+        (self.out / "busy").mkdir(parents=True)
+        (self.out / "busy" / "left-over").write_text("x\n")
+        out, _ = self.clone("--checkout", f"vagary-core:{self.out / 'busy'}")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("exists and is not empty", out.stderr)
+
+    def test_a_checkout_not_at_mains_commit_fails(self):
+        # The old per-repo loop asserted `git rev-parse HEAD` == the sha it fetched (root's class item on #37, (b)).
+        spec = importlib.util.spec_from_file_location("sibling_read", READ)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real = module.git
+        def drifting(*args, cwd):
+            out = real(*args, cwd=cwd)
+            return "0" * 40 + "\n" if args[-2:] == ("rev-parse", "HEAD") else out
+        env = dict(os.environ, SIBLING_TOKEN=SECRET)
+        with mock.patch.object(module, "git", drifting), mock.patch.dict(os.environ, env, clear=True), \
+                self.assertRaises(SystemExit), mock.patch("sys.stderr") as err:
+            module.clone(f"file://{self.server}", "vagarylabs", [], [f"vagary-core:{self.out / 'c'}"], ["vagary-core"])
+        said = "".join(str(c.args[0]) for c in err.write.call_args_list if c.args)
+        self.assertIn(f"is at {'0' * 40}, not main's {self.heads['vagary-core']}", said)
+
+    def test_the_token_steps_run_in_a_reset_shell_that_a_hostile_job_environment_cannot_reach(self):
+        # Steps before this action may run PR code that writes BASH_ENV, ENV or a python3/git earlier on PATH (via
+        # GITHUB_ENV / GITHUB_PATH). The clone step, run through the shell action.yml declares for it, must neither
+        # source the one nor execute the others, and must still clone. Control: GitHub's plain `shell: bash` is caught.
+        text = (HERE / "action.yml").read_text()
+        step = text.split("    - id: read\n", 1)[1]
+        shell = next(line.split("shell: ", 1)[1] for line in step.splitlines() if line.strip().startswith("shell: "))
+        body = step.split("      run: |\n", 1)[1]
+        script = "\n".join(line[8:] for line in body.splitlines() if line.startswith("        ") or not line.strip())
+        evil = pathlib.Path(self.temp.name) / "evil"
+        (evil / "bin").mkdir(parents=True)
+        caught = evil / "caught"
+        (evil / "bash_env.sh").write_text(f'printf "%s\\n" "bash_env:$SIBLING_TOKEN" >> "{caught}"\n')
+        for tool, real in (("python3", "/usr/bin/python3"), ("git", "/usr/bin/git")):
+            (evil / "bin" / tool).write_text(f'#!/bin/sh\nprintf "%s\\n" "{tool}:$SIBLING_TOKEN" >> "{caught}"\nexec {real} "$@"\n')
+            (evil / "bin" / tool).chmod(0o755)
+        (evil / "step.sh").write_text(script + "\n")
+        def run_step(template, dest):
+            env = dict(os.environ, SIBLING_TOKEN=SECRET, SIBLING_SERVER=f"file://{self.server}", SIBLING_OWNER="vagarylabs",
+                       SIBLING_REPOS="vagary-core", SIBLING_BARE="", SIBLING_CHECKOUTS=f"vagary-core:{dest}\n",
+                       GITHUB_ACTION_PATH=str(HERE), BASH_ENV=str(evil / "bash_env.sh"), ENV=str(evil / "bash_env.sh"),
+                       PATH=f"{evil / 'bin'}:{os.environ['PATH']}")
+            env.pop("GITHUB_STEP_SUMMARY", None)
+            return subprocess.run(shlex.split(template.replace("{0}", str(evil / "step.sh"))), env=env,
+                                  capture_output=True, text=True, timeout=120)
+        out = run_step(shell, self.out / "reset")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue((self.out / "reset" / "README").is_file())
+        self.assertFalse(caught.exists(), caught.read_text() if caught.exists() else "")
+        self.assertNotIn(SECRET, out.stdout + out.stderr)
+        control = run_step("bash --noprofile --norc -eo pipefail {0}", self.out / "plain")
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertTrue(caught.exists() and "bash_env:" in caught.read_text() and "python3:" in caught.read_text(),
+                        "the control must catch the token, or this test proves nothing")
+
+    def test_read_py_runs_git_from_a_path_a_job_step_cannot_prepend_to(self):
+        evil = pathlib.Path(self.temp.name) / "evil-git"
+        evil.mkdir()
+        caught = evil / "caught"
+        (evil / "git").write_text(f'#!/bin/sh\nprintf "%s\\n" "$SIBLING_TOKEN" >> "{caught}"\nexec /usr/bin/git "$@"\n')
+        (evil / "git").chmod(0o755)
+        self.out.mkdir(exist_ok=True)
+        out, _ = run(["clone", "--server", f"file://{self.server}", "--owner", "vagarylabs", "--repos", "vagary-core",
+                      "--checkout", f"vagary-core:{self.out / 'c'}"], env_extra={"PATH": f"{evil}:{os.environ['PATH']}"})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(caught.exists(), "git ran from a PATH entry a job step can prepend")
+
     def test_a_missing_repository_fails_loudly(self):
         out, _ = self.clone("--checkout", f"vagary-core:{self.out / 'c'}", "--bare", f"absent:{self.out / 'a.git'}",
                             repos="vagary-core,absent")
@@ -195,6 +268,19 @@ class ActionShape(unittest.TestCase):
         self.assertLess(probe, read)
         self.assertRegex(text, r"actions/create-github-app-token@[0-9a-f]{40} ")
         self.assertEqual(text.count("SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}"), 2)
+
+    def test_every_step_that_holds_the_token_runs_the_reset_shell_and_an_isolated_python(self):
+        text = (HERE / "action.yml").read_text()
+        steps = text.split("    - id: ")
+        holders = [step for step in steps if "SIBLING_TOKEN:" in step]
+        self.assertEqual(sorted(step.split("\n", 1)[0] for step in holders), ["read", "ready"])
+        for step in holders:
+            shell = next(line.strip() for line in step.splitlines() if line.strip().startswith("shell: "))
+            self.assertRegex(shell, r"^shell: /usr/bin/env (-u \w+ )*PATH=/usr/bin:/bin /bin/bash --noprofile --norc ")
+            for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"):
+                self.assertIn(f"-u {name} ", shell)
+            self.assertIn('python3 -I -S "$GITHUB_ACTION_PATH/read.py"', step)
+            self.assertNotIn("python3 -I \"", step)
 
     def test_the_token_is_minted_read_only_and_packages_read_only_when_asked(self):
         # Root's R4 of #37: least privilege. Each mint carries exactly its permissions; nothing else is requested.

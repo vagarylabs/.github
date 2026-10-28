@@ -81,11 +81,18 @@ def ready(api: str, owner: str, repos: list[str], bound: float, sleep=time.sleep
     return report
 
 
+# The environment git (and the credential helper's shell) gets: no inherited GIT_*, shell start-up file or loader
+# variable, and a PATH that a job step's GITHUB_PATH entries cannot reach (root's class item on #37).
+UNSAFE_ENV = ("BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH")
+SAFE_PATH = "/usr/bin:/bin"
+
+
 def git(*args: str, cwd: str) -> str:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k not in UNSAFE_ENV}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, PATH=SAFE_PATH)
     out = subprocess.run(["git", "-c", "http.https://github.com/.extraheader=", "-c", f"credential.helper={HELPER}",
-                          *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
+                          "-c", f"core.hooksPath={os.devnull}", *args], cwd=cwd, env=env, capture_output=True, text=True,
+                         timeout=600)
     if out.returncode != 0:
         # git's stderr can carry a URL; ours never holds the token, and the helper never echoes it.
         fail(f"git {args[0]} failed (exit {out.returncode}): {out.stderr.strip()[-400:]}")
@@ -120,10 +127,15 @@ def clone(server: str, owner: str, bare: list[str], checkouts: list[str], allowe
                 if not SHA.fullmatch(line):
                     fail(f"{owner}/{repo} has no readable main")
                 sha = line
+                if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
+                    fail(f"--checkout destination {dest} exists and is not empty: a checkout goes into a fresh directory")
                 os.makedirs(dest, exist_ok=True)
                 git("init", "--quiet", dest, cwd=outside)
                 git("-C", dest, "fetch", "--quiet", "--depth", "1", url, sha, cwd=outside)
                 git("-C", dest, "-c", "advice.detachedHead=false", "checkout", "--quiet", "FETCH_HEAD", cwd=outside)
+                head = git("-C", dest, "rev-parse", "HEAD", cwd=outside).strip()
+                if head != sha:
+                    fail(f"{owner}/{repo} checkout at {dest} is at {head}, not main's {sha}")
             rows.append({"repo": repo, "kind": kind, "path": dest, "commit": sha})
     return rows
 

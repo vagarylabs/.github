@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""broker-source-read: read-only GitHub installation tokens minted by the Source & Delivery broker for THIS job's
+GitHub OIDC identity. No App key sits in Actions secrets. This replaces actions/create-github-app-token with
+SOURCE_READ_APP_ID / SOURCE_READ_APP_PRIVATE_KEY: the internal Source Access App is retired (operator ruling
+2026-10-14; source-access move plan row C4). Stdlib only.
+
+mint    The chain, every leg keyless and short-lived:
+          1. A GitHub OIDC token for the job (`permissions: id-token: write`), audience = the WIF provider.
+          2. Google STS exchanges it at that provider for a federated access token.
+          3. iamcredentials generateIdToken for the service account, audience = the broker, email included.
+          4. POST <broker>/v1/source/read {"repository", "purpose"}: one token per repository.
+        Every credential is masked (`::add-mask::`) the moment it is received. Each broker answer is then checked
+        before its token is used: the schema is source_read/v1, the repository is echoed, and the echoed
+        `permissions` EQUAL the purpose's expected set (PURPOSES, mirroring the broker). Wider, narrower, missing or
+        malformed: the token is revoked and the step fails. Then a readiness probe: GET <api>/repos/<owner>/<name>
+        must answer 200 within --readiness-seconds, because a fresh installation token is not visible everywhere at
+        once (vagaris #825, core #920).
+        All or nothing: on any failure nothing is written, and every token already minted for a revocable purpose is
+        revoked.
+        The token goes to a 0600 file (--token-file, one repository; --token-dir, one file `<owner>__<name>` per
+        repository) and/or, masked, to $GITHUB_OUTPUT (--github-output NAME, one repository). Never printed, never
+        logged, never in argv.
+revoke  Reads each token from its 0600 file (never argv). For a revocable purpose it calls DELETE
+        <api>/installation/token: 204 is revoked; 401 or 404 means the token is already gone. The file is removed
+        either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller.
+
+Failure is loud and never a pass. Any leg that does not succeed exits 1 and names the leg and the HTTP status. 429,
+5xx and transport errors are retried with a bounded backoff (the broker allows 30 mints per minute per caller); a
+final 429 is a failure, so the consuming gate reports CANNOT-DETERMINE. Usage errors, including an unknown purpose,
+exit 2 before any network call.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Callable
+
+# The purposes a CI job may ask POST /v1/source/read for, each with EXACTLY the permission set the broker mints. This
+# mirrors vps-ansible scripts/build-controller/source_delivery_broker.py (origin/main 8d3c29dd):
+# SOURCE_READ_PERMISSIONS (:196), SOURCE_READ_PURPOSE_PERMISSIONS (:207-208), SOURCE_READ_UNCACHED_PURPOSES (:211)
+# and source_read_permissions() (:1009). The broker's other purposes (canon_sync, deployment_reconcile,
+# agent_context, self_converge) belong to build cells and services, not CI, and are refused here before any call.
+#
+# `revocable` is the broker's UNCACHED set. The broker caches a build_checkout token per caller: Minter's cache scope
+# includes holder = the caller's sub (:606-611), and every job of one CI service account shares that sub, so they
+# share one token for up to about 55 minutes. Revoking it would revoke it under every concurrent and later job of
+# that caller. So revoke mode DELETEs only revocable tokens. A token whose echo check FAILS is revoked whatever its
+# purpose, because a wrong token is wrong for every holder.
+PURPOSES = {
+    "build_checkout": {"permissions": {"contents": "read", "metadata": "read"}, "revocable": False},
+    "image_pull": {"permissions": {"packages": "read", "metadata": "read"}, "revocable": True},
+    "repository_census": {"permissions": {"pull_requests": "read", "checks": "read", "metadata": "read"},
+                          "revocable": True},
+}
+SCHEMA = "source_read/v1"
+STS_URL = "https://sts.googleapis.com/v1/token"
+IAM_URL = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{sa}:generateIdToken"
+BACKOFF = (2, 5, 10, 20, 30)          # seconds between attempts; 6 attempts span about 67 s
+GITHUB_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+USER_AGENT = "vagarylabs-broker-source-read"
+
+PROVIDER_RE = re.compile(r"(?://iam\.googleapis\.com/)?(projects/[0-9]+/locations/global/workloadIdentityPools/"
+                         r"[a-z0-9-]+/providers/[a-z0-9-]+)")
+SERVICE_ACCOUNT_RE = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com")
+AUDIENCE_RE = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?")
+API_RE = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._/-]*)?")
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+OUTPUT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
+TOKEN_FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}__[A-Za-z0-9._-]{1,100}")
+# A credential is one run of printable, non-space ASCII. Anything else is refused unprinted: a newline would split an
+# `::add-mask::` line and leave the rest of the value unmasked.
+CREDENTIAL_RE = re.compile(r"[\x21-\x7e]{8,16384}")
+
+
+class LegFailed(RuntimeError):
+    """One leg did not succeed. The message names the leg and the status, never a credential."""
+
+
+class Usage(ValueError):
+    """A usage error, found before any network call (exit 2)."""
+
+
+def _http(method: str, url: str, headers: dict, data: bytes | None, timeout: float = 30) -> tuple[int, dict]:
+    req = urllib.request.Request(url, data=data, method=method, headers={"User-Agent": USER_AGENT, **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw, status = resp.read(), resp.status
+    except urllib.error.HTTPError as err:
+        raw, status = err.read(), err.code
+    try:
+        body = json.loads(raw.decode("utf-8")) if raw else {}
+    except ValueError:
+        body = {}
+    return status, body if isinstance(body, dict) else {}
+
+
+def _call(leg: str, method: str, url: str, headers: dict, data: bytes | None, http: Callable,
+          sleep: Callable[[float], None], ok: tuple[int, ...] = (200,)) -> tuple[int, dict]:
+    """(status, body) of the first answer in `ok`, retrying 429, 5xx and transport errors a bounded number of times;
+    any other answer, or the last retried one, raises LegFailed."""
+    last = "no attempt"
+    for attempt in range(len(BACKOFF) + 1):
+        try:
+            status, body = http(method, url, headers, data)
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            last = f"transport {type(err).__name__}"
+        else:
+            if status in ok:
+                return status, body
+            # A broker refusal carries a non-secret `reason`; STS/IAM carry `error` / `error.status`.
+            reason = body.get("reason") or body.get("error_description") or body.get("error") or body.get("message")
+            if isinstance(reason, dict):
+                reason = reason.get("status") or reason.get("message")
+            last = f"HTTP {status}" + (f" ({str(reason)[:160]})" if reason else "")
+            if status != 429 and status < 500:
+                break
+        if attempt < len(BACKOFF):
+            sleep(BACKOFF[attempt])
+    raise LegFailed(f"{leg}: {last}")
+
+
+def mask(value: object, what: str, out) -> str:
+    """Register one credential with the runner's masker before anything else is done with it."""
+    if not isinstance(value, str) or not CREDENTIAL_RE.fullmatch(value):
+        raise LegFailed(f"{what}: the credential is missing or not a single printable token (not printed)")
+    print(f"::add-mask::{value}", file=out, flush=True)
+    return value
+
+
+def provider_resource(provider: str) -> str:
+    """The provider as `projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<id>`."""
+    m = PROVIDER_RE.fullmatch(provider.strip())
+    if not m:
+        raise Usage("provider must be projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<id>"
+                    " (optionally prefixed //iam.googleapis.com/)")
+    return m.group(1)
+
+
+def github_oidc(resource: str, env: dict, http: Callable, sleep: Callable, out) -> str:
+    url, bearer = env.get("ACTIONS_ID_TOKEN_REQUEST_URL"), env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not url or not bearer:
+        raise LegFailed("github-oidc: ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN absent; the job needs "
+                        "`permissions: id-token: write`")
+    audience = "https://iam.googleapis.com/" + resource
+    sep = "&" if "?" in url else "?"
+    _, body = _call("github-oidc", "GET", f"{url}{sep}audience={urllib.parse.quote(audience, safe='')}",
+                    {"Authorization": f"bearer {bearer}"}, None, http, sleep)
+    return mask(body.get("value"), "github-oidc", out)
+
+
+def federated_access_token(resource: str, oidc: str, http: Callable, sleep: Callable, out) -> str:
+    form = urllib.parse.urlencode({
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "audience": "//iam.googleapis.com/" + resource,
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "subject_token": oidc,
+    }).encode()
+    _, body = _call("sts", "POST", STS_URL, {"Content-Type": "application/x-www-form-urlencoded"}, form, http, sleep)
+    return mask(body.get("access_token"), "sts", out)
+
+
+def broker_id_token(service_account: str, audience: str, access: str, http: Callable, sleep: Callable, out) -> str:
+    _, body = _call("generate-id-token", "POST", IAM_URL.format(sa=service_account),
+                    {"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
+                    json.dumps({"audience": audience, "includeEmail": True}).encode(), http, sleep)
+    return mask(body.get("token"), "generate-id-token", out)
+
+
+def echo_problems(body: dict, repository: str, purpose: str) -> list[str]:
+    """What is wrong with a broker 200 for this repository and purpose; empty when it is exactly right."""
+    problems = []
+    if body.get("schema") != SCHEMA:
+        problems.append(f"schema {str(body.get('schema'))[:40]!r} is not {SCHEMA}")
+    if str(body.get("repository", "")).lower() != repository.lower():
+        problems.append("the broker echoed a different repository")
+    want, got = PURPOSES[purpose]["permissions"], body.get("permissions")
+    if got is None:
+        problems.append("no permissions echoed")
+    elif not isinstance(got, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in got.items()):
+        problems.append("permissions echo is malformed")
+    elif got != want:
+        wider = sorted(f"{k}:{v}" for k, v in got.items() if want.get(k) != v)
+        narrower = sorted(f"{k}:{v}" for k, v in want.items() if got.get(k) != v)
+        problems.append(f"permissions differ from {purpose}'s set (unexpected {wider or 'none'}, "
+                        f"missing {narrower or 'none'})"[:400])
+    return problems
+
+
+def revoke_token(token: str, api: str, http: Callable, sleep: Callable) -> str:
+    """DELETE <api>/installation/token with the token itself: 'revoked' (204) or 'already gone' (401/404); any other
+    answer, after the bounded retry, raises LegFailed."""
+    status, _ = _call("revoke", "DELETE", api.rstrip("/") + "/installation/token",
+                      {"Authorization": f"token {token}", **GITHUB_HEADERS}, None, http, sleep, ok=(204, 401, 404))
+    return "revoked" if status == 204 else "already gone"
+
+
+def _revoke_noting(token: str, api: str, http: Callable, sleep: Callable) -> str:
+    try:
+        return revoke_token(token, api, http, sleep)
+    except LegFailed as err:
+        return f"NOT revoked ({err}); it expires within the hour"
+
+
+def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, sleep: Callable,
+               clock: Callable[[], float]) -> dict[str, int]:
+    """GET <api>/repos/<owner>/<name> with each token until it answers 200, within ONE wall-clock bound for all.
+    {repository: attempts}, or LegFailed naming the repository and the last answer."""
+    deadline, attempts = clock() + bound, {}
+    for repo, token in tokens.items():
+        n, delay, last = 0, 1.0, ""
+        while True:
+            n += 1
+            remaining = deadline - clock()
+            try:
+                status, _ = http("GET", f"{api.rstrip('/')}/repos/{repo}", {"Authorization": f"token {token}",
+                                                                            **GITHUB_HEADERS},
+                                 None, max(1.0, min(10.0, remaining)))
+                last = f"HTTP {status}"
+            except (urllib.error.URLError, TimeoutError, OSError) as err:
+                status, last = 0, f"transport {type(err).__name__}"
+            if status == 200:
+                attempts[repo] = n
+                break
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise LegFailed(f"readiness {repo}: the token cannot see it after {bound:g} s (last answer {last}, "
+                                f"{n} attempt(s)): grant or installation scope?")
+            sleep(min(delay, remaining))
+            delay = min(delay * 2, 8.0)
+    return attempts
+
+
+def mint(purpose: str, repositories: list[str], resource: str, service_account: str, audience: str, api: str,
+         readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out) -> dict[str, str]:
+    """{repository: token}, every one echo-checked and visible; or LegFailed with every revocable token revoked."""
+    oidc = github_oidc(resource, env, http, sleep, out)
+    access = federated_access_token(resource, oidc, http, sleep, out)
+    id_token = broker_id_token(service_account, audience, access, http, sleep, out)
+    minted: dict[str, str] = {}
+    try:
+        for repo in repositories:
+            leg = f"broker source.read {repo} ({purpose})"
+            _, body = _call(leg, "POST", audience + "/v1/source/read",
+                            {"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
+                            json.dumps({"repository": repo, "purpose": purpose}).encode(), http, sleep)
+            token = mask(body.get("token"), leg, out)
+            problems = echo_problems(body, repo, purpose)
+            if problems:
+                # Revoked whatever the purpose: a token that is not exactly what was asked for is wrong for everyone.
+                outcome = _revoke_noting(token, api, http, sleep)
+                raise LegFailed(f"{leg}: echo check failed: {'; '.join(problems)}; the token was {outcome}")
+            minted[repo] = token
+        wait_ready(minted, api, readiness, http, sleep, clock)
+    except LegFailed as err:
+        if PURPOSES[purpose]["revocable"] and minted:
+            notes = [f"{repo}: {_revoke_noting(tok, api, http, sleep)}" for repo, tok in minted.items()]
+            raise LegFailed(f"{err} [already-minted tokens: {', '.join(notes)}]") from None
+        raise
+    return minted
+
+
+def _write_secret(path: pathlib.Path, token: str) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(token)
+
+
+def _parse_repositories(text: str) -> list[str]:
+    repos = [r.strip().removesuffix(".git").strip("/") for r in re.split(r"[\s,]+", text or "") if r.strip()]
+    if not repos:
+        raise Usage("repository is required: owner/name (several, separated by spaces, commas or newlines)")
+    bad = [r for r in repos if not REPOSITORY_RE.fullmatch(r)]
+    if bad:
+        raise Usage(f"repositories must be owner/name, not {bad[0]!r}")
+    if len({r.lower() for r in repos}) != len(repos):
+        raise Usage("a repository is listed twice")
+    return repos
+
+
+def _api(env: dict) -> str:
+    api = (env.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
+    if not API_RE.fullmatch(api):
+        raise Usage("GITHUB_API_URL must be an https URL")
+    return api
+
+
+def _purpose(value: str) -> str:
+    if value not in PURPOSES:
+        raise Usage(f"unknown purpose {value[:40]!r}: one of {', '.join(sorted(PURPOSES))}")
+    return value
+
+
+def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out) -> int:
+    purpose = _purpose(a.purpose)
+    repos = _parse_repositories(a.repositories)
+    resource = provider_resource(a.provider)
+    if not SERVICE_ACCOUNT_RE.fullmatch(a.service_account.strip()):
+        raise Usage("service_account must be <name>@<project>.iam.gserviceaccount.com")
+    audience = a.audience.strip().rstrip("/")
+    if not AUDIENCE_RE.fullmatch(audience):
+        raise Usage("audience must be the broker's https origin, with no path")
+    api = _api(env)
+    if not (a.token_file or a.token_dir or a.github_output):
+        raise Usage("say where the token goes: token-file, token-dir and/or github-output")
+    if a.token_file and a.token_dir:
+        raise Usage("token-file and token-dir are exclusive")
+    if (a.token_file or a.github_output) and len(repos) != 1:
+        raise Usage("token-file and github-output take exactly one repository; use token-dir for several")
+    if PURPOSES[purpose]["revocable"] and (a.github_output or not (a.token_file or a.token_dir)):
+        raise Usage(f"{purpose} tokens are revoked after use, which reads them from a file: give token-file or "
+                    "token-dir, and no github-output")
+    if a.github_output:
+        if not OUTPUT_NAME_RE.fullmatch(a.github_output):
+            raise Usage("github-output must be an output name")
+        if not env.get("GITHUB_OUTPUT"):
+            raise Usage("GITHUB_OUTPUT is not set")
+    if not 1 <= a.readiness_seconds <= 600:
+        raise Usage("readiness-seconds must be between 1 and 600")
+
+    tokens = mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env,
+                  http, sleep, clock, out)
+    written: list[pathlib.Path] = []
+    try:
+        if a.token_file:
+            written.append(pathlib.Path(a.token_file))
+            _write_secret(written[-1], tokens[repos[0]])
+        if a.token_dir:
+            d = pathlib.Path(a.token_dir)
+            d.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
+            for repo, token in tokens.items():
+                written.append(d / repo.replace("/", "__"))
+                _write_secret(written[-1], token)
+        if a.github_output:
+            with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                fh.write(f"{a.github_output}={tokens[repos[0]]}\n")
+    except OSError as err:
+        for p in written:
+            p.unlink(missing_ok=True)
+        notes = ""
+        if PURPOSES[purpose]["revocable"]:
+            notes = "; " + ", ".join(f"{r}: {_revoke_noting(t, api, http, sleep)}" for r, t in tokens.items())
+        raise LegFailed(f"writing the token failed ({type(err).__name__}){notes}") from None
+    perms = ",".join(f"{k}:{v}" for k, v in sorted(PURPOSES[purpose]["permissions"].items()))
+    for repo in repos:
+        print(f"broker-source-read: {repo} minted for {purpose} ({perms}); echo checked; visible", file=sys.stderr)
+    return 0
+
+
+def _token_files(a) -> list[pathlib.Path]:
+    if bool(a.token_file) == bool(a.token_dir):
+        raise Usage("revoke reads exactly one of token-file or token-dir")
+    if a.token_file:
+        return [pathlib.Path(a.token_file)]
+    d = pathlib.Path(a.token_dir)
+    if not d.exists():
+        return []
+    if d.is_symlink() or not d.is_dir():
+        raise LegFailed(f"revoke: {d} is not a directory")
+    files = sorted(d.iterdir())
+    stray = [p.name for p in files if not TOKEN_FILE_RE.fullmatch(p.name)]
+    if stray:
+        raise LegFailed(f"revoke: {d} holds a file that is not a token file: {stray[0]!r}")
+    return files
+
+
+def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
+    purpose = _purpose(a.purpose)
+    api = _api(env)
+    files = _token_files(a)
+    revocable, rc = PURPOSES[purpose]["revocable"], 0
+    present = [p for p in files if p.exists() or p.is_symlink()]
+    if not present:
+        print("broker-source-read: no token file, so nothing to revoke (the mint did not write one)", file=sys.stderr)
+    for path in present:
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise LegFailed(f"revoke {path.name}: not a regular file")
+            token = mask(path.read_text(encoding="utf-8").strip(), f"revoke {path.name}", out)
+            if revocable:
+                print(f"broker-source-read: {path.name}: {revoke_token(token, api, http, sleep)}", file=sys.stderr)
+            else:
+                print(f"::notice::broker-source-read: {path.name}: a {purpose} token is cached by the broker and "
+                      "shared by every job of this caller, so it is not revoked (it expires within the hour); the "
+                      "file is removed", file=out, flush=True)
+        except LegFailed as err:
+            print(f"::error::broker-source-read: {err}", file=sys.stderr)
+            rc = 1
+        finally:
+            path.unlink(missing_ok=True)
+    if a.token_dir:
+        try:
+            pathlib.Path(a.token_dir).rmdir()
+        except OSError:
+            pass
+    return rc
+
+
+def main(argv: list[str], env: dict | None = None, http: Callable = _http,
+         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic, out=None) -> int:
+    env = dict(os.environ) if env is None else env
+    out = sys.stdout if out is None else out
+    p = argparse.ArgumentParser(prog="client.py", description=__doc__.split("\n", 1)[0])
+    sub = p.add_subparsers(dest="mode", required=True)
+    m = sub.add_parser("mint")
+    m.add_argument("--purpose", required=True)
+    m.add_argument("--repositories", required=True, metavar="OWNER/NAME[,...]")
+    m.add_argument("--provider", required=True)
+    m.add_argument("--service-account", required=True)
+    m.add_argument("--audience", required=True, help="the broker's https origin")
+    m.add_argument("--token-file", default="")
+    m.add_argument("--token-dir", default="")
+    m.add_argument("--github-output", default="", metavar="NAME")
+    m.add_argument("--readiness-seconds", type=float, default=60.0)
+    r = sub.add_parser("revoke")
+    r.add_argument("--purpose", required=True)
+    r.add_argument("--token-file", default="")
+    r.add_argument("--token-dir", default="")
+    try:
+        a = p.parse_args(argv)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    try:
+        if a.mode == "mint":
+            return run_mint(a, env, http, sleep, clock, out)
+        return run_revoke(a, env, http, sleep, out)
+    except Usage as err:
+        print(f"::error::broker-source-read: {err}", file=sys.stderr)
+        return 2
+    except LegFailed as err:
+        print(f"::error::broker-source-read failed at {err}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

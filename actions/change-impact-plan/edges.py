@@ -2832,8 +2832,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     def shell_module_names(path: str) -> set[str]:
         """The shell lines' module positions (see SHELL_RUNNERS): the command word, or an interpreter's or `source`'s
-        script operand, with heredoc bodies skipped."""
-        here, found, end = posixpath.dirname(path), set(), None
+        script operand, with heredoc bodies skipped.
+
+        A shell script runs from its CALLER's working directory, so a relative module path is resolved against the
+        directory the script has `cd`'d to (spine's A2 census: 35 runners do `cd "$(dirname "$0")/.."`, then
+        `bash ../../scripts/ci-test-pg.sh`). Before any `cd` it is the script's own directory, as before. A `cd` to the
+        script's own directory, or below or above it, or to a literal relative directory, is followed. After a `cd` to
+        a computed directory, a relative module path cannot be resolved and refuses."""
+        own = posixpath.dirname(path)
+        here, found, end = own, set(), None
         for line in read_source(repo, path, revision, environment).split("\n"):
             if end is not None:
                 if line.strip() == end:
@@ -2843,18 +2850,25 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if t.startswith("#"):
                 continue
             heredoc = SHELL_HEREDOC.search(t)
-            for m in SHELL_SELF_DIR.finditer(t):
-                before = re.split(r"&&|\|\||[;|&(`]", t[:m.start()])[-1].replace('"', " ").replace("'", " ").split()
-                while before and (re.match(r"^\w+=", before[0]) or before[0] in SHELL_PREFIXES):
-                    before.pop(0)
-                if not before or (len(before) == 1 and before[0] in SHELL_RUNNERS):
-                    found.add(posixpath.normpath(posixpath.join(here, m.group(1))))
-            for command in re.split(r"&&|\|\||[;|&`()]|\$\(", SHELL_SELF_DIR.sub(" ", t)):
+            # The self-directory form holds spaces and parentheses: name it with one token before splitting.
+            t = SHELL_SELF_DIR.sub(lambda m: "\x00SELF/" + m.group(1), t)
+            t = re.sub(r"[\"']?\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)[\"']?|\$\{BASH_SOURCE%/\*\}",
+                       "\x00SELF", t)
+            for command in re.split(r"&&|\|\||[;|&`()]|\$\(", t):
                 words = [w.strip("\"'") for w in command.split()]
                 i = 0
                 while i < len(words) and (re.match(r"^\w+=", words[i]) or words[i] in SHELL_PREFIXES):
                     i += 1
                 if i >= len(words):
+                    continue
+                if words[i] == "cd":
+                    target = words[i + 1] if i + 1 < len(words) else ""
+                    if target.startswith("\x00SELF"):
+                        here = posixpath.normpath(posixpath.join(own, target[len("\x00SELF"):].lstrip("/")))
+                    elif target and here is not None and not target.startswith(("/", "~", "-")) and "$" not in target:
+                        here = posixpath.normpath(posixpath.join(here, target))
+                    else:
+                        here = None  # a computed directory: relative module paths after it cannot be resolved
                     continue
                 word = words[i]
                 if word in SHELL_RUNNERS:
@@ -2862,7 +2876,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     while i < len(words) and words[i].startswith("-"):
                         i += 1
                     word = words[i] if i < len(words) else ""
-                if word.startswith(("./", "../")):
+                if word.startswith("\x00SELF"):
+                    found.add(posixpath.normpath(posixpath.join(own, word[len("\x00SELF"):].lstrip("/"))))
+                elif word.startswith(("./", "../")):
+                    if here is None:
+                        raise ValueError(f"unresolved (a relative shell module path `{word}` after a `cd` to a computed "
+                                         f"directory) in {path}; cd to a literal or script-relative directory")
                     found.add(posixpath.normpath(posixpath.join(here, word)))
             if heredoc:
                 end = heredoc.group(2)

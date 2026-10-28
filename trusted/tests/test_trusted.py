@@ -9,14 +9,17 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "trusted"))
 import classify  # noqa: E402
+import inline_scripts  # noqa: E402
 import render  # noqa: E402
 
 MANIFEST = ROOT / "trusted" / "manifest.json"
@@ -237,15 +240,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(render.main(["--check"]), 0)
 
     def test_inline_copies_are_byte_identical(self):
+        # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        for name in ("trusted-workflow-integrity", "trusted-protected-paths"):
+        for name, copies in (("trusted-workflow-integrity", 2), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
-            m = re.search(r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n",
-                          text, re.S)
-            self.assertIsNotNone(m, name)
-            indent = m.group(1)
-            body = "\n".join(l[len(indent):] if l.startswith(indent) else l for l in m.group(2).split("\n"))
-            self.assertEqual(body + "\n", src, name)
+            found = list(re.finditer(
+                r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))
+            self.assertEqual(len(found), copies, name)
+            for m in found:
+                indent = m.group(1)
+                body = "\n".join(l[len(indent):] if l.startswith(indent) else l for l in m.group(2).split("\n"))
+                self.assertEqual(body + "\n", src, name)
 
     def test_invariants(self):
         for name, path in WORKFLOWS.items():
@@ -264,6 +269,90 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):
                     self.assertRegex(use, r"@[0-9a-f]{40}$")
+
+    def actionlint_job(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        return ci.split("\n  actionlint:\n", 1)[1].split("\n  planner-tests:\n", 1)[0]
+
+    def test_ci_reports_the_inline_script_sizes_and_never_re_enables_shellcheck_for_them(self):
+        job = self.actionlint_job()
+        # Each workflow's largest INLINE run script is printed to the step summary on every run, next to the limit.
+        self.assertIn('python3 -I trusted/inline_scripts.py sizes "${inline[@]}"', job)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', job)
+        # The two inline-classifier workflows stay off actionlint's shellcheck integration (the deadlock), and the
+        # warning that says so stays with them, with what was reproduced and what is inferred.
+        self.assertIn('"$lint" -color -shellcheck= "${inline[@]}"', job)
+        self.assertIn("Do NOT re-enable the shellcheck", job)
+        self.assertIn("REPRODUCED on 1.7.12 only", job)
+        self.assertIn("On 1.7.7 the hang is INFERRED", job)
+        self.assertNotIn("coverage is equal", job)
+
+    def test_the_required_actionlint_job_gates_the_trust_root_scripts_on_shellcheck(self):
+        # The required job runs the shellcheck test itself, by its exact name, with a missing shellcheck a failure.
+        job = self.actionlint_job()
+        self.assertIn("TRUSTED_REQUIRE_SHELLCHECK=1 python3 -m unittest -v \\\n"
+                      "            test_trusted.WorkflowTests.test_inline_workflow_run_scripts_pass_shellcheck", job)
+        test = getattr(WorkflowTests, "test_inline_workflow_run_scripts_pass_shellcheck")
+        self.assertTrue(callable(test))
+
+    def test_missing_shellcheck_fails_only_when_required(self):
+        for env, failed, skipped in (({"TRUSTED_REQUIRE_SHELLCHECK": "1"}, 1, 0), ({}, 0, 1)):
+            with self.subTest(env=env), mock.patch.object(shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, env, clear=False):
+                if not env:
+                    os.environ.pop("TRUSTED_REQUIRE_SHELLCHECK", None)
+                result = unittest.TestResult()
+                WorkflowTests("test_inline_workflow_run_scripts_pass_shellcheck").run(result)
+                self.assertEqual((len(result.failures), len(result.skipped), result.testsRun), (failed, skipped, 1))
+
+    def test_inline_script_sizes_are_the_largest_inline_run_scripts(self):
+        names = [str(WORKFLOWS[n].relative_to(ROOT)) for n in ("trusted-workflow-integrity", "trusted-protected-paths")]
+        r = subprocess.run([sys.executable, "-I", str(ROOT / "trusted" / "inline_scripts.py"), "sizes"] + names,
+                           cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for name in names:
+            size = inline_scripts.largest((ROOT / name).read_text())
+            self.assertGreater(size, len((ROOT / "trusted" / "classify.py").read_bytes()))  # the inline copy, not the source
+            self.assertIn("- `%s`: largest inline run script %d bytes (the shellcheck stdin pipe buffer is 65536)"
+                          % (name, size), r.stdout)
+
+    def test_ci_scans_this_repo_with_the_timeout_floor(self):
+        # The ruleset's trusted job skips this repo, so the floor sees it only through this self-scan.
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("\n  timeout-floor-self-scan:\n", ci)
+        job = ci.split("\n  timeout-floor-self-scan:\n", 1)[1].split("\n  trusted-tests:\n", 1)[0]
+        self.assertIn("python3 -I trusted/classify.py timeout-floor --manifest trusted/manifest.json", job)
+        self.assertIn('--repo "$GITHUB_REPOSITORY"', job)
+        # The head commit alone: the mode reads only the head tree (the PR head, not the default merge commit).
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}\n          fetch-depth: 1\n", job)
+        self.assertNotIn("fetch-depth: 0", job)
+        self.assertNotIn("--base", job)
+        self.assertNotIn("vagarylabs/.github'", job)  # no repository guard: this job exists for this repo
+
+    def test_inline_workflow_run_scripts_pass_shellcheck(self):
+        # ci.yml lints these two with actionlint -shellcheck=: actionlint fills shellcheck's stdin before starting it,
+        # and their classifier run scripts are over the 64 KiB pipe buffer. This is that shellcheck pass on the same
+        # scripts (inline_scripts.run_scripts), through a pipe that is read while it is written. The REQUIRED actionlint
+        # job runs this test with TRUSTED_REQUIRE_SHELLCHECK=1, so shellcheck gates the trust-root scripts there and a
+        # missing shellcheck fails it; elsewhere (trusted-tests, a laptop) a missing shellcheck skips.
+        sc = shutil.which("shellcheck")
+        if not sc:
+            if os.environ.get("TRUSTED_REQUIRE_SHELLCHECK") == "1":
+                self.fail("shellcheck is not on PATH and TRUSTED_REQUIRE_SHELLCHECK=1: the trust-root run scripts "
+                          "must be shellchecked")
+            self.skipTest("shellcheck is not on PATH")
+        sizes = []
+        for name in ("trusted-workflow-integrity", "trusted-protected-paths"):
+            scripts = inline_scripts.run_scripts(WORKFLOWS[name].read_text())
+            self.assertGreaterEqual(len(scripts), 3, name)
+            for i, script in enumerate(scripts):
+                self.assertNotIn("$" + "{{", script)
+                sizes.append(len(script.encode()))
+                with self.subTest(workflow=name, script=i):
+                    r = subprocess.run([sc, "--norc", "--shell=bash", "-"], input=script, capture_output=True, text=True,
+                                       timeout=120)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertGreater(max(sizes), 65536)  # the reason for the split in ci.yml; drop it if this ever fails
 
     def test_tool_pins_match_release_assets_lock(self):
         lock = {}

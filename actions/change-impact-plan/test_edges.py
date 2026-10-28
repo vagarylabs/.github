@@ -1488,6 +1488,9 @@ class ImportAttributionTest(unittest.TestCase):
             "before the cd": ('bash ../../../scripts/x.sh\ncd "$(dirname "$0")/.."\n', "scripts/x.sh"),
             "identity control": ('bash "$(dirname "$0")/../../../scripts/ci-test-pg.sh" wait\n', "scripts/ci-test-pg.sh"),
             "heredoc text": ('cat <<EOF\ncd /tmp\nEOF\nbash ../../../scripts/x.sh\n', "scripts/x.sh"),
+            # vagary-core social-distribution's runner: a trailing comment after the cd is no part of its argument.
+            "trailing comment": ('cd "$(dirname "$0")/.."          # services/a\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "a comment's cd": ('echo start  # cd /tmp\nbash ../../../scripts/x.sh\n', "scripts/x.sh"),
         }
         for why, (body, target) in cases.items():
             with self.subTest(why):
@@ -1496,17 +1499,28 @@ class ImportAttributionTest(unittest.TestCase):
                 self.assertIn("a", report["imports"].get(target, []), why)
 
     def test_shell_a_cd_the_scan_cannot_follow_refuses_later_relative_paths(self):
-        for why, body in {"computed": 'cd "$WORKDIR"\nbash ../x.sh\n', "literal": "cd ../tools\nbash ./x.sh\n",
+        for why, body in {"computed": 'cd "$WORKDIR"\nbash ../x.sh\n', "literal": "cd ../x.sh.d\nbash ./x.sh\n",
                           "absolute": "cd /opt/app\nbash ../x.sh\n", "no argument": "cd\nbash ../x.sh\n",
-                          "dash": "cd -\nbash ../x.sh\n"}.items():
+                          "dash": "cd -\nbash ../x.sh\n",
+                          "a quoted #": 'cd "../#tools"\nbash ../x.sh\n'}.items():
             with self.subTest(why):
-                self.files(**{"services__a__test__run.sh": "#!/bin/bash\n" + body, "services__a__x.sh": "#!/bin/bash\n"})
+                self.files(**{"services__a__test__run.sh": "#!/bin/bash\n" + body, "services__a__x.sh": "#!/bin/bash\n",
+                              "services__a__x.sh.d__keep.txt": "k\n"})
                 with self.assertRaisesRegex(ValueError, "after a `cd` the scan cannot follow"):
                     self.scan()
         # A relative path BEFORE such a cd still resolves from the file's directory.
         self.files(**{"services__a__test__run.sh": "#!/bin/bash\nbash ../../../scripts/x.sh\ncd \"$WORKDIR\"\necho done\n",
                       "scripts__x.sh": "#!/bin/bash\n"})
         self.assertIn("a", self.scan()[2]["imports"]["scripts/x.sh"])
+
+    def test_shell_any_other_cd_names_the_directory_its_next_commands_run_in(self):
+        # R5V14: only a cd to the script's own directory is modelled (shell_cwd_spans); any other cd's argument is read.
+        self.files(**{"services__a__test__run.sh": "#!/bin/bash\n(cd ../../b && make)\n", "services__b__Makefile": "all:\n"})
+        self.assertIn("b", self.scan()[0]["a"])
+        # A `../` after a computed prefix resolves from the file's directory, as in any other file: naming nothing refuses.
+        self.files(**{"services__a__test__run.sh": '#!/bin/bash\nfor d in x; do (cd "$d/../../packages/b" && make); done\n'})
+        with self.assertRaisesRegex(ValueError, "which is no tracked file or directory"):
+            self.scan()
 
     def test_shell_a_reached_unowned_script_resolves_after_its_own_cd(self):
         # tools/run.sh (outside every package) is reached from a; it cds to the repo root, then runs ./scripts/x.sh.

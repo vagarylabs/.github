@@ -1801,13 +1801,14 @@ def shell_cwd_spans(text: str, own: str) -> dict[int, list[tuple[int, int, froze
         if line.startswith("#"):
             spans[i] = [(0, len(line), cwds)]
             continue
-        cuts = [m.span() for m in SHELL_SEPARATOR.finditer(line)]
+        code = RootLiteral.strip_comment(line).rstrip()  # a trailing `# …` is no command: `cd x   # note`
+        cuts = [m.span() for m in SHELL_SEPARATOR.finditer(code)]
         starts = [0] + [b for _, b in cuts]
-        ends = [a for a, _ in cuts] + [len(line)]
+        ends = [a for a, _ in cuts] + [len(code)]
         segments = []
         for a, b in zip(starts, ends):
             segments.append((a, b, cwds))
-            cd = SHELL_CD.match(line[a:b])
+            cd = SHELL_CD.match(code[a:b])
             if cd:
                 arg = (cd.group("arg") or "").strip()
                 self_cd = SHELL_SELF_CD.match(arg) if arg else None
@@ -1815,20 +1816,29 @@ def shell_cwd_spans(text: str, own: str) -> dict[int, list[tuple[int, int, froze
                     cwds = cwds | {posixpath.normpath(posixpath.join(own, (self_cd.group("rel") or "").lstrip("/")))}
                 elif not self_cd:
                     cwds = None
+        if len(code) < len(line):
+            segments.append((len(code), len(line), cwds))
         spans[i] = segments
-        heredoc = SHELL_HEREDOC_OPEN.search(line)
+        heredoc = SHELL_HEREDOC_OPEN.search(code)
         if heredoc:
             end = heredoc.group(2)
     return spans
 
 
 def shell_cd_ranges(line: str) -> list[tuple[int, int]]:
-    """The spans of a stripped shell line that are `cd`/`pushd` commands: their argument changes the directory and reads
-    nothing, so it is never a name."""
-    cuts = [m.span() for m in SHELL_SEPARATOR.finditer(line)]
+    """The spans of a stripped shell line that are a `cd`/`pushd` to the script's own directory (or above or below it).
+    shell_cwd_spans models where those move the script, so their argument is never a name. Any other `cd` keeps its
+    argument a name: it is the directory the next commands run in (`(cd "$d/../../packages/shared" && make)`, R5V14)."""
+    code = RootLiteral.strip_comment(line).rstrip()
+    cuts = [m.span() for m in SHELL_SEPARATOR.finditer(code)]
     starts = [0] + [b for _, b in cuts]
-    ends = [a for a, _ in cuts] + [len(line)]
-    return [(a, b) for a, b in zip(starts, ends) if SHELL_CD.match(line[a:b])]
+    ends = [a for a, _ in cuts] + [len(code)]
+    ranges = []
+    for a, b in zip(starts, ends):
+        cd = SHELL_CD.match(code[a:b])
+        if cd and SHELL_SELF_CD.match((cd.group("arg") or "").strip() or "-"):
+            ranges.append((a, b))
+    return ranges
 
 
 def shell_bases_at(spans: dict, line: int, offset: int) -> frozenset | None:
@@ -2466,15 +2476,23 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 targets.add(literal_read(m.group(1)))
             if shell_text(path):
                 # A shell line: the self-directory form resolves from the file's own directory; every other ./ or ../
-                # path from where the script is there (shell_cwd_spans). A cd/pushd argument is not a name.
+                # path from where the script is there (shell_cwd_spans). A self-directory cd's argument is not a name.
                 cds = shell_cd_ranges(t)
                 in_cd = lambda at: any(a <= at < b for a, b in cds)
+                seen = []
                 for m in SHELL_SELF_DIR.finditer(t):
+                    seen.append(m.span())
                     if not in_cd(m.start()):
                         targets |= relative_target(path, "./" + m.group(1))
                 for m in SHELL_RELATIVE.finditer(SHELL_SELF_DIR.sub(lambda x: " " * len(x.group(0)), t)):
+                    seen.append(m.span())
                     if not in_cd(m.start()):
                         targets |= relative_target(path, m.group(1), line_bases(path, int(number), t, m.start()))
+                # A `../` after a computed prefix (`"$d/../../packages/shared"`) is neither form: as for any other file
+                # it resolves from the file's own directory, so a route that names nothing refuses (D5, R5V14).
+                for m in rel.finditer(t):
+                    if not in_cd(m.start()) and not any(a <= m.start() < b for a, b in seen):
+                        targets |= relative_target(path, m.group(1))
             else:
                 for m in rel.finditer(t):
                     targets |= relative_target(path, m.group(1))

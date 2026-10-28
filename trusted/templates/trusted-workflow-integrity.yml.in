@@ -114,3 +114,79 @@ jobs:
           set -euo pipefail
           d="$RUNNER_TEMP/trusted"
           python3 -I "$d/classify.py" sibling-read --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA"
+      # C1 admission (root, 2026-10-29): every `uses:` names a commit with its exact release (manifest `pins`).
+      - name: Check every uses is pinned to a commit with its exact release (HEAD tree)
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          python3 -I "$d/classify.py" pins --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA"
+
+  workflow-lint:
+    name: workflow-lint
+    # C1 admission (root, 2026-10-29): zizmor and actionlint over the PR head, as data. Same guard, runner and timeout
+    # as the jobs above; it inherits the workflow's read-only permissions. The verdict and mode are classify.py's.
+    if: github.repository != 'vagarylabs/.github'
+    runs-on: [self-hosted, Linux, X64, vl-light]
+    timeout-minutes: 10
+    steps:
+{{INCLUDE:_resolve_shas.yml.in}}
+      - name: Check out the PR head alone as data (depth 1, no credentials kept, nothing executed)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.shas.outputs.head }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: head
+      # Both tools through fetch-release-asset (the shared tool cache, a resumable download, the sha256 pin), with the
+      # values of their release-assets.lock lines; trusted/tests holds these two steps equal to the lock.
+      - name: Fetch zizmor 1.31.1 (release-assets.lock)
+        uses: vagarylabs/.github/actions/fetch-release-asset@85ac97443b6e2fb23570ccda190934f150973aef # .github #40 merge
+        with:
+          tool: zizmor
+          version: 1.31.1
+          url: https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          sha256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+          dest: ${{ runner.temp }}/workflow-lint/zizmor.tar.gz
+      - name: Fetch actionlint 1.7.7 (release-assets.lock)
+        uses: vagarylabs/.github/actions/fetch-release-asset@85ac97443b6e2fb23570ccda190934f150973aef # .github #40 merge
+        with:
+          tool: actionlint
+          version: 1.7.7
+          url: https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          sha256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          dest: ${{ runner.temp }}/workflow-lint/actionlint.tar.gz
+      - name: Unpack both
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/workflow-lint"
+          tar -xzf zizmor.tar.gz zizmor
+          tar -xzf actionlint.tar.gz actionlint
+      - name: Run zizmor (offline audits) and actionlint over the head tree, and report (manifest workflow_lint)
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP/workflow-lint"
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          cd head
+          # A tool's own exit code is passed on: zizmor runs with --no-exit-codes (non-zero is a tool failure),
+          # actionlint exits 1 on findings. classify.py reports anything else as INCOMPLETE, never as clean.
+          zrc=0
+          "$t/zizmor" --no-exit-codes --no-online-audits --format json . \
+            > "$t/zizmor.json" 2> "$t/zizmor.err" || zrc=$?
+          arc=0
+          "$t/actionlint" -shellcheck= -pyflakes= -format '{{json .}}' > "$t/actionlint.json" 2> "$t/actionlint.err" || arc=$?
+          python3 -I "$d/classify.py" workflow-lint --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA" \
+            --zizmor "$t/zizmor.json" --zizmor-rc "$zrc" --actionlint "$t/actionlint.json" --actionlint-rc "$arc"

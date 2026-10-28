@@ -95,7 +95,8 @@ class SiblingReadFindings(unittest.TestCase):
 class Manifest(unittest.TestCase):
     def manifest(self, **sibling):
         m = {"version": 1, "default": {"protected": [{"class": "c", "patterns": ["x"]}], "ratchet_files": []},
-             "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []}}
+             "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []},
+             "pins": {"mode": "report", "exemptions": []}, "workflow_lint": {"mode": "report"}}
         m.update(sibling)
         return m
 

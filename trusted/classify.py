@@ -96,7 +96,29 @@ def validate_manifest(m):
     sr = m.get("sibling_read")
     if not isinstance(sr, dict) or sr.get("mode") not in ("report", "enforce"):
         raise IntegrityError("manifest: sibling_read.mode must be report or enforce")
+    validate_pins(m.get("pins"))
+    wl = m.get("workflow_lint")
+    if not isinstance(wl, dict) or set(wl) != {"mode"} or wl["mode"] not in ("report", "enforce"):
+        raise IntegrityError("manifest: workflow_lint must be {\"mode\": report or enforce}")
     return m
+
+
+# An exemption names one `uses:` value exactly, plus why and the record that approved it. `repo` and `file` may be "*",
+# because a first-party reusable workflow called @main (issue-triage, secret-scan) is called the same way org-wide.
+PIN_EXEMPTION_FIELDS = ("repo", "file", "uses", "reason", "record")
+
+
+def validate_pins(p):
+    if not isinstance(p, dict) or p.get("mode") not in ("report", "enforce"):
+        raise IntegrityError("manifest: pins.mode must be report or enforce")
+    ex = p.get("exemptions")
+    if not isinstance(ex, list):
+        raise IntegrityError("manifest: pins.exemptions must be a list")
+    for i, e in enumerate(ex):
+        if not isinstance(e, dict) or set(e) != set(PIN_EXEMPTION_FIELDS) or not all(
+                isinstance(e[f], str) and e[f].strip() for f in PIN_EXEMPTION_FIELDS):
+            raise IntegrityError("manifest: pins exemption %d needs exactly the non-empty strings %s"
+                                 % (i, ", ".join(PIN_EXEMPTION_FIELDS)))
 
 
 # An exemption names one job exactly: repo, workflow path, job id and the timeout-minutes text it declares (a literal
@@ -1998,21 +2020,235 @@ def run_timeout_floor(m, repo, base, head):
     return 1 if mode == "enforce" and (violations or incomplete) else 0
 
 
+# ---------- pins (C1 admission, root 2026-10-29) ----------
+# Every `uses:` in a workflow or composite action names an immutable commit, labelled with what it is:
+#   - third party: `owner/repo[/path]@<40-hex sha> # vX.Y.Z`, an exact release (a pre-release or build suffix allowed;
+#     `# v4` or `# v4.1` is not exact, and no label is no label);
+#   - first party: `vagarylabs/<repo>/...@<40-hex sha> # <repo> #<PR> merge` (`# .github #37 merge`), naming the PR
+#     whose merge commit it is;
+#   - a container: `docker://image@sha256:<64-hex>`; a local `./` action is the PR's own code.
+# The merge path checks the FORM only: no network. Whether a label's tag still resolves to its sha upstream, and whether
+# an internal sha is really that PR's merge commit, belong in a scheduled job (root, 2026-10-29).
+_PIN_USES = re.compile(r"^\s*(?:-\s+)?uses\s*:\s*(?P<v>.*?)\s*$")
+_PIN_SHA = re.compile(r"^[0-9a-f]{40}$")
+_PIN_HEXISH = re.compile(r"^[0-9a-f]{4,39}$")
+_PIN_EXACT = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$")
+_PIN_INTERNAL = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+) #\d+ merge$")
+_PIN_DOCKER = re.compile(r"^docker://\S+@sha256:[0-9a-f]{64}$")
+PIN_CLASSES = ("tag_ref", "short_sha", "no_label", "major_only", "minor_only", "bad_label", "wrong_internal", "docker_tag")
+
+
+def pin_split(value):
+    """(the `uses:` value, its trailing comment or None) from the raw text after `uses:`."""
+    v = value.strip()
+    if v[:1] in ("'", '"'):
+        end = v.find(v[0], 1)
+        body, rest = (v[1:], "") if end == -1 else (v[1:end], v[end + 1:].strip())
+    else:
+        body, _, rest = v.partition(" ")
+        rest = rest.strip()
+    return body, (rest[1:].strip() if rest.startswith("#") else None)
+
+
+def pin_verdict(value):
+    """(class or None, uses, label) for one `uses:` value; None means it passes."""
+    uses, label = pin_split(value)
+    if uses.startswith("./") or uses == ".":
+        return None, uses, label
+    if uses.startswith("docker://"):
+        return (None if _PIN_DOCKER.match(uses) else "docker_tag"), uses, label
+    name, at, ref = uses.rpartition("@")
+    if not at:
+        return "tag_ref", uses, label
+    if not _PIN_SHA.match(ref):
+        return ("short_sha" if _PIN_HEXISH.match(ref) else "tag_ref"), uses, label
+    parts = name.split("/")
+    if parts[0] == "vagarylabs":
+        m = _PIN_INTERNAL.match(label or "")
+        return (None if m and len(parts) > 1 and m.group("repo") == parts[1] else "wrong_internal"), uses, label
+    if not label:
+        return "no_label", uses, label
+    if _PIN_EXACT.match(label):
+        return None, uses, label
+    if re.match(r"^v\d+$", label):
+        return "major_only", uses, label
+    if re.match(r"^v\d+\.\d+$", label):
+        return "minor_only", uses, label
+    return "bad_label", uses, label
+
+
+def pin_findings(text):
+    """[(line, class, uses, label)] for every `uses:` line that does not pass (a commented line never matches)."""
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        m = _PIN_USES.match(line)
+        if m:
+            cls, uses, label = pin_verdict(m.group("v"))
+            if cls:
+                out.append((i, cls, uses, label))
+    return out
+
+
+def run_pins(m, repo, base, head):
+    pins = m["pins"]
+    mode = pins["mode"]
+    resolve_head(base, head)
+    files = [p for p in git("ls-tree", "-r", "--name-only", head).splitlines() if _SR_FILE.search(p)]
+    rows, used = [], set()
+    for path in files:
+        for line, cls, uses, label in pin_findings(blob(head, path) or ""):
+            hit = next((e for e in pins["exemptions"] if e["uses"] == uses and e["repo"] in ("*", repo)
+                        and e["file"] in ("*", path)), None)
+            if hit:
+                used.add(id(hit))
+            rows.append((path, line, cls, uses, label, hit))
+    level = "error" if mode == "enforce" else "warning"
+    failing = [r for r in rows if r[5] is None]
+    lines = ["## Action pins: %s" % repo,
+             "%d workflow/action files at head `%s` (manifest `pins`, mode `%s`): %d `uses:` refs fail the pin rule, "
+             "%d are exempt." % (len(files), head, mode, len(failing), len(rows) - len(failing))]
+    count = {}
+    for path, line, cls, uses, label, hit in rows:
+        if hit:
+            lines.append("- EXEMPT %s: %s (record %s: %s)" % (md_code("%s:%d" % (path, line)), md_code(uses),
+                                                               md_code(hit["record"]), md_code(hit["reason"])))
+            continue
+        count[cls] = count.get(cls, 0) + 1
+        what = "%s: %s%s" % (cls, uses, " # " + label if label else "")
+        if count[cls] <= FLOOR_MAX_LISTED:
+            lines.append("- %s %s" % (cls.upper(), md_code("%s:%d %s" % (path, line, what))))
+        print("::%s file=%s,line=%d,title=action pin::%s" % (level, _cmd_prop(path), line, _cmd_data(what)))
+    for cls in PIN_CLASSES:
+        if count.get(cls, 0) > FLOOR_MAX_LISTED:
+            lines.append("- ... and %d more %s" % (count[cls] - FLOOR_MAX_LISTED, cls))
+    for e in pins["exemptions"]:
+        if e["repo"] == repo and id(e) not in used:
+            lines.append("- STALE EXEMPTION %s in %s (record %s): nothing at head uses it; reported, not enforced"
+                         % (md_code(e["uses"]), md_code(e["file"]), md_code(e["record"])))
+    if not failing:
+        lines.append("Every `uses:` is pinned to a commit with its exact release, or is exempt.")
+    elif mode == "report":
+        lines.append("Report-only (mode `report`): %d listed, not enforced." % len(failing))
+    else:
+        lines.append("Refused (mode `enforce`): pin each listed ref to its commit with `# vX.Y.Z` (first party: "
+                     "`# <repo> #<PR> merge`), or record an exemption in the trusted manifest.")
+    summary(lines)
+    return 1 if mode == "enforce" and failing else 0
+
+
+# ---------- workflow-lint (C1 admission, root 2026-10-29) ----------
+# zizmor (MIT; offline audits only, so the verdict depends on the head tree alone) and actionlint (shellcheck off: it
+# is slow and hung on large run blocks) read the head tree as data. This mode turns their JSON into the job summary and
+# annotations. A tool that did not run, or whose output does not parse, is INCOMPLETE: never clean, never a pass.
+WL_MAX_LISTED = 200
+
+
+def _zizmor_rows(doc):
+    rows = []
+    for f in doc if isinstance(doc, list) else []:
+        if not isinstance(f, dict):
+            continue
+        sev = (f.get("determinations") or {}).get("severity") or "Unknown"
+        path, line = "?", 0
+        for loc in f.get("locations") or []:
+            key = ((loc.get("symbolic") or {}).get("key") or {})
+            local = key.get("Local") if isinstance(key, dict) else None
+            if isinstance(local, dict) and (local.get("given_path") or local.get("verbatim_path")):
+                path = str(local.get("given_path") or local["verbatim_path"])
+                path = path[2:] if path.startswith("./") else path
+            row = (((loc.get("concrete") or {}).get("location") or {}).get("start_point") or {}).get("row")
+            if isinstance(row, int):
+                line = row + 1
+            break
+        rows.append((str(f.get("ident") or "?"), str(sev), path, line, str(f.get("desc") or "")))
+    return rows
+
+
+def _actionlint_rows(doc):
+    return [(str(e.get("kind") or "?"), str(e.get("filepath") or "?"), int(e.get("line") or 0), str(e.get("message") or ""))
+            for e in (doc if isinstance(doc, list) else []) if isinstance(e, dict)]
+
+
+def _load_tool(path, rc, ok_codes):
+    """(rows document, why INCOMPLETE or None)."""
+    if rc not in ok_codes:
+        return None, "exited %d" % rc
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        return (json.loads(text) if text.strip() else []), None
+    except (OSError, ValueError) as exc:
+        return None, "output did not parse (%s)" % type(exc).__name__
+
+
+def run_workflow_lint(m, repo, head, zizmor, zizmor_rc, actionlint, actionlint_rc):
+    mode = m["workflow_lint"]["mode"]
+    level = "error" if mode == "enforce" else "warning"
+    zdoc, zwhy = _load_tool(zizmor, zizmor_rc, (0,))          # --no-exit-codes: non-zero is a tool failure
+    adoc, awhy = _load_tool(actionlint, actionlint_rc, (0, 1))  # 1: findings, anything else a tool failure
+    lines = ["## Workflow lint: %s" % repo, "zizmor (offline audits) and actionlint over head `%s` (manifest "
+             "`workflow_lint`, mode `%s`)." % (head, mode)]
+    findings = 0
+    for tool, why in (("zizmor", zwhy), ("actionlint", awhy)):
+        if why:
+            lines.append("- INCOMPLETE: %s %s" % (tool, why))
+            print("::%s title=workflow lint::%s %s; the scan is incomplete" % (level, tool, _cmd_data(why)))
+    if zdoc is not None:
+        rows = _zizmor_rows(zdoc)
+        by = {}
+        for ident, sev, path, line, desc in rows:
+            by[(sev, ident)] = by.get((sev, ident), 0) + 1
+        lines.append("zizmor: %d findings%s" % (len(rows), "".join(
+            "; %s %s %d" % (sev, md_code(ident), n) for (sev, ident), n in sorted(by.items(), key=lambda kv: -kv[1]))))
+        for ident, sev, path, line, desc in rows[:WL_MAX_LISTED]:
+            print("::%s file=%s,line=%d,title=zizmor %s::%s" % (level, _cmd_prop(path), max(line, 1), _cmd_prop(ident),
+                                                                _cmd_data("%s (%s)" % (desc, sev))))
+        findings += len(rows)
+    if adoc is not None:
+        rows = _actionlint_rows(adoc)
+        by = {}
+        for kind, path, line, msg in rows:
+            by[kind] = by.get(kind, 0) + 1
+        lines.append("actionlint: %d findings%s" % (len(rows), "".join(
+            "; %s %d" % (md_code(k), n) for k, n in sorted(by.items(), key=lambda kv: -kv[1]))))
+        for kind, path, line, msg in rows[:WL_MAX_LISTED]:
+            print("::%s file=%s,line=%d,title=actionlint %s::%s" % (level, _cmd_prop(path), max(line, 1), _cmd_prop(kind),
+                                                                    _cmd_data(msg)))
+        findings += len(rows)
+    incomplete = bool(zwhy or awhy)
+    if mode == "report":
+        lines.append("Report-only (mode `report`): %d findings%s, not enforced."
+                     % (findings, " and an INCOMPLETE scan" if incomplete else ""))
+    elif findings or incomplete:
+        lines.append("Refused (mode `enforce`): %d findings%s." % (findings, ", INCOMPLETE" if incomplete else ""))
+    summary(lines)
+    return 1 if mode == "enforce" and (findings or incomplete) else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor", "sibling-read"))
+    ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor", "sibling-read", "pins",
+                                     "workflow-lint"))
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", help="required, except in timeout-floor mode (which reads the head tree only)")
     ap.add_argument("--head", required=True)
+    ap.add_argument("--zizmor", help="workflow-lint: zizmor's JSON output")
+    ap.add_argument("--zizmor-rc", type=int, help="workflow-lint: zizmor's exit code")
+    ap.add_argument("--actionlint", help="workflow-lint: actionlint's JSON output")
+    ap.add_argument("--actionlint-rc", type=int, help="workflow-lint: actionlint's exit code")
     a = ap.parse_args(argv)
     try:
-        if a.base is None and a.mode not in ("timeout-floor", "sibling-read"):
+        if a.base is None and a.mode not in ("timeout-floor", "sibling-read", "pins", "workflow-lint"):
             raise IntegrityError("--base is required in %s mode" % a.mode)
         with open(a.manifest, encoding="utf-8") as fh:
             m = validate_manifest(json.load(fh))
+        if a.mode == "workflow-lint":
+            if None in (a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc):
+                raise IntegrityError("workflow-lint needs --zizmor, --zizmor-rc, --actionlint and --actionlint-rc")
+            return run_workflow_lint(m, a.repo, a.head, a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc)
         fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor,
-              "sibling-read": run_sibling_read}[a.mode]
+              "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:
         print("::error title=trusted %s::%s" % (a.mode, exc))

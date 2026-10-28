@@ -740,6 +740,39 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.scan()
 
+    def test_a_shorthand_method_named_require_or_import_is_a_definition_not_a_call(self):
+        # Spine (core's console vm sandboxes, 2026-10-27): `{ ..., require(name) { ... } }` defines a method.
+        for body in ("vm.runInNewContext(code, { module, require(name) { return stubs[name]; } });\n",
+                     "const sandbox = {\n  require(spec) {\n    throw new Error(spec);\n  },\n};\n",
+                     "class Box { static require(name) { return name; } import(x) { return x; } }\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__vm.test.mjs": body})
+                self.scan()
+        # Controls: a real computed call inside that method body stays a site, and ASI keeps `= require(name)` a call.
+        controls = {"inner call": "const require_ = createRequire(import.meta.url);\n"
+                                  "const s = { require(name) { return require_(name); } };\n",
+                    "asi": "const x = require(name)\n{ x(); }\n"}
+        for why, body in controls.items():
+            with self.subTest(why):
+                self.files(**{"services__a__vm.test.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+                    self.scan()
+
+    def test_a_non_file_url_scheme_import_names_no_file(self):
+        for body in ("await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);\n",
+                     "await import('data:text/javascript,' + src);\n",
+                     "await import(`node:${name}`);\n",
+                     "await import(`https://cdn.example/${pkg}`);\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__sync.mjs": body})
+                self.scan()
+        # Controls: a file: URL and a bare substitution still refuse.
+        for body in ("await import(`file:${p}`);\n", "await import(`${p}`);\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__sync.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+
     def test_computed_imports_refuse_unless_declared_and_an_escape_refuses_even_declared(self):
         self.files(**{"services__a__load.mjs": "export const load = (name) => import(name);\n"})
         with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):

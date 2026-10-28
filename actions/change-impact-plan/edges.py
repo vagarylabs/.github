@@ -2116,6 +2116,25 @@ def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[s
 CREATE_REQUIRE_BINDING = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?createRequire\s*\(")
 
 
+# A shorthand METHOD named require/import is a definition, not a call (spine, core's vm sandboxes, 2026-10-27):
+# `{ ..., require(name) { ... } }`. Its `)` is followed by `{`, and the word follows an object/class member boundary.
+# `const x = require(name)\n{` (ASI) follows `=`, so it stays a call.
+_MEMBER_BOUNDARY = frozenset({"{", ",", "}", ";", "*", "async", "static", "get", "set"})
+
+
+def _is_shorthand_method(src: Source, j: int) -> bool:
+    code = src.code
+    close = src.match.get(j + 1)
+    if close is None or close + 1 >= len(code) or code[close + 1][0] != "open" or code[close + 1][3] != "{":
+        return False
+    return j == 0 or code[j - 1][3] in _MEMBER_BOUNDARY
+
+
+# A module specifier whose leading literal is a non-file: URL scheme names no repository file (spine, 2026-10-27:
+# docs-site's `import(\`data:text/javascript;base64,${...}\`)`): no edge and no refusal. `file:${x}` and `${x}` refuse.
+_NON_FILE_SCHEME = re.compile(r"(?:data|node|https?):")
+
+
 def loader_call_opens(src: Source):
     """The index of the `(` of every call that loads or resolves a module by path: `import(`, `require(`,
     `require.resolve(`, `import.meta.resolve(`, `module.require(`, `createRequire(...)(`, and a name bound to
@@ -2129,7 +2148,8 @@ def loader_call_opens(src: Source):
         member = j >= 1 and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?.")
         receiver = code[j - 2][3] if member and j >= 2 and code[j - 2][0] == "word" else None
         if word in ("import", "require") and not member:
-            yield j + 1
+            if not _is_shorthand_method(src, j):
+                yield j + 1
         elif word == "require" and receiver == "module":
             yield j + 1  # `module.require(x)` is the loader under another name
         elif word == "resolve" and receiver == "require":
@@ -2166,6 +2186,8 @@ def computed_import_sites(src: Source):
         if first and first[0][0] == "str" and first[0][3][1] is True and (
                 len(first) == 1 or (first[1][0] == "word" and first[1][3] in ("as", "satisfies"))):
             continue  # a plain literal, also under a TypeScript cast (`import("redis" as string)` loads "redis")
+        if first and first[0][0] == "str" and _NON_FILE_SCHEME.match(first[0][3][0]):
+            continue  # a data:/node:/http(s): URL names no repository file
         expr = " ".join(src.text[first[0][1]:first[-1][2]].split()) if first else ""
         yield expr, first, o + 1
 

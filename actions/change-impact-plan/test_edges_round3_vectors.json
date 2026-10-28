@@ -1,0 +1,906 @@
+{
+ "$comment": "Root's round-3 vectors of .github #33 (lanes/root/reviews/dotgithub-33-round3-vectors.md), pinned EXACT. Method (root's): commit, run the real `edges.py check --revision`, apply check's own remedies until rc 0, judge with plan.classify_paths + rule_matches. A drop-vector must REFUSE, plan FULL, or select its must_run job; a correct-plan control must select exactly its jobs.",
+ "base_config": {
+  "schema": 1,
+  "workspace": {
+   "type": "declared",
+   "packages": {
+    "a": {
+     "dir": "services/a",
+     "deps": []
+    },
+    "b": {
+     "dir": "services/b",
+     "deps": []
+    },
+    "c": {
+     "dir": "services/c",
+     "deps": []
+    }
+   }
+  },
+  "edge_scan": {
+   "roots": [
+    "services"
+   ],
+   "reader_dirs": [
+    "scripts",
+    "test",
+    "tools"
+   ],
+   "reader_job": "root",
+   "exclude": [
+    "*.md",
+    "docs",
+    ".github",
+    "vendor"
+   ]
+  },
+  "jobs": {
+   "root": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-a": {
+    "packages": [
+     "a"
+    ]
+   },
+   "test-b": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-c": {
+    "packages": [
+     "c"
+    ]
+   }
+  }
+ },
+ "cases": {
+  "F10b compose volume": {
+   "kind": "drop-vector",
+   "files": {
+    "services/a/package.json": "{\"scripts\":{\"test\":\"docker compose -f ../../tools/compose.yml up\"}}\n",
+    "tools/compose.yml": "x:\n  volumes:\n    - \"../scripts/worker.mjs:/app/w.mjs\"\n",
+    "services/c/t.mjs": "import \"../../scripts/worker.mjs\";\n",
+    "scripts/worker.mjs": "export const w = 1;\n"
+   },
+   "change": "scripts/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10b tsconfig extends": {
+   "kind": "drop-vector",
+   "files": {
+    "services/a/tsconfig.json": "{\"extends\":\"../../tools/tsconfig.base.json\"}\n",
+    "tools/tsconfig.base.json": "{\"files\":[\"../scripts/worker.mjs\"]}\n",
+    "services/c/t.mjs": "import \"../../scripts/worker.mjs\";\n",
+    "scripts/worker.mjs": "export const w = 1;\n"
+   },
+   "change": "scripts/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 zsh": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"zsh ../../tools/run.zsh\"}}\n",
+    "tools/run.zsh": "node ./worker.mjs\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 extensionless no shebang": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"bash ../../tools/run\"}}\n",
+    "tools/run": "node ./worker.mjs\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 make": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"make -f ../../tools/Makefile run\"}}\n",
+    "tools/Makefile": "run:\n\tnode ./worker.mjs\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 html module": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import page from \"../../tools/page.html\";\n",
+    "tools/page.html": "<script type=\"module\" src=\"./worker.mjs\"></script>\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 tsconfig files": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/tsconfig.json": "{\"extends\":\"../../tools/tsconfig.json\"}\n",
+    "tools/tsconfig.json": "{\"files\":[\"./worker.mjs\"]}\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F10 compose ./": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"docker compose -f ../../tools/compose.yml up\"}}\n",
+    "tools/compose.yml": "x:\n  volumes:\n    - \"./worker.mjs:/app/w.mjs\"\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F15 segment-chain root": {
+   "kind": "drop-vector",
+   "files": {
+    "services/a/vitest.config.mjs": "import path from \"node:path\";\nexport default { test: { dir: path.join(__dirname, \"..\", \"..\"), include: [\"lib/**/*.test.mjs\"] } };\n",
+    "lib/x.test.mjs": "import \"./x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {},
+   "verdict": "REFUSE",
+   "refusal": "unresolved (services/a/vitest.config.mjs names ../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "must_run": "test-a"
+  },
+  "F13b test compose": {
+   "kind": "drop-vector",
+   "files": {
+    "test/compose.yml": "x:\n  volumes:\n    - \"../lib/entry.mjs:/entry.mjs\"\n",
+    "lib/entry.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/entry.mjs\";\n"
+   },
+   "change": "lib/entry.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-b",
+    "test-c"
+   ],
+   "must_run": "root"
+  },
+  "F13b control test/run.mjs": {
+   "kind": "drop-vector",
+   "files": {
+    "test/run.mjs": "import \"../lib/entry.mjs\";\n",
+    "lib/entry.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/entry.mjs\";\n"
+   },
+   "change": "lib/entry.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-b",
+    "test-c"
+   ],
+   "must_run": "root"
+  },
+  "F12 repo-root run-all": {
+   "kind": "drop-vector",
+   "files": {
+    "run-all.mjs": "import \"./lib/x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {},
+   "verdict": "FULL",
+   "must_run": null
+  },
+  "F12 misc/run-all": {
+   "kind": "drop-vector",
+   "files": {
+    "misc/run-all.mjs": "import \"../lib/x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {},
+   "verdict": "FULL",
+   "must_run": null
+  },
+  "F01 fork join": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import { fork } from \"node:child_process\";\nimport path from \"node:path\";\nfork(path.join(__dirname, \"..\", \"..\", \"lib\", \"x.mjs\"));\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F01b Worker resolve": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../scripts/x.mjs\";\n",
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import path from \"node:path\";\nnew Worker(path.resolve(__dirname, \"..\", \"..\", \"scripts\", \"x.mjs\"));\n"
+   },
+   "change": "scripts/x.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F02 vite alias": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/vite.config.mjs": "import path from \"node:path\";\nexport default { resolve: { alias: [{ find: /^@lib\\/(.*)$/, replacement: path.join(__dirname, \"..\", \"..\", \"lib\") + \"/$1\" }] } };\n",
+    "services/a/t.mjs": "import \"@lib/x.mjs\";\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F03 Worker template": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/w-x.mjs\";\n",
+    "tools/w-x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../tools/run.mjs\";\n",
+    "tools/run.mjs": "const n = \"x\";\nnew Worker(new URL(`./w-${n}.mjs`, import.meta.url));\n"
+   },
+   "change": "tools/w-x.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-c"
+   ],
+   "must_run": "test-a"
+  },
+  "F03 fork join": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/w-x.mjs\";\n",
+    "tools/w-x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../tools/run.mjs\";\n",
+    "tools/run.mjs": "import path from \"node:path\";\nimport { fork } from \"node:child_process\";\nfork(path.join(__dirname, \"w-x.mjs\"));\n"
+   },
+   "change": "tools/w-x.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "test-a"
+  },
+  "F03 new URL": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/w-x.mjs\";\n",
+    "tools/w-x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../tools/run.mjs\";\n",
+    "tools/run.mjs": "new Worker(new URL(\"w-x.mjs\", import.meta.url));\n"
+   },
+   "change": "tools/w-x.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "test-a"
+  },
+  "F04 python subprocess": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.py\";\n",
+    "tools/worker.py": "print(1)\n",
+    "services/a/t.mjs": "import \"../../tools/run.py\";\n",
+    "tools/run.py": "import subprocess, sys\nfrom pathlib import Path\nsubprocess.run([sys.executable, str(Path(__file__).parent / \"worker.py\")])\n"
+   },
+   "change": "tools/worker.py",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "test-a"
+  },
+  "F05 cd pwd": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"bash ../../tools/run.sh\"}}\n",
+    "tools/run.sh": "#!/bin/bash\nnode \"$(cd \"$(dirname \"$0\")\" && pwd)/worker.mjs\"\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "test-a"
+  },
+  "F05 ${0%/*}": {
+   "kind": "drop-vector",
+   "files": {
+    "services/c/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n",
+    "services/a/package.json": "{\"scripts\":{\"test\":\"bash ../../tools/run.sh\"}}\n",
+    "tools/run.sh": "#!/bin/bash\nnode \"${0%/*}/worker.mjs\"\n"
+   },
+   "change": "tools/worker.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": "always",
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "test-a"
+  },
+  "L1 core exact lines": {
+   "kind": "drop-vector",
+   "files": {
+    "apps/console/scripts/run-admin-compliance-live.sh": "#!/bin/bash\nbash \"$(dirname \"$0\")/../../../scripts/ci-test-pg.sh\" wait x\n",
+    "services/billing-metering/test/usage_agg_key_discipline_pg_unit.py": "import subprocess\nfrom pathlib import Path\nREPO = Path(__file__).resolve().parents[3]\nscript = REPO / \"scripts\" / \"ci-test-pg.sh\"\nsubprocess.run([\"bash\", str(script), \"up\"])\n",
+    "scripts/ci-test-pg.sh": "#!/bin/bash\necho pg\n",
+    "apps/console/keep.txt": "k\n"
+   },
+   "change": "scripts/ci-test-pg.sh",
+   "cfg_set": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "app-console": {
+       "dir": "apps/console",
+       "deps": []
+      },
+      "billing-metering": {
+       "dir": "services/billing-metering",
+       "deps": []
+      }
+     }
+    },
+    "jobs": {
+     "root": {
+      "packages": [
+       "app-console",
+       "billing-metering"
+      ]
+     },
+     "test-app-console": {
+      "packages": [
+       "app-console"
+      ]
+     },
+     "test-billing-metering": {
+      "packages": [
+       "billing-metering"
+      ]
+     }
+    }
+   },
+   "verdict": "REFUSE",
+   "must_run": "test-billing-metering",
+   "refusal": "unresolved (services/billing-metering/test/usage_agg_key_discipline_pg_unit.py names ../../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)"
+  },
+  "F09 reach none for code ext": {
+   "kind": "drop-vector",
+   "files": {
+    "services/a/t.mjs": "import { spawn } from \"node:child_process\";\nspawn(process.execPath, [\"../../dist/x.js\"]);\n",
+    "dist/keep.txt": "k\n"
+   },
+   "change": "services/a/t.mjs",
+   "cfg_set": {
+    "edge_scan": {
+     "roots": [
+      "services"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "dist/x.js",
+       "reach": "none",
+       "reason": "F09: a code name declared reach none must refuse, so the vector pins that refusal",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "verdict": "REFUSE",
+   "refusal": "edge_scan.unresolved_names: services/a/t.mjs names dist/x.js, a code file, with reach \"none\"; code that runs reaches its sources, so declare the tracked paths it stands for",
+   "must_run": "test-a"
+  },
+  "F08 excluded docs runner": {
+   "kind": "drop-vector",
+   "files": {
+    "docs/build.mjs": "import \"../lib/x.mjs\";\n",
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "change": "lib/x.mjs",
+   "cfg_set": {
+    "jobs": {
+     "root": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-a": {
+      "packages": [
+       "a"
+      ]
+     },
+     "test-b": {
+      "packages": [
+       "b"
+      ]
+     },
+     "test-c": {
+      "packages": [
+       "c"
+      ]
+     },
+     "docs": {
+      "packages": [
+       "b"
+      ]
+     }
+    }
+   },
+   "verdict": "FULL",
+   "must_run": "docs"
+  },
+  "F01-ctl fork own file": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/t.mjs": "import { fork } from \"node:child_process\";\nimport path from \"node:path\";\nfork(path.join(__dirname, \"lib\", \"w.mjs\"));\n",
+    "services/a/lib/w.mjs": "export const w = 1;\n"
+   },
+   "change": "services/a/lib/w.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a"
+   ]
+  },
+  "F02-ctl vite alias own src": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/vite.config.mjs": "import path from \"node:path\";\nexport default { resolve: { alias: { \"@\": path.join(__dirname, \"src\") } } };\n",
+    "services/a/src/x.mjs": "export const w = 1;\n"
+   },
+   "change": "services/a/src/x.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a"
+   ]
+  },
+  "F11 test<->scripts cycle": {
+   "kind": "correct-plan control",
+   "files": {
+    "test/run.mjs": "import \"../scripts/x.mjs\";\n",
+    "scripts/x.mjs": "import \"../test/helper.mjs\";\n",
+    "test/helper.mjs": "export const w = 1;\n",
+    "services/c/t.mjs": "import \"../../scripts/x.mjs\";\n"
+   },
+   "change": "scripts/x.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-b",
+    "test-c"
+   ]
+  },
+  "require.resolve then spawn": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/t.mjs": "import { spawn } from \"node:child_process\";\nconst p = require.resolve(\"../../scripts/w.mjs\");\nspawn(process.execPath, [p]);\n",
+    "scripts/w.mjs": "export const w = 1;\n"
+   },
+   "change": "scripts/w.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ]
+  },
+  "vitest include ../../lib/**": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/vitest.config.mjs": "export default { test: { include: [\"../../lib/**/*.test.mjs\"] } };\n",
+    "lib/x.test.mjs": "export const w = 1;\n"
+   },
+   "change": "lib/x.test.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a"
+   ]
+  },
+  "tsconfig references": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/tsconfig.json": "{\"references\":[{\"path\":\"../../tools/tsc\"}]}\n",
+    "tools/tsc/tsconfig.json": "{\"files\":[\"./x.ts\"]}\n",
+    "tools/tsc/x.ts": "export const x = 1;\n"
+   },
+   "change": "tools/tsc/x.ts",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ]
+  },
+  "package.json imports map": {
+   "kind": "correct-plan control",
+   "files": {
+    "services/a/package.json": "{\"imports\":{\"#w\":\"./w.mjs\"}}\n",
+    "services/a/t.mjs": "import \"#w\";\n",
+    "services/a/w.mjs": "export const w = 1;\n"
+   },
+   "change": "services/a/w.mjs",
+   "cfg_set": {},
+   "verdict": "SELECT",
+   "jobs": [
+    "test-a"
+   ]
+  }
+ }
+}

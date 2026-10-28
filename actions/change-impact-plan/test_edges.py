@@ -1516,6 +1516,21 @@ class ImportAttributionTest(unittest.TestCase):
                       "scripts__x.sh": "#!/bin/bash\n"})
         self.assertIn("a", self.scan()[2]["imports"]["scripts/x.sh"])
 
+    def test_shell_whole_file_pass_reads_the_scanned_revision(self):
+        # action.yml runs `check --revision`: the whole-file shell pass lists the commit's shell files (ls-tree takes no
+        # glob and no `:!` exclude, exit 128), and reads the committed bytes, never a later working tree.
+        self.files(**{"services__a__test__run.sh": '#!/bin/bash\ncd "$(dirname "$0")/.."\nbash ./x.sh\n',
+                      "services__a__x.sh": "#!/bin/bash\n", "scripts__x.sh": "#!/bin/bash\n",
+                      "docs__note.sh": "cd /tmp\nbash ./y.sh\n"})  # excluded (docs): it would refuse if listed
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit",
+                        "-qm", "r", "--no-gpg-sign"], check=True)
+        rev = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        (self.repo / "services/a/test/run.sh").write_text("#!/bin/bash\ncd /tmp\nbash ./x.sh\n")  # the working tree differs
+        report = {}
+        E.scan(self.repo, IMPORT_CFG, revision=rev, report=report)
+        with self.assertRaisesRegex(ValueError, "after a `cd` the scan cannot follow"):
+            E.scan(self.repo, IMPORT_CFG)
+
     def test_shell_any_other_cd_names_the_directory_its_next_commands_run_in(self):
         # R5V14: only a cd to the script's own directory is modelled (shell_cwd_spans); any other cd's argument is read.
         self.files(**{"services__a__test__run.sh": "#!/bin/bash\n(cd ../../b && make)\n", "services__b__Makefile": "all:\n"})

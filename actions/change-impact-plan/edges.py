@@ -2510,12 +2510,14 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     # 1.5.1: every shell file, whole. The grep returns only lines naming a root or a `../`, so a `./x.sh` after a
     # `cd "$(dirname "$0")/../../b"` was never read, and a relative path after a `cd` the scan cannot follow would pass
     # unseen. Each such path resolves where the script is (shell_cwd_spans), or refuses; credits as the loop above.
-    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo),
-                              *(["ls-tree", "-r", "-z", "--name-only", revision] if revision else ["ls-files", "-z"]),
-                              "--", "*.sh", "*.bash", *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if listing.returncode != 0:
+    # `git grep -l` lists them in both modes: `ls-tree` supports neither a glob nor the `:!` excludes (exit 128).
+    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-e", "",
+                              *([revision] if revision else []), "--", "*.sh", "*.bash", *excludes],
+                             capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if listing.returncode not in (0, 1):
         raise SystemExit(f"edges: listing shell files failed (exit {listing.returncode})")
-    for path in sorted(p for p in listing.stdout.decode("utf-8", errors="replace").split("\0") if p):
+    names = [p[len(revision) + 1:] if revision else p for p in listing.stdout.decode("utf-8", errors="replace").split("\0") if p]
+    for path in sorted(names):
         reader, parts, targets = owner(path), path.split("/"), set()
         text = read_source(repo, path, revision, environment)
         spans = shell_cwd_spans(text, posixpath.dirname(path))

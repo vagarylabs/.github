@@ -42,7 +42,7 @@ jobs:
   plan:
     name: change-impact plan
     runs-on: ${{ inputs.runner != '' && inputs.runner || vars.CI_PLAN_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       plan_id: ${{ steps.plan.outputs.plan_id }}

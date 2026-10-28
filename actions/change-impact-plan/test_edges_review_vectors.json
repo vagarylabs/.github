@@ -3286,7 +3286,24 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "unresolved_names": [
+      {
+       "file": "services/r/x.ts",
+       "name": "services/app",
+       "reach": "none"
+      }
+     ]
+    }
+   }
   },
   "R4R02_js_default_value_does_not_bind": {
    "expect": "read",
@@ -4590,7 +4607,24 @@
    "src": "STEP = 'python3 ../../scripts/x.py'\ndef resolve(shell=STEP, cwd='services/b'):\n    return run_script(shell, cwd)\n",
    "truth": [
     "b"
-   ]
+   ],
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "unresolved_names": [
+      {
+       "file": "services/r/x.py",
+       "name": "scripts/x.py",
+       "reach": "none"
+      }
+     ]
+    }
+   }
   },
   "R5T02_py_fstring_subst_then_dotdot_root": {
    "expect": "refuse",
@@ -4840,7 +4874,7 @@
    "reads": []
   },
   "R5V13_makefile_target_specific_var": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "",
    "src": "test: SVC := services/b\ntest:\n\tcd $(SVC)/../../packages/shared && pytest\n",
    "truth": [
@@ -4849,13 +4883,10 @@
     "shared"
    ],
    "file": "services/r/build/Makefile",
-   "reads": [
-    "b",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V14_sh_find_while_read": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "sh",
    "src": "find services -mindepth 1 -maxdepth 1 -type d | while read -r d; do\n  (cd \"$d/../../packages/shared\" && make)\ndone\n",
    "truth": [
@@ -4866,15 +4897,10 @@
     "shared"
    ],
    "file": "services/r/ci/run.sh",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V15_taskfile_dir_key": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "yml",
    "src": "tasks:\n  test:\n    dir: services/b\n    cmds:\n      - cd ../../packages/shared && pytest\n",
    "truth": [
@@ -4883,13 +4909,10 @@
     "shared"
    ],
    "file": "services/r/ci/Taskfile.yml",
-   "reads": [
-    "b",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V18_py_popen_alias_cwd": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "from subprocess import Popen as P\nP([\"make\", \"-C\", \"../../packages/shared\"], cwd=Path(ROOT, \"services\", name))\n",
    "truth": [
@@ -4900,15 +4923,10 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V19_py_chdir_alias": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "from os import chdir as cd\ncd(Path(ROOT, \"services\", name))\nopen(\"../../packages/shared/x.json\")\n",
    "truth": [
@@ -4919,12 +4937,7 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V20_py_chdir_then_join_dotdot_components": {
    "expect": "refuse",
@@ -4953,7 +4966,7 @@
    "file": "services/r/sub/x.py"
   },
   "R5V22_py_asyncio_exec_cwd": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "await asyncio.create_subprocess_exec(\"make\", \"-C\", \"../../packages/shared\", cwd=Path(ROOT, \"services\", name))\n",
    "truth": [
@@ -4964,12 +4977,7 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R5V23_js_spawn_cwd_shorthand_control": {
    "expect": "refuse",
@@ -5674,7 +5682,7 @@
   "R6V15_pkg_utf8_bom": {
    "expect": "read",
    "ext": "json",
-   "src": "\ufeff{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "src": "﻿{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
    "truth": [
     "a",
     "b",
@@ -5722,7 +5730,7 @@
    "reads": []
   },
   "R6V19_deno_json_tasks": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "json",
    "src": "{\"tasks\": {\"b\": \"cd services/b && cd ../../packages/shared && deno task b\"}}\n",
    "truth": [
@@ -5731,10 +5739,7 @@
     "shared"
    ],
    "file": "services/r/sub/deno.json",
-   "reads": [
-    "b",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R6V20_pkg_precision_script_name_root": {
    "expect": "read",
@@ -5744,7 +5749,7 @@
    "file": "services/r/package.json"
   },
   "R6V21_chdir_tainted_attribute": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "class R:\n    def __init__(self, n):\n        self.d = Path(ROOT, \"services\", n)\n    def go(self):\n        os.chdir(self.d)\n        open(\"../../packages/shared/x.json\")\n",
    "truth": [
@@ -5755,15 +5760,10 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R6V22_exec_cwd_tainted_attribute": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "class R:\n    def __init__(self, n):\n        self.d = Path(ROOT, \"services\", n)\n    def go(self):\n        subprocess.run([\"make\"], cwd=self.d)\n        open(\"../../packages/shared/x.json\")\n",
    "truth": [
@@ -5774,15 +5774,10 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R6V23_js_exec_cwd_this_attribute": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "js",
    "src": "class R {\n  constructor(n) { this.d = path.join(root, 'services', n); }\n  go() {\n    spawnSync('make', [], { cwd: this.d });\n    fs.readFileSync('../../packages/shared/x.json');\n  }\n}\n",
    "truth": [
@@ -5793,12 +5788,7 @@
     "shared"
    ],
    "file": "services/r/sub/x.js",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R6V24_chdir_then_path_cwd_parent": {
    "expect": "residual",
@@ -5925,14 +5915,14 @@
   "R7T03_pkg_two_boms": {
    "expect": "refuse",
    "ext": "json",
-   "src": "\ufeff\ufeff{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
+   "src": "﻿﻿{\"scripts\": {\"t\": \"pytest services -q\"}}\n",
    "truth": [],
    "file": "services/r/package.json"
   },
   "R7T04_pkg_bom_then_invalid": {
    "expect": "refuse",
    "ext": "json",
-   "src": "\ufeff{\"scripts\": {\"t\": \"pytest services -q\",}}\n",
+   "src": "﻿{\"scripts\": {\"t\": \"pytest services -q\",}}\n",
    "truth": [],
    "file": "services/r/package.json"
   },
@@ -5974,7 +5964,7 @@
   "R7T10_pkg_bom_no_scripts": {
    "expect": "read",
    "ext": "json",
-   "src": "\ufeff{\"name\": \"x\", \"description\": \"services\"}\n",
+   "src": "﻿{\"name\": \"x\", \"description\": \"services\"}\n",
    "truth": [],
    "file": "services/r/package.json"
   },
@@ -6042,7 +6032,7 @@
    "file": "services/r/sub/x.py"
   },
   "R7T17_py_chdir_sibling_function_parameter": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "def a(name):\n    d = Path(ROOT, \"services\", name)\n    return d\ndef b(d):\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\n",
    "truth": [
@@ -6053,15 +6043,10 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R7T18_py_chdir_sibling_function_local": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "def a(name):\n    d = Path(ROOT, \"services\", name)\n    return d\ndef b():\n    os.chdir(d)\n    open(\"../../packages/shared/x.json\")\n",
    "truth": [
@@ -6072,12 +6057,7 @@
     "shared"
    ],
    "file": "services/r/sub/x.py",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R7T19_py_chdir_self_tainted_by_setattr": {
    "expect": "refuse",
@@ -6106,7 +6086,7 @@
    "file": "services/r/sub/x.py"
   },
   "R7B1a_py_chdir_fstring_of_tainted_name": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "truth": [
     "a",
@@ -6117,12 +6097,7 @@
    ],
    "file": "services/r/sub/x.py",
    "src": "d = Path(ROOT, \"services\", name)\nos.chdir(f\"{d}\")\nopen(\"../../packages/shared/x.json\")\n",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R7B1b_py_chdir_str_of_tainted_name": {
    "expect": "refuse",
@@ -6138,7 +6113,7 @@
    "src": "d = Path(ROOT, \"services\", name)\nos.chdir(str(d))\nopen(\"../../packages/shared/x.json\")\n"
   },
   "R7B1c_js_quoted_cwd_key": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "js",
    "truth": [
     "a",
@@ -6149,12 +6124,7 @@
    ],
    "file": "services/r/sub/x.js",
    "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { \"cwd\": d });\nfs.readFileSync('../../packages/shared/x.json');\n",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R7B1d_py_chdir_tainted_receiver_attr": {
    "expect": "refuse",
@@ -6195,7 +6165,7 @@
    "src": "os.chdir(f\"{Path(ROOT, 'services', name)}\")\nopen(\"../../packages/shared/x.json\")\n"
   },
   "R8T02_js_cwd_template_of_tainted_name": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "js",
    "truth": [
     "a",
@@ -6206,15 +6176,10 @@
    ],
    "file": "services/r/sub/x.js",
    "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { cwd: `${d}` });\nfs.readFileSync('../../packages/shared/x.json');\n",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R8T03_js_single_quoted_cwd_key": {
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "js",
    "truth": [
     "a",
@@ -6225,12 +6190,7 @@
    ],
    "file": "services/r/sub/x.js",
    "src": "const d = path.join(root, 'services', name);\nspawnSync('make', [], { 'cwd': d });\nfs.readFileSync('../../packages/shared/x.json');\n",
-   "reads": [
-    "a",
-    "b",
-    "b2",
-    "nest"
-   ]
+   "closed_by": "D5 (root's delta R4 of #33): its cwd-relative name resolves to nothing, an unresolved route, so it refuses"
   },
   "R8T04_js_unquoted_cwd_control": {
    "expect": "refuse",

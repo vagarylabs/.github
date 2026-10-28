@@ -30,6 +30,10 @@ def render(text):
             body = (ROOT / m["path"]).read_text(encoding="utf-8")
             if "\t" in body:
                 raise SystemExit("%s: tabs cannot be inlined into YAML" % m["path"])
+            if "$" + "{{" in body:
+                # Actions expands an expression anywhere in a run block, heredoc or not: the copy would differ from
+                # the file. In manifest.json write the $ as \u0024.
+                raise SystemExit("%s: an Actions expression cannot be inlined into a run block" % m["path"])
             out.extend((m["indent"] + l) if l else "" for l in body.rstrip("\n").split("\n"))
     return "\n".join(out) + "\n"
 

@@ -39,7 +39,7 @@ jobs:
     # refused (no hosted budget: rejected in about 2 s, zero steps), so private callers take the vl-light bridge
     # runners; public ones, and this repository, stay GitHub-hosted, which is correct for a public repo.
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","vl-light"]') || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)
     if: github.event_name == 'issues' && github.event.action == 'opened'
     steps:
       - name: Assign to maintainers

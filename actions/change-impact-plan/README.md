@@ -228,11 +228,19 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - a symlink resolves by its target;
    - a directory is every tracked file beneath it, and a package nested there is a dep, not a reached file.
    - **Nothing is dropped** (root's R4 of #33). An untracked path inside a package, such as its `dist/` output, stands
-     for that package: a dep. An untracked path outside every package REFUSES when it is named in a module position:
-     an import or export-from specifier, a loader call's literal argument or computed target,
-     `new URL(x, import.meta.url)`, or a shell file's relative operand. A relative string anywhere else is data that
-     may name nothing (a test's `"../../etc/passwd"`). It stays a non-edge, and `derive`'s report lists it under
-     `unresolved_data_names`.
+     for that package: a dep.
+   - **Every route resolves, or the scan refuses** (root's delta R4 of #33, D5). A name that resolves to no tracked file
+     or directory outside every package is an unresolved route, in ANY position. A scan that cannot run a line cannot
+     tell a module position from data. `timeout 300 node ../dist/x.js`, `npx tsx`, `env -i node`,
+     `node --import`, `pnpm exec`, `xargs`, `nohup`, a heredoc import, a `package.json` script, `fork`,
+     `new Worker("...")` and `spawn(process.execPath, [...])` all read alike to it, and a test's `"../../etc/passwd"`
+     looks no different. So it refuses unless an `edge_scan.unresolved_names` entry declares it: `{"file", "name",
+     "reach"}`, where `name` is the repo path it resolves to. `reach` is `"none"` (it names nothing that runs: a test
+     datum) or the tracked paths it stands for (a build output's sources), each then an edge. An entry that matches no
+     route fails `check` as stale. `derive`'s report lists the declared names under `unresolved_data_names`. A path under
+     `node_modules` stays external.
+   - **A path at or above the repository root refuses** (N4): a `"../.."` alias, `baseUrl` or `root` reaches every
+     file, so no mapping of it can be narrower than FULL.
 2. **The credit.** Per importing package, the transitive closure credits the package with every read the scan finds in
    each reached file. Cycles end. A file two packages reach credits both. The reader job keeps its own credit, so nothing
    is ever narrower.
@@ -243,7 +251,11 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      each one under `unowned_callers`, with its unit and the packages it reaches.
    - A `.md` file is prose: its edge is recorded and nothing is credited.
    - A data file is credited, which only over-approximates, but imports nothing.
-   - Only code (JS/TS, Python, shell) is followed further.
+   - Only code (JS/TS, Python, shell) is followed further. A reached `.mdx`, `.astro`, `.vue` or `.svelte` file can
+     import modules, and the scan does not parse it, so reaching one refuses (D5, N5).
+   - **A reacher outside every package** (D5, N3). Every code file outside every package also starts a closure of its
+     own unit: its reader directory, whose job runs it, or `<unmapped>`. What it reaches is that unit's import, listed
+     under `unit_imports` in the report.
 3. **Fail closed.** A reached path under `always_reader_dirs` refuses. So does a reached CODE file the scan excludes,
    since its reads cannot be credited, and a symlink loop.
 4. **Computed imports: refuse unless declared** (spine's D2). A module-loading call whose argument is not one plain
@@ -278,12 +290,22 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - on an imported path that no `extra_edges` glob maps to at least its importers;
    - on an imported path an `inert_globs` glob matches ("inert import"). `plan.classify_paths` applies `inert_globs`
      before `extra_edges`, so such a path would select nothing when it changes;
-   - on a `computed_imports` entry that matches no site.
+   - on a `computed_imports` or `unresolved_names` entry that matches no site;
+   - **on a narrowed import** (D5, N3): a path a reader unit imports, where the REAL `plan.classify_paths` under its
+     mapping does not run that unit's reader job. A path left unmapped plans FULL, which runs every job, so it never
+     fails here. A path reached by an `<unmapped>` file (in no reader directory, so no declared job runs it) may not be
+     mapped at all.
 
-   **Never narrower, end to end** (root's R4 of #33). For every imported path in vagary-core and vagaris, the REAL
-   `plan.classify_paths` under exactly the mapping `check` requests selects at least the importers an independent oracle
-   finds. The oracle resolves every quoted `./`/`../` string in package code with every extension form, transitively.
-   A path whose own `check` fails plans FULL.
+   **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
+   scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
+   does not parse, a reacher outside every package (unless the mapping still runs its job), and a path at or above the
+   root. So `check`'s mapping can only narrow FULL to a plan that still runs every importer the scan found.
+
+   **What this does not claim.** The census (`lanes/cli/scratch/import-attribution`) compares the real
+   `plan.classify_paths` with an independent oracle for every imported path in vagary-core and vagaris. That oracle
+   finds importers through quoted `./`/`../` strings, data-position names included, and through reacher units. It
+   cannot see the residuals listed below, so "never narrower" holds for the routes this scan reads, not for those
+   residuals. A path whose own `check` fails plans FULL.
 
    A declared edge then selects the importers through `plan.classify_paths`, as any `extra_edges` glob does. An
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
@@ -355,8 +377,6 @@ Not closed (documented residuals):
   default exclude);
 - an import by module name through a tsconfig `paths` alias or a bundler alias;
 - a data-driven read (code that reads a manifest, then the paths in it);
-- a relative DATA string (not a module position) that names an untracked path: it stays a non-edge and is listed under
-  `unresolved_data_names`, so a file a build writes there is not attributed to the build's sources;
 - Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
   `import x` / `from x import` is followed;
 - a shell `source "$VAR/x"`: a substituted prefix is not resolved;

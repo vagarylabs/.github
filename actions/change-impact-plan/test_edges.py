@@ -1246,6 +1246,29 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "a reaches third/x.mjs, code the scan excludes"):
             self.scan(cfg)
 
+    def test_a_shell_command_or_script_operand_is_a_module_position_and_other_operands_are_data(self):
+        # Fix 1's shell scope: vagary-core's `PGPORT="$(bash ../../scripts/ci-test-pg.sh port)"` runs a script written
+        # relative to another directory, so it names nothing from the file's own and refuses. A find pattern, heredoc
+        # text, an installed binary under node_modules and a `cd` target are not module positions.
+        refuse = {"interpreter": "bash ../../scripts/gone.sh\n",
+                  "inside $()": 'PGPORT="$(bash ../../scripts/gone.sh port "$X")"\n',
+                  "command word": "../../scripts/gone.sh --flag\n",
+                  "env prefix": "FOO=1 node ../../scripts/gone.mjs\n",
+                  "source self dir": 'source "$(dirname "$0")/../../scripts/gone.sh"\n'}
+        for why, body in refuse.items():
+            with self.subTest(why):
+                self.files(**{"services__a__run.sh": "#!/bin/bash\n" + body})
+                with self.assertRaisesRegex(ValueError, "scripts/gone.(sh|mjs), which names no tracked file"):
+                    self.scan()
+        data = {"find pattern": "find . ! -path '../../scripts/cache/*'\n",
+                "heredoc text": "usage() {\ncat <<'EOF'\n  ../../scripts/gone.sh canary\nEOF\n}\n",
+                "installed binary": "../../node_modules/.bin/vitest run\n",
+                "cd target": 'cd "$(dirname "$0")/../../scripts/gone"\n'}
+        for why, body in data.items():
+            with self.subTest(why):
+                self.files(**{"services__a__run.sh": "#!/bin/bash\n" + body})
+                self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.

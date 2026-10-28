@@ -1771,6 +1771,13 @@ IMPORT_CALL_GREP = (r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\(|(require
 SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
 SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
                             r"/([A-Za-z0-9_.@+/-]+)")
+# Fix 1's shell module positions: the command word itself, or the script operand of an interpreter or `source`. A path
+# anywhere else on a shell line (a find -path pattern, an rm target, heredoc text) is data.
+SHELL_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+SHELL_RUNNERS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "source", ".", "node", "python", "python3", "tsx", "ts-node",
+                           "deno", "bun"})
+SHELL_PREFIXES = frozenset({"env", "time", "exec", "nice", "sudo", "command", "then", "do", "else", "elif", "if", "while",
+                            "until", "!", "{"})
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*))", re.M)
 
 
@@ -2811,10 +2818,48 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     specifiers: dict[str, set[str]] = {}
 
+    def shell_module_names(path: str) -> set[str]:
+        """The shell lines' module positions (see SHELL_RUNNERS): the command word, or an interpreter's or `source`'s
+        script operand, with heredoc bodies skipped."""
+        here, found, end = posixpath.dirname(path), set(), None
+        for line in read_source(repo, path, revision, environment).split("\n"):
+            if end is not None:
+                if line.strip() == end:
+                    end = None
+                continue
+            t = line.strip()
+            if t.startswith("#"):
+                continue
+            heredoc = SHELL_HEREDOC.search(t)
+            for m in SHELL_SELF_DIR.finditer(t):
+                before = re.split(r"&&|\|\||[;|&(`]", t[:m.start()])[-1].replace('"', " ").replace("'", " ").split()
+                while before and (re.match(r"^\w+=", before[0]) or before[0] in SHELL_PREFIXES):
+                    before.pop(0)
+                if not before or (len(before) == 1 and before[0] in SHELL_RUNNERS):
+                    found.add(posixpath.normpath(posixpath.join(here, m.group(1))))
+            for command in re.split(r"&&|\|\||[;|&`()]|\$\(", SHELL_SELF_DIR.sub(" ", t)):
+                words = [w.strip("\"'") for w in command.split()]
+                i = 0
+                while i < len(words) and (re.match(r"^\w+=", words[i]) or words[i] in SHELL_PREFIXES):
+                    i += 1
+                if i >= len(words):
+                    continue
+                word = words[i]
+                if word in SHELL_RUNNERS:
+                    i += 1
+                    while i < len(words) and words[i].startswith("-"):
+                        i += 1
+                    word = words[i] if i < len(words) else ""
+                if word.startswith(("./", "../")):
+                    found.add(posixpath.normpath(posixpath.join(here, word)))
+            if heredoc:
+                end = heredoc.group(2)
+        return found
+
     def module_names(path: str) -> set[str]:
         """Fix 1's scope (root's R4 of #33, 2026-10-27): the targets `path` names in a MODULE position, where a name
         that resolves to nothing refuses. That is an import or export-from specifier, a loader call's literal argument,
-        `new URL(x, import.meta.url)`'s first argument, and every relative operand of a shell file's lines. A relative
+        `new URL(x, import.meta.url)`'s first argument, and a shell line's command word or script operand. A relative
         string anywhere else is data, which may name nothing (a test's "../../etc/passwd"); it stays a non-edge, and
         the report lists it under unresolved_data_names."""
         if path not in specifiers:
@@ -2832,7 +2877,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     if j in firsts or url or (prev is not None and prev[0] == "word" and prev[3] in ("from", "import")):
                         found.add(posixpath.normpath(posixpath.join(here, t[3][0])))
             elif src is None and is_code(path):
-                found = shell_names(path)
+                found = shell_module_names(path)
             specifiers[path] = found
         return specifiers[path]
 
@@ -2856,6 +2901,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # Never dropped: a path in a package (an untracked build output, its dist/) stands for that package's
                 # sources; one outside every package names nothing the scan can credit, so it refuses.
                 found = owner(target)
+                if "node_modules" in target.split("/"):
+                    continue  # an installed dependency, never tracked source: external (its manifests plan FULL)
                 if found is None:
                     if target in loader_targets or any(target in module_names(f) for f in sorted(namers.get(target, ()))):
                         raise ValueError(f"unresolved ({package} reaches {target}, which names no tracked file or "

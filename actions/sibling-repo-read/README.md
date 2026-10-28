@@ -29,6 +29,18 @@ The token reaches git only through a credential helper that reads it from the en
 printed line. Git runs outside any checkout, with the http extraheader blanked: actions/checkout persists one holding
 THIS repository's GITHUB_TOKEN, which would otherwise override the App token.
 
+**The job around it.** Steps before this action may run PR-controlled code (a check script, a `pnpm install`
+lifecycle, a PR-local setup action), which can write `GITHUB_PATH`, `GITHUB_ENV` or `BASH_ENV`. So the two steps that
+hold the token run in a reset shell: `/usr/bin/env` unsets `BASH_ENV`, `ENV` and the dynamic-loader variables, sets
+`PATH=/usr/bin:/bin`, and starts `/bin/bash --noprofile --norc`. read.py runs as `python3 -I -S` (no `PYTHON*`
+variables, no user or site packages), and git runs with the same PATH, those variables removed and hooks off. A
+python3 or git earlier on PATH, or a PR-built venv, never sees the token. A checkout goes into a fresh directory, and
+`git rev-parse HEAD` must equal the main commit it fetched.
+
+This narrows the channel; it does not close it. Code that already ran in the job can still reach the runner (on a
+hosted runner it has sudo). The durable fix mints before any PR code runs, or in a separate job that hands off only the
+objects: its own design.
+
 The `token` output is for a later read the action does not cover. A later sibling clone or checkout should use the
 action itself; `trusted-workflow-integrity` refuses a raw `create-github-app-token` followed by a sibling read.
 
@@ -55,4 +67,9 @@ covers:
 - one bound covers all repositories;
 - the token goes only in the Authorization header and is never printed.
 
-Local bare remotes cover the bare and pinned modes, the scope check, and a missing repository.
+Local bare remotes cover the bare and pinned modes, the scope check, and a missing repository. Hardening:
+- the clone step, run through its own declared shell with a hostile `BASH_ENV`, `ENV`, and a `python3` and `git`
+  earlier on PATH, clones and leaks nothing, while plain `shell: bash` (the control) leaks;
+- read.py's git ignores a PATH entry a step can prepend;
+- a non-empty destination refuses;
+- a checkout not at main's commit fails.

@@ -69,11 +69,11 @@ inputs:
     required: false
     default: ""
   token-file:
-    description: The 0600 file the token is written to (mint, one repository) or read from (revoke).
+    description: The 0600 file the token is written to (mint, one repository) or read from (revoke). An absolute path strictly inside $RUNNER_TEMP (no `..`, no symlink leading out), e.g. $RUNNER_TEMP/broker-tokens/<name> (runner.temp in an expression).
     required: false
     default: ""
   token-dir:
-    description: The 0700 directory holding one 0600 file `<owner>__<name>` per repository (mint, several repositories; revoke).
+    description: The 0700 directory holding one 0600 file `<owner>__<name>` per repository (mint, several repositories; revoke). An absolute path strictly inside $RUNNER_TEMP, like token-file.
     required: false
     default: ""
   output:

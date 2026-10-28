@@ -19,7 +19,8 @@ mint    The chain, every leg keyless and short-lived:
         revoked.
         The token goes to a 0600 file (--token-file, one repository; --token-dir, one file `<owner>__<name>` per
         repository) and/or, masked, to $GITHUB_OUTPUT (--github-output NAME, one repository). Never printed, never
-        logged, never in argv.
+        logged, never in argv. Every one of those paths must be absolute and strictly inside $RUNNER_TEMP once
+        resolved (no `..`, no symlink leading out); RUNNER_TEMP unset is refused. Both modes, before any call.
 revoke  Reads each token from its 0600 file (never argv). For a revocable purpose it calls DELETE
         <api>/installation/token: 204 is revoked; 401 or 404 means the token is already gone. The file is removed
         either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller.
@@ -86,6 +87,32 @@ class LegFailed(RuntimeError):
 
 class Usage(ValueError):
     """A usage error, found before any network call (exit 2)."""
+
+
+class OutsideRunnerTemp(Usage):
+    """RUNNER_TEMP is unset, or a token path is not strictly inside it once resolved (exit 2, before any call)."""
+
+
+def inside_runner_temp(value: str, what: str, env: dict) -> pathlib.Path:
+    """`value` when it is an absolute path strictly inside $RUNNER_TEMP with every symlink resolved; else
+    OutsideRunnerTemp. The runner empties RUNNER_TEMP after every job, so a token kept there cannot outlive the job,
+    and revoke (which removes what it reads) cannot be pointed at a file elsewhere. Both sides are compared as
+    realpaths, so a symlink anywhere in the path cannot lead out, while a RUNNER_TEMP that is itself reached through a
+    symlink is not an escape. A `..` component is refused outright, never resolved."""
+    root = env.get("RUNNER_TEMP") or ""
+    if not root:
+        raise OutsideRunnerTemp(f"RUNNER_TEMP is not set, so the {what} cannot be confined to the job's temp directory")
+    if not os.path.isabs(root):
+        raise OutsideRunnerTemp("RUNNER_TEMP must be an absolute path")
+    if not os.path.isabs(value):
+        raise OutsideRunnerTemp(f"RUNNER_TEMP: the {what} must be an absolute path inside it, not {value[:200]!r}")
+    if ".." in pathlib.PurePosixPath(value).parts:
+        raise OutsideRunnerTemp(f"RUNNER_TEMP: the {what} must not contain '..': {value[:200]!r}")
+    real_root, real = os.path.realpath(root), os.path.realpath(value)
+    if real == real_root or os.path.commonpath([real_root, real]) != real_root:
+        raise OutsideRunnerTemp(f"RUNNER_TEMP: the {what} {value[:200]!r} resolves to {real[:200]!r}, which is not "
+                                "inside RUNNER_TEMP")
+    return pathlib.Path(value)
 
 
 def _http(method: str, url: str, headers: dict, data: bytes | None, timeout: float = 30) -> tuple[int, dict]:
@@ -332,6 +359,14 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
             raise Usage("GITHUB_OUTPUT is not set")
     if not 1 <= a.readiness_seconds <= 600:
         raise Usage("readiness-seconds must be between 1 and 600")
+    # Every place the token is written: strictly inside RUNNER_TEMP. The runner keeps its GITHUB_OUTPUT file there too
+    # (<RUNNER_TEMP>/_runner_file_commands), so it is held to the same rule when the token goes to it.
+    if a.token_file:
+        inside_runner_temp(a.token_file, "token-file", env)
+    if a.token_dir:
+        inside_runner_temp(a.token_dir, "token-dir", env)
+    if a.github_output:
+        inside_runner_temp(env["GITHUB_OUTPUT"], "GITHUB_OUTPUT file the token is written to", env)
 
     tokens = mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env,
                   http, sleep, clock, out)
@@ -363,12 +398,12 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
     return 0
 
 
-def _token_files(a) -> list[pathlib.Path]:
+def _token_files(a, env: dict) -> list[pathlib.Path]:
     if bool(a.token_file) == bool(a.token_dir):
         raise Usage("revoke reads exactly one of token-file or token-dir")
     if a.token_file:
-        return [pathlib.Path(a.token_file)]
-    d = pathlib.Path(a.token_dir)
+        return [inside_runner_temp(a.token_file, "token-file", env)]
+    d = inside_runner_temp(a.token_dir, "token-dir", env)
     if not d.exists():
         return []
     if d.is_symlink() or not d.is_dir():
@@ -383,7 +418,7 @@ def _token_files(a) -> list[pathlib.Path]:
 def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
     purpose = _purpose(a.purpose)
     api = _api(env)
-    files = _token_files(a)
+    files = _token_files(a, env)
     revocable, rc = PURPOSES[purpose]["revocable"], 0
     present = [p for p in files if p.exists() or p.is_symlink()]
     if not present:

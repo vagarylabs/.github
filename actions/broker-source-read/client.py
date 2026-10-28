@@ -26,13 +26,15 @@ revoke  Reads each token from its 0600 file (never argv). For a revocable purpos
         either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller.
 
 Failure is loud and never a pass. Any leg that does not succeed exits 1 and names the leg and the HTTP status. 429,
-5xx and transport errors are retried with a bounded backoff (the broker allows 30 mints per minute per caller); a
-final 429 is a failure, so the consuming gate reports CANNOT-DETERMINE. Usage errors, including an unknown purpose,
-exit 2 before any network call.
+5xx and transport errors (a refused or dropped connection, a body cut short, a garbled status line) are retried with a
+bounded backoff (the broker allows 30 mints per minute per caller); a final 429 is a failure, so the consuming gate
+reports CANNOT-DETERMINE. Usage errors, including an unknown purpose, exit 2 before any network call. Nothing ends in
+a traceback: an unexpected exception exits 1 naming its type only.
 """
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import pathlib
@@ -43,6 +45,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable
+
+# What a dropped or garbled connection raises. urllib wraps a failure to SEND in URLError, but not one while reading the
+# answer: http.client raises IncompleteRead (a body cut short; also from HTTPError.read() on a 4xx/5xx body),
+# BadStatusLine or LineTooLong (a garbled status or header line), and RemoteDisconnected (an OSError). Every leg treats
+# them alike: retried with the bounded backoff, then a LegFailed naming the TYPE only. IncompleteRead carries the
+# partial body, which can hold a credential, so no exception's text is ever printed.
+TRANSPORT_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError)
 
 # The purposes a CI job may ask POST /v1/source/read for, each with EXACTLY the permission set the broker mints. This
 # mirrors vps-ansible scripts/build-controller/source_delivery_broker.py (origin/main 8d3c29dd):
@@ -137,7 +146,7 @@ def _call(leg: str, method: str, url: str, headers: dict, data: bytes | None, ht
     for attempt in range(len(BACKOFF) + 1):
         try:
             status, body = http(method, url, headers, data)
-        except (urllib.error.URLError, TimeoutError, OSError) as err:
+        except TRANSPORT_ERRORS as err:
             last = f"transport {type(err).__name__}"
         else:
             if status in ok:
@@ -253,7 +262,7 @@ def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, s
                                                                             **GITHUB_HEADERS},
                                  None, max(1.0, min(10.0, remaining)))
                 last = f"HTTP {status}"
-            except (urllib.error.URLError, TimeoutError, OSError) as err:
+            except TRANSPORT_ERRORS as err:
                 status, last = 0, f"transport {type(err).__name__}"
             if status == 200:
                 attempts[repo] = n
@@ -480,6 +489,10 @@ def main(argv: list[str], env: dict | None = None, http: Callable = _http,
         return 2
     except LegFailed as err:
         print(f"::error::broker-source-read failed at {err}", file=sys.stderr)
+        return 1
+    except Exception as err:                       # noqa: BLE001 -- the type only: a message may carry a credential
+        print(f"::error::broker-source-read failed: unexpected {type(err).__name__} (message withheld; it may carry "
+              "a credential)", file=sys.stderr)
         return 1
 
 

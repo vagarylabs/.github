@@ -6,17 +6,21 @@ Run: python3 -m unittest discover -s actions/broker-source-read -p 'test_*.py' -
 """
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import io
 import json
 import pathlib
 import re
+import socketserver
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 import urllib.parse
+import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("broker_source_read_client", HERE / "client.py")
@@ -311,6 +315,135 @@ class RetryTests(unittest.TestCase):
         rc, _, err, clock = run(mint_args(token_file=f"{RT}/x/t"), fake)
         self.assertEqual((rc, clock.sleeps), (1, []))
         self.assertIn("HTTP 403 (repository not granted)", err)
+
+
+class RawServer:
+    """A 127.0.0.1 server that reads each request whole, answers it with the same raw bytes, then closes the
+    connection: a cut body or a garbled status line exactly as a dropped connection delivers it to urllib."""
+
+    def __init__(self, response: bytes):
+        self.response, self.hits = response, 0
+        outer = self
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                outer.hits += 1
+                self.request.settimeout(5)
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    chunk = self.request.recv(65536)
+                    if not chunk:
+                        return
+                    data += chunk
+                head, _, body = data.partition(b"\r\n\r\n")
+                m = re.search(rb"(?im)^content-length:\s*(\d+)", head)
+                while m and len(body) < int(m.group(1)):
+                    chunk = self.request.recv(65536)
+                    if not chunk:
+                        break
+                    body += chunk
+                self.request.sendall(outer.response)
+
+        self.server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/source/read"
+
+    def __enter__(self):
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class TransportTests(unittest.TestCase):
+    """A connection dropped mid-answer, or a garbled status line, is a transport error like a refused connection:
+    retried with the bounded backoff, then the client's named failure (LegFailed) in the same `<leg>: transport <Type>`
+    shape. Never a traceback, and never the exception's text (IncompleteRead carries the partial body)."""
+
+    PARTIAL = b'{"schema": "source_read/v1", "token": "' + install_token("vagarylabs/partial").encode()
+    CUT = b"Content-Type: application/json\r\nContent-Length: 400\r\nConnection: close\r\n\r\n" + PARTIAL
+
+    def setUp(self):
+        # Straight to 127.0.0.1: no environment or system proxy in between.
+        urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+        self.addCleanup(urllib.request.install_opener, None)
+
+    def drive(self, response: bytes):
+        sleeps = []
+        with RawServer(response) as srv:
+            with self.assertRaises(client.LegFailed) as cm:
+                client._call("broker source.read vagarylabs/partial (image_pull)", "POST", srv.url,
+                             {"Content-Type": "application/json"}, b'{"repository": "vagarylabs/partial"}',
+                             client._http, sleeps.append)
+        self.assertEqual((srv.hits, sleeps), (len(client.BACKOFF) + 1, list(client.BACKOFF)))
+        self.assertNotIn(install_token("vagarylabs/partial"), str(cm.exception))
+        return str(cm.exception)
+
+    def test_positive_control_the_raw_server_delivers_a_whole_answer(self):
+        body = b'{"ok": true}'
+        with RawServer(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body) \
+                as srv:
+            answer = client._call("control", "POST", srv.url, {}, b"{}", client._http, [].append)
+        self.assertEqual((answer, srv.hits), ((200, {"ok": True}), 1))
+
+    def test_a_200_cut_mid_body_is_a_retried_named_transport_failure(self):
+        self.assertEqual(self.drive(b"HTTP/1.1 200 OK\r\n" + self.CUT),
+                         "broker source.read vagarylabs/partial (image_pull): transport IncompleteRead")
+
+    def test_a_5xx_cut_mid_body_is_a_retried_named_transport_failure(self):
+        # urlopen raises HTTPError first; the cut is then hit by HTTPError.read() in _http's handler.
+        self.assertEqual(self.drive(b"HTTP/1.1 503 Service Unavailable\r\n" + self.CUT),
+                         "broker source.read vagarylabs/partial (image_pull): transport IncompleteRead")
+
+    def test_a_garbled_status_line_is_a_retried_named_transport_failure(self):
+        self.assertEqual(self.drive(b"garbage\r\n\r\n"),
+                         "broker source.read vagarylabs/partial (image_pull): transport BadStatusLine")
+
+    def test_a_dropped_broker_answer_through_main_exits_1_without_a_traceback(self):
+        class Cut(Fake):
+            def __call__(self, method, url, headers, data=None, timeout=30):
+                if url == BROKER + "/v1/source/read":
+                    self.calls.append((method, url, dict(headers), data))
+                    raise http.client.IncompleteRead(TransportTests.PARTIAL, 300)
+                return super().__call__(method, url, headers, data, timeout)
+        with tmpdir() as td:
+            rc, out, err, clock = run(mint_args(purpose="image_pull", token_file=f"{td}/t"), Cut())
+            self.assertEqual(rc, 1)
+            self.assertIn("broker source.read vagarylabs/vagary-core (image_pull): transport IncompleteRead", err)
+            self.assertEqual(clock.sleeps, list(client.BACKOFF))
+            self.assertNotIn("Traceback", err)
+            self.assertNotIn(install_token("vagarylabs/partial"), out + err)
+            self.assertFalse(pathlib.Path(f"{td}/t").exists())
+
+    def test_a_dropped_readiness_answer_is_retried_in_the_bound_then_fails_and_revokes(self):
+        for exc in (http.client.IncompleteRead(b"{}", 10), http.client.BadStatusLine("garbage"),
+                    http.client.LineTooLong("header line")):
+            class Cut(Fake):
+                def __call__(self, method, url, headers, data=None, timeout=30):
+                    if method == "GET" and url.startswith(API + "/repos/"):
+                        self.calls.append((method, url, dict(headers), data))
+                        raise exc
+                    return super().__call__(method, url, headers, data, timeout)
+            fake = Cut()
+            rc, _, err, clock = run(mint_args(purpose="image_pull", token_file=f"{RT}/x/t", readiness_seconds=5), fake)
+            self.assertEqual(rc, 1, exc)
+            self.assertIn(f"(last answer transport {type(exc).__name__},", err)
+            self.assertLessEqual(sum(clock.sleeps), 5)
+            self.assertEqual(fake.deletes(), [f"token {install_token('vagarylabs/vagary-core')}"], exc)
+
+    def test_an_unexpected_exception_exits_1_naming_its_type_only(self):
+        class Boom(Fake):
+            def __call__(self, method, url, headers, data=None, timeout=30):
+                if url == BROKER + "/v1/source/read":
+                    raise RuntimeError(f"boom {install_token('vagarylabs/vagary-core')}")
+                return super().__call__(method, url, headers, data, timeout)
+        rc, out, err, _ = run(mint_args(token_file=f"{RT}/x/t"), Boom())
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected RuntimeError", err)
+        self.assertNotIn("boom", err)
+        self.assertEqual(leaked(out + err, ALL_SECRETS), [])
 
 
 class ReadinessTests(unittest.TestCase):

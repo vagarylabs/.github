@@ -194,8 +194,27 @@ class ActionShape(unittest.TestCase):
         self.assertLess(mint, probe)
         self.assertLess(probe, read)
         self.assertRegex(text, r"actions/create-github-app-token@[0-9a-f]{40} ")
-        self.assertIn("SIBLING_TOKEN: ${{ steps.mint.outputs.token }}", text)
-        self.assertNotIn("${{ steps.mint.outputs.token }}\"", text.split("run:", 1)[1].split("env:", 1)[0])
+        self.assertEqual(text.count("SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}"), 2)
+
+    def test_the_token_is_minted_read_only_and_packages_read_only_when_asked(self):
+        # Root's R4 of #37: least privilege. Each mint carries exactly its permissions; nothing else is requested.
+        text = (HERE / "action.yml").read_text()
+        steps = text.split("    - id: ")
+        mint = next(step for step in steps if step.startswith("mint\n"))
+        packages = next(step for step in steps if step.startswith("mint_packages\n"))
+        perms = lambda step: sorted(line.strip() for line in step.splitlines() if line.strip().startswith("permission-"))
+        self.assertEqual(perms(mint), ["permission-contents: read"])
+        self.assertEqual(perms(packages), ["permission-contents: read", "permission-packages: read"])
+        self.assertIn("if: ${{ inputs.packages == '' }}", mint)
+        self.assertIn("if: ${{ inputs.packages == 'read' }}", packages)
+        self.assertEqual(sum(len(perms(step)) for step in steps), 3, "no other step requests a permission")
+        scope = next(step for step in steps if step.startswith("scope\n")).split("run: |\n", 1)[1]
+        script = "\n".join(line[8:] for line in scope.splitlines() if line.startswith("        "))
+        for value, ok in (("", True), ("read", True), ("write", False), ("admin", False), ("read,write", False)):
+            with self.subTest(value=value):
+                out = subprocess.run(["bash", "-c", script], env=dict(os.environ, SIBLING_PACKAGES=value),
+                                     capture_output=True, text=True)
+                self.assertEqual(out.returncode == 0, ok, out.stdout + out.stderr)
 
 
 if __name__ == "__main__":

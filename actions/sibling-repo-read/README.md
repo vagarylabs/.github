@@ -21,6 +21,10 @@ job 122068344051) and core #920's merge group each lost a full red cycle to it o
 
    Every read is written to the step summary with its commit.
 
+**Scope: least privilege.** The token is minted READ-ONLY for the listed repositories: `contents: read` always, plus
+`packages: read` only when `packages: read` is passed (a GHCR pull of those repositories' packages). Any other
+`packages` value is refused before minting. It never carries the App's full installation permissions.
+
 The token reaches git only through a credential helper that reads it from the environment: never argv, a URL or a
 printed line. Git runs outside any checkout, with the http extraheader blanked: actions/checkout persists one holding
 THIS repository's GITHUB_TOKEN, which would otherwise override the App token.
@@ -38,6 +42,7 @@ action itself; `trusted-workflow-integrity` refuses a raw `create-github-app-tok
     bare: vagary-core:${{ runner.temp }}/core.git
     checkouts: |
       vagary-voice:${{ runner.temp }}/siblings/vagary-voice
+    packages: read          # optional: only for a GHCR pull of the listed repositories' packages
 ```
 
 ## Tests

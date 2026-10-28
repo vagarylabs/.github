@@ -44,24 +44,51 @@ inputs:
     description: The readiness bound, in seconds, for all repositories together.
     required: false
     default: "60"
+  packages:
+    description: Empty, or `read` to add packages read (a GHCR pull of the listed repositories' packages). Nothing else.
+    required: false
+    default: ""
 outputs:
   token:
-    description: The minted installation token, for a later read the action does not cover.
-    value: ${{ steps.mint.outputs.token }}
+    description: The minted read-only installation token (contents read, plus packages read when asked), for a later read the action does not cover.
+    value: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}
 runs:
   using: composite
   steps:
+    # LEAST PRIVILEGE (root's R4 of #37): the token is minted READ-ONLY, never with the App's full installation
+    # permissions: contents read always, packages read only when asked. Any other `packages` value is refused here.
+    - id: scope
+      shell: bash
+      env:
+        SIBLING_PACKAGES: ${{ inputs.packages }}
+      run: |
+        case "$SIBLING_PACKAGES" in
+          ""|read) ;;
+          *) echo "::error::sibling-repo-read: packages must be empty or read, not '$SIBLING_PACKAGES'"; exit 1 ;;
+        esac
     - id: mint
+      if: ${{ inputs.packages == '' }}
       uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
       with:
         app-id: ${{ inputs.app-id }}
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repositories }}
+        permission-contents: read
+    - id: mint_packages
+      if: ${{ inputs.packages == 'read' }}
+      uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+        permission-contents: read
+        permission-packages: read
     - id: ready
       shell: bash
       env:
-        SIBLING_TOKEN: ${{ steps.mint.outputs.token }}
+        SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}
         SIBLING_API: ${{ github.api_url }}
         SIBLING_OWNER: ${{ inputs.owner }}
         SIBLING_REPOS: ${{ inputs.repositories }}
@@ -71,7 +98,7 @@ runs:
       if: ${{ inputs.bare != '' || inputs.checkouts != '' }}
       shell: bash
       env:
-        SIBLING_TOKEN: ${{ steps.mint.outputs.token }}
+        SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}
         SIBLING_SERVER: ${{ github.server_url }}
         SIBLING_OWNER: ${{ inputs.owner }}
         SIBLING_REPOS: ${{ inputs.repositories }}

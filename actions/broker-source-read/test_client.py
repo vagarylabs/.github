@@ -845,7 +845,7 @@ class RevokeTests(unittest.TestCase):
             with mock.patch.object(pathlib.Path, "unlink", stuck):
                 rc, _, err, _ = self.revoke_dir(d, fake)
             self.assertEqual(rc, 1)
-            self.assertEqual(fake.deletes(), ["token fixture-token-a", "token fixture-token-b", "token fixture-token-c"])
+            self.assertEqual(fake.deletes(), [f"token fixture-token-{n}" for n in "abc"])   # b's token was revoked too
             self.assertIn("revoke vagarylabs__b: the file could not be removed (PermissionError)", err)
             self.assertIn("revoke: 1 of 3 token file(s) failed: vagarylabs__b", err)
             self.assertEqual([p.name for p in d.iterdir()], ["vagarylabs__b"])

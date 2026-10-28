@@ -415,7 +415,9 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
     if not 1 <= a.readiness_seconds <= 600:
         raise Usage("readiness-seconds must be between 1 and 600")
     # Every place the token is written: strictly inside RUNNER_TEMP. The runner keeps its GITHUB_OUTPUT file there too
-    # (<RUNNER_TEMP>/_runner_file_commands), so it is held to the same rule when the token goes to it.
+    # (actions/runner 4197182e: runner.temp is WellKnownDirectory.Temp, TempDirectoryManager.cs:24,31, emptied at
+    # job start and end, :35,:54; file commands live in <Temp>/_runner_file_commands, FileCommandManager.cs:21,32),
+    # so it is held to the same rule when the token goes to it.
     if a.token_file:
         inside_runner_temp(a.token_file, "token-file", env)
     if a.token_dir:

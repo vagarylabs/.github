@@ -1185,7 +1185,9 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertIn("scripts/ reads b, but job 'root' does not list it", out)
         cfg["jobs"] = {"root": {"packages": ["b"]}}
         cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
-        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        # scripts/x.mjs sits in the reader directory scripts/, so a change to it must still run that job (D5, N3): the
+        # mapping names b, which the root job lists, beside its importer a.
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a", "b"]}
         self.assertEqual(self.check(cfg)[0], 0)
         import plan
         affected = plan.classify_paths(["services/b/src/y.ts"], cfg, E.workspace_graph(self.repo, cfg))["affected"]
@@ -1351,7 +1353,8 @@ class ImportAttributionTest(unittest.TestCase):
         cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
         cfg["jobs"] = {"root": {"packages": ["b"]}}
         _, _, report = self.scan(cfg)
-        self.assertEqual(report["unit_imports"]["scripts/x.mjs"], ["test"])
+        # test/ reaches it, and scripts/ holds it (a reader-dir file may itself be an executor its job runs).
+        self.assertEqual(report["unit_imports"]["scripts/x.mjs"], ["scripts", "test"])
         rc, out = self.check(cfg)
         self.assertEqual(rc, 1)
         self.assertIn("narrowed import: scripts/x.mjs is reached from test/, which reader job 'root' runs", out)

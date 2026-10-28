@@ -16,7 +16,8 @@ mint    The chain, every leg keyless and short-lived:
         must answer 200 within --readiness-seconds, because a fresh installation token is not visible everywhere at
         once (vagaris #825, core #920).
         All or nothing: on any failure nothing is written, and every token already minted for a revocable purpose is
-        revoked.
+        revoked FIRST, then the original failure is raised; a failed revoke is reported, never raised in its place.
+        That holds for every failure after a token is received, a write error or an interrupt included.
         The token goes to a 0600 file (--token-file, one repository; --token-dir, one file `<owner>__<name>` per
         repository) and/or, masked, to $GITHUB_OUTPUT (--github-output NAME, one repository). Never printed, never
         logged, never in argv. Every one of those paths must be absolute and strictly inside $RUNNER_TEMP once
@@ -241,10 +242,14 @@ def revoke_token(token: str, api: str, http: Callable, sleep: Callable) -> str:
 
 
 def _revoke_noting(token: str, api: str, http: Callable, sleep: Callable) -> str:
+    """revoke_token's outcome in words, never an exception: it runs while another failure is on its way out, and a
+    failing revoke must never replace that failure."""
     try:
         return revoke_token(token, api, http, sleep)
     except LegFailed as err:
         return f"NOT revoked ({err}); it expires within the hour"
+    except Exception as err:                       # noqa: BLE001 -- the type only, as in main()
+        return f"NOT revoked (unexpected {type(err).__name__}); it expires within the hour"
 
 
 def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, sleep: Callable,
@@ -277,32 +282,46 @@ def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, s
 
 
 def mint(purpose: str, repositories: list[str], resource: str, service_account: str, audience: str, api: str,
-         readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out) -> dict[str, str]:
-    """{repository: token}, every one echo-checked and visible; or LegFailed with every revocable token revoked."""
+         readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out,
+         deliver: Callable[[dict[str, str]], None] = lambda tokens: None) -> dict[str, str]:
+    """{repository: token}, every one echo-checked, visible and handed to `deliver` (which writes them); or the
+    failure.
+
+    Each token is recorded the moment it is received and masked. From then on ANY failure (an echo mismatch, a
+    readiness timeout, a transport error, a write error in `deliver`, an unexpected exception, an interrupt) first
+    revokes, then re-raises THE ORIGINAL exception unchanged; a failing revoke is reported, never raised in its place.
+      - A token whose echo check failed is revoked whatever its purpose: it is wrong for every holder.
+      - Every other token is revoked for a revocable purpose. A build_checkout token is not: it is the broker's cached
+        token for this caller (Minter's cache scope; SOURCE_READ_UNCACHED_PURPOSES), shared by every job of the
+        caller, so revoking it would revoke it under all of them. It is not orphaned: the broker holds it, and it
+        expires within the hour.
+    A token whose value is malformed (mask refuses it) is never sent anywhere, revoke included."""
     oidc = github_oidc(resource, env, http, sleep, out)
     access = federated_access_token(resource, oidc, http, sleep, out)
     id_token = broker_id_token(service_account, audience, access, http, sleep, out)
-    minted: dict[str, str] = {}
+    obtained: dict[str, str] = {}
     try:
         for repo in repositories:
             leg = f"broker source.read {repo} ({purpose})"
             _, body = _call(leg, "POST", audience + "/v1/source/read",
                             {"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
                             json.dumps({"repository": repo, "purpose": purpose}).encode(), http, sleep)
-            token = mask(body.get("token"), leg, out)
+            obtained[repo] = mask(body.get("token"), leg, out)
             problems = echo_problems(body, repo, purpose)
             if problems:
-                # Revoked whatever the purpose: a token that is not exactly what was asked for is wrong for everyone.
-                outcome = _revoke_noting(token, api, http, sleep)
+                outcome = _revoke_noting(obtained.pop(repo), api, http, sleep)
                 raise LegFailed(f"{leg}: echo check failed: {'; '.join(problems)}; the token was {outcome}")
-            minted[repo] = token
-        wait_ready(minted, api, readiness, http, sleep, clock)
-    except LegFailed as err:
-        if PURPOSES[purpose]["revocable"] and minted:
-            notes = [f"{repo}: {_revoke_noting(tok, api, http, sleep)}" for repo, tok in minted.items()]
-            raise LegFailed(f"{err} [already-minted tokens: {', '.join(notes)}]") from None
+        wait_ready(obtained, api, readiness, http, sleep, clock)
+        deliver(obtained)
+    except BaseException as err:
+        if PURPOSES[purpose]["revocable"]:
+            for repo, tok in obtained.items():
+                outcome = _revoke_noting(tok, api, http, sleep)
+                print(f"{'::warning::' if outcome.startswith('NOT') else ''}broker-source-read: the mint failed "
+                      f"({type(err).__name__}) after {repo}'s token was obtained; that token was {outcome}",
+                      file=sys.stderr, flush=True)
         raise
-    return minted
+    return obtained
 
 
 def _write_secret(path: pathlib.Path, token: str) -> None:
@@ -377,30 +396,39 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
     if a.github_output:
         inside_runner_temp(env["GITHUB_OUTPUT"], "GITHUB_OUTPUT file the token is written to", env)
 
-    tokens = mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env,
-                  http, sleep, clock, out)
-    written: list[pathlib.Path] = []
-    try:
-        if a.token_file:
-            written.append(pathlib.Path(a.token_file))
-            _write_secret(written[-1], tokens[repos[0]])
-        if a.token_dir:
-            d = pathlib.Path(a.token_dir)
-            d.mkdir(mode=0o700, parents=True, exist_ok=True)
-            os.chmod(d, 0o700)
-            for repo, token in tokens.items():
-                written.append(d / repo.replace("/", "__"))
-                _write_secret(written[-1], token)
-        if a.github_output:
-            with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-                fh.write(f"{a.github_output}={tokens[repos[0]]}\n")
-    except OSError as err:
-        for p in written:
-            p.unlink(missing_ok=True)
-        notes = ""
-        if PURPOSES[purpose]["revocable"]:
-            notes = "; " + ", ".join(f"{r}: {_revoke_noting(t, api, http, sleep)}" for r, t in tokens.items())
-        raise LegFailed(f"writing the token failed ({type(err).__name__}){notes}") from None
+    def deliver(tokens: dict[str, str]) -> None:
+        """Write every token, all or nothing: on any failure each file already written is removed again, then the
+        failure goes on to mint(), which revokes and re-raises it. An OSError becomes LegFailed naming its type."""
+        written: list[pathlib.Path] = []
+        try:
+            if a.token_file:
+                written.append(pathlib.Path(a.token_file))
+                _write_secret(written[-1], tokens[repos[0]])
+            if a.token_dir:
+                d = pathlib.Path(a.token_dir)
+                d.mkdir(mode=0o700, parents=True, exist_ok=True)
+                os.chmod(d, 0o700)
+                for repo, token in tokens.items():
+                    written.append(d / repo.replace("/", "__"))
+                    _write_secret(written[-1], token)
+            if a.github_output:
+                with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write(f"{a.github_output}={tokens[repos[0]]}\n")
+        except BaseException as err:
+            for p in written:
+                try:
+                    p.unlink()
+                except (FileNotFoundError, NotADirectoryError):
+                    pass                           # never written (a missing or non-directory parent)
+                except OSError as gone:
+                    print(f"::warning::broker-source-read: {p.name} could not be removed after the failure "
+                          f"({type(gone).__name__}); the runner empties RUNNER_TEMP when the job ends", file=sys.stderr)
+            if isinstance(err, OSError):
+                raise LegFailed(f"writing the token failed ({type(err).__name__})") from None
+            raise
+
+    mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env, http, sleep,
+         clock, out, deliver)
     perms = ",".join(f"{k}:{v}" for k, v in sorted(PURPOSES[purpose]["permissions"].items()))
     for repo in repos:
         print(f"broker-source-read: {repo} minted for {purpose} ({perms}); echo checked; visible", file=sys.stderr)

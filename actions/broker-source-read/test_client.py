@@ -21,6 +21,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("broker_source_read_client", HERE / "client.py")
@@ -514,6 +515,149 @@ class OutputTests(unittest.TestCase):
             rc, out, err, _ = run(mint_args(token_file=f"{RT}/x/t"), fake)
             self.assertEqual(rc, 1, bad)
             self.assertNotIn(bad.split()[0], out + err.replace("vagarylabs/vagary-core", ""), bad)
+
+
+class Sentinel(Exception):
+    """A failure no code path expects, so it can only reach the test as the original exception."""
+
+
+class RevokeOnFailureTests(unittest.TestCase):
+    """Once a token is received, ANY failure revokes it first (revocable purposes; a failed echo check whatever the
+    purpose), then raises the ORIGINAL failure, never a revoke error in its place."""
+
+    TOKEN = install_token("vagarylabs/vagary-core")
+
+    def mint_direct(self, purpose, fake, deliver):
+        """(the exception mint() raised, stderr). Every caller's deliver fails, so mint() must raise."""
+        clock, err = Clock(), io.StringIO()
+        saved, sys.stderr = sys.stderr, err
+        try:
+            client.mint(purpose, ["vagarylabs/vagary-core"], PROVIDER, SA, BROKER, API, 60, dict(ENV), fake,
+                        clock.sleep, clock, io.StringIO(), deliver=deliver)
+        except BaseException as exc:          # noqa: BLE001 -- returned to the test, which asserts its identity
+            return exc, err.getvalue()
+        finally:
+            sys.stderr = saved
+        self.fail("mint() returned although delivery failed")
+
+    def test_a_failure_in_delivery_revokes_first_then_raises_the_original_object(self):
+        for purpose, revoked in (("image_pull", True), ("repository_census", True), ("build_checkout", False)):
+            fake, original = Fake(), Sentinel("the write failed")
+            seen_at_failure = []
+
+            def deliver(tokens):
+                self.assertEqual(tokens, {"vagarylabs/vagary-core": self.TOKEN})
+                seen_at_failure.append(list(fake.deletes()))
+                raise original
+            exc, err = self.mint_direct(purpose, fake, deliver)
+            self.assertIs(exc, original, purpose)
+            self.assertEqual(seen_at_failure, [[]], purpose)          # nothing revoked before the failure
+            self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"] if revoked else [], purpose)
+            self.assertEqual("that token was revoked" in err, revoked, (purpose, err))
+
+    def test_a_failing_revoke_never_replaces_the_original(self):
+        class DeleteBlowsUp(Fake):
+            def __call__(self, method, url, headers, data=None, timeout=30):
+                if method == "DELETE":
+                    self.calls.append((method, url, dict(headers), data))
+                    raise RuntimeError("revoke exploded")
+                return super().__call__(method, url, headers, data, timeout)
+        for fake, why in ((Fake(delete=[500] * 20), "NOT revoked (revoke: HTTP 500)"),
+                          (DeleteBlowsUp(), "NOT revoked (unexpected RuntimeError)")):
+            original = Sentinel("the write failed")
+
+            def deliver(tokens):
+                raise original
+            exc, err = self.mint_direct("image_pull", fake, deliver)
+            self.assertIs(exc, original, why)
+            self.assertGreaterEqual(len(fake.deletes()), 1, why)      # the revoke was attempted
+            self.assertIn(why, err)
+
+    def test_through_main_a_write_error_revokes_and_names_it(self):
+        for purpose, revoked in (("image_pull", True), ("build_checkout", False)):
+            with tmpdir() as td:
+                (pathlib.Path(td) / "file").write_text("a regular file where a directory is needed")
+                fake = Fake()
+                rc, out, err, _ = run(mint_args(purpose=purpose, token_file=f"{td}/file/t"), fake)
+                self.assertEqual(rc, 1, purpose)
+                self.assertRegex(err, r"writing the token failed \((FileExistsError|NotADirectoryError)\)")
+                self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"] if revoked else [], purpose)
+                self.assertNotIn("could not be removed", err, purpose)  # never written, so nothing to remove
+                self.assertEqual(leaked(out + err, ALL_SECRETS), [], purpose)
+
+    def test_through_main_an_unexpected_write_failure_revokes_and_names_the_original(self):
+        def boom(path, token):
+            raise Sentinel(f"carrying {token}")
+        with tmpdir() as td, mock.patch.object(client, "_write_secret", boom):
+            fake = Fake()
+            rc, out, err, _ = run(mint_args(purpose="image_pull", token_file=f"{td}/t"), fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected Sentinel", err)
+        self.assertIn("the mint failed (Sentinel) after vagarylabs/vagary-core's token was obtained; that token was "
+                      "revoked", err)
+        self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
+        self.assertEqual(leaked(out + err, ALL_SECRETS), [])
+
+    def test_through_main_a_failing_revoke_is_reported_and_the_original_still_named(self):
+        def boom(path, token):
+            raise Sentinel("write")
+        with tmpdir() as td, mock.patch.object(client, "_write_secret", boom):
+            fake = Fake(delete=[500] * 20)
+            rc, _, err, _ = run(mint_args(purpose="image_pull", token_file=f"{td}/t"), fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected Sentinel", err)
+        self.assertIn("::warning::broker-source-read: the mint failed (Sentinel)", err)
+        self.assertIn("NOT revoked (revoke: HTTP 500)", err)
+
+    def test_through_main_an_unexpected_revoke_error_on_an_echo_mismatch_keeps_the_echo_failure(self):
+        class DeleteBlowsUp(Fake):
+            def __call__(self, method, url, headers, data=None, timeout=30):
+                if method == "DELETE":
+                    self.calls.append((method, url, dict(headers), data))
+                    raise RuntimeError("revoke exploded")
+                return super().__call__(method, url, headers, data, timeout)
+        fake = DeleteBlowsUp(echo={"vagarylabs/vagary-core": {"permissions": None}})
+        rc, _, err, _ = run(mint_args(token_file=f"{RT}/x/t"), fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("echo check failed: no permissions echoed; the token was NOT revoked (unexpected RuntimeError)",
+                      err)
+        self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
+
+    def test_an_interrupt_after_a_token_is_obtained_still_revokes_and_propagates(self):
+        def interrupted(path, token):
+            raise KeyboardInterrupt
+        with tmpdir() as td, mock.patch.object(client, "_write_secret", interrupted):
+            fake = Fake()
+            with self.assertRaises(KeyboardInterrupt):
+                run(mint_args(purpose="image_pull", token_file=f"{td}/t"), fake)
+            self.assertFalse(pathlib.Path(f"{td}/t").exists())
+        self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
+
+    def test_a_token_is_recorded_the_moment_it_is_masked(self):
+        # A failure between receiving the token and its echo check still revokes it.
+        def broken_check(body, repository, purpose):
+            raise Sentinel("check broke")
+        with mock.patch.object(client, "echo_problems", broken_check):
+            fake = Fake()
+            rc, _, err, _ = run(mint_args(purpose="repository_census", token_file=f"{RT}/x/t"), fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected Sentinel", err)
+        self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
+
+    def test_a_later_repository_failing_revokes_the_earlier_ones(self):
+        class SecondBlowsUp(Fake):
+            def __call__(self, method, url, headers, data=None, timeout=30):
+                if url == BROKER + "/v1/source/read" and json.loads(data)["repository"] == "vagarylabs/b":
+                    raise RuntimeError("second")
+                return super().__call__(method, url, headers, data, timeout)
+        with tmpdir() as td:
+            fake = SecondBlowsUp()
+            rc, _, err, _ = run(mint_args(purpose="image_pull", repos="vagarylabs/a vagarylabs/b",
+                                          token_dir=f"{td}/d"), fake)
+            self.assertEqual(rc, 1)
+            self.assertIn("unexpected RuntimeError", err)
+            self.assertEqual(fake.deletes(), [f"token {install_token('vagarylabs/a')}"])
+            self.assertFalse(pathlib.Path(f"{td}/d").exists())
 
 
 class RevokeTests(unittest.TestCase):

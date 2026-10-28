@@ -1,0 +1,85 @@
+# Sibling repository read: mint a read-only App installation token, WAIT until it can see the repositories, then clone.
+# A clone within about a second of minting can be answered "Repository not found" (exit 128) with nothing wrong
+# (vagaris #825, core #920, 2026-10-27), costing a full red cycle. This is the one place a workflow reads a sibling
+# repository with a freshly minted App token; trusted-workflow-integrity refuses a raw create-github-app-token
+# followed by a sibling clone or checkout anywhere else.
+#
+#   - uses: vagarylabs/.github/actions/sibling-repo-read@<commit sha>   # pin a SHA, never @main
+#     with:
+#       app-id: ${{ vars.SOURCE_READ_APP_ID }}
+#       private-key: ${{ secrets.SOURCE_READ_APP_PRIVATE_KEY }}
+#       repositories: vagary-core
+#       bare: vagary-core:${{ runner.temp }}/core.git          # newline list repo:path, a bare clone of main
+#       checkouts: vagary-voice:${{ runner.temp }}/siblings/vagary-voice   # newline list repo:dir, shallow, main's SHA
+#
+# Readiness: GET <api>/repos/<owner>/<repo> must answer 200 for EVERY repository within readiness-seconds (default
+# 60, one wall-clock bound for all), with backoff (1, 2, 4, 8 s). A 404 that persists fails by name: "App token
+# cannot see <owner>/<repo> after 60 s: installation scope?". A first-time 200 costs no delay.
+# Script and tests: read.py, test_read.py; usage: README.md.
+name: sibling-repo-read
+description: Mint a read-only App token for sibling repositories, wait until it can see them, then clone or check out.
+inputs:
+  app-id:
+    description: The GitHub App id.
+    required: true
+  private-key:
+    description: The GitHub App private key.
+    required: true
+  owner:
+    description: The repositories' owner.
+    required: false
+    default: vagarylabs
+  repositories:
+    description: Comma-separated repository names the token is scoped to (and the only ones this action reads).
+    required: true
+  bare:
+    description: Newline-separated repo:path pairs, each a bare single-branch clone of main.
+    required: false
+    default: ""
+  checkouts:
+    description: Newline-separated repo:dir pairs, each a depth-1 checkout of main's commit at job start.
+    required: false
+    default: ""
+  readiness-seconds:
+    description: The readiness bound, in seconds, for all repositories together.
+    required: false
+    default: "60"
+outputs:
+  token:
+    description: The minted installation token, for a later read the action does not cover.
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - id: mint
+      uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+    - id: ready
+      shell: bash
+      env:
+        SIBLING_TOKEN: ${{ steps.mint.outputs.token }}
+        SIBLING_API: ${{ github.api_url }}
+        SIBLING_OWNER: ${{ inputs.owner }}
+        SIBLING_REPOS: ${{ inputs.repositories }}
+        SIBLING_BOUND: ${{ inputs.readiness-seconds }}
+      run: python3 -I "$GITHUB_ACTION_PATH/read.py" ready --api "$SIBLING_API" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" --bound "$SIBLING_BOUND"
+    - id: read
+      if: ${{ inputs.bare != '' || inputs.checkouts != '' }}
+      shell: bash
+      env:
+        SIBLING_TOKEN: ${{ steps.mint.outputs.token }}
+        SIBLING_SERVER: ${{ github.server_url }}
+        SIBLING_OWNER: ${{ inputs.owner }}
+        SIBLING_REPOS: ${{ inputs.repositories }}
+        SIBLING_BARE: ${{ inputs.bare }}
+        SIBLING_CHECKOUTS: ${{ inputs.checkouts }}
+      run: |
+        set -euo pipefail
+        args=()
+        while IFS= read -r pair; do [ -n "$pair" ] && args+=(--bare "$pair"); done <<< "$SIBLING_BARE"
+        while IFS= read -r pair; do [ -n "$pair" ] && args+=(--checkout "$pair"); done <<< "$SIBLING_CHECKOUTS"
+        python3 -I "$GITHUB_ACTION_PATH/read.py" clone --server "$SIBLING_SERVER" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" "${args[@]}"

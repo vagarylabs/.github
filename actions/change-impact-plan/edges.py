@@ -2687,9 +2687,13 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     def reach_from(path: str, target: str) -> None:
         credit_load(path, owner(path), target)  # the same credit as a JS loader's (fix 1 and fix 2)
 
-    def escapes_by_text(expr: str) -> bool:
+    def escapes_by_text(expr: str, unowned_caller: bool = False) -> bool:
+        """A parent step always escapes. A literal naming another top-level directory escapes a PACKAGE; a caller
+        outside every package has no package to leave, so for it that is a load to declare, not an escape."""
         literals = re.findall(r"""["']([^"']*)["']""", expr)
-        return bool(PARENT_STEP.search(expr)) or any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
+        if PARENT_STEP.search(expr):
+            return True
+        return not unowned_caller and any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
@@ -2703,10 +2707,18 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # A prefix inside ANOTHER package loads that package's modules: declarable, and a dep on it (billing's
             # `plane_app / (name + ".py")`). Only a prefix outside every package, or a parent step after it, escapes.
             other = owner(prefix[0]) if prefix is not None and not prefix[1] and not inside else None
-            if kind == "path" and prefix is not None and not inside and other is None:
+            # A caller outside every package (#33's fix 2 scans it) loading a path outside every package leaves no
+            # package: declarable, its reach named as paths (fix 4 refuses reach "package" there). A parent step after
+            # the prefix still escapes (spine's A2 census, 2026-10-28).
+            unowned_caller = owner(path) is None
+            # ...but only into a package-FREE subtree: a prefix with a package beneath it (the repo root, services/)
+            # lets a computed tail reach any of them, so it still escapes.
+            free = prefix is not None and not any(d == prefix[0] or d.startswith(prefix[0].rstrip("/") + "/") or prefix[0] in (".", "")
+                                                  for d in package_dir.values())
+            if kind == "path" and prefix is not None and not inside and other is None and (prefix[1] or not unowned_caller or not free):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
-            if kind == "path" and prefix is None and escapes_by_text(expr):
+            if kind == "path" and prefix is None and escapes_by_text(expr, unowned_caller):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
             entry = by_site.get((path, expr))

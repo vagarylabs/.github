@@ -1003,6 +1003,39 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'declared reach "package", but scripts/x.py is outside every package'):
             self.scan(cfg)
 
+    def test_an_unowned_caller_loading_an_unowned_path_declares_it_and_a_parent_step_still_escapes(self):
+        # Spine's A2 census (2026-10-28): scripts/identity-products-apply.py's `HERE / file` and
+        # scripts/test_contract_drift.py's `_mod.ROOT / "scripts/gen-capability-docs.py"`. The caller is outside every
+        # package, so the load leaves no package: it is a load to declare (reach as paths), not an escape.
+        cases = {"evaluated prefix": 'from pathlib import Path\nimport runpy\nHERE = Path(__file__).parent\n'
+                                     'runpy.run_path(str(HERE / file))\n',
+                 "unevaluated prefix": 'import runpy\nrunpy.run_path(str(_mod.ROOT / "scripts/gen.py"))\n'}
+        for why, body in cases.items():
+            with self.subTest(why):
+                self.files(**{"scripts__apply.py": body, "scripts__gen.py": "G = 1\n"})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+                expr = "str(HERE / file)" if why == "evaluated prefix" else 'str(_mod.ROOT / "scripts/gen.py")'
+                cfg = json.loads(json.dumps(IMPORT_CFG))
+                cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/apply.py", "expr": expr, "reach": ["scripts/gen.py"]}]
+                self.scan(cfg)
+                (self.repo / "scripts/apply.py").unlink()
+        # Controls: an unowned caller whose prefix has a package beneath it (the repo root via `..`, or services/) still
+        # escapes, and package code reaching an unowned path still escapes, declared or not.
+        for body in ('from pathlib import Path\nimport runpy\nHERE = Path(__file__).parent\nrunpy.run_path(str(HERE / ".." / file))\n',
+                     'from pathlib import Path\nimport runpy\nROOT = Path(__file__).parents[1]\nrunpy.run_path(str(ROOT / "services" / name))\n'):
+            with self.subTest(body=body):
+                self.files(**{"scripts__apply.py": body})
+                with self.assertRaisesRegex(ValueError, "may leave its package"):
+                    self.scan()
+                (self.repo / "scripts/apply.py").unlink()
+        self.files(**{"services__a__load.py": 'import runpy\nrunpy.run_path(str(_mod.ROOT / "scripts/gen.py"))\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py", "expr": 'str(_mod.ROOT / "scripts/gen.py")',
+                                                 "reach": ["scripts/gen.py"]}]
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan(cfg)
+
     def test_pathlib_edits_evaluate_and_the_floor_judges_the_evaluated_prefix(self):
         # vagary-core's evidence app vendors a package INSIDE itself: PACKAGE / "scripts/..." is its own subdirectory,
         # not the top-level scripts/ (spine, 2026-10-27; a rewrite to the repo-root copy would have broken the service).

@@ -24,10 +24,15 @@ mint    The chain, every leg keyless and short-lived:
         resolved (no `..`, no symlink leading out); RUNNER_TEMP unset is refused. Both modes, before any call.
         `cached`: whether the broker says it handed back a token from its cache, in the log line and (when
         $GITHUB_OUTPUT is set) the step output `cached`: true, false, or unknown when the reply does not say (see
-        cached_echo: today's broker never says).
-revoke  Reads each token from its 0600 file (never argv). For a revocable purpose it calls DELETE
-        <api>/installation/token: 204 is revoked; 401 or 404 means the token is already gone. The file is removed
-        either way. A build_checkout token is NOT revoked (see PURPOSES): the broker caches it per caller. Each file
+        cached_echo).
+        `revocable`: whether this token is revoked after use (and on any failure) is the broker's word when its reply
+        carries a JSON boolean `revocable`; only when the field is absent (an older broker) is it the purpose's rule
+        (PURPOSES). A present non-boolean is refused like any echo mismatch: revoked, then the step fails. The broker's
+        word is recorded under $RUNNER_TEMP (revocable_record) so revoke mode follows it.
+revoke  Reads each token from its 0600 file (never argv). When the token is revocable (the broker's word recorded at
+        mint; without a record, the purpose's rule) it calls DELETE <api>/installation/token: 204 is revoked; 401 or
+        404 means the token is already gone. The file is removed either way. Without a record, a build_checkout token
+        is NOT revoked (see PURPOSES): an older broker caches it per caller. Each file
         is handled on its own: one that cannot be read (unreadable, vanished), revoked or removed is reported, the rest
         are still revoked, and the exit is 1 at the end.
 
@@ -40,6 +45,7 @@ a traceback: an unexpected exception exits 1 naming its type only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -65,11 +71,12 @@ TRANSPORT_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutErr
 # and source_read_permissions() (:1009). The broker's other purposes (canon_sync, deployment_reconcile,
 # agent_context, self_converge) belong to build cells and services, not CI, and are refused here before any call.
 #
-# `revocable` is the broker's UNCACHED set. The broker caches a build_checkout token per caller: Minter's cache scope
-# includes holder = the caller's sub (:606-611), and every job of one CI service account shares that sub, so they
-# share one token for up to about 55 minutes. Revoking it would revoke it under every concurrent and later job of
-# that caller. So revoke mode DELETEs only revocable tokens. A token whose echo check FAILS is revoked whatever its
-# purpose, because a wrong token is wrong for every holder.
+# `revocable` is the broker's UNCACHED set, and it is now only the FALLBACK for a broker whose reply carries no
+# `revocable` field (revocable_echo): a reply that carries one decides for itself. Such an older broker caches a
+# build_checkout token per caller: Minter's cache scope includes holder = the caller's sub (:606-611), and every job of
+# one CI service account shares that sub, so they share one token for up to about 55 minutes. Revoking it would revoke
+# it under every concurrent and later job of that caller. A token whose echo check FAILS is revoked whatever its
+# purpose and whatever the broker says, because a wrong token is wrong for every holder.
 PURPOSES = {
     "build_checkout": {"permissions": {"contents": "read", "metadata": "read"}, "revocable": False},
     "image_pull": {"permissions": {"packages": "read", "metadata": "read"}, "revocable": True},
@@ -235,6 +242,8 @@ def echo_problems(body: dict, repository: str, purpose: str) -> list[str]:
         narrower = sorted(f"{k}:{v}" for k, v in want.items() if got.get(k) != v)
         problems.append(f"permissions differ from {purpose}'s set (unexpected {wider or 'none'}, "
                         f"missing {narrower or 'none'})"[:400])
+    if "revocable" in body and not isinstance(body["revocable"], bool):
+        problems.append("revocable is present but not a JSON boolean")
     return problems
 
 
@@ -243,13 +252,57 @@ def cached_echo(body: dict) -> str:
     boolean `cached`, else 'unknown'. Never inferred: expires_at cannot stand in for it (a cache hit minted a second
     ago looks fresh), nor can the purpose.
 
-    The broker does not say today. vps-ansible origin/main 2aac710f: source_read() answers {schema, repository, token,
+    The broker at vps-ansible origin/main 2aac710f does not say: source_read() answers {schema, repository, token,
     permissions, expires_at, request_id} (source_delivery_broker.py:1083-1085), and Minter.token() returns a cache hit
-    as (token, granted, expires) (:616-618), the same shape as a fresh mint (:658), so the handler cannot tell either.
-    To make this true/false the broker needs: Minter.token() to report whether it served the scope from its cache, and
-    source_read() to add `"cached": <bool>` to its 200 (additive under source_read/v1, as `permissions` was)."""
+    as (token, granted, expires) (:616-618), the same shape as a fresh mint (:658). Root's decision on .github #38 (as
+    relayed, not verified here) is that the next broker release echoes `"cached": <bool>` and `"revocable": <bool>` in
+    every 200; this passes that through, and stays 'unknown' for an older broker."""
     value = body.get("cached")
     return "true" if value is True else "false" if value is False else "unknown"
+
+
+def revocable_said(body: dict) -> bool | None:
+    """The broker's own `revocable` when its reply carries a JSON boolean; None when the field is absent (an older
+    broker) or not a boolean (which echo_problems refuses). bool only: isinstance(1, bool) is False."""
+    value = body.get("revocable")
+    return value if isinstance(value, bool) else None
+
+
+def revocable_echo(body: dict, purpose: str) -> bool:
+    """Whether this token is revoked after use and on any failure: the broker's word when its reply carries a JSON
+    boolean `revocable`; the purpose's rule (PURPOSES) only when the field is ABSENT. A present non-boolean is unclear,
+    so True: it is revoked (echo_problems then fails the step)."""
+    if "revocable" not in body:
+        return PURPOSES[purpose]["revocable"]
+    said = revocable_said(body)
+    return True if said is None else said
+
+
+REVOCABLE_RECORDS = ".broker-source-read-revocable"
+
+
+def revocable_record(token_path: str | pathlib.Path, env: dict) -> pathlib.Path:
+    """Where mint records the broker's `revocable` for one token file, so revoke mode follows the broker:
+    <RUNNER_TEMP>/.broker-source-read-revocable/<sha256 of the token file's realpath>, holding `true` or `false`.
+    Outside the token file (a consumer reads that as the raw token) and outside token-dir (one file per repository).
+    Written only when the reply carried a boolean; no record means the purpose's rule. Mint and revoke run in one job,
+    and the runner empties RUNNER_TEMP only at job start and end."""
+    key = hashlib.sha256(os.path.realpath(token_path).encode("utf-8", "surrogateescape")).hexdigest()
+    return pathlib.Path(env["RUNNER_TEMP"]) / REVOCABLE_RECORDS / key
+
+
+def _recorded_revocable(record: pathlib.Path) -> tuple[bool | None, str]:
+    """(the recorded `revocable`, a problem). (None, '') with no record. An unreadable or malformed record is (True,
+    problem): what is unclear is revoked, then that file fails."""
+    try:
+        text = record.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return None, ""
+    except (OSError, ValueError) as err:
+        return True, f"its revocable record cannot be read ({type(err).__name__})"
+    if text in ("true", "false"):
+        return text == "true", ""
+    return True, "its revocable record is malformed"
 
 
 def cached_output(cached: dict[str, str]) -> str:
@@ -308,16 +361,20 @@ def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, s
 
 def mint(purpose: str, repositories: list[str], resource: str, service_account: str, audience: str, api: str,
          readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out,
-         deliver: Callable[[dict[str, str], dict[str, str]], None] = lambda tokens, cached: None) -> dict[str, str]:
+         deliver: Callable[[dict[str, str], dict[str, str], dict[str, bool | None]], None]
+         = lambda tokens, cached, said: None) -> dict[str, str]:
     """{repository: token}, every one echo-checked, visible and handed to `deliver` (which writes them) with
-    {repository: cached_echo}; or the failure.
+    {repository: cached_echo} and {repository: revocable_said}; or the failure.
 
-    Each token is recorded the moment it is received and masked. From then on ANY failure (an echo mismatch, a
-    readiness timeout, a transport error, a write error in `deliver`, an unexpected exception, an interrupt) first
-    revokes, then re-raises THE ORIGINAL exception unchanged; a failing revoke is reported, never raised in its place.
-      - A token whose echo check failed is revoked whatever its purpose: it is wrong for every holder.
-      - Every other token is revoked for a revocable purpose. A build_checkout token is not: it is the broker's cached
-        token for this caller (Minter's cache scope; SOURCE_READ_UNCACHED_PURPOSES), shared by every job of the
+    Each token is recorded the moment it is received and masked, with whether it is revocable (revocable_echo). From
+    then on ANY failure (an echo mismatch, a readiness timeout, a transport error, a write error in `deliver`, an
+    unexpected exception, an interrupt) first revokes, then re-raises THE ORIGINAL exception unchanged; a failing
+    revoke is reported, never raised in its place.
+      - A token whose echo check failed is revoked whatever its purpose and whatever the broker says: it is wrong for
+        every holder. A present non-boolean `revocable` is such a failure.
+      - Every other token is revoked when it is revocable: the broker's `revocable` when the reply carries it, else
+        the purpose's rule. Under that rule an older broker's build_checkout token is not revoked: it is the broker's
+        cached token for this caller (Minter's cache scope; SOURCE_READ_UNCACHED_PURPOSES), shared by every job of the
         caller, so revoking it would revoke it under all of them. It is not orphaned: the broker holds it, and it
         expires within the hour.
     A token whose value is malformed (mask refuses it) is never sent anywhere, revoke included."""
@@ -325,6 +382,8 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
     access = federated_access_token(resource, oidc, http, sleep, out)
     id_token = broker_id_token(service_account, audience, access, http, sleep, out)
     obtained: dict[str, str] = {}
+    revocable: dict[str, bool] = {}
+    said: dict[str, bool | None] = {}
     cached: dict[str, str] = {}
     try:
         for repo in repositories:
@@ -333,16 +392,17 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
                             {"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
                             json.dumps({"repository": repo, "purpose": purpose}).encode(), http, sleep)
             obtained[repo] = mask(body.get("token"), leg, out)
+            revocable[repo], said[repo] = revocable_echo(body, purpose), revocable_said(body)
             problems = echo_problems(body, repo, purpose)
             if problems:
                 outcome = _revoke_noting(obtained.pop(repo), api, http, sleep)
                 raise LegFailed(f"{leg}: echo check failed: {'; '.join(problems)}; the token was {outcome}")
             cached[repo] = cached_echo(body)
         wait_ready(obtained, api, readiness, http, sleep, clock)
-        deliver(obtained, cached)
+        deliver(obtained, cached, said)
     except BaseException as err:
-        if PURPOSES[purpose]["revocable"]:
-            for repo, tok in obtained.items():
+        for repo, tok in obtained.items():
+            if revocable.get(repo, PURPOSES[purpose]["revocable"]):
                 outcome = _revoke_noting(tok, api, http, sleep)
                 print(f"{'::warning::' if outcome.startswith('NOT') else ''}broker-source-read: the mint failed "
                       f"({type(err).__name__}) after {repo}'s token was obtained; that token was {outcome}",
@@ -425,22 +485,33 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
     if a.github_output:
         inside_runner_temp(env["GITHUB_OUTPUT"], "GITHUB_OUTPUT file the token is written to", env)
 
-    def deliver(tokens: dict[str, str], cached: dict[str, str]) -> None:
-        """Write every token, then the step outputs, all or nothing: on any failure each file already written is
-        removed again, then the failure goes on to mint(), which revokes and re-raises it. An OSError becomes LegFailed
-        naming its type. Last, one log line per repository."""
+    def deliver(tokens: dict[str, str], cached: dict[str, str], said: dict[str, bool | None]) -> None:
+        """Write every token (each after its revocable record, when the broker said), then the step outputs, all or
+        nothing: on any failure each file already written is removed again, then the failure goes on to mint(), which
+        revokes and re-raises it. An OSError becomes LegFailed naming its type. Last, one log line per repository."""
+        if not (a.token_file or a.token_dir):
+            sure = [r for r in repos if said[r] is True]
+            if sure:
+                # Revoke mode reads a token from its file, so a revocable token with no file could never be revoked.
+                raise LegFailed(f"{sure[0]}: the broker marks this token revocable, and revoke reads a token from its "
+                                "file: give token-file or token-dir, not github-output alone")
         written: list[pathlib.Path] = []
+
+        def write(path: pathlib.Path, repo: str) -> None:
+            if said[repo] is not None:
+                written.append(revocable_record(path, env))
+                _write_secret(written[-1], "true" if said[repo] else "false")
+            written.append(path)
+            _write_secret(path, tokens[repo])
         try:
             if a.token_file:
-                written.append(pathlib.Path(a.token_file))
-                _write_secret(written[-1], tokens[repos[0]])
+                write(pathlib.Path(a.token_file), repos[0])
             if a.token_dir:
                 d = pathlib.Path(a.token_dir)
                 d.mkdir(mode=0o700, parents=True, exist_ok=True)
                 os.chmod(d, 0o700)
-                for repo, token in tokens.items():
-                    written.append(d / repo.replace("/", "__"))
-                    _write_secret(written[-1], token)
+                for repo in tokens:
+                    write(d / repo.replace("/", "__"), repo)
             if env.get("GITHUB_OUTPUT"):
                 with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
                     if a.github_output:
@@ -460,8 +531,10 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
             raise
         perms = ",".join(f"{k}:{v}" for k, v in sorted(PURPOSES[purpose]["permissions"].items()))
         for repo in repos:
-            said = "" if cached[repo] != "unknown" else " (the broker's reply does not say)"
-            print(f"broker-source-read: {repo} minted for {purpose} ({perms}); cached: {cached[repo]}{said}; echo "
+            c = cached[repo] + ("" if cached[repo] != "unknown" else " (the broker's reply does not say)")
+            r = (str(said[repo]).lower() + " (the broker says)" if said[repo] is not None else
+                 str(PURPOSES[purpose]["revocable"]).lower() + f" ({purpose}'s rule: the broker's reply does not say)")
+            print(f"broker-source-read: {repo} minted for {purpose} ({perms}); cached: {c}; revocable: {r}; echo "
                   "checked; visible", file=sys.stderr)
 
     mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env, http, sleep,
@@ -502,21 +575,29 @@ def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
     purpose = _purpose(a.purpose)
     api = _api(env)
     files = _token_files(a, env)
-    revocable, failed = PURPOSES[purpose]["revocable"], []
+    failed: list[str] = []
     present = [p for p in files if _present(p)]
     if not present:
         print("broker-source-read: no token file, so nothing to revoke (the mint did not write one)", file=sys.stderr)
     for path in present:
+        record = revocable_record(path, env)
         try:
             if path.is_symlink() or not path.is_file():
                 raise LegFailed(f"revoke {path.name}: not a regular file")
             token = mask(path.read_text(encoding="utf-8").strip(), f"revoke {path.name}", out)
-            if revocable:
-                print(f"broker-source-read: {path.name}: {revoke_token(token, api, http, sleep)}", file=sys.stderr)
+            recorded, problem = _recorded_revocable(record)
+            if recorded if recorded is not None else PURPOSES[purpose]["revocable"]:
+                by = " (the broker said revocable)" if recorded is not None else ""
+                print(f"broker-source-read: {path.name}: {revoke_token(token, api, http, sleep)}{by}", file=sys.stderr)
+            elif recorded is False:
+                print(f"::notice::broker-source-read: {path.name}: the broker marked this token not revocable, so it "
+                      "is not revoked (it expires within the hour); the file is removed", file=out, flush=True)
             else:
                 print(f"::notice::broker-source-read: {path.name}: a {purpose} token is cached by the broker and "
                       "shared by every job of this caller, so it is not revoked (it expires within the hour); the "
                       "file is removed", file=out, flush=True)
+            if problem:
+                raise LegFailed(f"revoke {path.name}: {problem}; the token was revoked")
         except LegFailed as err:
             print(f"::error::broker-source-read: {err}", file=sys.stderr)
             failed.append(path.name)
@@ -525,13 +606,14 @@ def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
                   f"({type(err).__name__}); the remaining files are still revoked", file=sys.stderr)
             failed.append(path.name)
         finally:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError as err:
-                print(f"::error::broker-source-read: revoke {path.name}: the file could not be removed "
-                      f"({type(err).__name__})", file=sys.stderr)
-                if path.name not in failed:
-                    failed.append(path.name)
+            for gone, what in ((path, "the file"), (record, "its revocable record")):
+                try:
+                    gone.unlink(missing_ok=True)
+                except OSError as err:
+                    print(f"::error::broker-source-read: revoke {path.name}: {what} could not be removed "
+                          f"({type(err).__name__})", file=sys.stderr)
+                    if path.name not in failed:
+                        failed.append(path.name)
     if a.token_dir:
         try:
             pathlib.Path(a.token_dir).rmdir()

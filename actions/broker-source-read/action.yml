@@ -37,11 +37,13 @@
 # The `cached` output and log line repeat the broker's word on whether the token came from its cache: true, false,
 # or unknown when the reply does not say (today it never does).
 #
-# Revoke reads the token from its file and removes the file. It calls DELETE /installation/token for image_pull and
-# repository_census (minted uncached, one per request). A build_checkout token is NOT deleted: the broker caches it
-# per caller and hands the same token to every job of that service account for up to about 55 minutes, so deleting
-# it would break every concurrent and later job. The revoke step is still required after the last use of every token,
-# so the file never outlives the job's need and the behaviour follows the broker if it ever stops caching.
+# Revoke reads the token from its file and removes the file. Whether it calls DELETE /installation/token follows the
+# broker: when the mint reply carried a boolean `revocable`, mint recorded it under $RUNNER_TEMP and revoke deletes iff
+# it was true (a non-boolean `revocable` fails the mint, token revoked). Only for an older broker whose reply has no
+# `revocable` does the purpose decide: image_pull and repository_census (minted uncached) are deleted; build_checkout
+# is NOT, because that broker caches it per caller and hands the same token to every job of that service account for
+# up to about 55 minutes, so deleting it would break every concurrent and later job. The revoke step is required after
+# the last use of every token, so the file never outlives the job's need.
 #
 # Script and tests: client.py, test_client.py (python3 -m unittest discover -s actions/broker-source-read -p 'test_*.py').
 name: broker-source-read
@@ -79,7 +81,7 @@ inputs:
     required: false
     default: ""
   output:
-    description: mint only, build_checkout only. `true` also sets the step output `token` (masked; one repository). A revocable purpose must use a file.
+    description: mint only, build_checkout only. `true` also sets the step output `token` (masked; one repository). A revocable purpose must use a file, and so must a token the broker marks revocable (with no token-file or token-dir that mint fails and revokes the token).
     required: false
     default: "false"
   readiness-seconds:

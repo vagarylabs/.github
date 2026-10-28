@@ -52,11 +52,16 @@ def install_token(repo: str) -> str:
     return "fixture-install-" + repo.replace("/", "-")
 
 
+NULL = object()   # in Fake(echo=...): send the field as a JSON null (None deletes it)
+
+
 class Fake:
     """Answers each leg and records every call.
 
     broker:  {repo: [status, ...]} answered in order before a 200.
-    echo:    {repo: dict} fields that REPLACE the 200 body's defaults (None deletes the field).
+    echo:    {repo: dict} fields that REPLACE the 200 body's defaults (None deletes the field; NULL sends a JSON null).
+             The default 200 carries no `revocable` and no `cached`: an older broker, so every test that does not set
+             them exercises the legacy per-purpose rule.
     ready:   {repo: [status, ...]} readiness answers before a 200.
     delete:  [status, ...] DELETE answers in order; then 204.
     """
@@ -90,7 +95,7 @@ class Fake:
                 if v is None:
                     body.pop(k, None)
                 else:
-                    body[k] = v
+                    body[k] = None if v is NULL else v
             return 200, body
         if method == "GET" and url.startswith(API + "/repos/"):
             repo = url[len(API + "/repos/"):]
@@ -546,9 +551,10 @@ class RevokeOnFailureTests(unittest.TestCase):
             fake, original = Fake(), Sentinel("the write failed")
             seen_at_failure = []
 
-            def deliver(tokens, cached):
-                self.assertEqual((tokens, cached), ({"vagarylabs/vagary-core": self.TOKEN},
-                                                    {"vagarylabs/vagary-core": "unknown"}))
+            def deliver(tokens, cached, said):
+                self.assertEqual((tokens, cached, said), ({"vagarylabs/vagary-core": self.TOKEN},
+                                                          {"vagarylabs/vagary-core": "unknown"},
+                                                          {"vagarylabs/vagary-core": None}))
                 seen_at_failure.append(list(fake.deletes()))
                 raise original
             exc, err = self.mint_direct(purpose, fake, deliver)
@@ -568,7 +574,7 @@ class RevokeOnFailureTests(unittest.TestCase):
                           (DeleteBlowsUp(), "NOT revoked (unexpected RuntimeError)")):
             original = Sentinel("the write failed")
 
-            def deliver(tokens, cached):
+            def deliver(tokens, cached, said):
                 raise original
             exc, err = self.mint_direct("image_pull", fake, deliver)
             self.assertIs(exc, original, why)
@@ -682,7 +688,7 @@ class CachedEchoTests(unittest.TestCase):
             outputs, err = self.mint(Fake(), purpose=purpose)
             self.assertEqual(outputs, {"cached": "unknown"}, purpose)
             self.assertIn(f"vagarylabs/vagary-core minted for {purpose} (", err)
-            self.assertIn("; cached: unknown (the broker's reply does not say); echo checked; visible", err)
+            self.assertIn("; cached: unknown (the broker's reply does not say); revocable: ", err)
 
     def test_an_expiry_or_a_purpose_never_stands_in_for_it(self):
         # A token about to expire (the shape of a cache hit) and a never-cached purpose both stay unknown.
@@ -695,7 +701,7 @@ class CachedEchoTests(unittest.TestCase):
         for value, word in ((True, "true"), (False, "false")):
             outputs, err = self.mint(Fake(echo={"vagarylabs/vagary-core": {"cached": value}}))
             self.assertEqual(outputs, {"cached": word})
-            self.assertIn(f"; cached: {word}; echo checked; visible", err)
+            self.assertIn(f"; cached: {word}; revocable: ", err)
 
     def test_a_cached_field_that_is_not_a_json_boolean_is_unknown(self):
         for value in ("true", "yes", 1, 0, {}, []):
@@ -723,6 +729,134 @@ class CachedEchoTests(unittest.TestCase):
             rc, _, err, _ = run(mint_args(token_file=f"{td}/t"), Fake(), env=env)
         self.assertEqual(rc, 0, err)
         self.assertIn("; cached: unknown (the broker's reply does not say);", err)
+
+
+class BrokerRevocableTests(unittest.TestCase):
+    """Whether a token is revoked follows the broker: its `revocable` decides when the reply carries a JSON boolean
+    (revoke iff true), in the failure path AND in revoke mode (through the record mint keeps under RUNNER_TEMP). Only
+    when the field is ABSENT does the purpose's legacy rule apply. A present non-boolean is refused: revoked, then
+    the step fails."""
+
+    REPO = "vagarylabs/vagary-core"
+    TOKEN = install_token(REPO)
+
+    def failing_mint(self, purpose, echo):
+        """A mint that obtains the token, then fails its readiness wait: what the failure path revokes."""
+        fake = Fake(echo={self.REPO: echo}, ready={self.REPO: [404] * 50})
+        rc, _, err, _ = run(mint_args(purpose=purpose, token_file=f"{RT}/x/t", readiness_seconds=3), fake)
+        self.assertEqual(rc, 1, err)
+        return fake.deletes(), err
+
+    def lifecycle(self, purpose, echo):
+        """mint then revoke, as a job runs them: (DELETEs by revoke, mint stderr, revoke stdout+stderr)."""
+        with tmpdir() as td:
+            f = f"{td}/t"
+            rc, _, merr, _ = run(mint_args(purpose=purpose, token_file=f), Fake(echo={self.REPO: echo}))
+            self.assertEqual(rc, 0, merr)
+            record = client.revocable_record(f, ENV)
+            # a record exactly when the broker said, holding what it said
+            self.assertEqual(record.read_text() if record.exists() else None,
+                             None if "revocable" not in echo else str(echo["revocable"]).lower(), (purpose, echo))
+            fake = Fake()
+            rc, rout, rerr, _ = run(["revoke", "--purpose", purpose, "--token-file", f], fake)
+            self.assertEqual(rc, 0, rerr)
+            self.assertFalse(pathlib.Path(f).exists())
+            self.assertFalse(client.revocable_record(f, ENV).exists())       # the record goes with the file
+        return fake.deletes(), merr, rout + rerr
+
+    def test_revocable_true_on_build_checkout_is_revoked(self):
+        deletes, err = self.failing_mint("build_checkout", {"revocable": True})
+        self.assertEqual(deletes, [f"token {self.TOKEN}"])
+        self.assertIn("that token was revoked", err)
+        deletes, merr, rlog = self.lifecycle("build_checkout", {"revocable": True})
+        self.assertEqual(deletes, [f"token {self.TOKEN}"])
+        self.assertIn("revocable: true (the broker says)", merr)
+        self.assertIn("revoked (the broker said revocable)", rlog)
+
+    def test_revocable_false_is_not_revoked_even_for_a_revocable_purpose(self):
+        for purpose in client.PURPOSES:
+            deletes, _ = self.failing_mint(purpose, {"revocable": False})
+            self.assertEqual(deletes, [], purpose)
+            deletes, merr, rlog = self.lifecycle(purpose, {"revocable": False})
+            self.assertEqual(deletes, [], purpose)
+            self.assertIn("revocable: false (the broker says)", merr)
+            self.assertIn("the broker marked this token not revocable", rlog)
+
+    def test_an_absent_field_keeps_the_legacy_per_purpose_rule(self):
+        for purpose in client.PURPOSES:
+            legacy = client.PURPOSES[purpose]["revocable"]
+            want = [f"token {self.TOKEN}"] if legacy else []
+            deletes, _ = self.failing_mint(purpose, {})
+            self.assertEqual(deletes, want, purpose)
+            deletes, merr, rlog = self.lifecycle(purpose, {})
+            self.assertEqual(deletes, want, purpose)
+            self.assertIn(f"revocable: {str(legacy).lower()} ({purpose}'s rule: the broker's reply does not say)", merr)
+        self.assertEqual({p for p in client.PURPOSES if client.PURPOSES[p]["revocable"]},
+                         {"image_pull", "repository_census"})                 # both branches of the rule are covered
+
+    def test_a_non_boolean_revocable_is_refused_revoked_and_nothing_is_written(self):
+        for purpose in ("build_checkout", "image_pull"):
+            for value in ("true", "yes", 1, 0, NULL, {}, []):
+                with tmpdir() as td:
+                    fake = Fake(echo={self.REPO: {"revocable": value}})
+                    rc, out, err, _ = run(mint_args(purpose=purpose, token_file=f"{td}/t"), fake)
+                    self.assertEqual(rc, 1, (purpose, value))
+                    self.assertIn("echo check failed: revocable is present but not a JSON boolean; the token was "
+                                  "revoked", err)
+                    self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"], (purpose, value))
+                    self.assertEqual(list(pathlib.Path(td).iterdir()), [], (purpose, value))
+                    self.assertEqual(leaked(out + err, ALL_SECRETS), [])
+
+    def test_an_echo_mismatch_is_revoked_even_when_the_broker_says_not_revocable(self):
+        fake = Fake(echo={self.REPO: {"revocable": False, "permissions": None}})
+        rc, _, err, _ = run(mint_args(purpose="image_pull", token_file=f"{RT}/x/t"), fake)
+        self.assertEqual((rc, fake.deletes()), (1, [f"token {self.TOKEN}"]))
+        self.assertIn("echo check failed: no permissions echoed", err)
+
+    def test_each_token_of_a_dir_follows_its_own_answer(self):
+        with tmpdir() as td:
+            d = pathlib.Path(td) / "d"
+            echo = {"vagarylabs/a": {"revocable": True}, "vagarylabs/b": {"revocable": False}}   # c: absent
+            rc, _, err, _ = run(mint_args(repos="vagarylabs/a vagarylabs/b vagarylabs/c", token_dir=str(d)),
+                                Fake(echo=echo))
+            self.assertEqual(rc, 0, err)
+            # the consumer's view of the dir is unchanged: one token file per repository, nothing else
+            self.assertEqual(sorted(p.name for p in d.iterdir()), ["vagarylabs__a", "vagarylabs__b", "vagarylabs__c"])
+            fake = Fake()
+            rc, _, err, _ = run(["revoke", "--purpose", "build_checkout", "--token-dir", str(d)], fake)
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(fake.deletes(), [f"token {install_token('vagarylabs/a')}"])
+            self.assertFalse(d.exists())
+
+    def test_a_revocable_token_with_no_file_to_revoke_from_is_refused_and_revoked(self):
+        with tmpdir() as td:
+            gh_out = pathlib.Path(td) / "gh-out"
+            gh_out.write_text("")
+            fake = Fake(echo={self.REPO: {"revocable": True}})
+            rc, _, err, _ = run(mint_args(github_output="token"), fake, env={**ENV, "GITHUB_OUTPUT": str(gh_out)})
+            self.assertEqual(rc, 1)
+            self.assertIn("the broker marks this token revocable, and revoke reads a token from its file", err)
+            self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
+            self.assertEqual(gh_out.read_text(), "")
+            # with a file as well, github-output is allowed: revoke reads the file
+            fake = Fake(echo={self.REPO: {"revocable": True}})
+            rc, _, err, _ = run(mint_args(github_output="token", token_file=f"{td}/t"), fake,
+                                env={**ENV, "GITHUB_OUTPUT": str(gh_out)})
+            self.assertEqual((rc, fake.deletes()), (0, []), err)
+
+    def test_a_malformed_record_is_revoked_then_fails_that_file(self):
+        for content in ("maybe", ""):
+            with tmpdir() as td:
+                f = f"{td}/t"
+                rc, _, err, _ = run(mint_args(token_file=f), Fake(echo={self.REPO: {"revocable": False}}))
+                self.assertEqual(rc, 0, err)
+                client.revocable_record(f, ENV).write_text(content)
+                fake = Fake()
+                rc, _, err, _ = run(["revoke", "--purpose", "build_checkout", "--token-file", f], fake)
+                self.assertEqual(rc, 1, content)
+                self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"], content)
+                self.assertIn("revoke t: its revocable record is malformed; the token was revoked", err)
+                self.assertFalse(pathlib.Path(f).exists() or client.revocable_record(f, ENV).exists())
 
 
 class RevokeTests(unittest.TestCase):

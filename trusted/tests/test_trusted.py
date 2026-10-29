@@ -28,6 +28,14 @@ WORKFLOWS = {n: ROOT / ".github" / "workflows" / (n + ".yml")
              for n in ("trusted-secret-scan", "trusted-workflow-integrity", "trusted-protected-paths")}
 
 
+def judge_witnessed(pattern):
+    """True when the F14 judge-config list (test_judge_configs) declares a path this pattern matches: that path is its
+    witness, so a typo in it still fails a test, and it may protect a judge's file the repository does not have yet."""
+    from test_judge_configs import JUDGES, REPO_JUDGES
+    declared = [x for paths in JUDGES.values() for x in paths] + [x for paths in REPO_JUDGES.values() for x in paths]
+    return any(classify.fnmatch.fnmatchcase(x, pattern) for x in declared)
+
+
 def manifest():
     return classify.validate_manifest(json.loads(MANIFEST.read_text()))
 
@@ -52,10 +60,16 @@ class ManifestTests(unittest.TestCase):
         # in this repository's history; only further exposure is stopped.)
         paths = FIXTURE.read_text().split()
         self.assertEqual(paths, sorted(paths))
-        self.assertEqual(len(paths), sum(len(p["patterns"]) for p in manifest()["repos"]["vagarylabs/vps-ansible"]["protected"]))
+        # A judge-config pattern (F14) with no file in vps-ansible yet is witnessed by test_judge_configs' declared
+        # path instead, which it must match; one that has a real file here (.gitleaks.toml) keeps its real witness.
         entry = manifest()["repos"]["vagarylabs/vps-ansible"]
+        real = lambda pat: any(classify.fnmatch.fnmatchcase(x, pat) for x in paths)
+        own = [pat for p in entry["protected"] for pat in p["patterns"] if real(pat) or not judge_witnessed(pat)]
+        self.assertEqual(len(paths), len(own))
         for p in entry["protected"]:
             for pat in p["patterns"]:
+                if judge_witnessed(pat) and not real(pat):
+                    continue
                 with self.subTest(pattern=pat):
                     self.assertTrue(any(classify.fnmatch.fnmatchcase(x, pat) for x in paths))
         for rf in entry["ratchet_files"]:
@@ -90,7 +104,7 @@ class ManifestTests(unittest.TestCase):
         entry = manifest()["repos"]["vagarylabs/vagaris"]
         for p in entry["protected"]:
             for pat in p["patterns"]:
-                if pat in default:
+                if pat in default or judge_witnessed(pat):
                     continue
                 with self.subTest(pattern=pat):
                     self.assertTrue(any(classify.fnmatch.fnmatchcase(x, pat) for x in paths))

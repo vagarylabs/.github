@@ -2026,44 +2026,9 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         for f, text in grep(["-F", *args]):
             for m in token.finditer(text):
                 hit(f, m.group(1))
-    # A runner that names only a DIRECTORY (`node --test "$REPO_ROOT/tools/"`, a workflow's `pytest scripts/`, a config's
-    # `tools/**`) runs what is beneath it, so every directory that holds a subject is a subject too, written `tools/`. A
-    # token ENDS at the directory and has a slash beside it (`tools/`, `./tools`, `$X/tools`; the bare word `test` in
-    # `"scripts": {"test": ...}` or a workflow's `test:` job is no path): resolved from the mentioning file's directory
-    # (from the root for a file at the root or under .github/, whose steps run there), or named after a prefix the scan
-    # cannot resolve (`$X/`, `${X}/`, `/`).
-    holders: dict[str, set[str]] = {}
-    for member in set().union(*subjects.values()):
-        d = posixpath.dirname(member)
-        while d:
-            holders.setdefault(d, set()).add(member)
-            d = posixpath.dirname(d)
-    if holders:
-        ere = lambda x: re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", x)
-        alternatives = sorted(holders, key=lambda d: (-len(d), d))
-        token = re.compile(r"(?<![A-Za-z0-9_.@-])((?:[^\s\"'`=,;|&<>]*/)?)(" + "|".join(re.escape(d) for d in alternatives)
-                           + r")(/?)(?![A-Za-z0-9_.@/-])")
-        alt = "|".join(ere(d) for d in alternatives)
-        for f, text in grep(["-E", "(/(" + alt + ")/?|(" + alt + ")/)([^A-Za-z0-9_.@/-]|$)"]):
-            if f in policy_files:
-                continue
-            here = "" if "/" not in f or f.startswith(".github/") else posixpath.dirname(f)
-            for m in token.finditer(text):
-                prefix, d = m.group(1), m.group(2)
-                if not prefix and not m.group(3):
-                    continue  # a bare word, not a path
-                if prefix.startswith("/") or any(c in prefix for c in "$%{}()~"):
-                    named = d  # after a prefix the scan cannot resolve: by name
-                else:
-                    named = posixpath.normpath(posixpath.join(here, prefix + d))
-                if named in holders:
-                    found.setdefault(named + "/", set()).add(f)
     out: dict[str, list[list]] = {}
     for p, members in sorted(subjects.items()):
-        held = sorted({posixpath.dirname(m.rstrip("/")) for m in members} - {""})
-        held = sorted({a + "/" for d in held for a in [d] + [d.rsplit("/", k)[0] for k in range(1, d.count("/") + 1)]})
-        rows = [[f, owner(f), f in members, member] for member in sorted(members) + held
-                for f in sorted(found.get(member, ()))]
+        rows = [[f, owner(f), f in members, member] for member in sorted(members) for f in sorted(found.get(member, ()))]
         if rows:
             out[p] = rows
     return out
@@ -3654,10 +3619,8 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
         for f, own, subject, member in rows:
             if (own is not None and own in affected) or (own is None and subject):
                 continue
-            base = member if member.endswith("/") else posixpath.basename(member)
-            via = ("" if member == path else f"; {member} holds {path} or a file that reaches it by a recorded route, so "
-                   f"what runs it runs {path}" if member.endswith("/") else
-                   f"; {member} reaches {path} by a recorded route, so what runs it runs {path}")
+            base = posixpath.basename(member)
+            via = "" if member == path else f"; {member} reaches {path} by a recorded route, so what runs it runs {path}"
             if inert_rule:
                 failures.append(f"inert mention: {f} names {base}, but inert_globs {inert_rule!r} makes a change to "
                                 f"{path} select nothing (narrow the glob so it leaves {path} out, or add {path} to "

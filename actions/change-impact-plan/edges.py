@@ -1964,25 +1964,25 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
             holders.setdefault(d, set()).add(member)
             d = posixpath.dirname(d)
     if holders:
-        ere = lambda x: re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", x)
-        alternatives = sorted(holders, key=lambda d: (-len(d), d))
-        token = re.compile(r"(?<![A-Za-z0-9_.@-])((?:[^\s\"'`=,;|&<>]*/)?)(" + "|".join(re.escape(d) for d in alternatives)
-                           + r")(/?)(?![A-Za-z0-9_.@/-])")
-        alt = "|".join(ere(d) for d in alternatives)
-        for f, text in grep(["-E", "(/(" + alt + ")/?|(" + alt + ")/)([^A-Za-z0-9_.@/-]|$)"]):
+        # One generic prefilter (any path token that ends at a slash-terminated or slash-led segment) and an exact match
+        # in Python: an alternation of every holder's path made git grep exceed its timeout on vagary-core.
+        token = re.compile(r"[^\s\"'`=,;|&<>:\\]+")  # a backslash ends one too: JSON escapes `\"$ROOT/tools/\"`
+        for f, text in grep(["-E", r"(^|[^A-Za-z0-9_.@-])[A-Za-z0-9_.@-]+/([^A-Za-z0-9_.@/-]|$)|/[A-Za-z0-9_.@-]+([^A-Za-z0-9_.@/-]|$)"]):
             if f in policy_files:
                 continue
             here = "" if "/" not in f or f.startswith(".github/") else posixpath.dirname(f)
             for m in token.finditer(text):
-                prefix, d = m.group(1), m.group(2)
-                if not prefix and not m.group(3):
+                core = m.group(0).rstrip("/")
+                if not core or ("/" not in core and not m.group(0).endswith("/")):
                     continue  # a bare word, not a path
-                if prefix.startswith("/") or any(c in prefix for c in "$%{}()~"):
-                    named = d  # after a prefix the scan cannot resolve: by name
+                if core.startswith("/") or any(c in core for c in "$%{}()~"):
+                    # after a prefix the scan cannot resolve, by name: every holder the token ends with
+                    parts = core.split("/")
+                    named = {"/".join(parts[i:]) for i in range(1, len(parts))} & set(holders)
                 else:
-                    named = posixpath.normpath(posixpath.join(here, prefix + d))
-                if named in holders:
-                    found.setdefault(named + "/", set()).add(f)
+                    named = {posixpath.normpath(posixpath.join(here, core))} & set(holders)
+                for d in named:
+                    found.setdefault(d + "/", set()).add(f)
     out: dict[str, list[list]] = {}
     for p, members in sorted(subjects.items()):
         held = sorted({posixpath.dirname(m.rstrip("/")) for m in members} - {""})
@@ -2171,8 +2171,17 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
     if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("reader scan revision must be an immutable commit")
-    with batch_reads(repo, revision, environment):
-        return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files, report=report)
+    try:
+        with batch_reads(repo, revision, environment):
+            return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files,
+                         report=report)
+    except subprocess.TimeoutExpired as err:
+        # F18 (root, 2026-10-29): a pass that runs out of time read only part of the tree, so the closure is unproven. It
+        # refuses like every other unproven route (FULL), by a typed refusal, never by an uncaught exception.
+        cmd = [str(x) for x in (err.cmd if isinstance(err.cmd, (list, tuple)) else [err.cmd])]
+        what = next((f"git {x}" for x in cmd if x in ("grep", "ls-tree", "ls-files", "show", "cat-file")), cmd[0])
+        raise ValueError(f"unresolved (reader closure unproven: timeout: `{what}` ran over its {err.timeout:g} s limit)") \
+            from None
 
 
 def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,

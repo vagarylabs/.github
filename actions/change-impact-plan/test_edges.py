@@ -1190,6 +1190,19 @@ class ImportAttributionTest(unittest.TestCase):
         deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=rev)  # a whole scan through the reader
         self.assertIn("a", deps)
 
+    def test_a_pass_that_times_out_is_a_typed_refusal(self):
+        # F18 (root, 2026-10-29): census part 2 of #33 round 4 timed the directory pass out on vagary-core, and the
+        # TimeoutExpired escaped `check` uncaught. Any pass's timeout is now a refusal (FULL), named as one.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        real = subprocess.run
+        def slow_grep(*a, **k):
+            if "grep" in a[0]:
+                raise subprocess.TimeoutExpired(a[0], k.get("timeout", 0))
+            return real(*a, **k)
+        with patch.object(E.subprocess, "run", slow_grep):
+            with self.assertRaisesRegex(ValueError, r"reader closure unproven: timeout: `git grep` ran over its \d+ s limit"):
+                E.scan(self.repo, reviewed_cfg(IMPORT_CFG))
+
     def test_the_action_judges_the_candidate_with_the_base_config_only(self):
         # A PR cannot use its own new registry entries: action.yml runs `check` with the BASE copy of the config and the
         # base manifests, never the candidate's (root's ruling on #33 round 3).

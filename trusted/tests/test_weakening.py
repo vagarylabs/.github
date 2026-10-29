@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import pathlib
+import resource
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,31 @@ def git(cwd, *args):
 def edit(path_text, old, new):
     assert old in path_text, old
     return path_text.replace(old, new, 1)
+
+
+def cpu_seconds():
+    """CPU seconds of this process and its finished children (git): what a scan costs, whatever the host's load. F5
+    (root, 2026-10-29): a 5 s wall-clock budget below took 5.22 s at load average 39 and passed alone twice. A stall is
+    not cost, and the quadratic walks these budgets guard spend CPU. (The deadline tests stay on the wall clock: the
+    scan's deadline IS wall time.)"""
+    own, children = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+
+
+class BudgetsCountCpu(unittest.TestCase):
+    def test_a_stall_is_not_cost_and_a_spin_is_in_this_process_or_a_child(self):
+        wall, cpu = time.monotonic(), cpu_seconds()
+        time.sleep(0.3)
+        self.assertGreaterEqual(time.monotonic() - wall, 0.29)
+        self.assertLess(cpu_seconds() - cpu, 0.1, "a stall (descheduling, I/O wait, a loaded host) costs no CPU")
+        cpu, until = cpu_seconds(), time.process_time() + 0.3
+        while time.process_time() < until:
+            pass
+        self.assertGreaterEqual(cpu_seconds() - cpu, 0.29, "a spin in this process is cost")
+        cpu = cpu_seconds()
+        subprocess.run([sys.executable, "-c", "import time\nt = time.process_time() + 0.3\nwhile time.process_time() < t: pass"],
+                       check=True)
+        self.assertGreaterEqual(cpu_seconds() - cpu, 0.29, "a finished child's spin (git) is cost too")
 
 
 class Repo:
@@ -372,9 +398,9 @@ class WeakeningCases(unittest.TestCase):
         rows = [("D", "d%d/index.test.ts" % i, "d%d/index.test.ts" % i) for i in range(n)]
         rows += [("A", "a%d/index.test.ts" % i, "a%d/index.test.ts" % i) for i in range(n)]
         rows += [("D", "e%d/index.spec.ts" % i, "e%d/index.spec.ts" % i) for i in range(n)]  # same stem, other name
-        started = time.monotonic()
+        started = cpu_seconds()
         got = classify.deleted_test_findings(rows)
-        self.assertLess(time.monotonic() - started, 1)
+        self.assertLess(cpu_seconds() - started, 1)
         self.assertEqual(len(got), 2 * n)
         listed = "`a0/index.test.ts`, `a1/index.test.ts`, `a2/index.test.ts` and %d more" % (n - 3)
         self.assertIn("candidate by name only: %s (" % listed, got[0]["detail"])
@@ -521,9 +547,9 @@ class IntegrityReportTests(unittest.TestCase):
         # One ~1 MB minified-style line: before the cap, two predicates were quadratic on it (red proof:
         # 96k chars took 11.7 s on fl4-v1's first draft, extrapolating past the job's 10-minute timeout).
         head = self.repo.case({"e2e/min.test.js": "it(a,{x:1});" * 85000 + "\n"})
-        started = time.monotonic()
+        started = cpu_seconds()
         code, out = self.repo.integrity(head)
-        self.assertLess(time.monotonic() - started, 20)
+        self.assertLess(cpu_seconds() - started, 20)
         self.assertEqual(code, 0, out)
         self.assertIn("- INCOMPLETE: `e2e/min.test.js`: 1 changed lines over 4000 chars not scanned", out)
         self.assertNotIn("No test-weakening pattern added", out)
@@ -540,9 +566,9 @@ class IntegrityReportTests(unittest.TestCase):
                  "scripts/adv.sh": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n",
                  ".github/workflows/adv.yml": "\n".join(l[: classify.WEAKENING_MAX_LINE] for l in lines * 10) + "\n"}
         head = self.repo.case(files)
-        started = time.monotonic()
+        started = cpu_seconds()
         findings, incomplete, _ = self.repo.scan(head)
-        self.assertLess(time.monotonic() - started, 20)
+        self.assertLess(cpu_seconds() - started, 20)
         self.assertEqual(incomplete, [])
 
     def test_scan_deadline_is_incomplete(self):
@@ -570,11 +596,11 @@ class IntegrityReportTests(unittest.TestCase):
 
     def test_red_file_over_the_blob_cap_is_never_diffed(self):
         head = self.repo.case({"src/huge.test.ts": HUGE, "src/z.test.ts": "it.skip('z', () => {})\n"})
-        started = time.monotonic()
+        started = cpu_seconds()
         with mock.patch.object(classify, "WEAKENING_MAX_BLOB_BYTES", 1000000, create=True), \
                 mock.patch.object(classify, "WEAKENING_DEADLINE_SECONDS", 5):
             code, out, peak = self.traced_integrity(head)
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertLess(cpu_seconds() - started, 5)
         self.assertEqual(code, 0, out)
         self.assertIn("- INCOMPLETE: `src/huge.test.ts`: file larger than 1000000 bytes, not diffed or scanned", out)
         self.assertIn("- WEAKENING test-skip `src/z.test.ts:1` adds `it.skip`", out)
@@ -711,9 +737,9 @@ class IntegrityReportTests(unittest.TestCase):
         # 20k added continue-on-error lines at one indent: walking up from each was quadratic (10k lines: 7 s).
         wf = "on: push\njobs:\n  a:\n    runs-on: x\n" + "    continue-on-error: true\n" * 20000
         head = self.repo.case({".github/workflows/coe.yml": wf})
-        started = time.monotonic()
+        started = cpu_seconds()
         findings, incomplete, _ = self.repo.scan(head)
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertLess(cpu_seconds() - started, 5)
         self.assertEqual((len(findings), incomplete), (20000, []))
         listed = findings[:classify.WEAKENING_MAX_LISTED]
         self.assertTrue(all(f["detail"].startswith("adds `continue-on-error: true` on job `a`;") for f in listed))

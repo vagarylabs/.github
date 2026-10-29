@@ -246,7 +246,13 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        unresolved-name class. It is declared in `unresolved_names` by its exact path, or by a glob over such paths whose
        first segment below the `../` steps is literal (`../vagary-voice/**`; `../**` refuses). Its reach may be `"none"`
        even with a code extension, since nothing above the checkout is this repository's. It may also list the tracked
-       paths it stands for.
+       paths it stands for. Two exceptions need a reach list (root's R4 of #49):
+       - a name made only of `..` steps (`..`, `../..`, `x/../..`) is an ANCESTOR of the checkout, so it contains every
+         file, as the root does (A7-A7c; `../sibling` with `"none"` still holds, A7d);
+       - a name that re-enters the checkout by its own name (`../<repo>/...`, globs included) may be this repository's
+         tree: CI checks out into `.../<repo>/<repo>`. The names are the checkout directory's and, in Actions,
+         `GITHUB_REPOSITORY`'s. **Residual:** a checkout reached under any other name (a parent symlink, a directory not
+         named after the repository outside Actions) is not recognised.
      - **(b) At the root** (`.`), a name refuses unless declared with a reach list. `"none"` refuses, because a name at
        the root reaches every file. A **root base** needs no declaration when every use joins string literals: it then
        stands for exactly those literals. A root base is a chain anchored at the file's directory that resolves to the
@@ -524,8 +530,8 @@ vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run en
 
 Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
 
-`test_edges_152_rulings_vectors.json` holds 23 vectors for 1.5.2's root-climb rulings, run by the same method:
-- A1-A6: names above the checkout;
+`test_edges_152_rulings_vectors.json` holds 27 vectors for 1.5.2's root-climb rulings, run by the same method:
+- A1-A7d: names above the checkout, an ancestor of it among them;
 - B1-B11: root bases and root declarations;
 - C1-C6: lockfiles and the nested-lockfile ruling.
 

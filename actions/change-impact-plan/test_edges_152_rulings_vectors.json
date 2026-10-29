@@ -579,6 +579,164 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "SELECT"
+  },
+  "A7 a name of only .. steps is an ancestor: reach none refuses": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names .., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7b ../.. is an ancestor too": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "../..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names ../.., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7c x/../.. normalises to an ancestor": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "x/../..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names x/../.., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7d control: ../sibling with reach none still selects": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "../sibling",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\", \"sibling\")]);\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
   }
  }
 }

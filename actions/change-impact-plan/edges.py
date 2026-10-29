@@ -2185,7 +2185,17 @@ def _levels(parents: str) -> int:
     return sum(int(n) + 1 if n else 1 for n in re.findall(r"\.parents?(?:\[\s*(\d+)\s*\])?", parents))
 
 
-def unresolved_name_registry(es: dict) -> tuple[dict, list]:
+def own_names(repo) -> frozenset:
+    """The names this checkout goes by: its directory's name and, in Actions, the repository's (CI checks out into
+    .../<repo>/<repo>, and a local clone may be named otherwise). A name above the checkout that re-enters one of these
+    may be this repository's own tree (root's R4 of #49)."""
+    names = {Path(repo).resolve().name}
+    if os.environ.get("GITHUB_REPOSITORY", "").count("/") == 1:
+        names.add(os.environ["GITHUB_REPOSITORY"].split("/")[1])
+    return frozenset(n for n in names if n and n not in (".", ".."))
+
+
+def unresolved_name_registry(es: dict, own: frozenset = frozenset()) -> tuple[dict, list]:
     """edge_scan.unresolved_names, validated: ({(file, normalized name): entry}, [(file, glob regex, entry)]).
     A name that resolves to no tracked file or directory is an UNRESOLVED ROUTE, in any position (root's delta R4 of
     #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
@@ -2211,6 +2221,22 @@ def unresolved_name_registry(es: dict) -> tuple[dict, list]:
     for d in names_declared:
         name = posixpath.normpath(d["name"])
         above = name == ".." or name.startswith("../")
+        below = [x for x in name.split("/") if x != ".."]
+        # Root's R4 of #49 (blocking): a name made only of `..` steps (`..`, `../..`, `x/../..`) is an ANCESTOR of the
+        # checkout, so it contains every file, exactly as the root does; reach "none" would hide what it runs.
+        if name == "." and d["reach"] == "none":
+            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names the repository root with reach \"none\"; a "
+                             "name at the root reaches every file, so declare the paths it reaches")
+        if not below and d["reach"] == "none":
+            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names {d['name']}, an ancestor of the checkout that "
+                             "contains it, with reach \"none\"; a name there reaches every file, as the root does, so "
+                             "declare the paths it reaches")
+        # ...and one that RE-ENTERS the checkout by its own name (`../<repo>/...`) may be this repository's tree, which a
+        # sibling repository's name cannot be told apart from: it must declare what it reaches too.
+        if above and d["reach"] == "none" and own & set(below):
+            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names {d['name']}, above the checkout but through "
+                             f"its own name ({', '.join(sorted(own & set(below)))}), with reach \"none\"; it may be this "
+                             "repository's own tree, so declare the paths it reaches")
         if any(c in d["name"] for c in "*?["):
             first = [x for x in name.split("/") if x != ".."][:1]
             if not above or not first or any(c in first[0] for c in "*?["):
@@ -2219,9 +2245,6 @@ def unresolved_name_registry(es: dict) -> tuple[dict, list]:
                                  "literal (`../repo/**`, never `../**`)")
             globs.append((d["file"], glob_to_regex(name), d))
             continue
-        if name == "." and d["reach"] == "none":
-            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names the repository root with reach \"none\"; a "
-                             "name at the root reaches every file, so declare the paths it reaches")
         # Root's round 3 of #33, F09: a name with a code extension is code something runs (`spawn(process.execPath,
         # ["../../dist/x.js"])`), so reach "none" would say it runs nothing; it must name what it stands for. Above the
         # checkout nothing is this repository's, so "none" is the honest reach there (1.5.2, ruling a).
@@ -2962,7 +2985,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     edges: dict[str, set[str]] = {}  # a file -> the repo paths outside every package its relative paths name (1.5.0)
 
     shell_spans: dict[str, dict] = {}
-    scan_names, scan_name_globs = unresolved_name_registry(es)
+    scan_names, scan_name_globs = unresolved_name_registry(es, own_names(repo))
     scan_names_used: set = set()
     root_info: dict[str, tuple] = {}
 
@@ -3458,7 +3481,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
     # to a scan that cannot run them. It refuses unless declared: {file, name, reach}, `name` the repo path it resolves
     # to, `reach` "none" (it names nothing that runs: a test datum) or the tracked paths it stands for (each an edge).
-    by_name, name_globs = unresolved_name_registry(es)
+    by_name, name_globs = unresolved_name_registry(es, own_names(repo))
     names_used: set = set()
     loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
     reader_dirs = set(es.get("reader_dirs") or [])

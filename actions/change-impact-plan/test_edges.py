@@ -902,6 +902,32 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
                          "a change to the imported file selects its importer, not FULL")
 
+    def test_a_name_that_re_enters_the_checkout_by_its_own_name_must_declare_what_it_reaches(self):
+        # Root's R4 of #49 (required): CI checks out into .../<repo>/<repo>, so `../<repo>/...` may be this repository's
+        # own tree, which a sibling repository's name cannot be told apart from. Reach "none" refuses there, globs too;
+        # a reach list is accepted, and a sibling's name with "none" still is.
+        entry = lambda name, reach="none": {"file": "services/a/t.mjs", "name": name, "reach": reach, "reason": "fixture",
+                                            "review_by": "2026-11-20"}
+        own = frozenset({"myrepo"})
+        for name in ("../myrepo/scripts/x.mjs", "../../work/myrepo/x.json", "../myrepo/**"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, r"through its own name \(myrepo\)"):
+                E.unresolved_name_registry({"unresolved_names": [entry(name)]}, own)
+        E.unresolved_name_registry({"unresolved_names": [entry("../myrepo/scripts/x.mjs", ["scripts/x.mjs"])]}, own)
+        E.unresolved_name_registry({"unresolved_names": [entry("../vagary-voice/x.json")]}, own)  # a sibling: "none" holds
+        # The names: the checkout directory's, and in Actions the repository's (a local clone may be named otherwise).
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "vagarylabs/vagaris"}):
+            self.assertEqual(E.own_names(self.repo), {self.repo.resolve().name, "vagaris"})
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GITHUB_REPOSITORY", None)
+            self.assertEqual(E.own_names(self.repo), {self.repo.resolve().name})
+        # End to end, by the checkout's own directory name.
+        self.files(**{"services__a__t.mjs": 'import { readFileSync } from "node:fs";\n'
+                                            f'readFileSync("../../../{self.repo.name}/services/b/app.py");\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["unresolved_names"] = [entry(f"../{self.repo.name}/services/b/app.py")]
+        with self.assertRaisesRegex(ValueError, "through its own name"):
+            E.scan(self.repo, cfg)
+
     def test_every_git_grep_of_the_scan_refuses_typed_when_it_cannot_read(self):
         # Root's carry-over from #47 (556963a): no grep site of the scan may fail by a bare SystemExit. Each `git grep` the
         # scan runs on this tree is made to exit 128 in turn (git 2.56's unreadable-blob status); every one refuses typed,
@@ -2153,7 +2179,7 @@ class RulingsOf152Test(VectorHarness, unittest.TestCase):
 
     def test_each_ruling_has_vectors(self):
         names = sorted(self.CASES["cases"])
-        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
+        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A7b", "A7c", "A7d", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
                        "C1", "C2", "C3", "C4", "C5", "C6"):
             self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 

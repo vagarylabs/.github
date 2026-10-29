@@ -6,8 +6,10 @@ Report-only first; a tool that did not run is INCOMPLETE, never clean. Stdlib on
 import contextlib
 import io
 import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -265,6 +267,49 @@ class WorkflowWiring(unittest.TestCase):
         src = (ROOT / "trusted" / "actionlint.yaml").read_text().rstrip("\n")
         self.assertEqual("\n".join(l[10:] for l in body.split("\n")), src)
         self.assertIn("vl-light", src)
+
+    def rendered_run_step(self, mode):
+        """The workflow-lint run step's script exactly as rendered, with the inlined manifest's workflow_lint mode set."""
+        wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
+        step = wf.split("- name: Run zizmor and actionlint over the head tree", 1)[1].split("        run: |\n", 1)[1]
+        body = []
+        for line in step.split("\n"):
+            if line.strip() and not line.startswith("          "):
+                break
+            body.append(line[10:])
+        script = "\n".join(body)
+        head, rest = script.split("<<'TRUSTED_MANIFEST_JSON'\n", 1)
+        doc, tail = rest.split("\nTRUSTED_MANIFEST_JSON\n", 1)
+        m = json.loads(doc)
+        m["workflow_lint"]["mode"] = mode
+        return head + "<<'TRUSTED_MANIFEST_JSON'\n" + json.dumps(m).replace("$", "\\u0024") + "\nTRUSTED_MANIFEST_JSON\n" + tail
+
+    def test_the_rendered_step_ends_incomplete_not_red_when_both_fetches_fail(self):
+        # Root's delta R4 of #41, B2: the cold-cache case, both fetches failed, so no tool and no $RUNNER_TEMP/workflow-lint.
+        # The rendered step itself, run as the runner runs it: green with INCOMPLETE x2 in report, refused in enforce.
+        for mode, want in (("report", 0), ("enforce", 1)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:
+                ws, temp = pathlib.Path(td, "ws"), pathlib.Path(td, "temp")
+                (ws / "head" / ".github" / "workflows").mkdir(parents=True)
+                temp.mkdir()
+                (ws / "head" / ".github" / "workflows" / "w.yml").write_text("on: push\njobs: {}\n")
+                env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+                g = lambda *a: subprocess.run(["git", "-C", str(ws / "head"), *a], check=True, capture_output=True,
+                                              text=True, env=env).stdout.strip()
+                g("init", "-q")
+                g("add", "-A")
+                g("-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-qm", "h", "--no-gpg-sign")
+                step = pathlib.Path(td, "step.sh")
+                step.write_text(self.rendered_run_step(mode))
+                summary = pathlib.Path(td, "summary.md")
+                out = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(step)], cwd=ws,
+                                     capture_output=True, text=True, timeout=120,
+                                     env=dict(env, RUNNER_TEMP=str(temp), REPO="vagarylabs/x", HEAD_SHA=g("rev-parse", "HEAD"),
+                                              Z_FETCH="failure", A_FETCH="failure", GITHUB_STEP_SUMMARY=str(summary)))
+                self.assertEqual(out.returncode, want, out.stdout + out.stderr)
+                text = summary.read_text()
+                self.assertIn("INCOMPLETE: zizmor was not fetched (step outcome failure)", text)
+                self.assertIn("INCOMPLETE: actionlint was not fetched (step outcome failure)", text)
 
     def test_report_mode_cannot_go_red_on_a_fetch_and_every_step_is_bounded(self):
         # Root's R4 of #41, B2: each fetch is bounded and continue-on-error (its outcome goes to classify.py), each

@@ -193,6 +193,9 @@ jobs:
           {{INLINE:trusted/actionlint.yaml}}
           TRUSTED_ACTIONLINT_YAML
           # A missing binary (its fetch failed) exits 127 and a stalled one 124: classify.py reports both INCOMPLETE.
+          # When both fetches failed nothing created $t, so it is made here: a cd into a missing directory would end
+          # the step red in mode report (root's delta R4 of #41, B2).
+          mkdir -p "$t"
           ( cd "$t" && { tar -xzf zizmor.tar.gz zizmor || true; tar -xzf actionlint.tar.gz actionlint || true; } ) 2>/dev/null
           cd head
           # Nothing in the PR configures the judge (root's R4 of #41, B1): zizmor reads no config (--no-config), no

@@ -2236,24 +2236,24 @@ jobs:
           def _zizmor_shape(doc):
               """None when `doc` is zizmor's JSON finding list, else why it is not."""
               if not isinstance(doc, list):
-                  return "zizmor output is %s, not a finding list" % type(doc).__name__
+                  return "output is %s, not a finding list" % type(doc).__name__
               for i, f in enumerate(doc):
                   if not (isinstance(f, dict) and isinstance(f.get("ident"), str) and isinstance(f.get("locations"), list)
                           and isinstance(f.get("determinations"), dict) and isinstance(f["determinations"].get("severity"), str)):
-                      return "zizmor finding %d is not a finding (ident, determinations.severity, locations)" % i
+                      return "finding %d is not a finding (ident, determinations.severity, locations)" % i
               return None
 
 
           def _actionlint_shape(doc, rc):
               """None when `doc` is actionlint's JSON error list and agrees with its exit code, else why it is not."""
               if not isinstance(doc, list):
-                  return "actionlint output is %s, not an error list" % type(doc).__name__
+                  return "output is %s, not an error list" % type(doc).__name__
               for i, e in enumerate(doc):
                   if not (isinstance(e, dict) and all(isinstance(e.get(k), str) for k in ("kind", "filepath", "message"))
                           and isinstance(e.get("line"), int)):
-                      return "actionlint error %d is not an error (kind, filepath, line, message)" % i
+                      return "error %d is not an error (kind, filepath, line, message)" % i
               if (rc == 1) != bool(doc):
-                  return "actionlint exited %d with %d errors" % (rc, len(doc))
+                  return "exited %d with %d errors" % (rc, len(doc))
               return None
 
 

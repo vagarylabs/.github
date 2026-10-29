@@ -5870,7 +5870,7 @@
    ]
   },
   "R6V29_no_cwd_unrelated_dotdot_precision": {
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "p = Path(ROOT, \"services\", name)\nsys.path.insert(0, os.path.join(HERE, \"..\"))\n",
    "truth": [
@@ -5878,7 +5878,20 @@
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "note": "1.5.2 rule 6 (spine, 2026-10-27): an unresolved sys.path entry holding a parent step refuses (HERE is unbound here). Rule 7's precision this vector asserted is kept by R6V29b, the same `..` outside a sys.path entry."
+  },
+  "R6V29b_no_cwd_unrelated_dotdot_precision_outside_sys_path": {
+   "expect": "read",
+   "ext": "py",
+   "src": "p = Path(ROOT, \"services\", name)\nq = os.path.join(HERE, \"..\")\n",
+   "truth": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ],
+   "note": "R6V29's rule-7 precision without a sys.path entry (1.5.2): a `..` with no cwd change still reads."
   },
   "R6V30_toml_key_precision": {
    "expect": "read",

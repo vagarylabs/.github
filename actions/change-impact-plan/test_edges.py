@@ -755,6 +755,39 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.scan()
 
+    def test_a_shorthand_method_named_require_or_import_is_a_definition_not_a_call(self):
+        # Spine (core's console vm sandboxes, 2026-10-27): `{ ..., require(name) { ... } }` defines a method.
+        for body in ("vm.runInNewContext(code, { module, require(name) { return stubs[name]; } });\n",
+                     "const sandbox = {\n  require(spec) {\n    throw new Error(spec);\n  },\n};\n",
+                     "class Box { static require(name) { return name; } import(x) { return x; } }\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__vm.test.mjs": body})
+                self.scan()
+        # Controls: a real computed call inside that method body stays a site, and ASI keeps `= require(name)` a call.
+        controls = {"inner call": "const require_ = createRequire(import.meta.url);\n"
+                                  "const s = { require(name) { return require_(name); } };\n",
+                    "asi": "const x = require(name)\n{ x(); }\n"}
+        for why, body in controls.items():
+            with self.subTest(why):
+                self.files(**{"services__a__vm.test.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+                    self.scan()
+
+    def test_a_non_file_url_scheme_import_names_no_file(self):
+        for body in ("await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);\n",
+                     "await import('data:text/javascript,' + src);\n",
+                     "await import(`node:${name}`);\n",
+                     "await import(`https://cdn.example/${pkg}`);\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__sync.mjs": body})
+                self.scan()
+        # Controls: a file: URL and a bare substitution still refuse.
+        for body in ("await import(`file:${p}`);\n", "await import(`${p}`);\n"):
+            with self.subTest(body=body):
+                self.files(**{"services__a__sync.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+
     def test_computed_imports_refuse_unless_declared_and_an_escape_refuses_even_declared(self):
         self.files(**{"services__a__load.mjs": "export const load = (name) => import(name);\n"})
         with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
@@ -869,6 +902,315 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
                          "a change to the imported file selects its importer, not FULL")
 
+    def test_a_name_that_re_enters_the_checkout_by_its_own_name_must_declare_what_it_reaches(self):
+        # Root's R4 of #49 (required): CI checks out into .../<repo>/<repo>, so `../<repo>/...` may be this repository's
+        # own tree, which a sibling repository's name cannot be told apart from. Reach "none" refuses there, globs too;
+        # a reach list is accepted, and a sibling's name with "none" still is.
+        entry = lambda name, reach="none": {"file": "services/a/t.mjs", "name": name, "reach": reach, "reason": "fixture",
+                                            "review_by": "2026-11-20"}
+        own = frozenset({"myrepo"})
+        for name in ("../myrepo/scripts/x.mjs", "../../work/myrepo/x.json", "../myrepo/**"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, r"through its own name \(myrepo\)"):
+                E.unresolved_name_registry({"unresolved_names": [entry(name)]}, own)
+        E.unresolved_name_registry({"unresolved_names": [entry("../myrepo/scripts/x.mjs", ["scripts/x.mjs"])]}, own)
+        E.unresolved_name_registry({"unresolved_names": [entry("../vagary-voice/x.json")]}, own)  # a sibling: "none" holds
+        # The names: the checkout directory's, and in Actions the repository's (a local clone may be named otherwise).
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "vagarylabs/vagaris"}):
+            self.assertEqual(E.own_names(self.repo), {self.repo.resolve().name, "vagaris"})
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GITHUB_REPOSITORY", None)
+            self.assertEqual(E.own_names(self.repo), {self.repo.resolve().name})
+        # End to end, by the checkout's own directory name.
+        self.files(**{"services__a__t.mjs": 'import { readFileSync } from "node:fs";\n'
+                                            f'readFileSync("../../../{self.repo.name}/services/b/app.py");\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["unresolved_names"] = [entry(f"../{self.repo.name}/services/b/app.py")]
+        with self.assertRaisesRegex(ValueError, "through its own name"):
+            E.scan(self.repo, cfg)
+
+    def test_every_git_grep_of_the_scan_refuses_typed_when_it_cannot_read(self):
+        # Root's carry-over from #47 (556963a): no grep site of the scan may fail by a bare SystemExit. Each `git grep` the
+        # scan runs on this tree is made to exit 128 in turn (git 2.56's unreadable-blob status); every one refuses typed,
+        # and the labels cover 1.5.2's own sites: the shell and Python listings and the Python import grep.
+        self.files(**{
+            "services__a__test__conftest.py": "import os, sys\n"
+                                              'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))\n',
+            "services__a__test__test_x.py": "import helper\n",
+            "scripts__helper.py": 'P = "services/b/x.json"\n',
+            "scripts__run.sh": "echo checking\n",  # the shell listing reads every *.sh, whatever it holds
+            "services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        head = self._commit(self.repo, "head")
+        cfg = reviewed_cfg({**IMPORT_CFG, "extra_edges": {"scripts/x.mjs": ["a"]}})
+        real = subprocess.run
+        greps = []
+
+        def counting(argv, *args, **kwargs):
+            if "grep" in argv[:6]:
+                greps.append(argv)
+            return real(argv, *args, **kwargs)
+
+        with patch.object(E.subprocess, "run", counting):
+            E.scan(self.repo, cfg, revision=head)  # control: every grep reads, and the scan completes
+        self.assertGreaterEqual(len(greps), 5)
+        labels = set()
+        for k in range(len(greps)):
+            seen = []
+
+            def failing(argv, *args, **kwargs):
+                if "grep" in argv[:6]:
+                    seen.append(argv)
+                    if len(seen) == k + 1:
+                        return subprocess.CompletedProcess(argv, 128, b"", b"fatal: planted\n")
+                return real(argv, *args, **kwargs)
+
+            with patch.object(E.subprocess, "run", failing), self.assertRaises(ValueError, msg=f"grep #{k}") as caught:
+                E.scan(self.repo, cfg, revision=head)
+            message = str(caught.exception)
+            self.assertIn("(git grep exit 128: fatal: planted)", message, f"grep #{k}")
+            labels.add(re.search(r"reader closure unproven: (.*?) could not read the scanned tree", message).group(1))
+        self.assertLessEqual({"the reader scan's shell listing", "the reader scan's Python listing",
+                              "the reader scan's Python import grep", "the reader scan"}, labels)
+
+    def test_python_sys_path_entries_credit_what_the_package_imports_by_name(self):
+        # 1.5.2. The entry sits in conftest.py, and the import in another test file: sys.path is process-wide.
+        self.files(**{
+            "services__a__test__conftest.py": "import os, sys\n"
+                                              'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))\n',
+            "services__a__test__test_x.py": "import helper\n",
+            "scripts__helper.py": 'P = "services/b/x.json"\n',
+            "scripts__unused.py": 'Q = "services/c/q.json"\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"}, "only a module the package imports by name is credited")
+        self.assertIn("scripts/helper.py", report["imports"])
+        self.assertNotIn("scripts/unused.py", report["imports"])
+
+    def test_a_sys_path_entry_into_another_package_is_a_dep_and_into_its_own_is_nothing(self):
+        self.files(**{"services__a__t.py": "import sys\nfrom pathlib import Path\n"
+                                            'APP = Path(__file__).resolve().parent / "app"\n'
+                                            'OTHER = Path(__file__).resolve().parents[1] / "b" / "app"\n'
+                                            "sys.path.insert(0, str(APP))\nsys.path.insert(0, str(OTHER))\n"})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
+    def test_an_unresolved_sys_path_entry_refuses_when_it_may_leave_its_package(self):
+        for entry in ('os.environ.get("X", "../scripts")', 'os.path.join(ROOT, "scripts")', 'os.path.join(REPO, "services", "b")'):
+            with self.subTest(entry):
+                self.files(**{"services__a__t.py": f"import os, sys\nsys.path.insert(0, {entry})\n"})
+                with self.assertRaisesRegex(ValueError, "sys.path entry"):
+                    self.scan()
+        self.files(**{"services__a__t.py": "import os, sys\nsys.path.insert(0, os.getcwd())\n"})
+        self.assertEqual(self.scan()[0]["a"], set(), "control: no parent step, no top-level name: a documented residual")
+
+    def test_every_sys_path_form_and_an_unparseable_file(self):
+        entry = 'os.path.join(os.path.dirname(__file__), "..", "..", "scripts")'
+        for form in ("sys.path.append(E)", "sys.path.extend([E])", "sys.path += [E]", "sys.path[0:0] = [E]"):
+            with self.subTest(form):
+                self.files(**{"services__a__t.py": f"import os, sys\n{form.replace('E', entry)}\nimport helper\n",
+                              "scripts__helper.py": 'P = "services/b/x.json"\n'})
+                self.assertEqual(self.scan()[0]["a"], {"b"})
+        self.files(**{"services__a__t.py": "import sys\nsys.path.insert(0, 'x'\n"})
+        with self.assertRaisesRegex(ValueError, "does not parse"):
+            self.scan()
+
+    def test_pytest_pythonpath_is_a_sys_path_entry_from_the_config_pytest_would_pick(self):
+        # Root-level configs with no `../` in them, so only rule 6 can see the entry (a package file's `../` path is a
+        # rule-1 edge on its own). A root pyproject.toml puts scripts/ on every package's path.
+        self.files(**{"pyproject.toml": '[tool.pytest.ini_options]\npythonpath = ["scripts"]\n',
+                      "services__a__test_x.py": "import helper\n",
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # In one directory pytest.ini wins over pyproject.toml, even with no [pytest] section.
+        self.files(**{"pytest.ini": "# empty: still the config\n"})
+        self.assertEqual(self.scan()[0]["a"], set())
+        # An entry into package c is a dep of every other Python package the config serves.
+        (self.repo / "pytest.ini").unlink()
+        self.files(**{"pyproject.toml": '[tool.pytest.ini_options]\npythonpath = ["services/c/app"]\n'})
+        deps = self.scan()[0]
+        self.assertEqual((deps["a"], deps["b"], deps["c"]), ({"c"}, {"c"}, set()))
+        # The NEAREST config wins: a's own pytest.ini (an entry inside a) shadows the root's entry into c for a only.
+        self.files(**{"services__a__pytest.ini": "[pytest]\npythonpath = sub\n"})
+        deps = self.scan()[0]
+        self.assertEqual((deps["a"], deps["b"]), (set(), {"c"}))
+        (self.repo / "services/a/pytest.ini").unlink()
+        # The package's own unreadable setup.cfg is the one pytest would read, so it refuses.
+        self.files(**{"services__a__setup.cfg": "[tool:pytest\npythonpath = x\n"})
+        with self.assertRaisesRegex(ValueError, "does not parse"):
+            self.scan()
+
+    def test_python_loaders_by_computed_name_or_path_are_held_to_the_declaration_rule(self):
+        self.files(**{"services__a__load.py": "import importlib\nm = importlib.import_module(name)\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py", "expr": "name", "reach": "external"}]
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for why, body in (("__import__", "m = __import__(name)\n"), ("runpy.run_module", "import runpy\nrunpy.run_module(name)\n"),
+                          ("exec(open(p).read())", "exec(open(p).read())\n")):
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+        # A path from __file__ with literal parts is a literal load: an edge, credited, with no declaration.
+        self.files(**{"services__a__load.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
+                                               '"m", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "m.py"))\n',
+                      "scripts__m.py": 'P = "services/b/m.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # An unevaluated path naming a parent step or an outside top-level directory refuses even when declared.
+        for escaping in ('runpy.run_path(os.path.join(ROOT, "scripts", "x.py"))', 'runpy.run_path("../../x.py")'):
+            with self.subTest(escaping):
+                self.files(**{"services__a__load.py": f"import os, runpy\n{escaping}\n"})
+                cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py",
+                                                         "expr": escaping[escaping.index("(") + 1:-1], "reach": "package"}]
+                with self.assertRaisesRegex(ValueError, "may leave its package"):
+                    self.scan(cfg)
+
+    def test_python_loaders_get_fix_1_and_fix_2_shape(self):
+        # Root's R4 of #33 carried into 1.5.2's Python loaders: an unowned file's loaders are checked and select its
+        # own unit, a literal load naming no tracked file refuses, and reach "package" refuses outside every package.
+        self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        self.files(**{"scripts__x.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
+                                       '"m", os.path.join(os.path.dirname(__file__), "..", "services", "b", "m.py"))\n',
+                      "services__b__m.py": "M = 1\n",
+                      "services__a__run.sh": "#!/bin/bash\npython3 ../../scripts/x.py\n"})
+        deps, readers, report = self.scan()
+        self.assertEqual(readers["scripts"], {"b"}, "x.py's own unit, the scripts/ reader job, loads b")
+        self.assertEqual(deps["a"], {"b"}, "a runs x.py, so a is credited with what it loads")
+        self.assertEqual(report["unowned_callers"], {"scripts/x.py": {"unit": "scripts", "reaches": ["b"]}})
+        self.files(**{"services__a__load.py": "import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(__file__), "
+                                               '"..", "..", "scripts", "gone.py"))\n'})
+        with self.assertRaisesRegex(ValueError, "a reaches scripts/gone.py, which names no tracked file"):
+            self.scan()
+        (self.repo / "services/a/load.py").unlink()
+        self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/x.py", "expr": "name", "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, 'declared reach "package", but scripts/x.py is outside every package'):
+            self.scan(cfg)
+
+    def test_an_unowned_caller_loading_an_unowned_path_declares_it_and_a_parent_step_still_escapes(self):
+        # Spine's A2 census (2026-10-28): scripts/identity-products-apply.py's `HERE / file` and
+        # scripts/test_contract_drift.py's `_mod.ROOT / "scripts/gen-capability-docs.py"`. The caller is outside every
+        # package, so the load leaves no package: it is a load to declare (reach as paths), not an escape.
+        cases = {"evaluated prefix": 'from pathlib import Path\nimport runpy\nHERE = Path(__file__).parent\n'
+                                     'runpy.run_path(str(HERE / file))\n',
+                 "unevaluated prefix": 'import runpy\nrunpy.run_path(str(_mod.ROOT / "scripts/gen.py"))\n'}
+        for why, body in cases.items():
+            with self.subTest(why):
+                self.files(**{"scripts__apply.py": body, "scripts__gen.py": "G = 1\n"})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+                expr = "str(HERE / file)" if why == "evaluated prefix" else 'str(_mod.ROOT / "scripts/gen.py")'
+                cfg = json.loads(json.dumps(IMPORT_CFG))
+                cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/apply.py", "expr": expr, "reach": ["scripts/gen.py"]}]
+                self.scan(cfg)
+                (self.repo / "scripts/apply.py").unlink()
+        # Controls: an unowned caller whose prefix has a package beneath it (the repo root via `..`, or services/) still
+        # escapes, and package code reaching an unowned path still escapes, declared or not.
+        for body in ('from pathlib import Path\nimport runpy\nHERE = Path(__file__).parent\nrunpy.run_path(str(HERE / ".." / file))\n',
+                     'from pathlib import Path\nimport runpy\nROOT = Path(__file__).parents[1]\nrunpy.run_path(str(ROOT / "services" / name))\n'):
+            with self.subTest(body=body):
+                self.files(**{"scripts__apply.py": body})
+                with self.assertRaisesRegex(ValueError, "may leave its package"):
+                    self.scan()
+                (self.repo / "scripts/apply.py").unlink()
+        self.files(**{"services__a__load.py": 'import runpy\nrunpy.run_path(str(_mod.ROOT / "scripts/gen.py"))\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.py", "expr": 'str(_mod.ROOT / "scripts/gen.py")',
+                                                 "reach": ["scripts/gen.py"]}]
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan(cfg)
+
+    def test_pathlib_edits_evaluate_and_the_floor_judges_the_evaluated_prefix(self):
+        # vagary-core's evidence app vendors a package INSIDE itself: PACKAGE / "scripts/..." is its own subdirectory,
+        # not the top-level scripts/ (spine, 2026-10-27; a rewrite to the repo-root copy would have broken the service).
+        self.files(**{"services__a__app__contract.py": "import importlib.util\nfrom pathlib import Path\n"
+                                                        'PACKAGE = Path(__file__).with_name("_vendored")\n'
+                                                        'spec = importlib.util.spec_from_file_location("m", PACKAGE / "scripts/x.py")\n',
+                      "services__a__app___vendored__scripts__x.py": 'P = "services/b/x.json"\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(report["computed_imports_unused"], [])
+        self.assertNotIn("services/a/app/_vendored/scripts/x.py", report["imports"], "inside the importing package: no edge")
+        # The same shape with a prefix that does not evaluate still refuses: nothing says where "scripts" is.
+        self.files(**{"services__a__app__contract.py": "import importlib.util\n"
+                                                        'spec = importlib.util.spec_from_file_location("m", PKG / "scripts/x.py")\n'})
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan()
+        # An evaluated prefix OUTSIDE the package (the repo root's scripts/) with a computed tail refuses, even declared.
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        root_tail = 'ROOT / "scripts" / x'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        "ROOT = Path(__file__).resolve().parents[3]\n"
+                                                        f"runpy.run_path({root_tail})\n"})
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": root_tail, "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, "may leave its package"):
+            self.scan(cfg)
+        # An evaluated in-package prefix with a computed tail is declarable, as reach "package" only.
+        inside_tail = 'PACKAGE / "scripts" / x'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        'PACKAGE = Path(__file__).with_name("_vendored")\n'
+                                                        f"runpy.run_path({inside_tail})\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": inside_tail, "reach": "external"}]
+        with self.assertRaisesRegex(ValueError, 'must be declared reach "package"'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "package"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        # An evaluated prefix inside ANOTHER package with a computed tail is declarable, and a dep on that package.
+        other_tail = 'PLANE / (name + ".py")'
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
+                                                        'PLANE = Path(__file__).resolve().parents[2] / "c" / "app"\n'
+                                                        f"runpy.run_path({other_tail})\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/app/contract.py", "expr": other_tail, "reach": "external"}]
+        self.assertIn("c", self.scan(cfg)[0]["a"], "the prefix's package c is a dep (only the vendored file reads b)")
+        # joinpath evaluates too: a sys.path entry into package b through it is a dep.
+        self.files(**{"services__a__app__contract.py": "import sys\nfrom pathlib import Path\n"
+                                                        'sys.path.insert(0, str(Path(__file__).resolve().parents[2].joinpath("b", "app")))\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
+    def test_a_loop_over_a_literal_is_literal_names_and_anything_short_of_it_refuses(self):
+        # vagary-core's observability.py: `for mod_name, cls in ((<const>, <const>), ...): import_module(mod_name)`.
+        loads = {
+            "a literal tuple of pairs": 'for mod_name, cls in (("redis", "R"), ("dns", "D")):\n    m = importlib.import_module(mod_name)\n',
+            "a module-level name bound once": 'MODS = ("redis", "dns")\nfor m in MODS:\n    importlib.import_module(m)\n',
+            "a comprehension": 'mods = [importlib.import_module(m) for m in ("redis",)]\n',
+        }
+        for why, body in loads.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": "import importlib\n" + body})
+                self.assertEqual(self.scan()[2]["computed_imports_unused"], [], "no declaration needed")
+        refused = {
+            "the literal mutated after binding": 'MODS = ["redis"]\nMODS.append(x)\nfor m in MODS:\n    importlib.import_module(m)\n',
+            "the loop variable rebound in the body": 'for m in ("redis",):\n    m = other\n    importlib.import_module(m)\n',
+            "an f-string argument": 'for m in ("redis",):\n    importlib.import_module(f"x.{m}")\n',
+            "an iterable from a call": 'for m in sorted(("redis",)):\n    importlib.import_module(m)\n',
+            "a name bound twice": 'MODS = ("a",)\nMODS = ("b",)\nfor m in MODS:\n    importlib.import_module(m)\n',
+        }
+        for why, body in refused.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.py": "import importlib\n" + body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+                    self.scan()
+        # The names resolve by name like any import: through a sys.path entry they are edges, and credited.
+        self.files(**{"services__a__load.py": "import importlib, os, sys\n"
+                                               'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))\n'
+                                               'for m in ("helper",):\n    importlib.import_module(m)\n',
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+
+    def test_a_literal_loader_name_resolves_through_a_sys_path_entry(self):
+        self.files(**{"services__a__t.py": "import os, sys\n"
+                                            'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))\n'
+                                            'mod = __import__("helper")\n',
+                      "scripts__helper.py": 'P = "services/b/x.json"\n'})
+        self.assertEqual(self.scan()[0]["a"], {"b"})
+        # A reached Python file's own computed loader is held to the same rule.
+        self.files(**{"scripts__helper.py": 'import importlib\nP = "services/b/x.json"\nm = importlib.import_module(name)\n'})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`.* in scripts/helper.py"):
+            self.scan()
     def check(self, cfg):
         (self.repo / ".github/ci-plan.json").write_text(json.dumps(reviewed_cfg(cfg)))
         subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
@@ -1123,10 +1465,10 @@ class ImportAttributionTest(unittest.TestCase):
             ('x = os.path.join(os.path.dirname(__file__), "..", "lib")', "py"): ["../lib"],
             ('x = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")', "py"): ["../.."],
             ('HERE = os.path.dirname(__file__)\nx = os.path.join(HERE, "..", "w.py")', "py"): ["../w.py"],
-            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../..", "../.."],
+            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../.."],  # 1.5.2: the alias's own binding is no use
             ('w = Path(__file__).parent / ".." / "w.py"', "py"): ["../w.py"],
             ('w = Path(__file__).parent.parent / "w.py"', "py"): ["../w.py"],
-            ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "..", "../scripts/x.sh"],
+            ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "../scripts/x.sh"],
         }
         for (src, ext), want in cases.items():
             with self.subTest(src):
@@ -1135,10 +1477,14 @@ class ImportAttributionTest(unittest.TestCase):
                          ('p = Path(__file__).parent / "w.py"', "py"), ('p = os.path.join(base, "..")', "py")):
             with self.subTest(control=src):
                 self.assertEqual(E.anchored_chains(E.Source(src, ext)), [], "no parent step from the anchor: no chain")
-        # In a scan: a Python root base by parents[N] refuses as a root climb, from any position.
-        self.files(**{"services__a__t.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"})
+        # In a scan: a Python root base by parents[N] refuses as a root climb when it is used other than joined with
+        # string literals (1.5.2, root's ruling b); a bound base nobody uses reaches nothing.
+        self.files(**{"services__a__t.py": "import subprocess\nfrom pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
+                                           "subprocess.run(['make'], cwd=ROOT)\n"})
         with self.assertRaisesRegex(ValueError, r"services/a/t.py names \.\./\.\., the repository root or above it"):
             self.scan()
+        self.files(**{"services__a__t.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"})
+        self.scan()
 
     def test_one_batch_reader_serves_a_scans_revision_reads_byte_for_byte(self):
         # perf: one `git cat-file --batch` per scan, not one `git show` per file; the bytes are git show's exactly.
@@ -1541,6 +1887,115 @@ class ImportAttributionTest(unittest.TestCase):
                 (self.repo / f"tools/content/page.{ext}").unlink()
                 self.files(**{"services__a__t.mjs": "export {};\n"})
 
+    # ── 1.5.2: a shell script's relative paths resolve where it has `cd`'d to (spine's A2 census, FALSE-POSITIVES item 3)
+    def test_shell_cd_to_its_own_directory_moves_where_relative_paths_resolve(self):
+        base = {"scripts__ci-test-pg.sh": "#!/bin/bash\necho pg\n", "scripts__x.sh": "#!/bin/bash\n"}
+        cases = {
+            # spine's 22 runners: cd up from test/, then a path written relative to the package directory.
+            "runner": ('cd "$(dirname "$0")/.."\nPGPORT="$(bash ../../scripts/ci-test-pg.sh port)"\n', "scripts/ci-test-pg.sh"),
+            "same line": ('cd "$(dirname "$0")/.." && bash ../../scripts/ci-test-pg.sh wait\n', "scripts/ci-test-pg.sh"),
+            "BASH_SOURCE": ('cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "conditional": ('[ -d .git ] && cd "$(dirname "$0")/.."\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "before the cd": ('bash ../../../scripts/x.sh\ncd "$(dirname "$0")/.."\n', "scripts/x.sh"),
+            "identity control": ('bash "$(dirname "$0")/../../../scripts/ci-test-pg.sh" wait\n', "scripts/ci-test-pg.sh"),
+            "heredoc text": ('cat <<EOF\ncd /tmp\nEOF\nbash ../../../scripts/x.sh\n', "scripts/x.sh"),
+            # vagary-core social-distribution's runner: a trailing comment after the cd is no part of its argument.
+            "trailing comment": ('cd "$(dirname "$0")/.."          # services/a\nbash ../../scripts/x.sh\n', "scripts/x.sh"),
+            "a comment's cd": ('echo start  # cd /tmp\nbash ../../../scripts/x.sh\n', "scripts/x.sh"),
+        }
+        for why, (body, target) in cases.items():
+            with self.subTest(why):
+                self.files(**base, **{"services__a__test__run.sh": "#!/bin/bash\n" + body})
+                _, _, report = self.scan()
+                self.assertIn("a", report["imports"].get(target, []), why)
+
+    def test_shell_a_cd_the_scan_cannot_follow_refuses_later_relative_paths(self):
+        for why, body in {"computed": 'cd "$WORKDIR"\nbash ../x.sh\n', "literal": "cd ../x.sh.d\nbash ./x.sh\n",
+                          "absolute": "cd /opt/app\nbash ../x.sh\n", "no argument": "cd\nbash ../x.sh\n",
+                          "dash": "cd -\nbash ../x.sh\n",
+                          "a quoted #": 'cd "../#tools"\nbash ../x.sh\n'}.items():
+            with self.subTest(why):
+                self.files(**{"services__a__test__run.sh": "#!/bin/bash\n" + body, "services__a__x.sh": "#!/bin/bash\n",
+                              "services__a__x.sh.d__keep.txt": "k\n"})
+                with self.assertRaisesRegex(ValueError, "after a `cd` the scan cannot follow"):
+                    self.scan()
+        # A relative path BEFORE such a cd still resolves from the file's directory.
+        self.files(**{"services__a__test__run.sh": "#!/bin/bash\nbash ../../../scripts/x.sh\ncd \"$WORKDIR\"\necho done\n",
+                      "scripts__x.sh": "#!/bin/bash\n"})
+        self.assertIn("a", self.scan()[2]["imports"]["scripts/x.sh"])
+
+    def test_shell_whole_file_pass_reads_the_scanned_revision(self):
+        # action.yml runs `check --revision`: the whole-file shell pass lists the commit's shell files (ls-tree takes no
+        # glob and no `:!` exclude, exit 128), and reads the committed bytes, never a later working tree.
+        self.files(**{"services__a__test__run.sh": '#!/bin/bash\ncd "$(dirname "$0")/.."\nbash ./x.sh\n',
+                      "services__a__x.sh": "#!/bin/bash\n", "scripts__x.sh": "#!/bin/bash\n",
+                      "docs__note.sh": "cd /tmp\nbash ./y.sh\n"})  # excluded (docs): it would refuse if listed
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit",
+                        "-qm", "r", "--no-gpg-sign"], check=True)
+        rev = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        (self.repo / "services/a/test/run.sh").write_text("#!/bin/bash\ncd /tmp\nbash ./x.sh\n")  # the working tree differs
+        report = {}
+        E.scan(self.repo, IMPORT_CFG, revision=rev, report=report)
+        with self.assertRaisesRegex(ValueError, "after a `cd` the scan cannot follow"):
+            E.scan(self.repo, IMPORT_CFG)
+
+    def test_shell_any_other_cd_names_the_directory_its_next_commands_run_in(self):
+        # R5V14: only a cd to the script's own directory is modelled (shell_cwd_spans); any other cd's argument is read.
+        self.files(**{"services__a__test__run.sh": "#!/bin/bash\n(cd ../../b && make)\n", "services__b__Makefile": "all:\n"})
+        self.assertIn("b", self.scan()[0]["a"])
+        # A `../` after a computed prefix resolves from the file's directory, as in any other file: naming nothing refuses.
+        self.files(**{"services__a__test__run.sh": '#!/bin/bash\nfor d in x; do (cd "$d/../../packages/b" && make); done\n'})
+        with self.assertRaisesRegex(ValueError, "which is no tracked file or directory"):
+            self.scan()
+
+    def test_shell_a_reached_unowned_script_resolves_after_its_own_cd(self):
+        # tools/run.sh (outside every package) is reached from a; it cds to the repo root, then runs ./scripts/x.sh.
+        self.files(**{"services__a__t.mjs": 'import "../../tools/run.sh";\n',
+                      "tools__run.sh": '#!/bin/bash\ncd "$(dirname "$0")/.."\nbash ./scripts/x.sh\n',
+                      "scripts__x.sh": '#!/bin/bash\ncat services/b/data.json\n', "services__b__data.json": "{}\n"})
+        deps, _, report = self.scan()
+        self.assertIn("a", report["imports"]["scripts/x.sh"])
+
+    def test_an_unowned_js_caller_declares_a_top_level_literal_after_a_computed_base(self):
+        # spine's FALSE-POSITIVES item 4: e2e/adr179/journeys.mjs imports join(identityDir, 'test', 'x.mjs'), where 'test'
+        # is a top-level reader directory. From outside every package that is a load to declare, not an escape.
+        expr = "pathToFileURL(join(identityDir, 'test', 'webauthn-authenticator.mjs')).href"
+        self.files(**{"e2e__adr179__journeys.mjs": f"export const load = (identityDir) => import({expr});\n",
+                      "services__identity__test__webauthn-authenticator.mjs": "export {};\n", "test__keep.txt": "k\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["workspace"]["packages"]["identity"] = {"dir": "services/identity", "deps": []}
+        cfg["edge_scan"]["reader_dirs"] = ["scripts", "tools", "e2e", "test"]
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"] = [{"file": "e2e/adr179/journeys.mjs", "expr": expr,
+                                                 "reach": ["services/identity/test/webauthn-authenticator.mjs"]}]
+        _, readers, _ = self.scan(cfg)
+        self.assertIn("identity", readers["e2e"])
+        # The same expression in a PACKAGE still escapes, declared or not; so does a parent step from outside.
+        self.files(**{"services__a__load.mjs": f"export const load = (identityDir) => import({expr});\n"})
+        cfg["edge_scan"]["computed_imports"].append({"file": "services/a/load.mjs", "expr": expr, "reach": "external"})
+        with self.assertRaisesRegex(ValueError, "steps outside its package"):
+            self.scan(cfg)
+
+    def test_an_untracked_name_under_a_directory_reached_whole_adds_nothing(self):
+        # spine's FALSE-POSITIVES item 5: a's package.json depends on file:../../shared/sdk, which reaches that directory
+        # whole; the SDK's own test imports its untracked build output ../dist/server.js. Every tracked file the build
+        # compiles dist/ from is already credited, so the name adds nothing.
+        self.files(**{"services__a__package.json": '{"dependencies": {"sdk": "file:../../shared/sdk"}}\n',
+                      "services__a__x.mjs": "export {};\n",
+                      "shared__sdk__src__server.ts": "export const s = 1;\n",
+                      "shared__sdk__test__app.mjs": 'import "../dist/server.js";\n'})
+        _, _, report = self.scan()
+        self.assertIn("a", report["imports"]["shared/sdk/src/server.ts"])
+        # Reached only through the test file, the name still stands for shared/sdk, the directory it shares with its namer.
+        self.files(**{"services__a__package.json": '{"name": "a"}\n', "services__a__t.mjs": 'import "../../shared/sdk/test/app.mjs";\n'})
+        _, _, report = self.scan()
+        self.assertIn("a", report["imports"]["shared/sdk/src/server.ts"])
+        # A name sharing only a top-level directory with its namer refuses: shared/dist/x.js from shared/tools/run.mjs.
+        self.files(**{"shared__tools__run.mjs": 'import "../dist/x.js";\n', "services__a__u.mjs": 'import "../../shared/tools/run.mjs";\n'})
+        with self.assertRaisesRegex(ValueError, "names shared/dist/x.js, which is no tracked file or directory"):
+            self.scan()
+
     def test_adversarial_forms_aimed_at_the_rule(self):
         self.files(**{
             # CRLF: the whole-file read must still find the ./ import.
@@ -1707,6 +2162,26 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
             if case["kind"] == "residual":
                 self.assertIn(case["residual"], readme, f"{name}: the README must list it")
 
+
+class RulingsOf152Test(VectorHarness, unittest.TestCase):
+    """1.5.2, root's rulings (a), (b), (c) and the nested-lockfile ruling (test_edges_152_rulings_vectors.json), pinned
+    EXACT: each drop-vector refuses, plans FULL or selects its runner; each control selects exactly its jobs."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_152_rulings_vectors.json")).read_text())
+
+    def test_every_ruling_vector_is_pinned_exactly(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                if case["kind"] == "drop-vector" and got["verdict"] == "SELECT":
+                    self.assertIn(case["must_run"], got["jobs"], f"{name} drops its runner")
+
+    def test_each_ruling_has_vectors(self):
+        names = sorted(self.CASES["cases"])
+        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A7b", "A7c", "A7d", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
+                       "C1", "C2", "C3", "C4", "C5", "C6"):
+            self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 
 def E_add(cfg, path, name):
     targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])

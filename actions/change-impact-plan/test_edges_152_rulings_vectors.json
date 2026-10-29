@@ -1,0 +1,742 @@
+{
+ "$comment": "1.5.2, root's rulings of 2026-10-29 (lanes/cli/RULINGS-2026-10-29-root-climb.md): (a) a name above the checkout is an unresolved name, declared by its path or a glob with a literal first segment; (b) a name at the root refuses unless declared with a reach list, and a root base whose every use joins string literals resolves to exactly those literals; (c) a lockfile is not read only when a change to it plans FULL under the config in use; and the nested-lockfile ruling: a nested lockfile selects exactly its one owning package, else FULL. Pinned EXACT by root's method (VectorHarness).",
+ "base_config": {
+  "edge_scan": {
+   "exclude": [
+    "*.md",
+    "docs",
+    ".github",
+    "vendor"
+   ],
+   "reader_dirs": [
+    "scripts",
+    "test",
+    "tools"
+   ],
+   "reader_job": "root",
+   "roots": [
+    "services"
+   ]
+  },
+  "jobs": {
+   "root": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-a": {
+    "packages": [
+     "a"
+    ]
+   },
+   "test-b": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-c": {
+    "packages": [
+     "c"
+    ]
+   }
+  },
+  "schema": 1,
+  "workspace": {
+   "packages": {
+    "a": {
+     "deps": [],
+     "dir": "services/a"
+    },
+    "b": {
+     "deps": [],
+     "dir": "services/b"
+    },
+    "c": {
+     "deps": [],
+     "dir": "services/c"
+    }
+   },
+   "type": "declared"
+  }
+ },
+ "cases": {
+  "A1 above-root name undeclared": {
+   "cfg_set": {},
+   "change": "services/a/t.mjs",
+   "files": {
+    "services/a/t.mjs": "import { readFileSync } from \"node:fs\";\nreadFileSync(\"../../../vagary-voice/x.json\");\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (services/a/t.mjs names ../../../vagary-voice/x.json, the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "verdict": "REFUSE"
+  },
+  "A2 above-root name declared exact, reach none": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "../vagary-voice/x.json",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/t.mjs",
+   "files": {
+    "services/a/t.mjs": "import { readFileSync } from \"node:fs\";\nreadFileSync(\"../../../vagary-voice/x.json\");\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "A3 above-root names declared by a glob": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "../vagary-voice/**",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/t.mjs",
+   "files": {
+    "services/a/t.mjs": "import { readFileSync } from \"node:fs\";\nreadFileSync(\"../../../vagary-voice/x.json\");\nreadFileSync(\"../../../vagary-voice/y/z.json\");\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "A4 a blanket above-root glob refuses": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "../**",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/t.mjs",
+   "files": {
+    "services/a/t.mjs": "import { readFileSync } from \"node:fs\";\nreadFileSync(\"../../../vagary-voice/x.json\");\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "edge_scan.unresolved_names: services/a/t.mjs declares ../**, a glob; a glob may only name paths ABOVE the checkout, and its first segment below the `../` steps must be literal (`../repo/**`, never `../**`)",
+   "verdict": "REFUSE"
+  },
+  "A5 above-root code name, reach none allowed": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "../vagary-voice/tools/x.mjs",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/t.mjs",
+   "files": {
+    "services/a/t.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [\"../../../vagary-voice/tools/x.mjs\"]);\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "A6 above-root declared with a reach list": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.mjs",
+       "name": "../vagary-voice/tools/x.mjs",
+       "reach": [
+        "scripts/stand-in.mjs"
+       ],
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "scripts/stand-in.mjs",
+   "files": {
+    "scripts/stand-in.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [\"../../../vagary-voice/tools/x.mjs\"]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B1 root idiom inline, literal join": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { realpathSync } from \"node:fs\";\nimport { execFileSync } from \"node:child_process\";\nexecFileSync(\"node\", [path.join(realpathSync(path.resolve(__dirname, \"../..\")), \"scripts/x.mjs\")]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B10 a root base in a reached file outside every package": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import \"../../tools/sub/run.mjs\";\n",
+    "tools/sub/run.mjs": "import path from \"node:path\";\nimport { execFileSync } from \"node:child_process\";\nconst ROOT = path.resolve(__dirname, \"../..\");\nexecFileSync(\"node\", [path.join(ROOT, \"scripts/x.mjs\")]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B11 the inline fileURLToPath root idiom": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { execFileSync } from \"node:child_process\";\nconst REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), \"../..\");\nexecFileSync(\"node\", [path.join(REPO_ROOT, \"scripts/x.mjs\")]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B2 root base bound, every use literal": {
+   "cfg_set": {},
+   "change": "scripts/y.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "scripts/y.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { execFileSync } from \"node:child_process\";\nconst REPO_ROOT = path.resolve(__dirname, \"../..\");\nexecFileSync(\"node\", [path.join(REPO_ROOT, \"scripts/x.mjs\")]);\nexecFileSync(\"node\", [path.resolve(REPO_ROOT, \"scripts\", \"y.mjs\")]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B3 one non-literal use refuses the base": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "scripts/y.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { execFileSync } from \"node:child_process\";\nconst REPO_ROOT = path.resolve(__dirname, \"../..\");\nexecFileSync(\"node\", [path.join(REPO_ROOT, \"scripts/x.mjs\")]);\nexecFileSync(\"node\", [path.resolve(REPO_ROOT, \"scripts\", \"y.mjs\")]);\nexecFileSync(\"node\", [path.join(REPO_ROOT, process.argv[2])]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (services/a/t.test.mjs names ../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "verdict": "REFUSE"
+  },
+  "B4 a base exported for other files refuses": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/root.mjs": "import path from \"node:path\";\nexport const REPO_ROOT = path.resolve(__dirname, \"../..\");\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { REPO_ROOT } from \"./root.mjs\";\nexecFileSync(\"node\", [path.join(REPO_ROOT, \"scripts/x.mjs\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (services/a/root.mjs names ../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "verdict": "REFUSE"
+  },
+  "B5 a template use refuses": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nconst REPO_ROOT = path.resolve(__dirname, \"../..\");\nexecFileSync(\"node\", [`${REPO_ROOT}/scripts/x.mjs`]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (services/a/t.test.mjs names ../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "verdict": "REFUSE"
+  },
+  "B6 python root alias, literal steps (L1 shape)": {
+   "cfg_set": {},
+   "change": "scripts/pg.sh",
+   "files": {
+    "scripts/pg.sh": "#!/bin/bash\necho pg\n",
+    "services/a/test/test_x.py": "import subprocess\nfrom pathlib import Path\nREPO = Path(__file__).resolve().parents[3]\nscript = REPO / \"scripts\" / \"pg.sh\"\nsubprocess.run([\"bash\", str(script), \"up\"])\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B7 python root alias passed as cwd refuses": {
+   "cfg_set": {},
+   "change": "scripts/pg.sh",
+   "files": {
+    "scripts/pg.sh": "#!/bin/bash\necho pg\n",
+    "services/a/test/test_x.py": "import subprocess\nfrom pathlib import Path\nREPO = Path(__file__).resolve().parents[3]\nsubprocess.run([\"bash\", \"scripts/pg.sh\"], cwd=REPO)\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (services/a/test/test_x.py names ../../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)",
+   "verdict": "REFUSE"
+  },
+  "B8 root declared with a reach list": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.test.mjs",
+       "name": ".",
+       "reach": [
+        "scripts/x.mjs"
+       ],
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nexecFileSync(\"node\", [\"x\"], { cwd: path.resolve(__dirname, \"../..\") });\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "B9 root declared reach none refuses": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "services/a/t.test.mjs",
+       "name": ".",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nexecFileSync(\"node\", [\"x\"], { cwd: path.resolve(__dirname, \"../..\") });\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "edge_scan.unresolved_names: services/a/t.test.mjs names the repository root with reach \"none\"; a name at the root reaches every file, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "C1 a root lockfile with above-root links is not read": {
+   "cfg_set": {},
+   "change": "services/a/t.mjs",
+   "files": {
+    "pnpm-lock.yaml": "importers:\n  services/a:\n    dependencies:\n      x:\n        version: link:../../../outside/x\n",
+    "services/a/t.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "C2 a nested lockfile is read and selects its package": {
+   "cfg_set": {},
+   "change": "services/a/package-lock.json",
+   "files": {
+    "services/a/package-lock.json": "{\"packages\": {\"\": {\"name\": \"a\"}}}\n",
+    "services/a/t.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "C3 a nested lockfile mapped to two packages plans FULL": {
+   "cfg_set": {
+    "extra_edges": {
+     "services/a/package-lock.json": [
+      "b"
+     ]
+    }
+   },
+   "change": "services/a/package-lock.json",
+   "files": {
+    "services/a/package-lock.json": "{\"packages\": {\"\": {\"name\": \"a\"}}}\n",
+    "services/a/t.mjs": "export const w = 1;\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "verdict": "FULL"
+  },
+  "C4 a nested lockfile in no package plans FULL": {
+   "cfg_set": {},
+   "change": "tools/package-lock.json",
+   "files": {
+    "tools/package-lock.json": "{\"packages\": {}}\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "FULL"
+  },
+  "C5 an inert glob does not hide a nested lockfile": {
+   "cfg_set": {
+    "inert_globs": [
+     "services/a/*.json"
+    ]
+   },
+   "change": "services/a/package-lock.json",
+   "files": {
+    "services/a/package-lock.json": "{\"packages\": {}}\n",
+    "services/a/t.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "C6 a nested lockfile's ../ link is still a route when read": {
+   "cfg_set": {},
+   "change": "tools/x/index.mjs",
+   "files": {
+    "services/a/package-lock.json": "{\"packages\": {\"node_modules/x\": {\"resolved\": \"../../tools/x\"}}}\n",
+    "services/a/t.mjs": "export const w = 1;\n",
+    "tools/x/index.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "A7 a name of only .. steps is an ancestor: reach none refuses": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names .., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7b ../.. is an ancestor too": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "../..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names ../.., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7c x/../.. normalises to an ancestor": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "x/../..",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\")]);\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "refusal": "edge_scan.unresolved_names: scripts/run-all.mjs names x/../.., an ancestor of the checkout that contains it, with reach \"none\"; a name there reaches every file, as the root does, so declare the paths it reaches",
+   "verdict": "REFUSE"
+  },
+  "A7d control: ../sibling with reach none still selects": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/run-all.mjs",
+       "name": "../sibling",
+       "reach": "none",
+       "reason": "fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/a/foo.mjs",
+   "files": {
+    "services/a/foo.mjs": "export const f = 1;\n",
+    "scripts/run-all.mjs": "import path from \"node:path\";\nimport { spawnSync } from \"node:child_process\";\nspawnSync(process.execPath, [\"--test\", path.resolve(__dirname, \"..\", \"..\", \"sibling\")]);\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  }
+ }
+}

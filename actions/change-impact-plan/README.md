@@ -40,7 +40,7 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
 
-## Reader scan (1.4.1; 1.5.0 adds imported files)
+## Reader scan (1.4.1; 1.5.0 adds imported files; 1.5.2 Python sys.path)
 
 `edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
 backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
@@ -241,7 +241,40 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      `node_modules` stays external. Reach `"none"` refuses for a name with a code extension (F09): code something runs
      (`spawn(process.execPath, ["../../dist/x.js"])`) reaches its sources, so it must name them.
    - **A path at or above the repository root refuses** (N4): a `"../.."` alias, `baseUrl` or `root` reaches every
-     file, so no mapping of it can be narrower than FULL.
+     file, so no mapping of it can be narrower than FULL. 1.5.2, root's rulings of 2026-10-29:
+     - **(a) Above the checkout** (`../vagary-voice`, `../../etc/passwd` resolved from the root), a name joins the
+       unresolved-name class. It is declared in `unresolved_names` by its exact path, or by a glob over such paths whose
+       first segment below the `../` steps is literal (`../vagary-voice/**`; `../**` refuses). Its reach may be `"none"`
+       even with a code extension, since nothing above the checkout is this repository's. It may also list the tracked
+       paths it stands for. Two exceptions need a reach list (root's R4 of #49):
+       - a name made only of `..` steps (`..`, `../..`, `x/../..`) is an ANCESTOR of the checkout, so it contains every
+         file, as the root does (A7-A7c; `../sibling` with `"none"` still holds, A7d);
+       - a name that re-enters the checkout by its own name (`../<repo>/...`, globs included) may be this repository's
+         tree: CI checks out into `.../<repo>/<repo>`. The names are the checkout directory's and, in Actions,
+         `GITHUB_REPOSITORY`'s. **Residual:** a checkout reached under any other name (a parent symlink, a directory not
+         named after the repository outside Actions) is not recognised.
+     - **(b) At the root** (`.`), a name refuses unless declared with a reach list. `"none"` refuses, because a name at
+       the root reaches every file. A **root base** needs no declaration when every use joins string literals: it then
+       stands for exactly those literals. A root base is a chain anchored at the file's directory that resolves to the
+       root (vagaris's `realpathSync(path.resolve(__dirname, "../../.."))` and
+       `path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")`, core's
+       `Path(__file__).resolve().parents[3]`). Its uses are:
+       - the base, through `realpathSync`, `normalize`, `str` or `Path`, as the first argument of a `join` or `resolve`
+         whose other arguments are all plain string literals;
+       - a name bound to it once, whose every use is such a join, or a Python alias step with only literals
+         (`REPO / "scripts" / "ci-test-pg.sh"`), or an expression the Python evaluator above judges itself (a
+         `sys.path` entry or a loader path).
+
+       Any other use refuses: a non-literal join, `cwd=REPO`, a template or f-string the tokens cannot see, an export
+       to other files, or a literal that is itself the root or above.
+   - **A lockfile is read only when it can select less than FULL** (1.5.2, root's ruling c). Every lockfile kind
+     (`plan.LOCKFILE_NAMES`) is metadata: its `link:../x` entries run nothing. So the scan skips a lockfile when, and only
+     when, `plan.classify_paths` plans a change to it FULL under the config in use. That check is per path and per
+     consumer, and `derive`'s report lists the skipped ones under `lockfiles_not_read`. A skipped lockfile is not a
+     backstop mentioner either. A root lockfile is a builtin full trigger. A nested one is its package's dependency input
+     (root's ruling): `plan.classify_paths` maps it to exactly its owning package, so it selects that package and its
+     reverse dependents. A nested lockfile that maps to no package, or to several, plans FULL. An `inert_globs` glob
+     never hides one. A nested lockfile that selects its package is read like any other file.
    - **A `".."` segment is a parent step everywhere** (round 3, B2). A chain anchored at the file's own directory is
      read in ANY position, not only as an import argument, and resolves like the path written out:
      `path.join(__dirname, "..", "..", "lib", "x.mjs")` and `path.resolve(here, "..", "scripts", "x.mjs")` in JS,
@@ -397,6 +430,63 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
    assessment carry `imports`: each imported path with its importers.
 
+### Python `sys.path` entries (1.5.2)
+
+Package Python code that puts a directory on `sys.path` imports from it by NAME, so no relative path names those
+modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__file__), "..", "app")`,
+`str(Path(__file__).resolve().parents[1] / "app")`, a name bound to either, or `REPO / "scripts"`.
+
+6. **Each entry is evaluated from the file's AST.** The evaluator understands:
+   - `__file__`;
+   - `dirname`, `abspath`, `realpath`, `normpath`, `str`, `Path`, `.resolve()` and `.absolute()`;
+   - `.parent` and `.parents[N]`;
+   - `os.path.join` and `/` with string constants;
+   - names assigned exactly once.
+
+   It reads `sys.path.insert`, `.append`, `.extend`, `+=` and slice assignment. Where the entry lands decides the
+   effect:
+   - **inside the package's own directory:** nothing;
+   - **inside another package:** a dep, since the package imports by name from that package's directory;
+   - **outside every package:** each module that any of the package's Python files imports by name, and that exists
+     there, is an edge (rule 1), so its reads are credited (rule 2). An entry in a `conftest.py` serves every test, so
+     the names come from the whole package.
+
+   **Fail closed:**
+   - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root or a top-level
+     directory outside every package. A cwd-relative string literal like `"../../shared-sdks/py"` is one;
+   - a package Python file that changes `sys.path` and does not parse refuses.
+7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.2.
+   - It is read from the config pytest would read: the nearest directory walking up from the package that holds one of
+     `pytest.ini` (it wins in its directory, even with no `[pytest]` section), `pyproject.toml`
+     (`[tool.pytest.ini_options]`), `tox.ini` (`[pytest]`) or `setup.cfg` (`[tool:pytest]`).
+   - Each entry is relative to that config's directory and is applied, as in rule 6, to every package that holds
+     Python files.
+   - A config that does not parse refuses. So does `pyproject.toml` pytest options on a Python without `tomllib`.
+8. **Python's loaders.** These are the `require.resolve` analog, under rule 4.
+   - **By name:** `importlib.import_module(x)`, `__import__(x)` and `runpy.run_module(x)`. A literal name is an import
+     by name, resolved through the package's entries. A non-literal name needs a `computed_imports` declaration.
+   - **By path:** `importlib.util.spec_from_file_location(name, p)` (where `module_from_spec` then loads),
+     `runpy.run_path(p)` and `exec(open(p).read())`. The path `p` is evaluated as in rule 6:
+     - evaluated, it is a literal load, an edge with no declaration;
+     - not evaluated, the floor judges its longest EVALUATED prefix:
+       - a prefix inside the importing package (no parent step after it) is declarable, as `reach: "package"`;
+       - a prefix inside ANOTHER package is declarable, and that package becomes a dep;
+       - a prefix outside every package refuses even when declared;
+       - with no evaluated prefix, text holding a parent step or naming a scan root or an outside top-level
+         directory refuses even when declared.
+       A `scripts` segment under an in-package prefix is that package's own subdirectory. pathlib's `with_name`,
+       `with_suffix` and `joinpath` with literals evaluate, like `/` (vagary-core's evidence app vendors
+       `Path(__file__).with_name("_qualification_contract")`).
+   - The same holds in a reached Python file.
+   - **A loop over a literal is literal names.** `for m[, x] in (<constants or tuples of constants>): import_module(m)`
+     loads exactly those constants, and so does a comprehension over the same. The conditions:
+     - the iterable is a literal, or a module-level name bound exactly once to one and never mutated;
+     - the loop variable is not rebound in the body;
+     - the argument is that variable itself (no f-string or concatenation).
+
+     The names then resolve by name like any import, so they are not assumed external. An iterable from a call
+     (`sorted(x)`, `.split()`) stays computed.
+
 Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
 scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b), T10g and T10h as the
 drops they are:
@@ -411,7 +501,7 @@ drops they are:
   bare `test` in a manifest or a workflow is not one;
 - a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
   `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
-  Python `sys.path` escapes are the next change;
+  Python `sys.path` escapes are closed by rules 6-8 above, except the residuals below;
 - a name built at runtime that never spells the basename: concatenated pieces, or a manifest's computed entries (a
   manifest that lists the file by name is a mention, so the backstop catches it);
 - a glob in a non-code file (`include: ["**/*.mjs"]` in a config the scan does not parse), and a basename inside a
@@ -419,6 +509,13 @@ drops they are:
 - a `./` word in a non-code file that names nothing tracked (a container path such as `./app`): it starts no route;
 - an unanchored `".."` chain (`join(base, "..", "x")` with a computed base): not resolved, and the backstop still
   needs the basename;
+- an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
+  variable);
+- a `sys.path` entry or pytest config inside a reached file outside every package (only its loaders are checked
+  there);
+- `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
+  default exclude);
+- a data-driven read (code that reads a manifest, then the paths in it);
 - Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
   `import x` / `from x import` is followed;
 - a shell `source "$VAR/x"`: a substituted prefix is not resolved;
@@ -433,7 +530,12 @@ vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run en
 
 Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
 
-`test_edges_review_vectors.json` holds 554 adversarial readers:
+`test_edges_152_rulings_vectors.json` holds 27 vectors for 1.5.2's root-climb rulings, run by the same method:
+- A1-A7d: names above the checkout, an ancestor of it among them;
+- B1-B11: root bases and root declarations;
+- C1-C6: lockfiles and the nested-lockfile ruling.
+
+`test_edges_review_vectors.json` holds 555 adversarial readers:
 - 245 from root's first three independent reviews;
 - 12 of spine's own probes;
 - 74 for round 4's rule 7;
@@ -450,6 +552,9 @@ Each is pinned exact: it refuses, plans FULL, or selects its runner, and each co
 - 9 for round 8: the seventh review's R7B1a-R7B1d and R7V14, and R8T01-R8T04 (the working-directory wording's
   edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads);
 - 2 for the 64-level nesting bound: R8T05 (100 deep) refuses on every Python, R8T06 (exactly 64) reads.
+- 1 for 1.5.2: R6V29b keeps R6V29's rule-7 precision (a `..` with no working-directory change reads) outside a
+  `sys.path` entry, because R6V29 itself now refuses under rule 6 (its entry `os.path.join(HERE, "..")` cannot be
+  evaluated and holds a parent step).
 
 Each one reads its truth or refuses, except the named residuals. Each residual records `reads`, its reading when
 pinned, and the suite asserts it exactly, so a residual that reads less (or more) fails until the pin is re-derived:

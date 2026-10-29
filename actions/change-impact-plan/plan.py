@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.5.1"
+PLANNER_VERSION = "1.5.2"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -628,6 +628,13 @@ BUILTIN_FULL_GLOBS = [
     "**/Dockerfile*",
 ]
 
+# Every lockfile kind. At the root each is a builtin full trigger (above, where listed). Nested (root's ruling,
+# 2026-10-29), it is its package's dependency input: it selects exactly its owning package and that package's reverse
+# dependents, and a nested lockfile that maps to no package, or to several, plans FULL.
+LOCKFILE_NAMES = frozenset({"pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock",
+                            "bun.lockb", "poetry.lock", "uv.lock", "Pipfile.lock", "Cargo.lock", "go.sum", "Gemfile.lock",
+                            "composer.lock"})
+
 RULE_KINDS = ("always", "full_only", "any_package", "{packages: [..]}", "{any_except: [..]}")
 
 
@@ -799,7 +806,8 @@ def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
         return result
     changed: set[str] = set()
     for path in paths:
-        if first_match(path, list(cfg.get("inert_globs") or [])):
+        nested_lockfile = "/" in path and path.rsplit("/", 1)[1] in LOCKFILE_NAMES
+        if not nested_lockfile and first_match(path, list(cfg.get("inert_globs") or [])):
             evidence["inert"].append(path)
             continue
         owners = set()
@@ -813,9 +821,15 @@ def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
         if unknown:
             result["error"] = f"extra_edges for {path} name unknown package(s) {sorted(unknown)}"
             return result
+        if nested_lockfile and len(owners) != 1:
+            evidence["full_triggers"].append({"path": path, "rule": f"nested lockfile maps to {len(owners)} packages, "
+                                                                   "not exactly one"})
+            continue
         if not owners:
             evidence["unmapped"].append(path)
         changed |= owners
+    if evidence["full_triggers"]:
+        return result
     evidence["changed_packages"] = sorted(changed)
     if not evidence["unmapped"]:
         result["affected"] = reverse_closure(pkgs, changed)

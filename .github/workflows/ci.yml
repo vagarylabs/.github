@@ -69,6 +69,24 @@ jobs:
             echo "### Inline run script sizes"
             python3 -I trusted/inline_scripts.py sizes "${inline[@]}"
           } >> "$GITHUB_STEP_SUMMARY"
+      # C1 workflow-lint live vectors (root's R4 of #41, B1): the real zizmor and actionlint, with the exact flags the
+      # rendered trusted-workflow-integrity.yml passes, are not quietened by a PR's zizmor.yml, ignore comment,
+      # .gitignore or actionlint.yaml. C1_REQUIRE_TOOLS=1 turns the local skip into a failure. Named exactly.
+      - name: C1 workflow-lint live vectors (real zizmor 1.31.1 and actionlint 1.7.7)
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(awk '$1 == "zizmor" && $2 == "1.31.1" { print }' release-assets.lock)
+          [ "${#pins[@]}" -eq 1 ] || { echo "Expected one locked zizmor 1.31.1 asset" >&2; exit 1; }
+          read -r ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256 extra <<< "${pins[0]}"
+          [ -z "$extra" ] || { echo "Malformed zizmor lock entry" >&2; exit 1; }
+          export ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256
+          export ASSET_DEST="$RUNNER_TEMP/zizmor.tar.gz" ASSET_MAX_TIME=90
+          export RUNNER_TOOL_CACHE="$RUNNER_TEMP/zizmor-cache"
+          bash actions/fetch-release-asset/fetch.sh
+          mkdir -p "$RUNNER_TEMP/zizmor-bin"
+          tar -xzf "$ASSET_DEST" -C "$RUNNER_TEMP/zizmor-bin" zizmor
+          (cd trusted/tests && C1_REQUIRE_TOOLS=1 C1_ZIZMOR="$RUNNER_TEMP/zizmor-bin/zizmor" \
+            C1_ACTIONLINT="$RUNNER_TEMP/actionlint-bin/actionlint" python3 -m unittest -v test_c1_live.LiveVectors)
 
   planner-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

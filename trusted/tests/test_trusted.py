@@ -256,7 +256,8 @@ class WorkflowTests(unittest.TestCase):
     def test_inline_copies_are_byte_identical(self):
         # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        for name, copies in (("trusted-workflow-integrity", 2), ("trusted-protected-paths", 1)):
+        # trusted-workflow-integrity: integrity, timeout-floor and workflow-lint (C1) each write the trusted bytes.
+        for name, copies in (("trusted-workflow-integrity", 3), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
             found = list(re.finditer(
                 r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))

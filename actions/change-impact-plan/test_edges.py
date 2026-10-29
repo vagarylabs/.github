@@ -902,6 +902,49 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
                          "a change to the imported file selects its importer, not FULL")
 
+    def test_every_git_grep_of_the_scan_refuses_typed_when_it_cannot_read(self):
+        # Root's carry-over from #47 (556963a): no grep site of the scan may fail by a bare SystemExit. Each `git grep` the
+        # scan runs on this tree is made to exit 128 in turn (git 2.56's unreadable-blob status); every one refuses typed,
+        # and the labels cover 1.5.2's own sites: the shell and Python listings and the Python import grep.
+        self.files(**{
+            "services__a__test__conftest.py": "import os, sys\n"
+                                              'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))\n',
+            "services__a__test__test_x.py": "import helper\n",
+            "scripts__helper.py": 'P = "services/b/x.json"\n',
+            "scripts__run.sh": "echo checking\n",  # the shell listing reads every *.sh, whatever it holds
+            "services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        head = self._commit(self.repo, "head")
+        cfg = reviewed_cfg({**IMPORT_CFG, "extra_edges": {"scripts/x.mjs": ["a"]}})
+        real = subprocess.run
+        greps = []
+
+        def counting(argv, *args, **kwargs):
+            if "grep" in argv[:6]:
+                greps.append(argv)
+            return real(argv, *args, **kwargs)
+
+        with patch.object(E.subprocess, "run", counting):
+            E.scan(self.repo, cfg, revision=head)  # control: every grep reads, and the scan completes
+        self.assertGreaterEqual(len(greps), 5)
+        labels = set()
+        for k in range(len(greps)):
+            seen = []
+
+            def failing(argv, *args, **kwargs):
+                if "grep" in argv[:6]:
+                    seen.append(argv)
+                    if len(seen) == k + 1:
+                        return subprocess.CompletedProcess(argv, 128, b"", b"fatal: planted\n")
+                return real(argv, *args, **kwargs)
+
+            with patch.object(E.subprocess, "run", failing), self.assertRaises(ValueError, msg=f"grep #{k}") as caught:
+                E.scan(self.repo, cfg, revision=head)
+            message = str(caught.exception)
+            self.assertIn("(git grep exit 128: fatal: planted)", message, f"grep #{k}")
+            labels.add(re.search(r"reader closure unproven: (.*?) could not read the scanned tree", message).group(1))
+        self.assertLessEqual({"the reader scan's shell listing", "the reader scan's Python listing",
+                              "the reader scan's Python import grep", "the reader scan"}, labels)
+
     def test_python_sys_path_entries_credit_what_the_package_imports_by_name(self):
         # 1.5.2. The entry sits in conftest.py, and the import in another test file: sys.path is process-wide.
         self.files(**{

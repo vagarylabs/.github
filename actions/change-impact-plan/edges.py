@@ -3185,8 +3185,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-e", "",
                               *([revision] if revision else []), "--", "*.sh", "*.bash", *excludes],
                              capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if listing.returncode not in (0, 1):
-        raise SystemExit(f"edges: listing shell files failed (exit {listing.returncode})")
+    grep_read_everything(listing, "the reader scan's shell listing")
     names = [p[len(revision) + 1:] if revision else p for p in listing.stdout.decode("utf-8", errors="replace").split("\0") if p]
     for path in sorted(names):
         reader, parts, targets = owner(path), path.split("/"), set()
@@ -3721,8 +3720,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                           PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    grep_read_everything(out, "the reader scan's Python listing")
     for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
         package = owner(path)
         if package is None:
@@ -3770,8 +3768,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                 r"^[[:space:]]*(import|from)[[:space:]]|import_module\(|__import__\(|run_module\(",
                                 *([revision] if revision else []), "--", f"{package_dir[package]}/*.py"],
                                capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-        if found.returncode not in (0, 1):
-            raise SystemExit(f"edges: git grep failed (exit {found.returncode})")
+        grep_read_everything(found, "the reader scan's Python import grep")
         names = set()
         for line in found.stdout.decode("utf-8", errors="replace").split("\n"):
             line = re.sub(r"^[0-9a-f]{40}:", "", line)

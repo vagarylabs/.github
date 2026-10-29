@@ -334,9 +334,10 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        checks out `filter: blob:none`) holds no base blobs.
      - **The subjects are the union of both trees**, which need no blobs. So a P the PR deletes or moves, named by a
        file the PR did not touch, is still a subject (root's condition).
-     - **Nothing unread passes as unmentioned.** `git grep` exits 1, its "no match" status, when it cannot read a blob.
-       Every grep of the scan refuses on `unable to read`, and so does a pass that times out ("reader closure
-       unproven: timeout"). Either one plans FULL.
+     - **Nothing unread passes as unmentioned.** On git 2.50 `git grep` exits 1, its "no match" status, when it cannot
+       read a blob, and prints `unable to read`; git 2.56 exits 128. Every grep of the scan refuses, typed, on either
+       signal (any exit but 0 or 1), and so does a pass that times out ("reader closure unproven: timeout"). Each one
+       plans FULL.
 
      The backstop catches a runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`,
      `node "${0%/*}/w.mjs"`, `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a

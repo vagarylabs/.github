@@ -1305,10 +1305,36 @@ class ImportAttributionTest(unittest.TestCase):
                        check=True)
         subprocess.run(["git", "-C", str(cand), "sparse-checkout", "set", "--no-cone", "/scripts/"], check=True)
         subprocess.run(["git", "-C", str(cand), "checkout", "-q", head], check=True)  # services/a/t.mjs: no blob
-        with self.assertRaisesRegex(ValueError, "could not read a blob of the scanned tree"):
+        with self.assertRaisesRegex(ValueError, "reader closure unproven: the reader scan could not read the scanned tree"):
             E.scan(cand, reviewed_cfg(IMPORT_CFG), revision=head)
         deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=head)  # control: every blob present
         self.assertIn("a", deps)
+
+    def test_both_unreadable_signals_refuse_typed_whatever_the_git_version(self):
+        # git 2.50 prints `unable to read` and exits 1; git 2.56 exits 128 (#47's planner-tests, 2026-10-29). Both are a
+        # typed refusal with git's first stderr line; 0 (a match) and 1 with a clean stderr (no match) are not.
+        run = lambda rc, err=b"": subprocess.CompletedProcess(["git", "grep"], rc, b"", err)
+        for out, detail in ((run(1, b"error: 'HEAD:a.mjs': unable to read 1234\n"), "git grep exit 1: error: 'HEAD:a.mjs': unable to read 1234"),
+                            (run(128, b"fatal: missing blob object 'abcd'\n"), "git grep exit 128: fatal: missing blob object 'abcd'"),
+                            (run(2), "git grep exit 2")):
+            with self.assertRaises(ValueError) as caught:
+                E.grep_read_everything(out, "the reader scan")
+            self.assertEqual(str(caught.exception), "unresolved (reader closure unproven: the reader scan could not read "
+                                                    f"the scanned tree ({detail}))")
+        for out in (run(0), run(1)):
+            E.grep_read_everything(out, "the reader scan")  # control: a match, and a clean miss, are read
+
+    def test_a_grep_git_cannot_run_on_its_revision_refuses_typed_not_a_crash(self):
+        # Root's control, the local rc-128 path: real git grep on a revision that does not exist exits 128, as git 2.56
+        # does for an unreadable blob. The pass refuses typed with git's own line; it never crashes into FULL.
+        self.files(**{"a.mjs": "export const x = 1;\n"})
+        self._commit(self.repo, "head")
+        out = subprocess.run(["git", "-C", str(self.repo), "grep", "--no-color", "-I", "-e", "x", "f" * 40, "--"],
+                             capture_output=True, env={**os.environ, "LC_ALL": "C"})
+        self.assertEqual(out.returncode, 128)
+        with self.assertRaisesRegex(ValueError, r"reader closure unproven: the reader scan could not read the scanned tree "
+                                                r"\(git grep exit 128: fatal: "):
+            E.grep_read_everything(out, "the reader scan")
 
     def test_base_paths_name_exactly_the_deleted_and_modified_files_for_the_sparse_base_checkout(self):
         # The action adds these patterns to its sparse base checkout; each must check out exactly its own file, whatever

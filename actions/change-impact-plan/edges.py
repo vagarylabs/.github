@@ -1888,11 +1888,16 @@ PACKAGE_METADATA = frozenset({"name", "version", "description", "keywords", "hom
                               "publishConfig", "private", "engines", "os", "cpu"})
 
 def grep_read_everything(out, what: str) -> None:
-    """`git grep` exits 1, the "no match" status, when it cannot read a blob (a partial clone with lazy fetching off):
-    it prints `unable to read <oid>` and goes on. A pass that did not read every file it was asked to cannot vouch for
-    what it did not see, so it refuses (FULL), never reads as a clean miss."""
-    if b"unable to read" in (out.stderr or b""):
-        raise ValueError(f"unresolved (reader closure unproven: {what} could not read a blob of the scanned tree)")
+    """A pass that did not read every file it was asked to cannot vouch for what it did not see, so it refuses (FULL),
+    typed, never reads as a clean miss and never crashes. Two signals, because git changed: git 2.50 exits 1, the "no
+    match" status, and prints `unable to read <oid>` for a blob a partial clone lacks (lazy fetching off); git 2.56 exits
+    128 (#47's planner-tests on a GitHub-hosted runner, 2026-10-29). So any exit other than 0 (a match) or 1 (no match)
+    refuses too. The detail is git's own first stderr line, bounded."""
+    err = out.stderr or b""
+    if b"unable to read" in err or out.returncode not in (0, 1):
+        first = err.decode("utf-8", errors="replace").strip().splitlines()[:1]
+        detail = f"git grep exit {out.returncode}" + (f": {first[0][:200]}" if first else "")
+        raise ValueError(f"unresolved (reader closure unproven: {what} could not read the scanned tree ({detail}))")
 
 
 def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, environment: dict,
@@ -1959,12 +1964,10 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         if only_paths is not None and b"unable to read" in (out.stderr or b""):
             raise ValueError("unresolved (reader closure unproven: the base tree's changed files could not be read "
                              "(a blob is missing): a missing blob plans FULL)")
+        if only_paths is not None and out.returncode not in (0, 1):
+            raise ValueError(f"unresolved (reader closure unproven: the base tree's changed files could not be read "
+                             f"(git grep exit {out.returncode}): a missing blob plans FULL)")
         grep_read_everything(out, "the backstop's mention grep")
-        if out.returncode not in (0, 1):
-            if only_paths is not None:
-                raise ValueError(f"unresolved (reader closure unproven: the base tree's changed files could not be read "
-                                 f"(git grep exit {out.returncode}): a missing blob plans FULL)")
-            raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
         rows = []
         for record in out.stdout.decode("utf-8", errors="replace").split("\n"):
             name, sep, text = record.partition("\0")
@@ -2293,8 +2296,6 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                           *([revision] if revision else []), "--", ".", *excludes],
                          capture_output=True, timeout=15, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan")
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
     lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")
     rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
     globs = list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())
@@ -2437,8 +2438,6 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                               *[f"*.{e}" for e in sorted(JS_EXT | PY_EXT)], *excludes],
                              capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
-    if listing.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
     for path in sorted(x[len(revision) + 1:] if revision else x
                        for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
         ext = posixpath.splitext(path)[1].lstrip(".").lower()
@@ -2749,8 +2748,6 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                           *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan")
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
     for path in out.stdout.decode("utf-8", errors="replace").split("\0"):
         if path and revision:
             path = path[len(revision) + 1:]
@@ -2904,8 +2901,6 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                               r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
-    if listing.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
     for p in sorted(x[len(revision) + 1:] if revision else x
                     for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
         if owner(p) is not None or excluded(p) or p.lower().endswith(".md") or tracked.get(p) == "120000":

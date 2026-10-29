@@ -2035,7 +2035,8 @@ _PIN_HEXISH = re.compile(r"^[0-9a-f]{4,39}$")
 _PIN_EXACT = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$")
 _PIN_INTERNAL = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+) #\d+ merge$")
 _PIN_DOCKER = re.compile(r"^docker://\S+@sha256:[0-9a-f]{64}$")
-PIN_CLASSES = ("tag_ref", "short_sha", "no_label", "major_only", "minor_only", "bad_label", "wrong_internal", "docker_tag")
+PIN_CLASSES = ("tag_ref", "short_sha", "no_label", "major_only", "minor_only", "bad_label", "wrong_internal", "docker_tag",
+               "image_tag", "image_arg", "node_version_loose", "node_version_expr", "pr_edited")
 
 
 def pin_split(value):
@@ -2089,6 +2090,115 @@ def pin_findings(text):
     return out
 
 
+# ---------- the other pinned inputs, and F19 (root, 2026-10-29) ----------
+# Pin enforcement lives ONLY here (root's ruling on the vagaris pin dedupe): beyond `uses:`, a Dockerfile `FROM` names
+# its image by digest, and setup-node's `node-version` is an exact X.Y.Z. And F19: `edited` in a pull_request trigger
+# restarts every job on a body or title edit (vagary-core #881 spawned four duplicate runs). Required checks attach to
+# the head SHA, and a retarget needs no new run. A job-level `if:` guard is not enough: a skipped job reports success,
+# and as the newest run on the SHA it can replace a red check (vagary-core #858). A workflow that must react to an edit
+# and runs no required check is exempted by name. Each finding carries a `uses` key the exemptions match exactly.
+_EXPR = "$" + "{{"  # an Actions expression opener, never written out (render.py refuses one inlined into a run block)
+_DOCKERFILE = re.compile(r"(?:^|/)(?:Dockerfile(?:\.(?!(?:md|txt|rst|json|ya?ml)$)[^/]*)?|[^/]+\.[Dd]ockerfile)$")
+_FROM = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.I)
+_DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+_NODE_VERSION = re.compile(r"^\s*(?:-\s+)?node-version(?P<file>-file)?\s*:\s*(?P<v>.*?)\s*$")
+_NODE_EXACT = re.compile(r"^v?\d+\.\d+\.\d+$")
+
+
+def image_findings(text):
+    """[(line, class, image, None)] for every `FROM` whose image is not named by digest. `scratch` and an earlier
+    stage's name pass; an image built from an ARG cannot be judged here (image_arg)."""
+    out, stages = [], set()
+    for i, line in enumerate(text.splitlines(), 1):
+        m = _FROM.match(line)
+        if not m or line.lstrip().startswith("#"):
+            continue
+        words = [w for w in m.group("rest").split() if not w.startswith("--")]
+        if not words:
+            continue
+        image = words[0]
+        if len(words) >= 3 and words[1].lower() == "as":
+            stages.add(words[2].lower())
+        if image.lower() == "scratch" or image.lower() in stages and not _DIGEST.search(image):
+            continue
+        if "$" in image:
+            out.append((i, "image_arg", image, None))
+        elif not _DIGEST.search(image):
+            out.append((i, "image_tag", image, None))
+    return out
+
+
+def node_version_findings(text, head=None, path=""):
+    """[(line, class, value, None)] for every setup-node `node-version` that is not an exact X.Y.Z, and every
+    `node-version-file` whose file (read at head) does not hold one."""
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        m = _NODE_VERSION.match(line)
+        if not m:
+            continue
+        value = m.group("v").split(" #", 1)[0].strip().strip("'\"")
+        if m.group("file"):
+            body = (blob(head, value) or "") if head else ""
+            first = body.strip().splitlines()[0].strip() if body.strip() else ""
+            if not _NODE_EXACT.match(first):
+                out.append((i, "node_version_loose", "node-version-file " + value, None))
+        elif _EXPR in value:
+            out.append((i, "node_version_expr", value, None))
+        elif not _NODE_EXACT.match(value):
+            out.append((i, "node_version_loose", value, None))
+    return out
+
+
+def pr_edited_findings(text):
+    """[(line, "pr_edited", "<event>.types edited", None)] for each pull_request trigger (or its _target variant) whose
+    types list `edited`. Read from the `on:` block by indentation (stdlib only); a form it cannot read never hides one:
+    any `edited` token in an event's block counts."""
+    lines = text.splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        if re.match(r"^(?:on|\"on\"|'on'|true)\s*:", lines[i]):
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j][:1] in (" ", "\t", "#")):
+                j += 1
+            block = list(range(i, j))
+            for k in block:
+                m = re.match(r"^(?P<ind>\s*)(?P<ev>pull_request(?:_target)?)\s*:(?P<rest>.*)$", lines[k])
+                if not m:
+                    continue
+                ind = len(m.group("ind"))
+                region = [(k, m.group("rest"))]
+                for n in block[block.index(k) + 1:]:
+                    if lines[n].strip() and not lines[n].lstrip().startswith("#") and len(lines[n]) - len(lines[n].lstrip()) <= ind:
+                        break
+                    region.append((n, lines[n]))
+                # Only the types list counts (a branch named `edited` is not a trigger type): an inline `types: [...]`
+                # or `{types: [...]}`, or the `- item` lines under a `types:` key.
+                tind = None
+                for n, part in region:
+                    code = part.split("#", 1)[0]
+                    pind = len(part) - len(part.lstrip())
+                    if tind is not None and code.strip() and pind <= tind and not code.lstrip().startswith("-"):
+                        tind = None
+                    t = re.search(r"(?<![A-Za-z0-9_-])types\s*:(?P<v>.*)$", code)
+                    if t:
+                        tind = pind if n != k else ind
+                        code = t.group("v")
+                    elif tind is None:
+                        continue
+                    if re.search(r"(?<![A-Za-z0-9_-])edited(?![A-Za-z0-9_-])", code):
+                        out.append((n + 1, "pr_edited", "%s.types edited" % m.group("ev"), None))
+                        break
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def dockerfiles(head):
+    """The head tree's Dockerfiles (Dockerfile, Dockerfile.<x>, <x>.Dockerfile), NUL-separated."""
+    return [p for p in git("ls-tree", "-r", "-z", "--name-only", head).split("\0") if p and _DOCKERFILE.search(p)]
+
+
 def workflow_files(head):
     """The head tree's workflow and composite-action files, NUL-separated so no name is quoted or skipped."""
     return [p for p in git("ls-tree", "-r", "-z", "--name-only", head).split("\0") if p and _SR_FILE.search(p)]
@@ -2099,19 +2209,29 @@ def run_pins(m, repo, base, head):
     mode = pins["mode"]
     resolve_head(base, head)
     files = workflow_files(head)
+    images = dockerfiles(head)
     rows, used = [], set()
+    found = []
     for path in files:
-        for line, cls, uses, label in pin_findings(blob(head, path) or ""):
-            hit = next((e for e in pins["exemptions"] if e["uses"] == uses and e["repo"] in ("*", repo)
-                        and e["file"] in ("*", path)), None)
-            if hit:
-                used.add(id(hit))
-            rows.append((path, line, cls, uses, label, hit))
+        text = blob(head, path) or ""
+        found += [(path,) + f for f in pin_findings(text)]
+        found += [(path,) + f for f in node_version_findings(text, head, path)]
+        if path.startswith(".github/workflows/"):
+            found += [(path,) + f for f in pr_edited_findings(text)]
+    for path in images:
+        found += [(path,) + f for f in image_findings(blob(head, path) or "")]
+    for path, line, cls, uses, label in found:
+        hit = next((e for e in pins["exemptions"] if e["uses"] == uses and e["repo"] in ("*", repo)
+                    and e["file"] in ("*", path)), None)
+        if hit:
+            used.add(id(hit))
+        rows.append((path, line, cls, uses, label, hit))
     level = "error" if mode == "enforce" else "warning"
     failing = [r for r in rows if r[5] is None]
-    lines = ["## Action pins: %s" % repo,
-             "%d workflow/action files at head `%s` (manifest `pins`, mode `%s`): %d `uses:` refs fail the pin rule, "
-             "%d are exempt." % (len(files), head, mode, len(failing), len(rows) - len(failing))]
+    lines = ["## Pinned inputs and PR triggers: %s" % repo,
+             "%d workflow/action files and %d Dockerfiles at head `%s` (manifest `pins`, mode `%s`): %d findings "
+             "(`uses:` pins, image digests, exact node-version, F19 `edited` triggers), %d exempt."
+             % (len(files), len(images), head, mode, len(failing), len(rows) - len(failing))]
     count = {}
     for path, line, cls, uses, label, hit in rows:
         if hit:
@@ -2131,12 +2251,14 @@ def run_pins(m, repo, base, head):
             lines.append("- STALE EXEMPTION %s in %s (record %s): nothing at head uses it; reported, not enforced"
                          % (md_code(e["uses"]), md_code(e["file"]), md_code(e["record"])))
     if not failing:
-        lines.append("Every `uses:` is pinned to a commit with its exact release, or is exempt.")
+        lines.append("Every `uses:` is pinned to a commit with its exact release, every image by digest, every "
+                     "node-version exact, and no pull_request trigger lists `edited`; or the finding is exempt.")
     elif mode == "report":
         lines.append("Report-only (mode `report`): %d listed, not enforced." % len(failing))
     else:
         lines.append("Refused (mode `enforce`): pin each listed ref to its commit with `# vX.Y.Z` (first party: "
-                     "`# <repo> #<PR> merge`), or record an exemption in the trusted manifest.")
+                     "`# <repo> #<PR> merge`), each image to `@sha256:`, each node-version to an exact X.Y.Z, and drop "
+                     "`edited` from pull_request types (F19), or record an exemption in the trusted manifest.")
     summary(lines)
     return 1 if mode == "enforce" and failing else 0
 

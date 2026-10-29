@@ -107,7 +107,7 @@ class PinsMode(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(classify, "resolve_head"), \
                 mock.patch.object(classify, "git", return_value="\0".join(files) + "\0"), \
-                mock.patch.object(classify, "blob", side_effect=lambda sha, path: files[path]), \
+                mock.patch.object(classify, "blob", side_effect=lambda sha, path: files.get(path)), \
                 mock.patch.object(classify, "summary", side_effect=lambda lines: out.write("\n".join(lines) + "\n")), \
                 contextlib.redirect_stdout(out):
             code = classify.run_pins(m, repo, None, "a" * 40)
@@ -153,6 +153,68 @@ class PinsMode(unittest.TestCase):
         mine = dict(org, repo="vagarylabs/x", file=".github/workflows/gone.yml")
         code, out = self.run_mode("report", files, [mine])
         self.assertIn("STALE EXEMPTION", out)
+
+
+class OtherPinnedInputsAndF19(unittest.TestCase):
+    """Root, 2026-10-29: pin enforcement lives only in C1, so beyond `uses:` a Dockerfile `FROM` names its image by
+    digest and setup-node's node-version is exact; and F19, `edited` in a pull_request trigger, which restarts CI on a
+    body or title edit (vagary-core #881, #858)."""
+
+    run_mode = PinsMode.run_mode
+
+    def classes(self, files, mode="report"):
+        code, out = self.run_mode(mode, files)
+        return code, re.findall(r"title=action pin::(\w+): (.*)$", out, re.M)
+
+    def test_images_are_named_by_digest(self):
+        digest = "node:24@sha256:" + "a" * 64
+        files = {"Dockerfile": "FROM node:24-slim AS base\nFROM base\nFROM %s AS b\nFROM scratch\n" % digest,
+                 "docker/x/Dockerfile.dev": "FROM --platform=linux/amd64 python:3.12\nARG BASE\nFROM ${BASE}\n",
+                 "api.Dockerfile": "# FROM ignored:latest\nFROM %s\n" % digest,
+                 "docs/Dockerfile.md": "FROM node:24 is how the docs spell it\n"}
+        code, found = self.classes(files)
+        self.assertEqual(sorted(found), sorted([("image_tag", "node:24-slim"), ("image_tag", "python:3.12"),
+                                                ("image_arg", "${BASE}")]))
+        self.assertEqual(self.classes({"Dockerfile": "FROM %s\n" % digest}, "enforce")[0], 0)
+        self.assertEqual(self.classes(files, "enforce")[0], 1)
+
+    def test_node_version_is_exact(self):
+        step = "      - uses: actions/setup-node@%s # v4.4.0\n        with:\n          node-version%s\n" % (SHA, "%s")
+        wf = "jobs:\n  a:\n    steps:\n" + "".join(step % v for v in (
+            ": 22", ': "22.11.0"', ": v22.11.0", ": lts/*", ": '24.x'", ": " + classify._EXPR + " matrix.node }}",
+            "-file: .nvmrc", "-file: .node-version", "-file: gone/.nvmrc"))
+        code, found = self.classes({".github/workflows/w.yml": wf, ".nvmrc": "22\n", ".node-version": "22.11.0\n"})
+        self.assertEqual(sorted(found), sorted([
+            ("node_version_loose", "22"), ("node_version_loose", "lts/*"), ("node_version_loose", "24.x"),
+            ("node_version_expr", classify._EXPR + " matrix.node }}"), ("node_version_loose", "node-version-file .nvmrc"),
+            ("node_version_loose", "node-version-file gone/.nvmrc")]))
+
+    def test_f19_an_edited_pull_request_trigger_is_reported(self):
+        flagged = {"flow": "on:\n  pull_request:\n    types: [opened, edited]\n",
+                   "block": "on:\n  pull_request_target:\n    types:\n      - opened\n      - edited\n",
+                   "inline map": "on:\n  pull_request: {types: [edited]}\n",
+                   "quoted on": '"on":\n  pull_request:\n    types: [edited]\n'}
+        clean = {"default types": "on: [pull_request]\n",
+                 "a branch named edited": "on:\n  pull_request:\n    branches: [edited]\n    types: [opened]\n",
+                 "branches after types": "on:\n  pull_request:\n    types:\n      - opened\n    branches:\n      - edited\n",
+                 "push": "on:\n  push:\n    branches: [edited]\n",
+                 "a comment": "on:\n  pull_request:\n    types: [opened] # edited removed (#858)\n"}
+        for name, text in flagged.items():
+            with self.subTest(name):
+                self.assertEqual([c for c, _ in self.classes({".github/workflows/w.yml": text})[1]], ["pr_edited"])
+        for name, text in clean.items():
+            with self.subTest(name):
+                self.assertEqual(self.classes({".github/workflows/w.yml": text})[1], [])
+        self.assertEqual(self.classes({"act/action.yml": flagged["flow"]})[1], [], "a composite action has no trigger")
+
+    def test_the_new_findings_are_exempted_by_their_exact_key(self):
+        files = {".github/workflows/w.yml": "on:\n  pull_request:\n    types: [edited]\n", "Dockerfile": "FROM node:24\n"}
+        ex = [{"repo": "vagarylabs/x", "file": ".github/workflows/w.yml", "uses": "pull_request.types edited",
+               "reason": "a title linter that runs no required check", "record": "rec"},
+              {"repo": "vagarylabs/x", "file": "Dockerfile", "uses": "node:24", "reason": "r", "record": "rec"}]
+        code, out = self.run_mode("enforce", files, ex)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("EXEMPT"), 2)
 
 
 ZIZMOR = [{"ident": "artipacked", "desc": "credential persistence", "determinations": {"severity": "Medium"},

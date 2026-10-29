@@ -177,12 +177,17 @@ def git(*args: str, cwd: str, secret: str = "", stdin: "str | None" = None) -> s
     """git with only `secret` (one repository's token) for the credential helper; none for a local command."""
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("GIT_") and k not in UNSAFE_ENV and k != "SIBLING_TOKEN"}
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, PATH=SAFE_PATH)
+    # Only https (and file, the tests' remotes) is a transport: never ext::, which runs a command (root's R4 of #52, B2).
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, PATH=SAFE_PATH,
+               GIT_ALLOW_PROTOCOL="https:file")
     if secret:
         env["SIBLING_TOKEN"] = secret
-    out = subprocess.run(["git", "-c", "http.https://github.com/.extraheader=", "-c", f"credential.helper={HELPER}",
-                          "-c", f"core.hooksPath={os.devnull}", *args], cwd=cwd, env=env, capture_output=True, text=True,
-                         timeout=600, input=stdin)
+    # The EMPTY credential.helper first resets any helper a repository config names, so only ours sees the token; no
+    # fsmonitor (a command git would run with this environment), hooks off, ext:: refused.
+    out = subprocess.run(["git", "-c", "http.https://github.com/.extraheader=", "-c", "credential.helper=",
+                          "-c", f"credential.helper={HELPER}", "-c", f"core.hooksPath={os.devnull}",
+                          "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never", *args],
+                         cwd=cwd, env=env, capture_output=True, text=True, timeout=600, input=stdin)
     if out.returncode != 0:
         # git's stderr can carry a URL; ours never holds the token, and the helper never echoes it.
         fail(f"git {args[0]} failed (exit {out.returncode}): {out.stderr.strip()[-400:]}")
@@ -213,7 +218,30 @@ def state_dir() -> str:
 
 def records(repo: str) -> dict:
     state = state_dir()
-    return {key: os.path.join(state, f"{repo}.{key}") for key in ("tree.z", "sha", "dir")}
+    return {key: os.path.join(state, f"{repo}.{key}") for key in ("tree.z", "sha", "dir", "git")}
+
+
+# Phase B's .git/config, whole (root's R4 of #52, B2): between the phases the consumer's code (PR code, on a PR) can
+# write the clone's config, and a planted core.fsmonitor, credential helper, url.insteadOf or ext:: remote would run
+# with the token in phase B. So before any token-carrying call phase B rewrites the config from this template, and
+# refuses a .git whose top-level entries changed since phase A (a planted commondir points git at another repository's
+# config).
+CONFIG_TEMPLATE = """[core]
+\trepositoryformatversion = 1
+\tfilemode = true
+\tbare = false
+\tlogallrefupdates = true
+[extensions]
+\tpartialClone = origin
+[remote "origin"]
+\turl = {url}
+\tpromisor = true
+\tpartialclonefilter = blob:none
+"""
+
+
+def git_entries(dest: str) -> str:
+    return "".join(f"{name}\n" for name in sorted(os.listdir(os.path.join(dest, ".git"))))
 
 
 def fresh(dest: str, what: str) -> None:
@@ -248,14 +276,14 @@ def tree_phase(url: str, owner: str, repo: str, dest: str, secret: str, outside:
     if "blob" in kinds:
         fail(f"--tree {repo}: the server sent blobs despite --filter=blob:none ({kinds.count('blob')} of them)")
     names = git("-C", dest, "ls-tree", "-r", "-z", "--name-only", sha, cwd=outside)
-    for key, body in (("tree.z", names), ("sha", sha + "\n"), ("dir", dest + "\n")):
+    for key, body in (("tree.z", names), ("sha", sha + "\n"), ("dir", dest + "\n"), ("git", git_entries(dest))):
         fd = os.open(rec[key], os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write(body)
     return {"repo": repo, "kind": "tree", "path": dest, "commit": sha, "tree": rec["tree.z"], "paths": names.count("\0")}
 
 
-def sparse_phase(owner: str, repo: str, dest: str, patterns_file: str, secret: str, outside: str) -> dict:
+def sparse_phase(url: str, owner: str, repo: str, dest: str, patterns_file: str, secret: str, outside: str) -> dict:
     """Phase 2: exactly `patterns_file`'s set of the commit phase 1 recorded, and no promisor left behind."""
     rec = records(repo)
     try:
@@ -265,6 +293,8 @@ def sparse_phase(owner: str, repo: str, dest: str, patterns_file: str, secret: s
             prepared = fh.read().rstrip("\n")
         with open(rec["tree.z"]) as fh:
             total = fh.read().count("\0")
+        with open(rec["git"]) as fh:
+            entries = fh.read()
     except OSError:
         fail(f"--sparse {repo}: no tree phase ran for it in this job (ask for `trees: {repo}:<dir>` first)")
     if not SHA.fullmatch(sha):
@@ -273,6 +303,17 @@ def sparse_phase(owner: str, repo: str, dest: str, patterns_file: str, secret: s
         fail(f"--sparse {repo}: {dest} is not the directory its tree phase prepared ({prepared})")
     if sorted(os.listdir(dest)) != [".git"]:
         fail(f"--sparse {repo}: {dest} is no longer the tree phase's bare partial clone (it has files, or no .git)")
+    gitdir = os.path.join(dest, ".git")
+    if not stat.S_ISDIR(os.lstat(gitdir).st_mode):
+        fail(f"--sparse {repo}: {gitdir} is not a plain directory (a symlink or a gitdir file)")
+    if git_entries(dest) != entries:
+        fail(f"--sparse {repo}: {gitdir}'s entries changed since the tree phase (a planted commondir, worktree or module?)")
+    config = os.path.join(gitdir, "config")
+    if os.path.lexists(config):
+        os.unlink(config)
+    fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(CONFIG_TEMPLATE.format(url=url))
     try:
         with open(patterns_file, newline="") as fh:  # newline="": a carriage return stays visible to the check below
             patterns = fh.read()
@@ -292,6 +333,9 @@ def sparse_phase(owner: str, repo: str, dest: str, patterns_file: str, secret: s
         fail(f"{owner}/{repo} sparse checkout at {dest} is at {head}, not the tree phase's {sha}")
     listed = git("-C", dest, "ls-files", "-t", "-z", cwd=outside).split("\0")
     materialized = sum(1 for entry in listed if entry and not entry.startswith("S "))
+    if materialized == 0:
+        # root's R4 of #52, B1: a set that matches nothing (a stale derived path) is no checkout, never a success.
+        fail(f"--sparse {repo}: the patterns matched nothing in {sha}: a stale derived set, refused")
     return {"repo": repo, "kind": "sparse", "path": dest, "commit": sha, "materialized": materialized, "paths": total}
 
 
@@ -341,7 +385,8 @@ def clone(server: str, owner: str, bare: list[str], checkouts: list[str], allowe
     for repo, dest, patterns_file in planned:
         if repo not in allowed:
             fail(f"{repo} is not in the token's repositories ({', '.join(allowed)})")
-        rows.append(sparse_phase(owner, repo, dest, patterns_file, tokens[repo], outside))
+        rows.append(sparse_phase(f"{server.rstrip('/')}/{owner}/{repo}.git", owner, repo, dest, patterns_file,
+                                 tokens[repo], outside))
     return rows
 
 

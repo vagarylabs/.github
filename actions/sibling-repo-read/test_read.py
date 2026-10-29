@@ -532,6 +532,113 @@ class Sparse(TokenDirFixture):
         self.assertTrue((self.dest / "keep" / "a.txt").is_file())
         self.assertFalse((self.dest / "docs").exists())
 
+    def test_a_set_that_matches_nothing_is_refused(self):
+        # root's R4 of #52, B1: a stale derived path matches nothing; that is no checkout, never sparse-ok.
+        self.assertEqual(self.call("--tree", f"vagary-platform:{self.dest}").returncode, 0)
+        self.patterns.write_text("/no/such/path\n")
+        self.output.unlink()
+        out = self.call("--sparse", f"vagary-platform:{self.dest}:{self.patterns}")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("the patterns matched nothing", out.stderr)
+        self.assertNotIn("sparse-ok=vagary-platform", self.output.read_text() if self.output.exists() else "")
+
+    def plant(self, section: str) -> pathlib.Path:
+        """Phase A, then config the consumer's code could write between the phases; returns the file the planted
+        command would write the token into."""
+        self.assertEqual(self.call("--tree", f"vagary-platform:{self.dest}").returncode, 0)
+        caught = pathlib.Path(self.temp.name) / "caught"
+        with open(self.dest / ".git" / "config", "a") as fh:
+            fh.write(section.replace("CAUGHT", str(caught)))
+        return caught
+
+    def test_a_planted_fsmonitor_never_sees_the_token(self):
+        # root's R4 of #52, B2: a core.fsmonitor written between the phases ran with SIBLING_TOKEN during the checkout.
+        hook = pathlib.Path(self.temp.name) / "fsmonitor.sh"
+        hook.write_text('#!/bin/sh\nprintf "%s" "$SIBLING_TOKEN" > "CAUGHT"\nexit 1\n'.replace("CAUGHT", str(pathlib.Path(self.temp.name) / "caught")))
+        hook.chmod(0o755)
+        caught = self.plant(f"[core]\n\tfsmonitor = {hook}\n")
+        # Control: plain git with that config DOES run the hook with the token in its environment.
+        subprocess.run(["git", "-C", str(self.dest), "status"], capture_output=True, env=dict(os.environ, SIBLING_TOKEN=SECRET))
+        self.assertEqual(caught.read_text() if caught.exists() else "", SECRET, "the planted hook must fire, or this proves nothing")
+        caught.unlink()
+        out = self.call("--sparse", f"vagary-platform:{self.dest}:{self.patterns}")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(caught.exists(), "the planted fsmonitor ran during phase B")
+        self.assertNotIn("fsmonitor", (self.dest / ".git" / "config").read_text())
+
+    def catcher(self, name: str) -> tuple[pathlib.Path, pathlib.Path]:
+        """A script that writes $SIBLING_TOKEN to a file (ext:: splits its URL on spaces, so a script path, not sh -c)."""
+        caught = pathlib.Path(self.temp.name) / f"caught-{name}"
+        script = pathlib.Path(self.temp.name) / f"{name}.sh"
+        script.write_text(f'#!/bin/sh\nprintf "%s" "$SIBLING_TOKEN" > "{caught}"\nexit 1\n')
+        script.chmod(0o755)
+        return script, caught
+
+    def test_a_planted_ext_remote_or_helper_never_runs(self):
+        ext, caught_ext = self.catcher("ext")
+        helper, caught_helper = self.catcher("helper")
+        self.plant(f"[credential]\n\thelper = !{helper}\n")
+        # The remote is OVERWRITTEN, as a planting step would: an appended second url is never the one fetch uses.
+        subprocess.run(["git", "-C", str(self.dest), "config", "remote.origin.url", f"ext::{ext}"], check=True)
+        # Control: plain git with that config runs the planted remote with the token in its environment.
+        subprocess.run(["git", "-C", str(self.dest), "-c", "protocol.ext.allow=always", "fetch", "origin"],
+                       capture_output=True, env=dict(os.environ, SIBLING_TOKEN=SECRET))
+        self.assertEqual(caught_ext.read_text() if caught_ext.exists() else "", SECRET, "the planted remote must run, or this proves nothing")
+        caught_ext.unlink()
+        out = self.call("--sparse", f"vagary-platform:{self.dest}:{self.patterns}")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(caught_ext.exists() or caught_helper.exists(), "a planted remote or helper ran during phase B")
+        self.assertTrue((self.dest / "keep" / "a.txt").is_file())
+
+    def test_a_planted_worktree_cannot_send_the_checkout_elsewhere(self):
+        # Only the config rewrite stops this one (no -c flag does): a planted core.worktree would materialize the set into
+        # another directory.
+        elsewhere = pathlib.Path(self.temp.name) / "elsewhere"
+        elsewhere.mkdir()
+        self.plant(f"[core]\n\tworktree = {elsewhere}\n")
+        out = self.call("--sparse", f"vagary-platform:{self.dest}:{self.patterns}")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue((self.dest / "keep" / "a.txt").is_file())
+        self.assertEqual(list(elsewhere.iterdir()), [], "the planted worktree received the checkout")
+
+    def test_git_runs_no_fsmonitor_whatever_the_config(self):
+        # Below the rewrite: git() itself turns the fsmonitor off, even for a config it never rewrote.
+        module = load()
+        hook, caught = self.catcher("direct-fsmonitor")
+        repo = pathlib.Path(self.temp.name) / "plain"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "core.fsmonitor", str(hook)], check=True)
+        subprocess.run(["git", "-C", str(repo), "status"], capture_output=True, env=dict(os.environ, SIBLING_TOKEN=SECRET))
+        self.assertTrue(caught.exists(), "the fsmonitor control must run, or this proves nothing")
+        caught.unlink()
+        module.git("-C", str(repo), "status", cwd=self.temp.name, secret=SECRET)
+        self.assertFalse(caught.exists())
+
+    def test_git_refuses_ext_and_runs_only_its_own_helper_whatever_the_config(self):
+        # Defence in depth, below the config rewrite: git() itself never allows ext:: and resets the helper list.
+        module = load()
+        script, caught = self.catcher("direct-ext")
+        ext = f"ext::{script}"
+        control = subprocess.run(["git", "-c", "protocol.ext.allow=always", "ls-remote", ext], capture_output=True,
+                                 env=dict(os.environ, SIBLING_TOKEN=SECRET), cwd=self.temp.name)
+        self.assertTrue(caught.exists(), "the ext:: control must run, or this proves nothing")
+        caught.unlink()
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            module.git("ls-remote", ext, cwd=self.temp.name, secret=SECRET)
+        self.assertFalse(caught.exists())
+
+    def test_a_gitdir_that_changed_shape_between_the_phases_is_refused(self):
+        for name, change in (("a planted commondir", lambda: (self.dest / ".git" / "commondir").write_text("/elsewhere\n")),
+                             ("a .git symlink", lambda: (shutil.move(str(self.dest / ".git"), str(self.dest.parent / "real-git")),
+                                                         (self.dest / ".git").symlink_to(self.dest.parent / "real-git")))):
+            with self.subTest(name):
+                self.setUp()
+                self.assertEqual(self.call("--tree", f"vagary-platform:{self.dest}").returncode, 0)
+                change()
+                out = self.call("--sparse", f"vagary-platform:{self.dest}:{self.patterns}")
+                self.assertNotEqual(out.returncode, 0)
+                self.assertRegex(out.stderr, "entries changed since the tree phase|is not a plain directory")
+
     def test_a_server_that_ignores_the_blob_filter_is_refused(self):
         subprocess.run(["git", "-C", str(self.remote), "config", "uploadpack.allowFilter", "false"], check=True)
         out = self.call("--tree", f"vagary-platform:{self.dest}")

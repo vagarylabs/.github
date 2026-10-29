@@ -296,7 +296,9 @@ def structure(code: list) -> tuple[dict, list, bool]:
 class BlobReader:
     """One `git cat-file --batch` process for a scan's reads at its revision. A scan reads thousands of files, and one
     `git show` each was 110 of 157 s on vagary-core. A blob comes back byte for byte; anything else (a missing path, a
-    tree, a path with a newline, a reader that died or stalled) falls back to `git show`, which refuses as before."""
+    tree, a path with a newline or a carriage return, a reader that died or stalled) falls back to `git show`, which
+    refuses as before. --batch reads one line per object and drops a CR before its LF, so a name ending in "\\r" would
+    come back as the blob of the name without it (root's R4 of #33 round 3, N1)."""
 
     TIMEOUT = 60  # seconds for one object: a stalled reader is killed, and the read falls back
 
@@ -306,7 +308,7 @@ class BlobReader:
                                      env=environment)
 
     def read(self, spec: str) -> bytes | None:
-        if "\n" in spec or self.proc.poll() is not None:
+        if "\n" in spec or "\r" in spec or self.proc.poll() is not None:
             return None
         timer = threading.Timer(self.TIMEOUT, self.proc.kill)
         timer.start()
@@ -1875,20 +1877,31 @@ def reviewed(kind: str, entries: list, key: str) -> None:
 
 def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, environment: dict,
                       routes_to: dict[str, set[str]], policy_files: set[str] = frozenset()) -> dict[str, list[list]]:
-    """Root's round 3 of #33, the BACKSTOP's evidence: for every tracked path outside every package that an extra_edges
-    glob maps, every OTHER tracked text file, excluded directories included, that names its basename as a token in any
-    syntax: [file, owning package or None, whether the scan recorded a route from that file to it]. assess() accepts the
-    mapping only when each such file's package is selected or its route was recorded; a mention the scan did not
-    attribute keeps the path FULL, whatever spelling hid it (B1-B4 and the ones not yet found)."""
-    globs = [glob_to_regex(g) for g in sorted((cfg.get("extra_edges") or {}).keys())]
+    """Root's round 3 of #33, the BACKSTOP's evidence. For every tracked path P outside every package that an
+    extra_edges or inert_globs glob maps, gitlinks included (round 4, B2 and B4), its SUBJECTS are P plus every file
+    outside every package that reaches P by a recorded route, to a fixpoint (round 4, B1: whatever runs such a file runs
+    P). Every OTHER tracked text file, excluded directories included, and every symlink, whose target text git grep
+    never reads (round 4, B3), that names a subject's basename as a token is a row [file, owning package or None, whether
+    it is itself a subject, the subject it names]. assess() accepts P's mapping only when each row's package is selected
+    or its file is a subject: a mention the scan did not attribute keeps P FULL, whatever spelling hid it."""
+    globs = [glob_to_regex(g) for g in sorted(set((cfg.get("extra_edges") or {}).keys())
+                                              | set(cfg.get("inert_globs") or []))]
     if not globs:
         return {}
     tracked = tracked_paths(repo, revision, environment)
-    mapped = sorted(p for p, mode in tracked.items() if mode != "160000" and owner(p) is None
-                    and any(r.match(p) for r in globs))
-    by_base: dict[str, list[str]] = {}
+    mapped = sorted(p for p in tracked if owner(p) is None and any(r.match(p) for r in globs))
+    subjects: dict[str, set[str]] = {}
     for p in mapped:
-        by_base.setdefault(posixpath.basename(p), []).append(p)
+        seen, queue = {p}, [p]
+        while queue:
+            for f in sorted(routes_to.get(queue.pop(), ())):
+                if f not in seen and owner(f) is None:
+                    seen.add(f)
+                    queue.append(f)
+        subjects[p] = seen
+    by_base: dict[str, set[str]] = {}
+    for member in set().union(*subjects.values()) if subjects else ():
+        by_base.setdefault(posixpath.basename(member), set()).add(member)
     if not by_base:
         return {}
     # ONE extended-regex grep for every basename with an extension: git grep scales with the number of -F patterns
@@ -1899,6 +1912,9 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
     others = sorted(set(by_base) - set(with_ext))
     exts = sorted({b.rsplit(".", 1)[1] for b in with_ext})
     found: dict[str, set[str]] = {}
+    # B3: git grep reads regular files only, so a symlink's target text (`alias.mjs -> worker.mjs`) is read here.
+    links = [(p, (read_source(repo, p, revision, environment) if revision else os.readlink(repo / p)))
+             for p, mode in sorted(tracked.items()) if mode == "120000"]
 
     def grep(args: list[str]) -> list[tuple[str, str]]:
         out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-I", *args,
@@ -1911,14 +1927,14 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
             name, sep, text = record.partition("\0")
             if sep:
                 rows.append((name[len(revision) + 1:] if revision else name, text))
-        return rows
+        return rows + links
 
     def hit(f: str, base: str) -> None:
         if f in policy_files:
             return  # the planner's own config names every mapped path by construction; it runs nothing
-        for p in by_base.get(base, ()):
-            if f != p:
-                found.setdefault(p, set()).add(f)
+        for member in by_base.get(base, ()):
+            if f != member:
+                found.setdefault(member, set()).add(f)
 
     if exts:
         alternatives = "|".join(re.escape(e) for e in exts)
@@ -1935,7 +1951,12 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         for f, text in grep(["-F", *args]):
             for m in token.finditer(text):
                 hit(f, m.group(1))
-    return {p: [[f, owner(f), f in routes_to.get(p, set())] for f in sorted(fs)] for p, fs in sorted(found.items())}
+    out: dict[str, list[list]] = {}
+    for p, members in sorted(subjects.items()):
+        rows = [[f, owner(f), f in members, member] for member in sorted(members) for f in sorted(found.get(member, ()))]
+        if rows:
+            out[p] = rows
+    return out
 
 
 def source_call_args(src: "Source", o: int) -> list[list] | None:
@@ -2748,6 +2769,17 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             dot_routes[p] = routes
             for t in routes:
                 namers.setdefault(t, set()).add(p)
+    # Round 4 of #33, B3: a symlink's target text is a route (git grep reads regular files only). A symlink outside every
+    # package routes to what it points at, so `tools/alias.mjs -> worker.mjs` starts its unit and, run by any name, runs
+    # worker.mjs. One inside a package is that package's; the backstop reads its target text as a mention.
+    for p, mode in sorted(tracked.items()):
+        if mode != "120000" or owner(p) is not None or excluded(p):
+            continue
+        link = read_source(repo, p, revision, environment) if revision else os.readlink(repo / p)
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(p), link.strip()))
+        if target != ".." and not target.startswith("../") and not target.startswith("/") and files_of(target):
+            dot_routes.setdefault(p, set()).add(target)
+            namers.setdefault(target, set()).add(p)
     for package in sorted({owner(p) for p in edges} - {None}):
         def credit_dep(found: str, package=package) -> None:
             if found != package:
@@ -2841,23 +2873,32 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
     # every other tracked file that names P's basename is in a package the mapping selects, or is a file outside every
     # package whose route to P the scan recorded. Anything else is a runner the scan did not see, by a spelling nobody
     # listed yet: P plans FULL until the mapping covers it or full_globs says so. A basename collision goes FULL too.
+    # Round 4: the same holds for every file outside every package that reaches P by a recorded route (B1, its runner
+    # runs P), and for a path inert_globs maps to nothing (B4). The FAIL prefixes stay fixed; what a hop adds is at the end.
+    inert_globs = list(cfg.get("inert_globs") or [])
     for path, rows in sorted((mentions or {}).items()):
         selection = classify_paths([path], cfg, pkgs)
         if selection["error"] or selection["evidence"]["full_triggers"] or selection["evidence"]["unmapped"]:
             continue  # FULL: every job runs
         affected = set(selection["affected"])
-        for f, own, routed in rows:
-            if (own is not None and own in affected) or (own is None and routed):
+        inert_rule = first_match(path, inert_globs) if selection["evidence"]["inert"] else None
+        for f, own, subject, member in rows:
+            if (own is not None and own in affected) or (own is None and subject):
                 continue
-            base = posixpath.basename(path)
-            if own is not None:
+            base = posixpath.basename(member)
+            via = "" if member == path else f"; {member} reaches {path} by a recorded route, so what runs it runs {path}"
+            if inert_rule:
+                failures.append(f"inert mention: {f} names {base}, but inert_globs {inert_rule!r} makes a change to "
+                                f"{path} select nothing (narrow the glob so it leaves {path} out, or add {path} to "
+                                f"full_globs so a change to it plans FULL){via}")
+            elif own is not None:
                 failures.append(f"unattributed mention: {f} (package {own}) names {base}, but the mapping for {path} "
                                 f"selects {sorted(affected) or 'no package'} (map {path} to {own} too, or add {path} to "
-                                "full_globs so a change to it plans FULL)")
+                                f"full_globs so a change to it plans FULL){via}")
             else:
                 failures.append(f"unattributed mention: {f}, outside every package, names {base} by a route the scan did "
                                 f"not record, so whatever runs {f} may run {path} (add {path} to full_globs so a change "
-                                "to it plans FULL, or write the route as a relative path the scan follows)")
+                                f"to it plans FULL, or write the route as a relative path the scan follows){via}")
     for entry in computed_unused or []:
         failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):

@@ -1,5 +1,6 @@
 """edges.py tests: a read in code is an edge, a read in a comment or Markdown is not, and check fails on an
 undeclared read (the RED case) while a declared one passes."""
+import base64
 import io
 import json
 import re
@@ -1144,6 +1145,7 @@ class ImportAttributionTest(unittest.TestCase):
         self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\r\n",
                       "scripts__bin.txt": "caf\u00e9\n"})
         (self.repo / "scripts/raw.txt").write_bytes(b"ok \xff\xfe\n")
+        (self.repo / "scripts/x.mjs\r").write_text("CR TWIN\n")  # N1: --batch would drop the CR and read x.mjs
         os.symlink("x.mjs", self.repo / "scripts/link.mjs")
         subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit",
@@ -1160,18 +1162,26 @@ class ImportAttributionTest(unittest.TestCase):
             if "show" in a[0]:
                 shows.append(a[0])
             return real_run(*a, **k)
-        paths = ("scripts/x.mjs", "scripts/bin.txt", "scripts/raw.txt", "scripts/link.mjs", "scripts/x.mjs")
+        paths = ("scripts/x.mjs", "scripts/bin.txt", "scripts/raw.txt", "scripts/link.mjs", "scripts/x.mjs", "scripts/x.mjs\r")
         expected = {path: shown(path) for path in paths}  # before the counters go on
         with patch.object(E.subprocess, "Popen", counting), patch.object(E.subprocess, "run", run_counting), \
                 E.batch_reads(self.repo, rev, env):
-            for path in paths:
+            for path in paths[:-1]:
                 self.assertEqual(E.read_source(self.repo, path, rev, env), expected[path], path)
             self.assertEqual(len([c for c in spawned if "cat-file" in c]), 1, "one reader for every read")
             self.assertEqual(shows, [], "no per-file git show while the reader serves")
+            self.assertEqual(E.read_source(self.repo, "scripts/x.mjs\r", rev, env), "CR TWIN\n", "a CR name is its own blob")
+            self.assertEqual(len(shows), 1, "a CR cannot go through --batch: it falls back to git show")
             with self.assertRaisesRegex(ValueError, "cannot read scripts/gone.mjs at the scanned revision"):
                 E.read_source(self.repo, "scripts/gone.mjs", rev, env)  # missing: falls back to git show, which refuses
             with self.assertRaisesRegex(ValueError, "cannot read scripts/a\nb at the scanned revision"):
                 E.read_source(self.repo, "scripts/a\nb", rev, env)  # a newline cannot go through --batch
+            # N2 (framing): the reads AFTER a refused name are still the reader's, byte for byte. Sent to --batch, the
+            # newline name would be two requests, and every later read would get the previous one's answer.
+            served = len(shows)
+            for path in ("scripts/bin.txt", "scripts/raw.txt", "scripts/x.mjs"):
+                self.assertEqual(E.read_source(self.repo, path, rev, env), expected[path], path)
+            self.assertEqual(len(shows), served, "after a refused name the reader still serves every read")
             E._BLOB_READERS[(str(self.repo), rev)].proc.kill()
             E._BLOB_READERS[(str(self.repo), rev)].proc.wait()
             self.assertEqual(E.read_source(self.repo, "scripts/x.mjs", rev, env), expected["scripts/x.mjs"],
@@ -1356,13 +1366,10 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertIn("services-x/u.mjs", report["imports"])
 
 
-class RoundThreeVectorsTest(unittest.TestCase):
-    """Root's round 3 of #33: every fresh vector and correct-plan control, run by root's method and pinned EXACT
-    (test_edges_round3_vectors.json). Commit the fixture; run the real `check --revision`; apply check's own remedies
-    (the importers it names, a package the reader job lists, leaving an <unmapped> path unmapped, the backstop's owner
-    or full_globs, a declared dep) until rc 0; then judge the change with the real plan.classify_paths + rule_matches."""
-
-    CASES = json.loads((Path(__file__).with_name("test_edges_round3_vectors.json")).read_text())
+class VectorHarness:
+    """Root's method for a vector: commit the fixture; run the real `check --revision`; apply check's own remedies (the
+    importers it names, a package the reader job lists, leaving an <unmapped> path unmapped, the backstop's owner or
+    full_globs, a declared dep) until rc 0; then judge the change with the real plan.classify_paths + rule_matches."""
 
     def setUp(self):
         environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -1381,6 +1388,8 @@ class RoundThreeVectorsTest(unittest.TestCase):
          lambda c, m: E_add(c, m.group(2), m.group(1))),
         (r"unattributed mention: \S+, outside every package, names \S+ by a route the scan did not record, so whatever "
          r"runs \S+ may run (\S+) ", lambda c, m: E_list_add(c.setdefault("full_globs", []), m.group(1))),
+        (r"inert mention: \S+ names \S+, but inert_globs '[^']*' makes a change to (\S+) select nothing",
+         lambda c, m: E_list_add(c.setdefault("full_globs", []), m.group(1))),
         (r"undeclared read: (\S+) reads (\S+) ", lambda c, m: E_list_add(c["workspace"]["packages"][m.group(1)]["deps"], m.group(2))),
         (r"\S+/ reads (\S+), but job '(\S+)' does not list it",
          lambda c, m: isinstance(c["jobs"][m.group(2)], dict) and E_list_add(c["jobs"][m.group(2)]["packages"], m.group(1))),
@@ -1396,9 +1405,18 @@ class RoundThreeVectorsTest(unittest.TestCase):
         for path, text in case["files"].items():
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
             (repo / path).write_text(text)
+        for path, data in case.get("binary", {}).items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_bytes(base64.b64decode(data))
+        for path, target in case.get("symlinks", {}).items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, repo / path)
         cfg = {**json.loads(json.dumps(self.CASES["base_config"])), **json.loads(json.dumps(case["cfg_set"]))}
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        for path in case.get("gitlinks", []):  # a submodule commit; its contents are never in this repository's tree
+            subprocess.run(["git", "-C", str(repo), "update-index", "--add", "--cacheinfo", f"160000,{'5' * 40},{path}"],
+                           check=True)
         subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-qm",
                         "v", "--no-gpg-sign"], check=True)
         rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
@@ -1430,6 +1448,14 @@ class RoundThreeVectorsTest(unittest.TestCase):
         return {"verdict": "SELECT", "jobs": sorted(j for j, rule in cfg["jobs"].items()
                                                      if rule == "always" or rule_matches(rule, sel["affected"])[0])}
 
+
+
+class RoundThreeVectorsTest(VectorHarness, unittest.TestCase):
+    """Root's round 3 of #33: every fresh vector and correct-plan control, run by root's method and pinned EXACT
+    (test_edges_round3_vectors.json)."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_round3_vectors.json")).read_text())
+
     def test_every_round3_vector_refuses_plans_full_or_selects_its_runner_exactly_as_pinned(self):
         for name, case in sorted(self.CASES["cases"].items()):
             with self.subTest(name):
@@ -1445,6 +1471,34 @@ class RoundThreeVectorsTest(unittest.TestCase):
         names = sorted(self.CASES["cases"])
         for prefix in ("F10b", "F10 ", "F15", "F13b", "F12", "F01", "F02", "F03", "F04", "F05", "L1", "F09", "F08", "F11"):
             self.assertTrue(any(n.startswith(prefix) for n in names), prefix)
+
+
+class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
+    """Root's R4 of #33 round 3 (lanes/root/reviews/dotgithub-33.md, head 70ed2e7): the reviewer's fresh vectors, pinned
+    EXACT by the same method (test_edges_round4_vectors.json). Each drop-vector must REFUSE, plan FULL or select its
+    runner: B1 (T1, T1b, T1c, a runner one hop or more out), B2 (T4, a gitlink), B3 (T3, T3b, a symlink alias or a
+    symlink in a package), B4 (T2, an inert glob). A residual is a spelling no recorded route or token sees (README,
+    "What the backstop does not see"): it is pinned as the drop it is, so the README cannot claim more than the scan."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_round4_vectors.json")).read_text())
+
+    def test_every_round4_vector_refuses_plans_full_or_selects_its_runner_exactly_as_pinned(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                runs = got["verdict"] != "SELECT" or case["must_run"] in got["jobs"]
+                self.assertEqual(runs, case["kind"] != "residual", f"{name}: {case['kind']}")
+
+    def test_the_drop_vectors_cover_every_round4_blocker_and_the_readme_lists_every_residual(self):
+        names = sorted(self.CASES["cases"])
+        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 "):
+            self.assertTrue(any(n.startswith(prefix) and self.CASES["cases"][n]["kind"] == "drop-vector" for n in names),
+                            prefix)
+        readme = (Path(__file__).with_name("README.md")).read_text()
+        for name, case in self.CASES["cases"].items():
+            if case["kind"] == "residual":
+                self.assertIn(case["residual"], readme, f"{name}: the README must list it")
 
 
 def E_add(cfg, path, name):

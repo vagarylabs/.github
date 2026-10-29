@@ -325,13 +325,26 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      basename collision goes FULL, the safe direction. One extended-regex `git grep` for the mapped extensions, then a
      token lookup, keeps it to a few seconds on vagary-core.
 
+     Round 4 (root's R4 of round 3) widens what it checks, each fail-toward-FULL:
+     - **B1, transitively.** P's subjects are P plus every file outside every package that reaches P by a recorded
+       route, to a fixpoint (cycle-safe). Every subject's mentions are held to P's rule. So `tools/run.mjs`, which
+       imports `./worker.mjs`, cannot hide package c's `execFileSync(..., ["tools/run.mjs"])`. A mention by another
+       subject is attributed, since whatever runs that subject is checked in turn;
+     - **B2, gitlinks.** A submodule path under a mapped glob is a subject, as `plan.classify_paths` maps it;
+     - **B3, symlinks.** `git grep` reads regular files only. So each symlink's target text is read as a mention (a
+       symlink inside package c that points at P names P), and a symlink outside every package is a route to its
+       target (it starts its unit, and an alias of P becomes P's subject);
+     - **B4, inert globs.** A path an `inert_globs` glob maps to nothing is backstopped too ("inert mention"). Its
+       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first.
+
    **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
    scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
    does not parse, a reacher outside every package (unless the mapping still runs its job), and a path at or above the
    root. So `check`'s mapping can only narrow FULL to a plan that still runs every importer the scan found.
 
    **What this does not claim.** "Never narrower" holds for the routes this scan reads, plus, through the backstop,
-   for every runner that names the mapped file's basename. It does not hold for a runner that does neither: the
+   for every runner that names the basename of the mapped file or of any of its subjects (a file, gitlink or symlink
+   outside every package that reaches it by a recorded route). It does not hold for a runner that does neither: the
    residuals below. A path whose own `check` fails plans FULL. The census (`lanes/cli/scratch/import-attribution`)
    compares the real `plan.classify_paths` with an independent oracle for every imported path in vagary-core and
    vagaris; the oracle finds importers through quoted `./`/`../` strings, data-position names included, and through
@@ -342,7 +355,15 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    assessment carry `imports`: each imported path with its importers.
 
 Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
-scan does not read:
+scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b, T10b) as the drops they
+are:
+- a mention that differs only in case (`tools/Worker.mjs` for `tools/worker.mjs`): the token match is exact;
+- a Python module path (`from tools.worker import f`, `python -m tools.worker`): a dotted name is not a basename;
+- a text file `.gitattributes` marks binary, and a basename inside a real binary file: `git grep -I` skips both;
+- a file in an encoding other than ASCII-compatible (UTF-16 with or without a BOM): its bytes never spell the token;
+- a runner that names only a directory (`node --test "$REPO_ROOT/tools/"`, where `tools/x.test.mjs` imports P): no
+  subject's basename appears. A `../` route to the directory is recorded (T10, a jest `roots` entry), so only a
+  directory named through a runtime-built prefix drops;
 - a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
   `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
   Python `sys.path` escapes are the next change;
@@ -356,7 +377,6 @@ scan does not read:
 - Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
   `import x` / `from x import` is followed;
 - a shell `source "$VAR/x"`: a substituted prefix is not resolved;
-- a symlink inside a package that points outside every package (it predates 1.5.0);
 - a chain across reader directories (`tools/a.mjs` loads `scripts/b.mjs`, which reads a package): each file's reads
   are credited to its own reader directory, not to the directory of the file that reaches it.
 

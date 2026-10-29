@@ -1,0 +1,261 @@
+# Reusable, report-only OpenSSF Scorecard run for ONE repository: the caller's own.
+#
+# DRAFT (U1 phase 1). It scores and reports; it never fails a build on a low score and files nothing. It fails the JOB
+# only when the repository has no usable result (a void is not a pass).
+#
+# ROOT'S U1 DECISIONS (2026-10-29, lanes/cli/C1-ADMISSION-WORKFLOW.md):
+# - HOST: no cross-repository report anywhere, and no aggregation repository. This workflow is generic, so it lives
+#   here; each repository calls it for ITSELF. The job summary and the artifact belong to the caller's run, so a private
+#   repository's result stays private to it. A public repository's Scorecard result is public anyway; it may also use
+#   Scorecard's standard publish (ossf/scorecard-action with publish_results), which this workflow does not do.
+# - AUTH: the caller's own GITHUB_TOKEN with `contents: read` and nothing else; no App, no secret. A check Scorecard
+#   cannot evaluate with that token scores -1 and is reported UNMEASURED, never failing. Per the Scorecard docs,
+#   Branch-Protection needs Administration:read, and a private repository's Code-Review, CI-Tests and SAST need
+#   issues, pull-requests and checks read; those show UNMEASURED or a lower score. No wider read token is used.
+# - FILING: nothing is filed. cli posts one weekly summary line on the board, and each finding goes to its owner
+#   through the failure-class registry.
+#
+# Example caller, weekly, in the repository being scored:
+#
+#   name: scorecard
+#   on:
+#     schedule:
+#       - cron: '37 3 * * 1'
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     scorecard:
+#       permissions:
+#         contents: read
+#       uses: vagarylabs/.github/.github/workflows/scorecard-weekly.yml@<40-hex> # .github #<PR> merge
+#       with:
+#         runner: vl-light
+#
+# RUNNER: the caller's `runner` input, else its SCORECARD_RUNNER variable, else ubuntu-latest. A private repository
+# passes a self-hosted label (GitHub refuses a hosted job there); a public one stays on a hosted runner. The pinned
+# scorecard binary is linux/amd64. Measured on a workstation: 10-22 s and at most 89 MB resident per repository, no
+# docker, no history clone (Scorecard downloads one archive and calls the API), so the light lane fits.
+#
+# The Scorecard release is pinned in release-assets.lock (line `scorecard 5.6.0`): its sha256 comes from the project's
+# own scorecard_checksums.txt, repeated in the env below, and a unit test keeps the two equal. The release's SLSA
+# provenance (multiple.intoto.jsonl) is not verified here.
+name: Scorecard (reusable, report-only, the calling repository)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label for the job. A private repository must give a self-hosted label.
+        required: false
+        type: string
+        default: ubuntu-latest
+      fail-below:
+        description: A check scoring under this (0-10) is listed as failing.
+        required: false
+        type: number
+        default: 5
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    runs-on: ${{ inputs.runner != 'ubuntu-latest' && inputs.runner || vars.SCORECARD_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15  # one repository, 10-22 s measured; the fetch and the scoring step have their own timeouts
+    permissions:
+      contents: read
+    env:
+      SCORECARD_VERSION: "5.6.0"
+      SCORECARD_URL: https://github.com/ossf/scorecard/releases/download/v5.6.0/scorecard_5.6.0_linux_amd64.tar.gz
+      SCORECARD_SHA256: "19bde07129450cb65a95c6e3b9f34e034341579e6f0e241546ec3ae6efb2dd9a"
+    steps:
+      - name: Check the runner and the inputs
+        env:
+          FAIL_BELOW: ${{ inputs.fail-below }}
+        run: |
+          set -euo pipefail
+          [[ "$FAIL_BELOW" =~ ^([0-9]|10)$ ]] || { echo "::error::fail-below must be 0-10"; exit 1; }
+          [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ] || { echo "::error::the scorecard pin is linux_amd64; runner is $(uname -s)-$(uname -m)"; exit 1; }
+      - name: Write the report helper
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/scorecard_report.py" <<'PY'
+          #!/usr/bin/env python3
+          """scorecard helper: turn ONE repository's OpenSSF Scorecard JSON into a report-only summary.
+
+          Stdlib only. The reusable workflow .github/workflows/scorecard-weekly.yml carries a byte-identical copy of this file
+          inline (a reusable workflow cannot read a script from its own repository), and scripts/test_scorecard_report.py fails if
+          the copy drifts. Source of truth: this file.
+
+            report --result FILE --repo OWNER/NAME [--rc FILE]   FILE is one `scorecard --format json` result, for exactly
+                                                                 github.com/OWNER/NAME; --rc holds that run's exit status.
+                                                                 Writes a Markdown summary. Exits 1 when there is no usable
+                                                                 result: report-only never means "pass on a void".
+
+          Root's U1 decisions (2026-10-29): each repository scores ITSELF, and its result stays in its own run (no cross-repository
+          report, no aggregation repository). The token is the caller's own contents:read GITHUB_TOKEN, so a check Scorecard cannot
+          evaluate with it (score -1) is UNMEASURED, never failing. Nothing is filed.
+          """
+          import argparse
+          import json
+          import re
+          import sys
+
+          REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+
+
+          def load_result(path, rc_path, repo):
+              """(result dict or None, reason). A result must be Scorecard JSON for exactly github.com/<repo>, from a run that
+              exited 0 when its exit status is known."""
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      d = json.load(fh)
+              except FileNotFoundError:
+                  return None, "no result file"
+              except (OSError, ValueError):
+                  return None, "result is not valid JSON"
+              if not isinstance(d, dict) or not isinstance(d.get("checks"), list) or not isinstance(d.get("score"), (int, float)):
+                  return None, "result has no score or checks"
+              if (d.get("repo") or {}).get("name") != f"github.com/{repo}":
+                  return None, "result names a different repository"
+              rc = None
+              if rc_path:
+                  try:
+                      with open(rc_path, encoding="utf-8") as fh:
+                          rc = fh.read().strip()
+                  except OSError:
+                      return None, "no exit status file"
+              if rc not in (None, "0"):
+                  return None, f"scorecard exited {rc}"
+              return d, ""
+
+
+          def classify(d, fail_below):
+              """[(check, score, state, reason)] sorted by check: state is FAIL (0 <= score < fail_below), PASS, or UNMEASURED (a
+              score Scorecard could not compute with this token, -1, or no score at all). UNMEASURED never counts as failing."""
+              rows = []
+              for c in d["checks"]:
+                  score = c.get("score")
+                  if not isinstance(score, (int, float)) or isinstance(score, bool) or score < 0:
+                      state = "UNMEASURED"
+                  else:
+                      state = "FAIL" if score < fail_below else "PASS"
+                  rows.append((str(c.get("name", "?")), score, state, " ".join(str(c.get("reason") or "").split())))
+              return sorted(rows)
+
+
+          def cell(text, limit=160):
+              text = text.replace("|", "\\|")
+              return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+          def render(repo, d, why, fail_below):
+              out = ["## OpenSSF Scorecard (report-only)", ""]
+              if d is None:
+                  out += [f"{repo}: no usable result ({why}). A void is not a pass.", ""]
+                  return "\n".join(out) + "\n"
+              version = (d.get("scorecard") or {}).get("version") or "unknown"
+              rows = classify(d, fail_below)
+              n = {s: sum(1 for r in rows if r[2] == s) for s in ("FAIL", "UNMEASURED", "PASS")}
+              score = f"{d['score']:.1f}/10" if d["score"] >= 0 else "none (no check could be scored)"
+              out.append(f"{repo}, Scorecard {version}: score {score}. {n['FAIL']} failing (below {fail_below}/10), "
+                         f"{n['UNMEASURED']} UNMEASURED (not evaluable with this run's contents:read token; never failing), "
+                         f"{n['PASS']} passing.")
+              out += ["", "| Check | Score | State | Reason |", "|---|---|---|---|"]
+              for name, s, state, reason in sorted(rows, key=lambda r: ({"FAIL": 0, "UNMEASURED": 1, "PASS": 2}[r[2]], r[0])):
+                  out.append(f"| {cell(name)} | {'-' if state == 'UNMEASURED' else s} | {state} | {cell(reason)} |")
+              out.append("")
+              return "\n".join(out) + "\n"
+
+
+          def main(argv=None):
+              ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+              sub = ap.add_subparsers(dest="cmd", required=True)
+              b = sub.add_parser("report")
+              b.add_argument("--result", required=True)
+              b.add_argument("--rc", help="the file holding scorecard's exit status")
+              b.add_argument("--repo", required=True, help="OWNER/NAME: the repository that was scored")
+              b.add_argument("--fail-below", type=int, default=5)
+              b.add_argument("--summary", help="append the Markdown here (GITHUB_STEP_SUMMARY)")
+              b.add_argument("--json-out", help="write the small machine summary here")
+              args = ap.parse_args(argv)
+              if not REPO_RE.match(args.repo) or not 0 <= args.fail_below <= 10:
+                  print("report: --repo must be OWNER/NAME and --fail-below 0-10", file=sys.stderr)
+                  return 2
+              d, why = load_result(args.result, args.rc, args.repo)
+              md = render(args.repo, d, why, args.fail_below)
+              sys.stdout.write(md)
+              if args.summary:
+                  with open(args.summary, "a", encoding="utf-8") as fh:
+                      fh.write(md)
+              if args.json_out:
+                  if d is None:
+                      small = {"repo": args.repo, "error": why}
+                  else:
+                      rows = classify(d, args.fail_below)
+                      small = {"repo": args.repo, "scorecard": (d.get("scorecard") or {}).get("version"), "score": d["score"],
+                               "commit": (d.get("repo") or {}).get("commit"), "fail_below": args.fail_below,
+                               "failing": [r[0] for r in rows if r[2] == "FAIL"],
+                               "unmeasured": [r[0] for r in rows if r[2] == "UNMEASURED"],
+                               "passing": [r[0] for r in rows if r[2] == "PASS"]}
+                  with open(args.json_out, "w", encoding="utf-8") as fh:
+                      json.dump(small, fh, indent=1, sort_keys=True)
+              return 1 if d is None else 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY
+      - name: Fetch the pinned scorecard archive
+        uses: vagarylabs/.github/actions/fetch-release-asset@85ac97443b6e2fb23570ccda190934f150973aef # .github #40 merge
+        timeout-minutes: 8
+        with:
+          tool: scorecard
+          version: ${{ env.SCORECARD_VERSION }}
+          url: ${{ env.SCORECARD_URL }}
+          sha256: ${{ env.SCORECARD_SHA256 }}
+          dest: ${{ runner.temp }}/scorecard.tar.gz
+          max-time: "180"
+      - name: Install scorecard (checksum-verified) and check its version
+        run: |
+          set -euo pipefail
+          echo "${SCORECARD_SHA256}  $RUNNER_TEMP/scorecard.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/scorecard.tar.gz" -C "$RUNNER_TEMP/bin" scorecard
+          "$RUNNER_TEMP/bin/scorecard" version 2>&1 | grep -Eq "^GitVersion:[[:space:]]+v${SCORECARD_VERSION}$"
+      - name: Score this repository
+        # A step timeout FAILS the step; the job timeout would cancel the job, and the report below would not run.
+        timeout-minutes: 8
+        env:
+          GITHUB_AUTH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          rc=0
+          timeout 300 "$RUNNER_TEMP/bin/scorecard" --repo="github.com/${REPO}" --format json \
+            --output "$RUNNER_TEMP/results/result.json" 2> "$RUNNER_TEMP/results/scorecard.err" || rc=$?
+          echo "$rc" > "$RUNNER_TEMP/results/result.rc"
+          echo "scorecard exited $rc"
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.repository }}
+          FAIL_BELOW: ${{ inputs.fail-below }}
+        run: |
+          set -euo pipefail
+          python3 -I "$RUNNER_TEMP/scorecard_report.py" report --result "$RUNNER_TEMP/results/result.json" \
+            --rc "$RUNNER_TEMP/results/result.rc" --repo "$REPO" --fail-below "$FAIL_BELOW" \
+            --summary "$GITHUB_STEP_SUMMARY" --json-out "$RUNNER_TEMP/results/summary.json" > /dev/null
+      - name: Keep the result as a job artifact (in this repository's run only)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-result
+          path: |
+            ${{ runner.temp }}/results/result.json
+            ${{ runner.temp }}/results/result.rc
+            ${{ runner.temp }}/results/summary.json
+          retention-days: 14
+          if-no-files-found: warn

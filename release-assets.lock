@@ -33,3 +33,7 @@ actionlint 1.7.7 https://github.com/rhysd/actionlint/releases/download/v1.7.7/ac
 # `digest` field is GitHub's sha256 of the uploaded asset). Downloaded archive verified against this pin.
 # source: https://api.github.com/repos/zizmorcore/zizmor/releases/tags/v1.31.1 (assets[].digest)
 zizmor 1.31.1 https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-unknown-linux-gnu.tar.gz d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+# scorecard: scorecard_checksums.txt of v5.6.0 (GitHub's recorded digest for that checksum file, sha256:7885cd81e0bf6ef30492de2c4252f3c293929da5716df8b9c2863dd5a1674422,
+# equals the file's own hash, 2026-10-29). The release publishes no signature over the checksum file; its multiple.intoto.jsonl SLSA provenance covers the archives and is NOT verified here.
+# source: https://github.com/ossf/scorecard/releases/download/v5.6.0/scorecard_checksums.txt
+scorecard 5.6.0 https://github.com/ossf/scorecard/releases/download/v5.6.0/scorecard_5.6.0_linux_amd64.tar.gz 19bde07129450cb65a95c6e3b9f34e034341579e6f0e241546ec3ae6efb2dd9a

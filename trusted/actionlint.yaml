@@ -1,0 +1,10 @@
+# actionlint's config for C1 workflow-lint (root's R4 of #41, B1): the judge's own config, never the PR's
+# .github/actionlint.yaml. The self-hosted runner labels are the org's registered ones (GET /orgs/vagarylabs/actions/runners,
+# 2026-10-29), so a job on a label no runner carries is still a finding.
+self-hosted-runner:
+  labels:
+    - vl-adv
+    - vl-bridge
+    - vl-builder
+    - vl-light
+    - vl-mq

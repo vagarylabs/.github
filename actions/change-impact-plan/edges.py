@@ -23,18 +23,23 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
+import datetime
+import fnmatch
 import json
 import os
 import posixpath
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 # -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
 if sys.flags.isolated:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex
+from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex, \
+    first_match, classify_paths, rule_matches
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
@@ -288,10 +293,76 @@ def structure(code: list) -> tuple[dict, list, bool]:
     return match, enclosing, not stack
 
 
+class BlobReader:
+    """One `git cat-file --batch` process for a scan's reads at its revision. A scan reads thousands of files, and one
+    `git show` each was 110 of 157 s on vagary-core. A blob comes back byte for byte; anything else (a missing path, a
+    tree, a path with a newline or a carriage return, a reader that died or stalled) falls back to `git show`, which
+    refuses as before. --batch reads one line per object and drops a CR before its LF, so a name ending in "\\r" would
+    come back as the blob of the name without it (root's R4 of #33 round 3, N1)."""
+
+    TIMEOUT = 60  # seconds for one object: a stalled reader is killed, and the read falls back
+
+    def __init__(self, repo: Path, environment: dict):
+        self.proc = subprocess.Popen(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "--batch"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     env=environment)
+
+    def read(self, spec: str) -> bytes | None:
+        if "\n" in spec or "\r" in spec or self.proc.poll() is not None:
+            return None
+        timer = threading.Timer(self.TIMEOUT, self.proc.kill)
+        timer.start()
+        try:
+            self.proc.stdin.write(spec.encode("utf-8", errors="surrogateescape") + b"\n")
+            self.proc.stdin.flush()
+            header = self.proc.stdout.readline().split()
+            if len(header) != 3 or not header[2].isdigit():
+                return None  # "<spec> missing" / "ambiguous", or the reader died
+            size = int(header[2])
+            data = self.proc.stdout.read(size)
+            if len(data) != size or self.proc.stdout.read(1) != b"\n":
+                self.proc.kill()
+                return None
+            return data if header[1] == b"blob" else None
+        except OSError:
+            return None
+        finally:
+            timer.cancel()
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.stdin.close()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+_BLOB_READERS: dict[tuple[str, str], BlobReader] = {}
+
+
+@contextlib.contextmanager
+def batch_reads(repo: Path, revision: str | None, environment: dict):
+    """Serve read_source's revision reads from one BlobReader for the duration of a scan."""
+    if revision is None or (str(repo), revision) in _BLOB_READERS:
+        yield
+        return
+    key = (str(repo), revision)
+    _BLOB_READERS[key] = BlobReader(repo, environment)
+    try:
+        yield
+    finally:
+        _BLOB_READERS.pop(key).close()
+
+
 def read_source(repo: Path, path: str, revision: str | None, environment: dict) -> str:
     """The scanned revision's bytes of one file (the working tree's when no revision is pinned)."""
     if revision is None:
         return (repo / path).read_bytes().decode("utf-8", errors="replace")  # no newline translation (CRLF)
+    reader = _BLOB_READERS.get((str(repo), revision))
+    data = reader.read(f"{revision}:{path}") if reader else None
+    if data is not None:
+        return data.decode("utf-8", errors="replace")
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "show", f"{revision}:{path}"],
                          capture_output=True, timeout=15, env=environment)
     if out.returncode:
@@ -1726,7 +1797,352 @@ def always_reader_dirs(es: dict, cfg: dict, package_dirs, roots, reader_dirs: se
     return set(declared)
 
 
-def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+# ---------- imported files outside every package (1.5.0) ----------
+# A package file that imports a file outside every package runs that file's code, so what the file reads, the package
+# reads. Before 1.5.0 a relative path resolving outside every package was dropped (`targets - {None}`): a test in package
+# a that imported ../../scripts/x.mjs, where x.mjs reads packages/b, gave deps(a) = [] and credited b only to the reader
+# job, so a change to b never selected a's tests (cli, 2026-10-27; spine's rulings D2/D3/D5 the same day).
+#   1. EDGE: a relative path on a non-comment line of a package file (`../`, as `rel` matches) that resolves to a
+#      tracked path outside every package; and, from a file outside every package already reached, every `./` or `../`
+#      string (a shell `source`, `. ` or `$(dirname "$0")/` path too), read from the WHOLE file, since a `./` import
+#      never matches the scan's grep. A symlink resolves by its target. A directory is every tracked file beneath it,
+#      and a package nested there is a read of that package.
+#   2. CREDIT: per importing package, the transitive closure (cycles end) credits it every read the scan found in each
+#      reached file. A `.md` file is prose: its edge is recorded, nothing is credited. A data file is credited (that only
+#      over-approximates) but imports nothing; only code (JS/TS, Python, shell) is followed further.
+#   3. FAIL CLOSED: a reached path under `always_reader_dirs` refuses (that directory is not always-only); a reached CODE
+#      file the scan excludes refuses (its reads cannot be credited); so does a symlink loop.
+#   4. COMPUTED (D2, strict by declaration): a module-loading call whose argument is not one plain literal, in a package
+#      file or a reached file, refuses unless an `edge_scan.computed_imports` entry declares it ({file, expr, reach},
+#      `expr` the exact argument text, whitespace collapsed). The calls: `import(`, `require(`, `require.resolve(`,
+#      `import.meta.resolve(`, `module.require(`, `createRequire(...)(` and a name bound to `createRequire(...)`.
+#      `reach` is "package" (inside the importing package), "external" (npm or stdlib by name), "fixture" (a test temp
+#      dir), or a list of repo paths, each then an edge. THE FLOOR (refined in spine's pre-review):
+#      - every component literal and anchored at the file's own directory (`__dirname`, `import.meta.dirname`, a name
+#        bound to `dirname(fileURLToPath(import.meta.url))`; `pathToFileURL(...).href` unwrapped): a literal import,
+#        resolved and mapped, with no declaration;
+#      - a parent step only in the LEADING literal prefix, that prefix resolving inside the importing package's own
+#        directory: allowed, declared reach "package" (the reviewer owns the claim about the substituted part);
+#      - any other parent step, or a literal naming a top-level directory outside every package where nothing anchors
+#        it: refuses even when declared. An escape has to be written as a literal path, which the scan maps.
+#   5. DECLARED (D5): `check` fails on an imported path no `extra_edges` glob maps to at least its importers, so a change
+#      to it selects them through plan.classify_paths, and on a computed_imports entry that matches no live site.
+CODE_EXT = JS_EXT | PY_EXT | {"sh", "bash"}
+# Files that can import modules but that the scan does not parse (root's delta R4 of #33, N5): reaching one refuses.
+IMPORTING_UNPARSED_EXT = frozenset({"mdx", "astro", "vue", "svelte"})
+# TypeScript's own module resolution (NodeNext and bundler alike): a `.js` specifier names its `.ts`, `.tsx` or `.d.ts`
+# source, `.jsx` its `.tsx`, `.mjs` its `.mts` or `.d.mts`, `.cjs` its `.cts` or `.d.cts`. The house style writes every
+# ESM import of a TypeScript file that way (`import "../../scripts/x.js"` loads scripts/x.ts).
+TS_SOURCES = {".js": (".ts", ".tsx", ".d.ts"), ".jsx": (".tsx",), ".mjs": (".mts", ".d.mts"), ".cjs": (".cts", ".d.cts")}
+COMPUTED_REACH = frozenset({"package", "external", "fixture"})
+# Every line a loader call can start on (loader_call_opens decides). A name bound to createRequire(...) lives in a file
+# that names createRequire, so that word finds its file.
+IMPORT_CALL_GREP = (r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\(|(require|import\.meta)\.resolve[[:space:]]*\("
+                    r"|module\.require[[:space:]]*\(|createRequire")
+SHELL_RELATIVE = re.compile(r"(?<![\w.$/-])(\.\.?/[A-Za-z0-9_.@+/-]+)")
+SHELL_SELF_DIR = re.compile(r"(?:\$\(\s*dirname\s+[\"']?\$(?:0|\{?BASH_SOURCE(?:\[0\])?\}?)[\"']?\s*\)|\$\{BASH_SOURCE%/\*\})"
+                            r"/([A-Za-z0-9_.@+/-]+)")
+def today() -> datetime.date:
+    """The UTC date the registry review judges against (a function, so tests pin it)."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+REVIEW_DAYS = 30
+
+
+def reviewed(kind: str, entries: list, key: str) -> None:
+    """Root's ruling on #33 round 3: the two declaration lists are a REGISTRY, reviewed like the secret-scan registry.
+    Each entry carries a non-empty `reason` (for reach "none": why the name never runs) and a `review_by` ISO date at
+    most REVIEW_DAYS ahead. A reasonless, expired or too-distant entry refuses: it fails toward FULL, never to a pass."""
+    now, bad = today(), []
+    for d in entries:
+        where = f"{d['file']}: {d[key]}"
+        if not isinstance(d["reason"], str) or not d["reason"].strip():
+            bad.append(f"{where} has no reason")
+            continue
+        try:
+            by = datetime.date.fromisoformat(d["review_by"]) if isinstance(d["review_by"], str) else None
+        except ValueError:
+            by = None
+        if by is None:
+            bad.append(f"{where} review_by is not an ISO date")
+        elif by < now:
+            bad.append(f"{where} expired on {by.isoformat()}")
+        elif by > now + datetime.timedelta(days=REVIEW_DAYS):
+            bad.append(f"{where} review_by {by.isoformat()} is more than {REVIEW_DAYS} days out")
+    if bad:
+        raise ValueError(f"edge_scan.{kind} registry review: " + "; ".join(bad) + " (renew it with a reason and a "
+                         f"review_by within {REVIEW_DAYS} days, after root's R4 record)")
+
+
+def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, environment: dict,
+                      routes_to: dict[str, set[str]], policy_files: set[str] = frozenset()) -> dict[str, list[list]]:
+    """Root's round 3 of #33, the BACKSTOP's evidence. For every tracked path P outside every package that an
+    extra_edges or inert_globs glob maps, gitlinks included (round 4, B2 and B4), its SUBJECTS are P plus every file
+    outside every package that reaches P by a recorded route, to a fixpoint (round 4, B1: whatever runs such a file runs
+    P). Every OTHER tracked text file, excluded directories included, and every symlink, whose target text git grep
+    never reads (round 4, B3), that names a subject's basename as a token is a row [file, owning package or None, whether
+    it is itself a subject, the subject it names]. assess() accepts P's mapping only when each row's package is selected
+    or its file is a subject: a mention the scan did not attribute keeps P FULL, whatever spelling hid it."""
+    globs = [glob_to_regex(g) for g in sorted(set((cfg.get("extra_edges") or {}).keys())
+                                              | set(cfg.get("inert_globs") or []))]
+    if not globs:
+        return {}
+    tracked = tracked_paths(repo, revision, environment)
+    mapped = sorted(p for p in tracked if owner(p) is None and any(r.match(p) for r in globs))
+    subjects: dict[str, set[str]] = {}
+    for p in mapped:
+        seen, queue = {p}, [p]
+        while queue:
+            for f in sorted(routes_to.get(queue.pop(), ())):
+                if f not in seen and owner(f) is None:
+                    seen.add(f)
+                    queue.append(f)
+        subjects[p] = seen
+    by_base: dict[str, set[str]] = {}
+    for member in set().union(*subjects.values()) if subjects else ():
+        by_base.setdefault(posixpath.basename(member), set()).add(member)
+    if not by_base:
+        return {}
+    # ONE extended-regex grep for every basename with an extension: git grep scales with the number of -F patterns
+    # (1,337 vagary-core basenames took 115 s), a single ERE with the extensions as alternatives takes about a second.
+    # Python then applies the exact token rule and looks each token up. The few others go through one -F grep.
+    plain = re.compile(r"[A-Za-z0-9_.-]*\.[A-Za-z0-9]+")
+    with_ext = sorted(b for b in by_base if plain.fullmatch(b))
+    others = sorted(set(by_base) - set(with_ext))
+    exts = sorted({b.rsplit(".", 1)[1] for b in with_ext})
+    found: dict[str, set[str]] = {}
+    # B3: git grep reads regular files only, so a symlink's target text (`alias.mjs -> worker.mjs`) is read here.
+    links = [(p, (read_source(repo, p, revision, environment) if revision else os.readlink(repo / p)))
+             for p, mode in sorted(tracked.items()) if mode == "120000"]
+
+    def grep(args: list[str]) -> list[tuple[str, str]]:
+        out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-I", *args,
+                              *([revision] if revision else []), "--", "."],
+                             capture_output=True, timeout=120, env={**environment, "LC_ALL": "C"})
+        if out.returncode not in (0, 1):
+            raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+        rows = []
+        for record in out.stdout.decode("utf-8", errors="replace").split("\n"):
+            name, sep, text = record.partition("\0")
+            if sep:
+                rows.append((name[len(revision) + 1:] if revision else name, text))
+        return rows + links
+
+    def hit(f: str, base: str) -> None:
+        if f in policy_files:
+            return  # the planner's own config names every mapped path by construction; it runs nothing
+        for member in by_base.get(base, ()):
+            if f != member:
+                found.setdefault(member, set()).add(f)
+
+    if exts:
+        alternatives = "|".join(re.escape(e) for e in exts)
+        token = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]*\.(?:" + alternatives + r"))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])")
+        for f, text in grep(["-E", r"[A-Za-z0-9_.-]*\.(" + alternatives + ")"]):
+            for m in token.finditer(text):
+                hit(f, m.group(1))
+    if others:
+        token = re.compile(r"(?<![A-Za-z0-9_.-])(" + "|".join(re.escape(b) for b in sorted(others, key=lambda b: (-len(b), b)))
+                           + r")(?![A-Za-z0-9_-]|\.[A-Za-z0-9])")
+        args = []
+        for b in others:
+            args += ["-e", b]
+        for f, text in grep(["-F", *args]):
+            for m in token.finditer(text):
+                hit(f, m.group(1))
+    out: dict[str, list[list]] = {}
+    for p, members in sorted(subjects.items()):
+        rows = [[f, owner(f), f in members, member] for member in sorted(members) for f in sorted(found.get(member, ()))]
+        if rows:
+            out[p] = rows
+    return out
+
+
+def source_call_args(src: "Source", o: int) -> list[list] | None:
+    """The top-level arguments of the call whose `(` is code[o]; None when it does not close."""
+    c = src.match.get(o)
+    if c is None:
+        return None
+    args, cur, depth = [], [], 0
+    for t in src.code[o + 1:c]:
+        if t[0] == "open":
+            depth += 1
+        elif t[0] == "close":
+            depth -= 1
+        if depth == 0 and t[0] == "comma":
+            args.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    return args + ([cur] if cur else [])
+
+
+# Round 3 of #33, B2: a path chain anchored at the file's own directory, in ANY position (not only an import call), whose
+# literal segments step to a parent. `path.join(__dirname, "..", "..")` is `../..`, so a vitest `dir:` of it reaches the
+# repository root and refuses like the string "../.." would.
+JS_DIR_ANCHOR = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?dirname\(\s*(?:[\w$]+\.)?"
+                           r"fileURLToPath\(\s*import\.meta\.url\s*\)\s*\)")
+PY_DIR_ANCHOR = re.compile(r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:os\.path\.)?dirname\(\s*(?:(?:os\.path\.)?(?:abspath|realpath)\(\s*)?"
+                           r"__file__\s*\)?\s*\)\s*$")
+PY_PATH_ANCHOR = re.compile(r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:pathlib\.)?Path\(\s*__file__\s*\)((?:\.(?:resolve|absolute)\(\s*\))*)"
+                            r"((?:\.parent\b|\.parents\[\s*\d+\s*\])*)\s*$")
+JS_INLINE_ANCHORS = (["__dirname"], ["import", ".", "meta", ".", "dirname"])
+PY_INLINE_ANCHORS = (["os", ".", "path", ".", "dirname", "(", "__file__", ")"], ["dirname", "(", "__file__", ")"],
+                     ["os", ".", "path", ".", "dirname", "(", "os", ".", "path", ".", "abspath", "(", "__file__", ")", ")"],
+                     ["os", ".", "path", ".", "dirname", "(", "os", ".", "path", ".", "realpath", "(", "__file__", ")", ")"])
+
+
+def _levels(parents: str) -> int:
+    """The directories `.parent` / `.parents[N]` steps climb from a FILE: .parent is its directory (1)."""
+    return sum(int(n) + 1 if n else 1 for n in re.findall(r"\.parents?(?:\[\s*(\d+)\s*\])?", parents))
+
+
+def anchored_chains(src: "Source") -> list[str]:
+    """Every chain anchored at the file's directory whose literal segments step to a parent: its spec relative to that
+    directory (`../../lib/x.mjs`). Only the literal prefix counts; a chain whose prefix steps nowhere up is not listed."""
+    code, specs = src.code, []
+    vals = lambda toks: [t[3] if t[0] != "str" else None for t in toks]
+    def add(segments: list[str]) -> None:
+        spec = "/".join(x.strip("/") for x in segments if x.strip("/")) or "."
+        if ".." in spec.split("/"):
+            specs.append(spec)
+    if src.py:
+        dir_alias = set(PY_DIR_ANCHOR.findall(src.text))
+        path_alias = {name: _levels(ups) for name, _, ups in PY_PATH_ANCHOR.findall(src.text)}
+    else:
+        dir_alias, path_alias = set(JS_DIR_ANCHOR.findall(src.text)), {}
+    inline = PY_INLINE_ANCHORS if src.py else JS_INLINE_ANCHORS
+    for j, t in enumerate(code):
+        # join(<anchor>, "..", "lib", ...) / resolve(...) / os.path.join(...)
+        if t[0] == "word" and t[3] in ("join", "resolve") and j + 1 < len(code) and code[j + 1][3] == "(":
+            args = source_call_args(src, j + 1) or []
+            first = vals(args[0]) if args else []
+            if first in [list(a) for a in inline] or (len(first) == 1 and first[0] in dir_alias):
+                lits = []
+                for arg in args[1:]:
+                    if len(arg) != 1 or arg[0][0] != "str" or arg[0][3][1] is not True:
+                        break
+                    lits.append(arg[0][3][0])
+                add(lits)
+        # Python: Path(__file__)[.resolve()].parent / .parents[N] then / "lit" ..., or an alias of such a Path.
+        if src.py and t[0] == "word" and (t[3] == "Path" or t[3] in path_alias):
+            k, up = j + 1, path_alias.get(t[3], 0)
+            if t[3] == "Path":
+                if vals(code[j + 1:j + 4]) != ["(", "__file__", ")"]:
+                    continue
+                k = j + 4
+            elif j and code[j - 1][3] == ".":
+                continue  # an attribute named like the alias
+            lits = []
+            while k < len(code):
+                v = vals(code[k:k + 4])
+                if v[:2] == [".", "resolve"] or v[:2] == [".", "absolute"]:
+                    k += 4
+                elif v[:2] == [".", "parent"]:
+                    up, k = up + 1, k + 2
+                elif v[:3] == [".", "parents", "["] and len(v) > 3 and (v[3] or "").isdigit():
+                    up, k = up + int(v[3]) + 1, k + 5
+                elif code[k][3] == "/" and k + 1 < len(code) and code[k + 1][0] == "str" and code[k + 1][3][1] is True:
+                    lits.append(code[k + 1][3][0])
+                    k += 2
+                else:
+                    break
+            if up >= 1:
+                add([".."] * (up - 1) + lits)
+    return specs
+
+
+NON_CODE_DOT_ROUTE = re.compile(r"(?<![A-Za-z0-9_./$-])(\./[A-Za-z0-9_.@+-][A-Za-z0-9_.@+/-]*)")  # round 3, B3
+PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*))", re.M)
+
+
+def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
+    """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
+    args = ["ls-tree", "-r", "-z", "--full-tree", revision] if revision else ["ls-files", "-s", "-z"]
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), *args], capture_output=True, timeout=60, env=environment)
+    if out.returncode:
+        raise ValueError("reader scan cannot list the tracked files at the scanned revision")
+    entries = {}
+    for record in out.stdout.decode("utf-8", errors="replace").split("\0"):
+        if record:
+            meta, _, path = record.partition("\t")
+            entries[path] = meta.split()[0]
+    return entries
+
+
+CREATE_REQUIRE_BINDING = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?createRequire\s*\(")
+
+
+def loader_call_opens(src: Source):
+    """The index of the `(` of every call that loads or resolves a module by path: `import(`, `require(`,
+    `require.resolve(`, `import.meta.resolve(`, `module.require(`, `createRequire(...)(`, and a name bound to
+    `createRequire(...)` (spine's pre-review, 2026-10-27: each loads or resolves by a path the argument names)."""
+    code = src.code
+    bound = set(CREATE_REQUIRE_BINDING.findall(src.text))
+    for j, tok in enumerate(code):
+        if j + 1 >= len(code) or code[j + 1][0] != "open" or code[j + 1][3] != "(":
+            continue
+        word = tok[3] if tok[0] == "word" else None
+        member = j >= 1 and code[j - 1][0] == "op" and code[j - 1][3] in (".", "?.")
+        receiver = code[j - 2][3] if member and j >= 2 and code[j - 2][0] == "word" else None
+        if word in ("import", "require") and not member:
+            yield j + 1
+        elif word == "require" and receiver == "module":
+            yield j + 1  # `module.require(x)` is the loader under another name
+        elif word == "resolve" and receiver == "require":
+            yield j + 1
+        elif word == "resolve" and receiver == "meta" and j >= 4 and code[j - 3][3] == "." and code[j - 4][3] == "import":
+            yield j + 1
+        elif word in bound and not member:
+            yield j + 1
+        elif tok[0] == "close" and tok[3] == ")":
+            opener = src.opener.get(j)
+            if opener is not None and opener >= 1 and code[opener - 1][0] == "word" and code[opener - 1][3] == "createRequire":
+                yield j + 1  # `createRequire(import.meta.url)(x)`
+
+
+def computed_import_sites(src: Source):
+    """Each loader call (loader_call_opens) whose first argument is not one plain string literal:
+    (expr, argument tokens, index of the first argument token in src.code).
+    A string token's value is (text, plain, start): `plain` is False for a template or f-string with substitutions."""
+    code = src.code
+    for o in loader_call_opens(src):
+        close = src.match.get(o)
+        if close is None:
+            yield "<unclosed>", [], o
+            continue
+        depth, first = 0, []
+        for t in code[o + 1:close]:
+            if t[0] == "open":
+                depth += 1
+            elif t[0] == "close":
+                depth -= 1
+            elif depth == 0 and t[0] == "comma":
+                break  # `import("x", { with: ... })`: only the specifier decides
+            first.append(t)
+        if first and first[0][0] == "str" and first[0][3][1] is True and (
+                len(first) == 1 or (first[1][0] == "word" and first[1][3] in ("as", "satisfies"))):
+            continue  # a plain literal, also under a TypeScript cast (`import("redis" as string)` loads "redis")
+        expr = " ".join(src.text[first[0][1]:first[-1][2]].split()) if first else ""
+        yield expr, first, o + 1
+
+
+def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
+         policy_files: tuple = (),
+         report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The reader scan; at a revision, every file read goes through one `git cat-file --batch` process."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("reader scan revision must be an immutable commit")
+    with batch_reads(repo, revision, environment):
+        return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files, report=report)
+
+
+def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
+          policy_files: tuple = (),
+          report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
     pkgs = workspace_graph(manifest_root or repo, cfg)
@@ -1746,7 +2162,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     excludes = [f":!{x}" for x in (es.get("exclude") or ["*.md", "docs", ".github"])]
     reader_dirs = set(es.get("reader_dirs") or [])
     # Directories that run only in `always` jobs are not scanned (always_reader_dirs, validated above all else).
-    excludes += [f":!{name}" for name in sorted(always_reader_dirs(es, cfg, by_dir, roots, reader_dirs))]
+    always = always_reader_dirs(es, cfg, by_dir, roots, reader_dirs)
+    excludes += [f":!{name}" for name in sorted(always)]
     if (cfg.get("workspace") or {}).get("type") == "pnpm":
         # The workspace manifest DEFINES the graph (its quoted roots are package globs, not reads), and any change to
         # it already plans FULL (plan.py BUILTIN_FULL_GLOBS).
@@ -1771,6 +2188,20 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
     scripts_read: set = set()
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
     readers: dict[str, set[str]] = {d: set() for d in reader_dirs}
+    outside: dict[str, set[str]] = {}  # a scanned file outside every package -> the packages its lines read (1.5.0)
+    edges: dict[str, set[str]] = {}  # a file -> the repo paths outside every package its relative paths name (1.5.0)
+
+    def relative_target(path: str, spec: str) -> str | None:
+        """`spec` resolved from `path`'s directory: the package that owns it, or None (recorded as an edge when it
+        stays inside the repository)."""
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
+        if target in (".", "..") or target.startswith("../"):
+            raise ValueError(f"unresolved ({path} names {spec}, the repository root or above it: that reaches every file, "
+                             "so no mapping of it can be narrower than FULL)")
+        found = owner(target)
+        if found is None:
+            edges.setdefault(path, set()).add(target)
+        return found
 
     def literal_read(path_text: str) -> str | None:
         found = owner(path_text)
@@ -1850,7 +2281,7 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                     targets |= classify.literal_path(src, m.start(), m.group(1))
             for m in rel.finditer(src.text, a, b):
                 if not src.in_comment(m.start()):
-                    targets.add(owner(posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))))
+                    targets.add(relative_target(path, m.group(1)))
         else:
             t = text.strip()
             if t.startswith(COMMENT_PREFIXES):
@@ -1870,7 +2301,9 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
             for m in lit.finditer(t):
                 targets.add(literal_read(m.group(1)))
             for m in rel.finditer(t):
-                targets.add(owner(posixpath.normpath(posixpath.join(posixpath.dirname(path), m.group(1)))))
+                targets.add(relative_target(path, m.group(1)))
+        if reader is None:
+            outside.setdefault(path, set()).update(targets - {None})
         for target in targets - {None, reader}:
             if reader:
                 deps[reader].add(target)
@@ -1880,11 +2313,594 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
                 readers.setdefault("<unmapped>", set()).add(target)
     if pending:
         finish(pending.pop())
+    # Round 3 of #33, B2: `".."` segment chains are parent steps everywhere. Every code file with a quoted ".." or a
+    # .parent step is read whole for chains anchored at its directory (anchored_chains); each resolves like the same
+    # relative path written out, so one that reaches the repository root or above refuses, and the rest are routes.
+    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+                              r"""["']\.\.["']|\.parents?([^A-Za-z0-9_]|$)""", *([revision] if revision else []), "--",
+                              *[f"*.{e}" for e in sorted(JS_EXT | PY_EXT)], *excludes],
+                             capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if listing.returncode not in (0, 1):
+        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
+    for path in sorted(x[len(revision) + 1:] if revision else x
+                       for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if path not in sources:
+            sources[path] = Source(read_source(repo, path, revision, environment), ext)
+        specs = sorted(set(anchored_chains(sources[path])))
+        if not specs:
+            continue
+        reader, parts = owner(path), path.split("/")
+        targets = {relative_target(path, spec) for spec in specs}
+        if reader is None:
+            outside.setdefault(path, set()).update(targets - {None})
+        for target in targets - {None, reader}:
+            if reader:
+                deps[reader].add(target)
+            elif parts[0] in reader_dirs:
+                readers[parts[0]].add(target)
+            else:
+                readers.setdefault("<unmapped>", set()).add(target)
+    unowned: dict[str, dict] = {}
+    imports, unused, unresolved_data, unit_imports, routes_to = import_closure(
+        repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps, readers, unowned)
+    mentions = basename_mentions(repo, cfg, owner, revision, environment, routes_to, set(policy_files))
+    if report is not None:
+        report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
+        report["unit_imports"] = {path: sorted(found) for path, found in sorted(unit_imports.items())}
+        report["mentions"] = mentions
+        report["unowned_callers"] = {path: {"unit": row["unit"], "reaches": sorted(row["reaches"])}
+                                     for path, row in sorted(unowned.items())}
+        report["computed_imports_unused"] = unused
+        report["unresolved_data_names"] = unresolved_data
     return deps, readers
 
 
-def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path) -> dict:
+def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
+                   readers, unowned):
+    """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
+    ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
+    tracked = tracked_paths(repo, revision, environment)
+    package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
+    # Top-level directories outside every package: the tracked ones, and every declared reader directory.
+    outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
+    # A trailing slash names a directory, exactly as git's pathspec reads `:!vendor/` (root's R4 of #33): strip it.
+    patterns = [x[2:].rstrip("/") if not any(c in x for c in "*?[") else x[2:] for x in excludes if x.startswith(":!")]
+
+    def excluded(path: str) -> bool:
+        # git pathspec without magic: a wildcard pattern matches the whole path (`*` crosses `/`); a plain one matches
+        # the path or anything beneath it.
+        return any(fnmatch.fnmatchcase(path, p) if any(c in p for c in "*?[") else path == p or path.startswith(p + "/")
+                   for p in patterns)
+
+    def resolve_links(path: str) -> str:
+        for _ in range(40):
+            parts = path.split("/")
+            for k in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:k])
+                if tracked.get(prefix) == "120000":
+                    link = (read_source(repo, prefix, revision, environment) if revision
+                            else os.readlink(repo / prefix))
+                    path = posixpath.normpath(posixpath.join(posixpath.dirname(prefix), link.strip(), *parts[k:]))
+                    break
+            else:
+                return path
+        raise ValueError(f"unresolved (a symlink loop) at {path}")
+
+    def files_of(target: str) -> list[str]:
+        """The tracked files a reached path names, or [] when it names none (the caller then maps or refuses it; a
+        dropped name lost every test run its importers had, root's R4 of #33, 2026-10-27)."""
+        target = resolve_links(target)
+        stem, ext = posixpath.splitext(target)
+        found = ([target] if target in tracked else []) + [
+            resolve_links(stem + alt) for alt in TS_SOURCES.get(ext, ()) if resolve_links(stem + alt) in tracked]
+        if found:
+            return found  # both, when a .js file and its .ts source are tracked: the over-approximation is the safe one
+        # An extensionless module specifier resolves the way Node and Python do (`require("../x")` is x.js, x.ts, ...).
+        # A directory (x/index.js included) is every tracked file beneath it, which only over-approximates.
+        for suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".jsx", ".json", ".py"):
+            if resolve_links(target + suffix) in tracked:
+                return [resolve_links(target + suffix)]
+        beneath = [p for p in tracked if p.startswith(target + "/")]
+        return sorted(beneath)  # a path that is no tracked file or directory names nothing
+
+    package_dir = {name: d for d, name in by_dir.items()}
+
+    def steps_up(text: str) -> bool:
+        return bool(PARENT_STEP.search(text)) or text.strip() == ".."
+
+    call_args = source_call_args
+
+    def parent_verdict(path: str, src: Source, tokens: list, at: int) -> tuple[str, str | None]:
+        """Rule 4's floor, refined in spine's pre-review (2026-10-27): ("literal", target) for an all-literal path the
+        file's own directory anchors; ("inside", None) for a parent step that stays in the LEADING literal prefix and
+        resolves inside the importing package's own directory (allowed only under a reach "package" declaration);
+        ("escape", None) for any other parent step, or a literal naming a top-level directory outside every package
+        where nothing anchors it; ("none", None) otherwise."""
+        own = package_dir.get(owner(path))
+        here = posixpath.dirname(path)
+
+        def inside(target: str) -> bool:
+            return own is not None and (target == own or target.startswith(own + "/"))
+
+        def steps_up_word(j: int) -> bool:
+            """A parent step spelled as a word (root's R4 of #33, fix 3): `pardir`, `.parent`/`.parents`, and every
+            `dirname(...)` except the file's own directory, `dirname(fileURLToPath(import.meta.url))`, `dirname(__filename)`
+            and the like, which is the anchor. So `dirname(dirname(__dirname))` steps up twice."""
+            t = tokens[j]
+            if t[0] != "word" or t[3] not in PARENT_WORDS:
+                return False
+            if t[3] == "pardir":
+                return True
+            if t[3] in ("parent", "parents"):
+                return j > 0 and tokens[j - 1][0] == "op" and tokens[j - 1][3] in (".", "?.")
+            if j + 1 >= len(tokens) or tokens[j + 1][0] != "open":
+                return False
+            c = src.match.get(at + j + 1)
+            inner = [x[3] for x in tokens[j + 2:c - at]] if c is not None else None
+            if inner and len(inner) >= 2 and inner[1] == "." and inner[0] in ("path", "url", "posix"):
+                inner = inner[2:]
+            return inner not in (["fileURLToPath", "(", "import", ".", "meta", ".", "url", ")"], ["__filename"],
+                                 ["import", ".", "meta", ".", "filename"], ["__file__"])
+
+        pardir = any(steps_up_word(j) for j in range(len(tokens)))
+        # Unwrap `pathToFileURL(<chain>).href` / `.pathname`, the usual way an anchored path reaches import().
+        k = 2 if len(tokens) >= 3 and tokens[1][0] == "op" and tokens[1][3] == "." and tokens[0][0] == "word" else 0
+        if len(tokens) > k + 1 and tokens[k][0] == "word" and tokens[k][3] == "pathToFileURL" and tokens[k + 1][0] == "open":
+            c = src.match.get(at + k + 1)
+            tail = [t[3] for t in tokens[c - at + 1:]] if c is not None else None
+            if tail in ([".", "href"], [".", "pathname"]):
+                return parent_verdict(path, src, tokens[k + 2:c - at], at + k + 2)
+        # A relative specifier: a template or string led by ./ or ../, maybe followed by `+` concatenation.
+        if tokens and tokens[0][0] == "str" and tokens[0][3][0].startswith(("./", "../")):
+            text, plain = tokens[0][3][0], tokens[0][3][1] is True
+            prefix = text if plain or "${" not in text else text[:text.index("${")]
+            later = ([] if plain else [text[len(prefix):]]) + [t[3][0] for t in tokens[1:] if t[0] == "str"]
+            if pardir or any(steps_up(x) for x in later):
+                return "escape", None  # a parent step after the first substitution
+            if not steps_up(prefix):
+                return "none", None
+            return ("inside", None) if inside(posixpath.normpath(posixpath.join(here, prefix))) else ("escape", None)
+        # A path chain anchored at the file's own directory: [path.](join|resolve)(<anchor>, <literal>..., <rest>...).
+        k = 2 if len(tokens) >= 3 and tokens[1][0] == "op" and tokens[1][3] == "." and tokens[0][0] == "word" else 0
+        if len(tokens) > k + 1 and tokens[k][0] == "word" and tokens[k][3] in ("join", "resolve") and tokens[k + 1][0] == "open":
+            args = call_args(src, at + k + 1)
+            c = src.match.get(at + k + 1)
+            anchors = {"__dirname"} | set(re.findall(
+                r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?dirname\(\s*(?:[\w$]+\.)?fileURLToPath\(\s*"
+                r"import\.meta\.url\s*\)\s*\)", src.text))
+            first = args[0] if args else []
+            dirname_word = [t[3] for t in first] == ["import", ".", "meta", ".", "dirname"]
+            if (len(first) == 1 and first[0][0] == "word" and first[0][3] in anchors) or dirname_word:
+                rest, lits = args[1:], []
+                while rest and len(rest[0]) == 1 and rest[0][0][0] == "str" and rest[0][0][3][1] is True:
+                    lits.append(rest.pop(0)[0][3][0])
+                if any(x.startswith("/") for x in lits) or pardir or any(
+                        t[0] == "str" and steps_up(t[3][0]) for arg in rest for t in arg):
+                    return "escape", None  # an absolute segment, or a parent step after the first non-literal
+                target = posixpath.normpath(posixpath.join(here, *lits))
+                if c is not None and any(t[0] == "str" and steps_up(t[3][0]) for t in tokens[c - at + 1:]):
+                    return "escape", None  # a parent step after the chain's closing bracket (fix 3)
+                if not rest and c == at + len(tokens) - 1:
+                    return "literal", target  # every component literal: a literal import, resolved and mapped
+                if not any(steps_up(x) for x in lits):
+                    return "none", None
+                return ("inside", None) if inside(target) else ("escape", None)
+        # Nothing anchors it at the file: any parent step escapes, and so does naming an outside top-level directory.
+        if pardir or any(t[0] == "str" and steps_up(t[3][0]) for t in tokens):
+            return "escape", None
+        # A leading "/" is stripped too (root's delta R4 of #33, N2): `process.cwd() + "/scripts/x.mjs"` names scripts/.
+        if any(t[0] == "str" and re.sub(r"^(?:\./|/|\$\{[^}]*\}/)+", "", t[3][0]).split("/")[0] in outside_tops
+               for t in tokens):
+            return "escape", None
+        return "none", None
+
+    declared = es.get("computed_imports")
+    if declared is None:
+        declared = []
+    if not isinstance(declared, list) or any(
+            not isinstance(d, dict) or set(d) != {"file", "expr", "reach", "reason", "review_by"} or not isinstance(d["file"], str)
+            or not isinstance(d["expr"], str)
+            or not (d["reach"] in COMPUTED_REACH if isinstance(d["reach"], str) else
+                    isinstance(d["reach"], list) and d["reach"] and all(isinstance(x, str) and x for x in d["reach"]))
+            for d in declared):
+        raise ValueError("edge_scan.computed_imports entries must be {file, expr, reach, reason, review_by}, with reach "
+                         "package, external, fixture or a non-empty list of repo paths")
+    reviewed("computed_imports", declared, "expr")
+    by_site = {(d["file"], " ".join(d["expr"].split())): d for d in declared}
+    # A name that resolves to no tracked file or directory is an UNRESOLVED ROUTE, in any position (root's delta R4 of
+    # #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
+    # to a scan that cannot run them. It refuses unless declared: {file, name, reach}, `name` the repo path it resolves
+    # to, `reach` "none" (it names nothing that runs: a test datum) or the tracked paths it stands for (each an edge).
+    names_declared = es.get("unresolved_names") or []
+    if not isinstance(names_declared, list) or any(
+            not isinstance(d, dict) or set(d) != {"file", "name", "reach", "reason", "review_by"} or not isinstance(d["file"], str)
+            or not isinstance(d["name"], str) or not (d["reach"] == "none" if isinstance(d["reach"], str) else
+                                                      isinstance(d["reach"], list) and d["reach"]
+                                                      and all(isinstance(x, str) and x for x in d["reach"]))
+            for d in names_declared):
+        raise ValueError("edge_scan.unresolved_names entries must be {file, name, reach, reason, review_by}, with reach "
+                         "\"none\" or a non-empty list of repo paths")
+    reviewed("unresolved_names", names_declared, "name")
+    for d in names_declared:
+        # Root's round 3 of #33, F09: a name with a code extension is code something runs (`spawn(process.execPath,
+        # ["../../dist/x.js"])`), so reach "none" would say it runs nothing; it must name what it stands for.
+        if d["reach"] == "none" and posixpath.splitext(d["name"])[1].lstrip(".").lower() in CODE_EXT | JS_EXT | PY_EXT:
+            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names {d['name']}, a code file, with reach \"none\"; "
+                             "code that runs reaches its sources, so declare the tracked paths it stands for")
+    by_name = {(d["file"], posixpath.normpath(d["name"])): d for d in names_declared}
+    names_used: set = set()
+    loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
+    reader_dirs = set(es.get("reader_dirs") or [])
+    used: set = set()
+    sources: dict[str, Source] = {}
+
+    def code_source(path: str) -> Source | None:
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext not in JS_EXT | PY_EXT:
+            return None
+        if path not in sources:
+            sources[path] = Source(read_source(repo, path, revision, environment), ext)
+        return sources[path]
+
+    def check_computed(path: str) -> None:
+        src = code_source(path)
+        if src is None or src.ext not in JS_EXT:
+            return
+        if not src.ok:
+            raise ValueError(f"unresolved (the bracket structure of {path} cannot be trusted, so its import calls cannot "
+                             "be read)")
+        # ONE owner() result decides both the credit below and the reach "package" floor (spine, fix 2 with fix 4).
+        caller = owner(path)
+        unit = path.split("/")[0] if path.split("/")[0] in reader_dirs and "/" in path else "<unmapped>"
+
+        def reaches(target: str) -> None:
+            loader_targets.add(target)
+            found = owner(target)
+            if caller is None:
+                # Root's R4 of #33, fix 2: a caller outside every package keys the edge by its own path, so every package
+                # that reaches it is credited with the target. It also maps to its own selection unit, never a
+                # free-floating key (spine): its reader directory's job, or <unmapped>, which plans FULL.
+                edges.setdefault(path, set()).add(target)
+                if found is not None:
+                    readers.setdefault(unit, set()).add(found)
+                    unowned.setdefault(path, {"unit": unit, "reaches": set()})["reaches"].add(found)
+            elif found is None:
+                edges.setdefault(path, set()).add(target)
+            elif found != caller:
+                deps[caller].add(found)
+
+        for expr, tokens, at in computed_import_sites(src):
+            verdict, target = parent_verdict(path, src, tokens, at)
+            if verdict == "literal":
+                reaches(target)  # an all-literal anchored path is a literal import: no declaration needed
+                continue
+            if verdict == "escape":
+                raise ValueError(f"unresolved (a computed import that steps outside its package: `{expr}`) in {path}; "
+                                 "write it as a literal path, which the scan maps")
+            entry = by_site.get((path, expr))
+            if entry is None:
+                raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
+                                 f"edge_scan.computed_imports) in {path}")
+            if entry["reach"] == "package" and caller is None:
+                raise ValueError(f"unresolved (`{expr}` is declared reach \"package\", but {path} is outside every "
+                                 "package, where that names and credits nothing; declare the paths it loads)")
+            if verdict == "inside" and entry["reach"] != "package":
+                raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
+                                 f"declared reach \"package\") in {path}")
+            used.add((path, expr))
+            if isinstance(entry["reach"], list):
+                for target in entry["reach"]:
+                    reaches(posixpath.normpath(target))
+
+    # Every computed import in tracked code, a package's or not (fix 2): a dedicated grep, since such a line names no
+    # root and no `../`.
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+                          IMPORT_CALL_GREP, *([revision] if revision else []), "--",
+                          *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
+                         capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if out.returncode not in (0, 1):
+        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    for path in out.stdout.decode("utf-8", errors="replace").split("\0"):
+        if path and revision:
+            path = path[len(revision) + 1:]
+        if path:
+            check_computed(path)  # a file outside every package too: its unit runs it, so its loads select that unit
+
+    def named_paths(path: str) -> set[str]:
+        """Rule 1, the whole file: every relative path a reached code file names."""
+        here, found = posixpath.dirname(path), set()
+        src = code_source(path)
+        if src is not None:
+            if not src.ok:
+                raise ValueError(f"unresolved (the bracket structure of {path}, a file a package reaches, cannot be "
+                                 "trusted)")
+            for t in src.code:
+                if t[0] != "str" or not t[3][0].startswith(("./", "../")):
+                    continue
+                if t[3][1] is True:
+                    found.add(posixpath.normpath(posixpath.join(here, t[3][0])))
+                    continue
+                # Round 3 of #33, F03: a relative TEMPLATE (`./w-${n}.mjs`) stands for every tracked file it can spell: each
+                # substitution is any name, so it is a glob. A parent step after a substitution, or a template that
+                # spells no tracked file, refuses.
+                text = t[3][0]
+                pattern = re.sub(r"\{[^{}]*\}", "*", text) if src.py else re.sub(r"\$\{[^{}]*\}", "*", text)
+                if "*" not in pattern:
+                    continue
+                if any(steps_up(x) for x in pattern[pattern.index("*"):].split("/")):
+                    raise ValueError(f"unresolved ({path} names {text}, a template with a parent step after a substitution: "
+                                     "it may reach any file)")
+                glob = posixpath.normpath(posixpath.join(here, pattern))
+                if glob in (".", "..") or glob.startswith("../"):
+                    raise ValueError(f"unresolved ({path} names {text}, the repository root or above it: that reaches every "
+                                     "file, so no mapping of it can be narrower than FULL)")
+                hits = [p for p in tracked if fnmatch.fnmatchcase(p, glob)]
+                if not hits:
+                    raise ValueError(f"unresolved ({path} names {text}, a template that spells no tracked file: it may stand "
+                                     "for anything; write the path out, or declare the load in edge_scan.computed_imports)")
+                found.update(hits)
+            if src.py:
+                for m in PY_IMPORT.finditer(src.text):
+                    for name in re.split(r"\s*,\s*", m.group(1) or m.group(2)):
+                        sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
+                        if sibling in tracked:
+                            found.add(sibling)
+            check_computed(path)
+            return found
+        return shell_names(path)
+
+    def shell_names(path: str) -> set[str]:
+        here, found = posixpath.dirname(path), set()
+        for line in read_source(repo, path, revision, environment).split("\n"):
+            t = line.strip()
+            if t.startswith("#"):
+                continue
+            for pattern in (SHELL_RELATIVE, SHELL_SELF_DIR):
+                for m in pattern.finditer(t):
+                    spec = m.group(1) if pattern is SHELL_RELATIVE else "./" + m.group(1)
+                    found.add(posixpath.normpath(posixpath.join(here, spec)))
+        return found
+
+    def is_code(path: str) -> bool:
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext in CODE_EXT:
+            return True
+        if ext:
+            return False
+        head = read_source(repo, path, revision, environment)[:200]
+        return head.startswith("#!") and re.search(r"\b(?:ba|z|da)?sh\b|\bnode\b|\bpython", head.split("\n")[0]) is not None
+
+    imports: dict[str, set[str]] = {}
+    unit_imports: dict[str, set[str]] = {}  # a path outside every package -> the reader units whose files reach it
+    named: dict[str, set[str]] = {}
+    namers: dict[str, set[str]] = {}  # a target -> the files that name it
+    for p, ts in edges.items():
+        for t in ts:
+            namers.setdefault(t, set()).add(p)
+    unresolved_data: set[str] = set()  # the declared names that resolve to nothing (report only)
+
+    def closure(key: str, starts: list[str], credit, record: dict) -> None:
+        """Every route from `starts` to a fixed point. `credit(found)` credits a package read; `record[path]` gains `key`
+        for every reached file outside every package. A route that resolves to nothing refuses unless declared."""
+        queue, seen = sorted(set(starts)), set()
+        while queue:
+            target = queue.pop(0)
+            if target in seen:
+                continue
+            seen.add(target)
+            if target in (".", "..") or target.startswith("../"):
+                raise ValueError(f"unresolved ({key} reaches {target}, the repository root or above it: that reaches "
+                                 "every file, so no mapping of it can be narrower than FULL)")
+            files = files_of(target)
+            if not files:
+                # A path in a package (an untracked build output, its dist/) stands for that package's sources.
+                found = owner(target)
+                if "node_modules" in target.split("/"):
+                    continue  # an installed dependency, never tracked source: external (its manifests plan FULL)
+                if found is not None:
+                    credit(found)
+                    continue
+                if target in loader_targets or not namers.get(target):
+                    # A declared reach (a computed import's, or an unresolved name's) that itself names nothing.
+                    raise ValueError(f"unresolved ({key} reaches {target}, which names no tracked file or directory, so "
+                                     "a change to what it stands for could not select it)")
+                for f in sorted(namers.get(target, ())):
+                    entry = by_name.get((f, target))
+                    if entry is None:
+                        raise ValueError(f"unresolved ({f} names {target}, which is no tracked file or directory: a route "
+                                         "that resolves to nothing may stand for anything; declare it in "
+                                         "edge_scan.unresolved_names with reach \"none\" or the paths it stands for)")
+                    names_used.add((f, target))
+                    unresolved_data.add(target)
+                    if isinstance(entry["reach"], list):
+                        queue.extend(sorted(posixpath.normpath(x) for x in entry["reach"]))
+                continue
+            for path in files:
+                found = owner(path)
+                if found is not None:
+                    credit(found)  # a package nested in a reached directory, or a link into one
+                    continue
+                record.setdefault(path, set()).add(key)
+                if any(path == d or path.startswith(d + "/") for d in always):
+                    raise ValueError(f"unresolved ({key} reaches {path}, under edge_scan.always_reader_dirs: that "
+                                     "directory is not always-only)")
+                if path.lower().endswith(".md"):
+                    continue
+                ext = posixpath.splitext(path)[1].lstrip(".").lower()
+                if ext in IMPORTING_UNPARSED_EXT:
+                    raise ValueError(f"unresolved ({key} reaches {path}, a .{ext} file that can import modules, which the "
+                                     "scan does not parse, so what it reaches could not select its importers)")
+                code = is_code(path)
+                if excluded(path):
+                    if code:
+                        raise ValueError(f"unresolved ({key} reaches {path}, code the scan excludes, so its reads "
+                                         "cannot be credited)")
+                    continue
+                for read in outside.get(path, set()):
+                    credit(read)
+                if path not in named:
+                    # Root's round 3 of #33, B1: a reached NON-code file's recorded routes are routes too (a compose
+                    # volume `../scripts/w.mjs:/app/w.mjs`, a tsconfig `files`/`extends`, a Makefile recipe): followed.
+                    named[path] = (named_paths(path) if code else dot_routes.get(path, set())) | edges.get(path, set())
+                    for t in named[path]:
+                        namers.setdefault(t, set()).add(path)
+                queue.extend(sorted(named[path] - seen))
+
+    # Round 3, B3: the ./ routes of every file outside every package. A code file names each quoted ./ or ../ string
+    # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
+    dot_routes: dict[str, set[str]] = {}
+    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+                              r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
+                              *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    if listing.returncode not in (0, 1):
+        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
+    for p in sorted(x[len(revision) + 1:] if revision else x
+                    for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
+        if owner(p) is not None or excluded(p) or p.lower().endswith(".md") or tracked.get(p) == "120000":
+            continue
+        if is_code(p):
+            routes = named_paths(p)
+        else:
+            here = posixpath.dirname(p)
+            routes = {t for t in (posixpath.normpath(posixpath.join(here, m.group(1))) for m in NON_CODE_DOT_ROUTE.finditer(
+                read_source(repo, p, revision, environment))) if files_of(t)}
+        if routes:
+            dot_routes[p] = routes
+            for t in routes:
+                namers.setdefault(t, set()).add(p)
+    # Round 4 of #33, B3: a symlink's target text is a route (git grep reads regular files only). A symlink outside every
+    # package routes to what it points at, so `tools/alias.mjs -> worker.mjs` starts its unit and, run by any name, runs
+    # worker.mjs. One inside a package is that package's; the backstop reads its target text as a mention.
+    for p, mode in sorted(tracked.items()):
+        if mode != "120000" or owner(p) is not None or excluded(p):
+            continue
+        link = read_source(repo, p, revision, environment) if revision else os.readlink(repo / p)
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(p), link.strip()))
+        if target != ".." and not target.startswith("../") and not target.startswith("/") and files_of(target):
+            dot_routes.setdefault(p, set()).add(target)
+            namers.setdefault(target, set()).add(p)
+    for package in sorted({owner(p) for p in edges} - {None}):
+        def credit_dep(found: str, package=package) -> None:
+            if found != package:
+                deps[package].add(found)
+        closure(package, [t for p, ts in edges.items() if owner(p) == package for t in ts], credit_dep, imports)
+    # root's delta R4 of #33, D5 (N3): a file outside every package runs in its reader directory's job (or nowhere
+    # declared, <unmapped>), so what it reaches is imported by that unit too: test/foo.test.mjs importing scripts/x.mjs.
+    units: dict[str, list[str]] = {}
+    # Round 3, B3: every file outside every package with a route starts its unit, code or not (test/compose.yml with
+    # `../lib/entry.mjs:/entry.mjs` runs in the test job like test/run.mjs would), plus every ./ route (dot_routes).
+    for p, ts in list(edges.items()) + sorted(dot_routes.items()):
+        if owner(p) is None and not excluded(p):
+            unit = p.split("/")[0] if "/" in p and p.split("/")[0] in reader_dirs else "<unmapped>"
+            units.setdefault(unit, []).extend(ts)
+    for unit, starts in sorted(units.items()):
+        def credit_unit(found: str, unit=unit) -> None:
+            readers.setdefault(unit, set()).add(found)
+        closure(unit, starts, credit_unit, unit_imports)
+    # A reached file in a reader directory may itself be an executor its job runs (scripts/x.test.mjs): its own unit
+    # imports it too, so a mapping of it must still run that job.
+    for path in sorted(set(imports) | set(unit_imports)):
+        top = path.split("/")[0]
+        if "/" in path and top in reader_dirs:
+            unit_imports.setdefault(path, set()).add(top)
+    stale = [f"{f}: {n}" for (f, n) in sorted(by_name) if (f, n) not in names_used]
+    unused = [f"{d['file']}: {d['expr']}" for d in declared if (d["file"], " ".join(d["expr"].split())) not in used]
+    unused += [f"unresolved_names {entry}" for entry in stale]
+    # Round 3 of #33, the backstop's attribution: a tracked file -> the files outside every package whose RECORDED
+    # routes (grep edges, ./ routes, a reached file's named paths) resolve to it, a directory route to everything beneath.
+    routes_to: dict[str, set[str]] = {}
+    for table in (edges, dot_routes, named):
+        for f, ts in table.items():
+            if owner(f) is None:
+                for t in ts:
+                    for hit in files_of(t) if not (t in (".", "..") or t.startswith("../")) else ():
+                        routes_to.setdefault(hit, set()).add(f)
+    return imports, unused, sorted(unresolved_data), unit_imports, routes_to
+
+
+def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path,
+           imports: dict | None = None, computed_unused: list | None = None, unit_imports: dict | None = None,
+           mentions: dict | None = None) -> dict:
     failures, stale = [], []
+    imports = imports or {}
+    unit_imports = unit_imports or {}
+    # 1.5.0 rule 5: a change to an imported file must select its importers, so extra_edges must map it to them.
+    edge_globs = [(glob_to_regex(glob), set(targets)) for glob, targets in sorted((cfg.get("extra_edges") or {}).items())]
+    inert = list(cfg.get("inert_globs") or [])
+    for path, importers in sorted(imports.items()):
+        # plan.classify_paths applies inert_globs before extra_edges, so an inert imported path selects NOTHING when it
+        # changes, whatever extra_edges maps (found by the end-to-end selection census, vagaris docs/**, 2026-10-27).
+        rule = first_match(path, inert)
+        if rule:
+            failures.append(f"inert import: {path} is imported by {', '.join(sorted(importers))}, but inert_globs "
+                            f"{rule!r} makes a change to it select nothing (narrow the glob so it leaves {path} out)")
+            continue
+        mapped = set().union(*[targets for regex, targets in edge_globs if regex.match(path)])
+        for name in sorted(set(importers) - mapped):
+            failures.append(f"undeclared import edge: {name} imports {path} (map it in extra_edges, so a change to it "
+                            f"selects {name})")
+    # root's delta R4 of #33, D5 (N3): a path a file outside every package reaches is mappable only if the mapping still
+    # runs that file. The REAL plan.classify_paths decides: FULL (unmapped, or a full trigger) runs everything; otherwise
+    # the reader job's rule must match what the mapping selects. A file in no reader directory runs in no declared job,
+    # so nothing it reaches may be mapped.
+    es_cfg = cfg.get("edge_scan") or {}
+    reader_rule = (cfg.get("jobs") or {}).get(es_cfg.get("reader_job")) if es_cfg.get("reader_job") else None
+    for path, units in sorted(unit_imports.items()):
+        selection = classify_paths([path], cfg, pkgs)
+        if selection["error"] or selection["evidence"]["full_triggers"] or selection["evidence"]["unmapped"]:
+            continue  # FULL: every job runs (an error plans FULL too)
+        if selection["evidence"]["inert"]:
+            failures.append(f"inert import: {path} is imported from {', '.join(f'{u}/' for u in sorted(units))}, but "
+                            "inert_globs makes a change to it select nothing")
+            continue
+        for unit in sorted(units):
+            if unit == "<unmapped>":
+                failures.append(f"narrowed import: {path} is reached by a file outside every package and every reader "
+                                "directory, which no declared job runs, so mapping it can only narrow FULL (leave it "
+                                "unmapped, or put that file's directory in edge_scan.reader_dirs)")
+                continue
+            try:
+                runs = reader_rule is not None and rule_matches(reader_rule, selection["affected"])[0]
+            except ValueError:
+                runs = False
+            if not runs:
+                failures.append(f"narrowed import: {path} is reached from {unit}/, which reader job "
+                                f"'{es_cfg.get('reader_job')}' runs, but its mapping selects "
+                                f"{sorted(selection['affected']) or 'no package'} and not that job (map it to a package "
+                                "the job lists, or leave it unmapped so it plans FULL)")
+    # Root's round 3 of #33, the BACKSTOP (attack-independent, failing toward FULL): a mapping for P is accepted only if
+    # every other tracked file that names P's basename is in a package the mapping selects, or is a file outside every
+    # package whose route to P the scan recorded. Anything else is a runner the scan did not see, by a spelling nobody
+    # listed yet: P plans FULL until the mapping covers it or full_globs says so. A basename collision goes FULL too.
+    # Round 4: the same holds for every file outside every package that reaches P by a recorded route (B1, its runner
+    # runs P), and for a path inert_globs maps to nothing (B4). The FAIL prefixes stay fixed; what a hop adds is at the end.
+    inert_globs = list(cfg.get("inert_globs") or [])
+    for path, rows in sorted((mentions or {}).items()):
+        selection = classify_paths([path], cfg, pkgs)
+        if selection["error"] or selection["evidence"]["full_triggers"] or selection["evidence"]["unmapped"]:
+            continue  # FULL: every job runs
+        affected = set(selection["affected"])
+        inert_rule = first_match(path, inert_globs) if selection["evidence"]["inert"] else None
+        for f, own, subject, member in rows:
+            if (own is not None and own in affected) or (own is None and subject):
+                continue
+            base = posixpath.basename(member)
+            via = "" if member == path else f"; {member} reaches {path} by a recorded route, so what runs it runs {path}"
+            if inert_rule:
+                failures.append(f"inert mention: {f} names {base}, but inert_globs {inert_rule!r} makes a change to "
+                                f"{path} select nothing (narrow the glob so it leaves {path} out, or add {path} to "
+                                f"full_globs so a change to it plans FULL){via}")
+            elif own is not None:
+                failures.append(f"unattributed mention: {f} (package {own}) names {base}, but the mapping for {path} "
+                                f"selects {sorted(affected) or 'no package'} (map {path} to {own} too, or add {path} to "
+                                f"full_globs so a change to it plans FULL){via}")
+            else:
+                failures.append(f"unattributed mention: {f}, outside every package, names {base} by a route the scan did "
+                                f"not record, so whatever runs {f} may run {path} (add {path} to full_globs so a change "
+                                f"to it plans FULL, or write the route as a relative path the scan follows){via}")
+    for entry in computed_unused or []:
+        failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):
         failures.append("unmapped source readers require a declared obligation: " + ", ".join(sorted(readers["<unmapped>"])))
     for name, found in deps.items():
@@ -1912,6 +2928,8 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
               "graph_sha256": graph_digest(pkgs), "scanner_source_sha256": sha256_file(Path(__file__)),
               "deps": {name: sorted(values) for name, values in sorted(deps.items())},
               "readers": {name: sorted(values) for name, values in sorted(readers.items())},
+              "imports": {path: sorted(values) for path, values in sorted(imports.items())},
+              "unit_imports": {path: sorted(values) for path, values in sorted(unit_imports.items())},
               "failures": failures, "stale": stale}
     result["assessment_sha256"] = canonical_digest(result)
     return result
@@ -1929,13 +2947,19 @@ def main(argv=None) -> int:
     repo = Path(a.repo)
     cfg = json.loads((repo / a.config).read_text())
     manifest_root = Path(a.manifest_root) if a.manifest_root else repo
-    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision)
+    report: dict = {}
+    # The candidate's copy of the planner config (the action reads the base copy: --config <base>/<config>).
+    policy = posixpath.normpath(os.path.relpath(repo / a.config, manifest_root))
+    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report, policy_files=(policy,))
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
-                          "readers": {k: sorted(v) for k, v in sorted(readers.items())}}, indent=1))
+                          "readers": {k: sorted(v) for k, v in sorted(readers.items())},
+                          "imports": report["imports"], "unit_imports": report["unit_imports"]}, indent=1))
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
-    assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config)
+    assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config,
+                        imports=report["imports"], computed_unused=report["computed_imports_unused"],
+                        unit_imports=report["unit_imports"], mentions=report["mentions"])
     failures, stale = assessment["failures"], assessment["stale"]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")

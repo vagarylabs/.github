@@ -1,7 +1,9 @@
 """edges.py tests: a read in code is an edge, a read in a comment or Markdown is not, and check fails on an
 undeclared read (the RED case) while a declared one passes."""
+import base64
 import io
 import json
+import re
 import os
 from unittest.mock import patch
 import subprocess
@@ -10,7 +12,25 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import datetime
 import edges as E
+from plan import classify_paths, rule_matches
+
+# Root's ruling on #33 round 3: computed_imports and unresolved_names are a registry, each entry with a reason and a
+# review_by at most 30 days after today(). The suite pins today(); fixtures that are not about the review get REVIEW.
+E.today = lambda: datetime.date(2026, 10, 29)
+REVIEW = {"reason": "test fixture: reviewed with its case", "review_by": "2026-11-20"}
+
+
+def reviewed_cfg(cfg: dict) -> dict:
+    """The config with REVIEW on every declaration that carries neither field (the registry tests pass both)."""
+    cfg = json.loads(json.dumps(cfg))
+    es = cfg.get("edge_scan") or {}
+    for kind in ("computed_imports", "unresolved_names"):
+        if isinstance(es.get(kind), list):
+            es[kind] = [{**REVIEW, **d} if isinstance(d, dict) and not ({"reason", "review_by"} & set(d)) else d
+                        for d in es[kind]]
+    return cfg
 
 CFG = {
     "schema": 1,
@@ -163,6 +183,13 @@ class EdgesTest(unittest.TestCase):
                 mutate(cfg)
                 with self.assertRaises(ValueError):
                     E.scan(self.repo, cfg)
+        # 1.5.0: a package that imports a file in the directory runs it in every job that runs the package, so the
+        # directory is not always-only, whatever the config says (cli, 2026-10-27: vagaris server imports scripts/).
+        (self.repo / "services/a/uses.mjs").write_text('import { h } from "../../scripts/helper.mjs";\n')
+        (self.repo / "scripts/helper.mjs").write_text("export const h = 1;\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        with self.assertRaisesRegex(ValueError, "always_reader_dirs"):
+            E.scan(self.repo, self.always_cfg())
 
     def test_a_change_inside_an_always_reader_dir_still_plans_full(self):
         """Leaving the directory out of the scan scopes its READS only; its own files stay unmapped."""
@@ -490,9 +517,7 @@ class EdgesTest(unittest.TestCase):
                           "R5V01_py_subprocess_module_alias", "R5V02_py_from_subprocess_import_run",
                           "R5V03_py_command_string_via_variable", "R5V04_py_asyncio_create_subprocess_shell",
                           "R5V07_js_execaCommand", "R5V08_js_child_process_destructured_alias",
-                          "R5V13_makefile_target_specific_var", "R5V14_sh_find_while_read", "R5V15_taskfile_dir_key",
-                          "R5V17_yaml_key_is_project_dir", "R5V18_py_popen_alias_cwd", "R5V19_py_chdir_alias",
-                          "R5V22_py_asyncio_exec_cwd", "R5V24_py_dirname_alias_inline_comment",
+                          "R5V17_yaml_key_is_project_dir", "R5V24_py_dirname_alias_inline_comment",
                           "R5V25_py_dirname_alias_tuple", "R5V26_js_require_dirname_alias",
                           "R5V27_py_parent_name_concat_dots", "R5V28_py_parent_name_joined_dots",
                           "R5V29_py_parent_name_path_dotdot", "R5V30_py_parent_name_fstring",
@@ -501,13 +526,8 @@ class EdgesTest(unittest.TestCase):
                           "R5V36_py_property_with_comment", "R5V37_py_function_ref_via_assignment",
                           "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
                           "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
-                          "R6V18_pkg_husky_hooks_not_scripts", "R6V19_deno_json_tasks",
-                          "R6V21_chdir_tainted_attribute", "R6V22_exec_cwd_tainted_attribute",
-                          "R6V23_js_exec_cwd_this_attribute", "R6V24_chdir_then_path_cwd_parent",
-                          "R6V25_chdir_then_fstring_dotdot_end", "R7B1a_py_chdir_fstring_of_tainted_name",
-                          "R7B1c_js_quoted_cwd_key", "R7T17_py_chdir_sibling_function_parameter",
-                          "R7T18_py_chdir_sibling_function_local", "R8T02_js_cwd_template_of_tainted_name",
-                          "R8T03_js_single_quoted_cwd_key", "T19_partial_split_root",
+                          "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
+                          "R6V25_chdir_then_fstring_dotdot_end", "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
@@ -604,6 +624,893 @@ class EdgesTest(unittest.TestCase):
         (self.repo / "cli/package.json").write_text('{"name":"server"}')
         with self.assertRaises(ValueError):
             E.workspace_graph(self.repo, cfg)
+
+
+IMPORT_CFG = {
+    "schema": 1,
+    "workspace": {"type": "declared", "packages": {
+        "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []},
+        "c": {"dir": "services/c", "deps": []},
+        "tp": {"dir": "tools/pkg", "deps": []},
+    }},
+    "edge_scan": {"roots": ["services"], "reader_dirs": ["scripts", "tools"], "reader_job": "root",
+                  "exclude": ["*.md", "docs", ".github", "vendor"]},
+    "jobs": {"root": "always"},
+}
+
+
+class ImportAttributionTest(unittest.TestCase):
+    """1.5.0: a package is credited with the reads of the files outside every package it imports (cli, 2026-10-27).
+    Before it, a relative path resolving outside every package was dropped, so deps(a) missed what scripts/x.mjs read."""
+
+    def setUp(self):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.repo = Path(self._td.name)
+        for d in ("services/a", "services/b", "services/c", "tools/pkg", "scripts", ".github"):
+            (self.repo / d).mkdir(parents=True)
+        for d in ("services/b", "services/c", "tools/pkg"):
+            (self.repo / d / "app.py").write_text("x = 1\n")
+        (self.repo / "services/a/app.py").write_text("x = 1\n")
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+
+    def files(self, **files):
+        for path, text in files.items():
+            target = self.repo / path.replace("__", "/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+
+    def scan(self, cfg=None):
+        report = {}
+        deps, readers = E.scan(self.repo, reviewed_cfg(cfg or IMPORT_CFG), report=report)
+        return deps, readers, report
+
+    def test_one_hop_import_credits_the_imported_files_reads(self):
+        self.files(**{"services__a__t.test.mjs": 'import { x } from "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'export const x = () => readFileSync("services/b/data.json");\n'})
+        deps, readers, report = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(readers["scripts"], {"b"}, "the reader job keeps its credit: nothing is ever narrower")
+        self.assertEqual(report["imports"], {"scripts/x.mjs": ["a"]})
+
+    def test_a_dot_slash_import_inside_a_reached_file_is_followed_though_the_grep_never_sees_it(self):
+        # y.mjs is reached only through `./y.mjs`, a line with no root and no `../`: only the whole-file read finds it.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'import { y } from "./y.mjs";\nexport { y };\n',
+                      "scripts__y.mjs": 'export const y = "services/c/z.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"c"})
+        self.assertEqual(sorted(report["imports"]), ["scripts/x.mjs", "scripts/y.mjs"])
+
+    def test_cycles_terminate_and_two_importers_are_both_credited(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "services__b__t.mjs": 'import "../../scripts/y.mjs";\n',
+                      "scripts__x.mjs": 'import "./y.mjs";\nconst p = "services/c/q.json";\n',
+                      "scripts__y.mjs": 'import "./x.mjs";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual((deps["a"], deps["b"]), ({"c"}, {"c"}))
+        self.assertEqual(report["imports"], {"scripts/x.mjs": ["a", "b"], "scripts/y.mjs": ["a", "b"]})
+
+    def test_extensionless_require_python_sibling_and_shell_source_resolve(self):
+        self.files(**{"services__a__t.cjs": 'const m = require("../../scripts/m");\n',
+                      "scripts__m.js": 'module.exports = 1;\nrequire("./run.py");\n',
+                      "scripts__run.py": "import helper\n",
+                      "scripts__helper.py": 'P = "services/b/x.json"\n',
+                      "services__c__t.mjs": 'import "../../scripts/r.sh";\n',
+                      "scripts__r.sh": '#!/bin/bash\nsource "$(dirname "$0")/lib.sh"\n',
+                      "scripts__lib.sh": "cat services/a/data.txt\n"})
+        deps, _, _ = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(deps["c"], {"a"})
+
+    def test_a_symlinked_file_or_directory_resolves_to_its_target(self):
+        self.files(**{"tools__real.mjs": 'export const r = "services/b/x.json";\n',
+                      "services__a__t.mjs": 'import "../../scripts/link.mjs";\nimport "../../scripts/dirlink/real.mjs";\n'})
+        os.symlink("../tools/real.mjs", self.repo / "scripts/link.mjs")
+        os.symlink("../tools", self.repo / "scripts/dirlink")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"})
+        self.assertIn("tools/real.mjs", report["imports"])
+
+    def test_a_directory_target_reads_its_files_and_a_nested_package_is_a_dep(self):
+        self.files(**{"services__a__t.mjs": 'const dir = new URL("../../tools/", import.meta.url);\n',
+                      "tools__z.mjs": 'export const z = "services/c/z.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"c", "tp"}, "tools/pkg is package tp: an edge to it is a dep, not a closure file")
+        self.assertNotIn("tools/pkg/app.py", report["imports"])
+
+    def test_data_targets_are_credited_markdown_is_edge_only_and_a_data_route_is_followed(self):
+        # Root's round 3 of #33, B1: a reached data file's ./ route is a route (a compose volume, a tsconfig `files`), so
+        # its ./more.mjs is followed and what more.mjs reads (c) is credited too. A .md file stays edge-only.
+        self.files(**{"services__a__t.mjs": 'read("../../scripts/data.json"); read("../../scripts/notes.md");\n',
+                      "scripts__data.json": '{"dir": "services/b/x", "next": "./more.mjs"}\n',
+                      "scripts__more.mjs": 'export const m = "services/c/m.json";\n',
+                      "scripts__notes.md": "see services/c\n"})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b", "c"}, "the data file is credited, and so is the module its ./more.mjs names")
+        self.assertEqual(sorted(report["imports"]), ["scripts/data.json", "scripts/more.mjs", "scripts/notes.md"])
+
+    def test_fail_closed_on_an_excluded_or_always_only_code_target(self):
+        self.files(**{"services__a__t.mjs": 'import "../../vendor/v.mjs";\n', "vendor__v.mjs": "export {};\n"})
+        with self.assertRaisesRegex(ValueError, "excludes"):
+            self.scan()
+        (self.repo / "services/a/t.mjs").write_text('import "../../scripts/s.mjs";\n')
+        self.files(**{"scripts__s.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["always_reader_dirs"] = ["scripts"]
+        with self.assertRaisesRegex(ValueError, "always_reader_dirs"):
+            self.scan(cfg)
+
+    def test_a_refusal_inside_a_reached_file_refuses(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n',
+                      "scripts__x.mjs": 'export const p = path.join(ROOT, "services", "..", "b");\n'})
+        with self.assertRaises(ValueError):
+            self.scan()
+
+    def test_computed_imports_refuse_unless_declared_and_an_escape_refuses_even_declared(self):
+        self.files(**{"services__a__load.mjs": "export const load = (name) => import(name);\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.mjs", "expr": "name", "reach": "external"}]
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for escaping in ('import(path.join(here, "..", name))', 'import("../../" + name)', "import(`../../scripts/${n}.mjs`)",
+                         'require(join(root, "scripts", n))'):
+            with self.subTest(escaping):
+                (self.repo / "services/a/load.mjs").write_text(f"export const load = () => {escaping};\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                expr = escaping[escaping.index("(") + 1:-1]
+                cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.mjs", "expr": expr, "reach": "external"}]
+                # `"../../"` alone resolves to the repository root, which refuses first (D5, N4): either way, never mapped.
+                with self.assertRaisesRegex(ValueError, "steps outside its package|the repository root or above it"):
+                    self.scan(cfg)
+
+    def test_a_parent_step_inside_the_package_needs_a_package_declaration_and_an_escape_never_passes(self):
+        # vagary-core identity's contract-drift test: `import(\`../dist/${m}\`)` stays inside its own package.
+        f = "services/a/test/drift.mjs"
+        self.files(**{"services__a__test__drift.mjs": "export const d = (m) => import(`../dist/${m}`);\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": "`../dist/${m}`", "reach": "external"}]
+        with self.assertRaisesRegex(ValueError, 'must be declared reach "package"'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "package"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+        for escaping in ("import(`../../x/${m}`)", "import(`${base}/../x`)", "import(`../dist/${m}/../../../scripts/y.mjs`)",
+                         "require(path.resolve(__dirname, '..', '..', 'scripts', x))",
+                         "require(path.join(__dirname, x, '..', '..', '..', 'scripts', 'y.mjs'))"):
+            with self.subTest(escaping):
+                (self.repo / f).write_text(f"export const d = () => {escaping};\n")
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+                cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": escaping[escaping.index("(") + 1:-1],
+                                                         "reach": "package"}]
+                with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                    self.scan(cfg)
+
+    def test_an_all_literal_path_anchored_at_the_file_is_a_literal_import(self):
+        # vagary-core webhook-egress's ssrf test: require(path.resolve(__dirname, '..', 'dist', 'ssrf.js')).
+        self.files(**{
+            "services__a__test__ssrf.test.mjs": "const { v } = require(path.resolve(__dirname, '..', 'dist', 'ssrf.js'));\n"
+                                                "const here = dirname(fileURLToPath(import.meta.url));\n"
+                                                "const x = await import(pathToFileURL(join(here, '..', '..', '..', "
+                                                "'scripts', 'x.mjs')).href);\n",
+            "scripts__x.mjs": 'export const x = "services/b/x.json";\n'})
+        deps, _, report = self.scan()
+        self.assertEqual(deps["a"], {"b"}, "the anchored literal chain to scripts/x.mjs is an edge, and its reads credit a")
+        self.assertIn("scripts/x.mjs", report["imports"])
+
+    def test_every_module_loader_form_is_held_to_the_declaration_rule(self):
+        forms = {"require.resolve": "const p = require.resolve(name);\n",
+                 "import.meta.resolve": "const p = import.meta.resolve(name);\n",
+                 "createRequire(...)(x)": "const m = createRequire(import.meta.url)(name);\n",
+                 "a createRequire binding": "const r = createRequire(import.meta.url);\nconst m = r(name);\n",
+                 "module.require": "const m = module.require(name);\n"}
+        for why, body in forms.items():
+            with self.subTest(why):
+                self.files(**{"services__a__load.mjs": body})
+                with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+                    self.scan()
+        self.files(**{"services__a__load.mjs": "const m = registry.require(name);\n"})
+        self.assertEqual(self.scan()[2]["computed_imports_unused"], [], "control: an object's own `require` is no loader")
+
+    def test_a_literal_under_a_typescript_cast_is_a_literal_and_a_cast_name_is_not(self):
+        # vagary-core's services/*/src/observability.ts load `import("@opentelemetry/sdk-node" as string)`: a literal.
+        self.files(**{"services__a__obs.ts": 'const m = await import("redis" as string);\n'})
+        self.assertEqual(self.scan()[2]["computed_imports_unused"], [])
+        (self.repo / "services/a/obs.ts").write_text("const m = await import(name as string);\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name as string`"):
+            self.scan()
+
+    def test_a_declared_reach_list_is_an_edge_and_a_stale_declaration_fails_check(self):
+        self.files(**{"services__a__load.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "scripts__x.mjs": 'export const x = "services/b/x.json";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [
+            {"file": "services/a/load.mjs", "expr": "pathToFileURL(f).href", "reach": ["scripts/x.mjs"]},
+            {"file": "services/a/gone.mjs", "expr": "x", "reach": "package"}]
+        deps, _, report = self.scan(cfg)
+        self.assertEqual(deps["a"], {"b"})
+        self.assertEqual(report["computed_imports_unused"], ["services/a/gone.mjs: x"])
+        assessment = E.assess(E.workspace_graph(self.repo, cfg), cfg, deps, {"scripts": set(), "tools": set()},
+                              revision=None, config_path=Path(__file__),
+                              computed_unused=report["computed_imports_unused"])
+        self.assertIn("stale computed_imports entry: services/a/gone.mjs: x matches no import call", assessment["failures"])
+
+    def test_check_fails_on_an_undeclared_import_edge_until_extra_edges_maps_it(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+
+        def check(c):
+            (self.repo / ".github/ci-plan.json").write_text(json.dumps(c))
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+            return rc, buf.getvalue()
+
+        rc, out = check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("undeclared import edge: a imports scripts/x.mjs", out)
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        self.assertEqual(check(cfg)[0], 0)
+        import plan
+        pkgs = E.workspace_graph(self.repo, cfg)
+        selected = plan.classify_paths(["scripts/x.mjs"], cfg, pkgs)
+        self.assertEqual((selected["evidence"]["unmapped"], sorted(selected["affected"])), ([], ["a"]),
+                         "a change to the imported file selects its importer, not FULL")
+
+    def check(self, cfg):
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(reviewed_cfg(cfg)))
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+        return rc, buf.getvalue()
+
+    def test_root_r4_counterexample_a_js_specifier_of_a_ts_file_is_never_dropped(self):
+        # root's R4 of #33 (2026-10-27): c imported scripts/x.ts as ../../scripts/x.js and was DROPPED, so the mapping
+        # check requested ({"scripts/x.ts": ["a"]}) passed and a change to x.ts selected only a, narrower than FULL.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.ts";\n',
+                      "services__c__t.mjs": 'import { x } from "../../scripts/x.js";\n',
+                      "scripts__x.ts": "export const x = 1;\n"})
+        self.assertEqual(self.scan()[2]["imports"], {"scripts/x.ts": ["a", "c"]})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/x.ts": ["a"]}
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "the narrowing mapping no longer passes")
+        self.assertIn("undeclared import edge: c imports scripts/x.ts", out)
+        cfg["extra_edges"] = {"scripts/x.ts": ["a", "c"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        selected = plan.classify_paths(["scripts/x.ts"], cfg, E.workspace_graph(self.repo, cfg))
+        self.assertEqual(sorted(selected["affected"]), ["a", "c"])
+
+    def test_every_typescript_source_form_resolves(self):
+        cases = {"x.jsx": "scripts/x.tsx", "x.mjs": "scripts/x.mts", "x.cjs": "scripts/x.cts", "y.js": "scripts/y.d.ts"}
+        for spec, source in cases.items():
+            with self.subTest(spec):
+                self.files(**{"services__a__t.mjs": f'import "../../scripts/{spec}";\n',
+                              source.replace("/", "__"): "export {};\n"})
+                self.assertIn(source, self.scan()[2]["imports"])
+
+    def test_a_path_that_names_nothing_refuses_and_an_untracked_path_in_a_package_maps_to_it(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/gone.js";\n'})
+        with self.assertRaisesRegex(ValueError, "services/a/t.mjs names scripts/gone.js, which is no tracked file or directory"):
+            self.scan()
+        # A build output in a package (untracked dist/) stands for that package: a dep, never dropped. tools/run.mjs
+        # names it as ./pkg/dist/index.js, a line with no root and no ../, so only the whole-file read sees it.
+        self.files(**{"services__a__t.mjs": 'import "../../tools/run.mjs";\n',
+                      "tools__run.mjs": 'export { p } from "./pkg/dist/index.js";\n'})
+        self.assertEqual(self.scan()[0]["a"], {"tp"})
+
+    def test_spine_control_an_unowned_caller_selects_its_own_unit_and_credits_its_importers(self):
+        # spine's binding control for fix 2 (2026-10-27): a root-level scripts/x.mjs loads services/b/src/y.ts through
+        # a declared computed import. Touching y must select x's unit (the reader job), and a package that imports x
+        # is credited with b. Before fix 2 an unowned caller's computed import credited nothing.
+        decl = [{"file": "scripts/x.mjs", "expr": "pathToFileURL(f).href", "reach": ["services/b/src/y.ts"]}]
+        self.files(**{"scripts__x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n",
+                      "services__a__t.mjs": 'import { load } from "../../scripts/x.mjs";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = decl
+        cfg["jobs"] = {"root": {"packages": []}}
+        deps, readers, report = self.scan(cfg)
+        self.assertEqual(readers["scripts"], {"b"}, "x's own unit, the scripts/ reader job, reads b")
+        self.assertEqual(deps["a"], {"b"}, "a reaches x, so a is credited with what x loads")
+        self.assertEqual(report["unowned_callers"], {"scripts/x.mjs": {"unit": "scripts", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/ reads b, but job 'root' does not list it", out)
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        cfg["workspace"]["packages"]["a"]["deps"] = ["b"]
+        # scripts/x.mjs sits in the reader directory scripts/, so a change to it must still run that job (D5, N3): the
+        # mapping names b, which the root job lists, beside its importer a.
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a", "b"]}
+        self.assertEqual(self.check(cfg)[0], 0)
+        import plan
+        affected = plan.classify_paths(["services/b/src/y.ts"], cfg, E.workspace_graph(self.repo, cfg))["affected"]
+        self.assertEqual(plan.rule_matches(cfg["jobs"]["root"], affected)[0], True, "touching y selects x's unit")
+
+    def test_an_unowned_caller_outside_every_reader_dir_maps_to_unmapped_and_plans_full(self):
+        self.files(**{"x.mjs": "export const load = (f) => import(pathToFileURL(f).href);\n",
+                      "services__b__src__y.ts": "export const y = 1;\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "x.mjs", "expr": "pathToFileURL(f).href",
+                                                 "reach": ["services/b/src/y.ts"]}]
+        _, readers, report = self.scan(cfg)
+        self.assertEqual(readers["<unmapped>"], {"b"})
+        self.assertEqual(report["unowned_callers"], {"x.mjs": {"unit": "<unmapped>", "reaches": ["b"]}})
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1, "no unit runs x.mjs, so check fails and the plan is FULL, never a drop")
+        self.assertIn("unmapped source readers require a declared obligation: b", out)
+
+    def test_an_unowned_files_undeclared_computed_import_refuses(self):
+        self.files(**{"scripts__x.mjs": "export const load = (name) => import(name);\n"})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
+            self.scan()
+
+    def test_reach_package_outside_every_package_refuses(self):
+        # Root's R4 of #33, fix 4: reach "package" for a file outside every package names and credits nothing.
+        self.files(**{"scripts__x.mjs": "export const load = (name) => import(name);\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/x.mjs", "expr": "name", "reach": "package"}]
+        with self.assertRaisesRegex(ValueError, 'declared reach "package", but scripts/x.mjs is outside every package'):
+            self.scan(cfg)
+        cfg["edge_scan"]["computed_imports"][0]["reach"] = "external"
+        self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [], "control: another reach is accepted")
+
+    def test_root_r4_an_escape_can_never_be_declared_away(self):
+        # Root's R4 of #33, fix 3: a parent step after the join's closing bracket, and nested dirname() calls, escape.
+        f = "services/a/load.mjs"
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        for escaping in ('import(path.join(__dirname, "lib") + "/../../../scripts/x.mjs")',
+                         'import(path.join(dirname(dirname(__dirname)), "x", n))',
+                         'import(join(path.dirname(here), "lib", n))'):
+            for reach in ("package", "external"):
+                with self.subTest(escaping, reach=reach):
+                    self.files(**{"services__a__load.mjs": f"export const load = (n, here) => {escaping};\n"})
+                    cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": escaping[escaping.index("(") + 1:-1],
+                                                             "reach": reach}]
+                    with self.assertRaisesRegex(ValueError, "steps outside its package|the repository root or above it"):
+                        self.scan(cfg)
+        # Controls: the file's own directory is the anchor, not a step up, and a literal tail without `..` is no escape.
+        for fine in ('import(path.join(dirname(fileURLToPath(import.meta.url)), "lib", n))',
+                     'import(path.join(path.dirname(__filename), "lib", n))',
+                     'import(path.join(__dirname, "lib") + ".mjs")'):
+            with self.subTest(fine):
+                self.files(**{"services__a__load.mjs": f"export const load = (n) => {fine};\n"})
+                cfg["edge_scan"]["computed_imports"] = [{"file": f, "expr": fine[fine.index("(") + 1:-1],
+                                                         "reach": "external"}]
+                self.assertEqual(self.scan(cfg)[2]["computed_imports_unused"], [])
+
+    def test_an_anchored_literal_join_followed_by_a_computed_tail_is_no_literal_import(self):
+        # Kills root's m3 (`if not rest:`): the chain closes, then `+ name` is computed, so it must be declared.
+        self.files(**{"services__a__load.mjs": 'export const load = (name) => import(path.join(__dirname, "lib") + name);\n'})
+        with self.assertRaisesRegex(ValueError, "undeclared computed import"):
+            self.scan()
+
+    def test_check_fails_on_an_imported_path_that_inert_globs_hides(self):
+        # The end-to-end selection census (2026-10-27): vagaris's candidate config makes docs/** inert, and the server
+        # imports docs/docs.json, so a change to it selected NOTHING though check had asked for extra_edges.
+        self.files(**{"services__a__t.mjs": 'import data from "../../scripts/data/x.json";\n',
+                      "scripts__data__x.json": "{}\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["extra_edges"] = {"scripts/data/x.json": ["a"]}
+        cfg["inert_globs"] = ["scripts/data/**"]
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("inert import: scripts/data/x.json is imported by a, but inert_globs 'scripts/data/**'", out)
+        import plan
+        self.assertEqual(plan.classify_paths(["scripts/data/x.json"], cfg, E.workspace_graph(self.repo, cfg))["affected"],
+                         set(), "the hole itself: inert wins over extra_edges")
+        cfg["inert_globs"] = ["scripts/data/*.md"]
+        self.assertEqual(self.check(cfg)[0], 0, "control: a glob that leaves the import out is accepted")
+
+    def test_a_trailing_slash_exclude_names_its_directory(self):
+        # Root's R4 of #33 (non-blocking): `vendor/` never matched in excluded(), though git's pathspec excludes it.
+        self.files(**{"services__a__t.mjs": 'import "../../third/x.mjs";\n', "third__x.mjs": "export {};\n"})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["exclude"] = ["*.md", "docs", ".github", "third/"]
+        with self.assertRaisesRegex(ValueError, "a reaches third/x.mjs, code the scan excludes"):
+            self.scan(cfg)
+
+    def test_d5_every_route_that_resolves_to_nothing_refuses_in_any_position(self):
+        # Root's delta R4 of #33, D5 (N1): a scan that cannot run a line cannot tell a module position from data, so a
+        # name that resolves to no tracked file refuses wherever it stands: every spelling below plans [a] at 7b83bf159e
+        # although the file it loads is a's dependency. node_modules stays external.
+        spellings = {
+            "timeout": "timeout 300 node ../../tools/dist/x.js\n",
+            "npx tsx": "npx tsx ../../tools/dist/x.js\n",
+            "env -i": "env -i node ../../tools/dist/x.js\n",
+            "node --import": "node --import ../../tools/dist/x.js main.js\n",
+            "pnpm exec": "pnpm exec node ../../tools/dist/x.js\n",
+            "xargs": "printf a | xargs node ../../tools/dist/x.js\n",
+            "nohup": "nohup node ../../tools/dist/x.js &\n",
+            "heredoc import": "node --input-type=module <<'EOF'\nimport \"../../tools/dist/x.js\";\nEOF\n",
+            "find pattern": "find . ! -path '../../tools/dist/x.js'\n",
+        }
+        for why, body in spellings.items():
+            with self.subTest(why):
+                self.files(**{"services__a__run.sh": "#!/bin/bash\n" + body})
+                with self.assertRaisesRegex(ValueError, "names tools/dist/x.js, which is no tracked file or directory"):
+                    self.scan()
+        for why, js in {"fork": 'fork("../../tools/dist/x.js");', "Worker": 'new Worker("../../tools/dist/x.js");',
+                        "spawn": 'spawn(process.execPath, ["../../tools/dist/x.js"]);'}.items():
+            with self.subTest(why):
+                self.files(**{"services__a__run.sh": "#!/bin/bash\n", "services__a__w.mjs": js + "\n"})
+                with self.assertRaisesRegex(ValueError, "names tools/dist/x.js, which is no tracked file or directory"):
+                    self.scan()
+        with self.subTest("package.json script"):
+            self.files(**{"services__a__w.mjs": "export {};\n",
+                          "services__a__package.json": '{"scripts": {"t": "node ../../tools/dist/x.js"}}\n'})
+            with self.assertRaisesRegex(ValueError, "names tools/dist/x.js, which is no tracked file or directory"):
+                self.scan()
+        self.files(**{"services__a__package.json": '{"scripts": {"t": "node ../../node_modules/.bin/vitest"}}\n'})
+        self.scan()  # an installed binary is external
+
+    def test_d5_a_declared_unresolved_name_names_nothing_or_stands_for_its_paths(self):
+        self.files(**{"services__a__run.sh": "#!/bin/bash\nnode ../../tools/dist/x.js\ncat ../../tools/out/r.txt\n",
+                      "tools__x.ts": 'export const p = "services/b/p.json";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        # Root's round 3 of #33, F09: reach "none" for a CODE name says it runs nothing, so it refuses.
+        cfg["edge_scan"]["unresolved_names"] = [{"file": "services/a/run.sh", "name": "tools/dist/x.js", "reach": "none"},
+                                                {"file": "services/a/run.sh", "name": "tools/out/r.txt", "reach": "none"}]
+        with self.assertRaisesRegex(ValueError, r"names tools/dist/x.js, a code file, with reach \"none\""):
+            self.scan(cfg)
+        cfg["edge_scan"]["unresolved_names"][0]["reach"] = ["tools/x.ts"]
+        deps, _, report = self.scan(cfg)
+        self.assertEqual(report["unresolved_data_names"], ["tools/dist/x.js", "tools/out/r.txt"],
+                         "both names resolve to nothing; the data one may reach nothing, the code one reaches its source")
+        deps, _, report = self.scan(cfg)
+        self.assertEqual(deps["a"], {"b"}, "a build output declared as its source is an edge to that source")
+        self.assertEqual(report["imports"]["tools/x.ts"], ["a"])
+        cfg["edge_scan"]["unresolved_names"][0]["reach"] = ["tools/also-gone.ts"]  # a declared reach that names nothing
+        with self.assertRaisesRegex(ValueError, "reaches tools/also-gone.ts, which names no tracked file or directory"):
+            self.scan(cfg)
+        cfg["edge_scan"]["unresolved_names"][0]["reach"] = ["tools/x.ts"]
+        cfg["edge_scan"]["unresolved_names"].append({"file": "services/a/run.sh", "name": "tools/gone.txt", "reach": "none"})
+        self.assertIn("unresolved_names services/a/run.sh: tools/gone.txt", self.scan(cfg)[2]["computed_imports_unused"])
+        cfg["edge_scan"]["unresolved_names"] = [{"file": "services/a/run.sh", "name": "tools/dist/x.js", "reach": "some"}]
+        with self.assertRaisesRegex(ValueError, "unresolved_names entries must be"):
+            self.scan(cfg)
+
+    def test_the_declaration_lists_are_a_reviewed_registry_that_fails_toward_full(self):
+        # Root's ruling on #33 round 3: a reason, and a review_by within 30 days of today(); otherwise the scan refuses.
+        self.files(**{"services__a__run.sh": "#!/bin/bash\ncat ../../tools/out/r.txt\n",
+                      "services__a__load.mjs": "export const l = (name) => import(name);\n"})
+        names = {"file": "services/a/run.sh", "name": "tools/out/r.txt", "reach": "none"}
+        loads = {"file": "services/a/load.mjs", "expr": "name", "reach": "external"}
+        good = {"reason": "a report the test writes, never run", "review_by": "2026-11-28"}
+        for kind, entry in (("unresolved_names", names), ("computed_imports", loads)):
+            other = ("computed_imports", loads) if kind == "unresolved_names" else ("unresolved_names", names)
+            for why, review, message in (
+                    ("no reason", {"reason": " ", "review_by": "2026-11-20"}, "has no reason"),
+                    ("expired", {"reason": "r", "review_by": "2026-10-28"}, "expired on 2026-10-28"),
+                    ("too far", {"reason": "r", "review_by": "2026-11-29"}, "more than 30 days out"),
+                    ("not a date", {"reason": "r", "review_by": "soon"}, "is not an ISO date")):
+                with self.subTest(kind=kind, why=why):
+                    cfg = json.loads(json.dumps(IMPORT_CFG))
+                    cfg["edge_scan"][kind] = [{**entry, **review}]
+                    cfg["edge_scan"][other[0]] = [{**other[1], **good}]
+                    with self.assertRaisesRegex(ValueError, rf"edge_scan.{kind} registry review: .*{message}"):
+                        E.scan(self.repo, cfg)
+            cfg = json.loads(json.dumps(IMPORT_CFG))
+            cfg["edge_scan"]["unresolved_names"] = [{**names, **good}]
+            cfg["edge_scan"]["computed_imports"] = [{**loads, **good}]
+            E.scan(self.repo, cfg)  # control: both reviewed, the last day of the window included
+            cfg["edge_scan"][kind] = [entry]
+            with self.assertRaisesRegex(ValueError, rf"edge_scan.{kind} entries must be"):
+                E.scan(self.repo, cfg)  # an entry without the two fields is malformed
+
+    def test_b2_anchored_segment_chains_are_parent_steps_in_every_position(self):
+        # Root's round 3 of #33, B2: each spelling resolves like the relative path written out, pinned exactly.
+        cases = {
+            ('const d = path.join(__dirname, "..", "..", "lib", "x.mjs"); fork(d);', "mjs"): ["../../lib/x.mjs"],
+            ('export default { test: { dir: path.join(__dirname, "..", "..") } };', "mjs"): ["../.."],
+            ('const here = dirname(fileURLToPath(import.meta.url));\nnew Worker(path.resolve(here, "..", "s", "w.mjs"));',
+             "mjs"): ["../s/w.mjs"],
+            ('const a = join(import.meta.dirname, "..", "x.mjs");', "mjs"): ["../x.mjs"],
+            ('x = os.path.join(os.path.dirname(__file__), "..", "lib")', "py"): ["../lib"],
+            ('x = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")', "py"): ["../.."],
+            ('HERE = os.path.dirname(__file__)\nx = os.path.join(HERE, "..", "w.py")', "py"): ["../w.py"],
+            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../..", "../.."],
+            ('w = Path(__file__).parent / ".." / "w.py"', "py"): ["../w.py"],
+            ('w = Path(__file__).parent.parent / "w.py"', "py"): ["../w.py"],
+            ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "..", "../scripts/x.sh"],
+        }
+        for (src, ext), want in cases.items():
+            with self.subTest(src):
+                self.assertEqual(E.anchored_chains(E.Source(src, ext)), want)
+        for src, ext in (('d = path.join(__dirname, "lib", "x.mjs");', "mjs"), ('d = path.join(base, "..", "x");', "mjs"),
+                         ('p = Path(__file__).parent / "w.py"', "py"), ('p = os.path.join(base, "..")', "py")):
+            with self.subTest(control=src):
+                self.assertEqual(E.anchored_chains(E.Source(src, ext)), [], "no parent step from the anchor: no chain")
+        # In a scan: a Python root base by parents[N] refuses as a root climb, from any position.
+        self.files(**{"services__a__t.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"})
+        with self.assertRaisesRegex(ValueError, r"services/a/t.py names \.\./\.\., the repository root or above it"):
+            self.scan()
+
+    def test_one_batch_reader_serves_a_scans_revision_reads_byte_for_byte(self):
+        # perf: one `git cat-file --batch` per scan, not one `git show` per file; the bytes are git show's exactly.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\r\n",
+                      "scripts__bin.txt": "caf\u00e9\n"})
+        (self.repo / "scripts/raw.txt").write_bytes(b"ok \xff\xfe\n")
+        (self.repo / "scripts/x.mjs\r").write_text("CR TWIN\n")  # N1: --batch would drop the CR and read x.mjs
+        os.symlink("x.mjs", self.repo / "scripts/link.mjs")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit",
+                        "-qm", "r", "--no-gpg-sign"], check=True)
+        rev = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        shown = lambda path: subprocess.run(["git", "-C", str(self.repo), "show", f"{rev}:{path}"], capture_output=True,
+                                            check=True).stdout.decode("utf-8", errors="replace")
+        real_popen, real_run, spawned, shows = subprocess.Popen, subprocess.run, [], []
+        def counting(*a, **k):
+            spawned.append(a[0])
+            return real_popen(*a, **k)
+        def run_counting(*a, **k):
+            if "show" in a[0]:
+                shows.append(a[0])
+            return real_run(*a, **k)
+        paths = ("scripts/x.mjs", "scripts/bin.txt", "scripts/raw.txt", "scripts/link.mjs", "scripts/x.mjs", "scripts/x.mjs\r")
+        expected = {path: shown(path) for path in paths}  # before the counters go on
+        with patch.object(E.subprocess, "Popen", counting), patch.object(E.subprocess, "run", run_counting), \
+                E.batch_reads(self.repo, rev, env):
+            for path in paths[:-1]:
+                self.assertEqual(E.read_source(self.repo, path, rev, env), expected[path], path)
+            self.assertEqual(len([c for c in spawned if "cat-file" in c]), 1, "one reader for every read")
+            self.assertEqual(shows, [], "no per-file git show while the reader serves")
+            self.assertEqual(E.read_source(self.repo, "scripts/x.mjs\r", rev, env), "CR TWIN\n", "a CR name is its own blob")
+            self.assertEqual(len(shows), 1, "a CR cannot go through --batch: it falls back to git show")
+            with self.assertRaisesRegex(ValueError, "cannot read scripts/gone.mjs at the scanned revision"):
+                E.read_source(self.repo, "scripts/gone.mjs", rev, env)  # missing: falls back to git show, which refuses
+            with self.assertRaisesRegex(ValueError, "cannot read scripts/a\nb at the scanned revision"):
+                E.read_source(self.repo, "scripts/a\nb", rev, env)  # a newline cannot go through --batch
+            # N2 (framing): the reads AFTER a refused name are still the reader's, byte for byte. Sent to --batch, the
+            # newline name would be two requests, and every later read would get the previous one's answer.
+            served = len(shows)
+            for path in ("scripts/bin.txt", "scripts/raw.txt", "scripts/x.mjs"):
+                self.assertEqual(E.read_source(self.repo, path, rev, env), expected[path], path)
+            self.assertEqual(len(shows), served, "after a refused name the reader still serves every read")
+            E._BLOB_READERS[(str(self.repo), rev)].proc.kill()
+            E._BLOB_READERS[(str(self.repo), rev)].proc.wait()
+            self.assertEqual(E.read_source(self.repo, "scripts/x.mjs", rev, env), expected["scripts/x.mjs"],
+                             "a dead reader falls back to git show")
+        self.assertNotIn((str(self.repo), rev), E._BLOB_READERS, "the reader closes with its scan")
+        deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=rev)  # a whole scan through the reader
+        self.assertIn("a", deps)
+
+    def test_the_action_judges_the_candidate_with_the_base_config_only(self):
+        # A PR cannot use its own new registry entries: action.yml runs `check` with the BASE copy of the config and the
+        # base manifests, never the candidate's (root's ruling on #33 round 3).
+        text = (Path(__file__).with_name("action.yml")).read_text()
+        call = text.split('"$GITHUB_ACTION_PATH/edges.py" check', 1)[1].split("; then", 1)[0]
+        self.assertIn('--config "$STATE/base/$CONFIG"', call)
+        self.assertIn('--manifest-root "$STATE/base"', call)
+        self.assertIn('--repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE"', call)
+        self.assertEqual(text.count('edges.py" check'), 1, "one check call, so no other path reads a candidate config")
+
+    def test_d5_a_leading_slash_is_stripped_so_a_cwd_concat_escapes(self):
+        # N2: `process.cwd() + "/scripts/x.mjs"` names scripts/, a top-level directory outside every package.
+        for expr in ('process.cwd() + "/scripts/x.mjs"', 'path.join(process.cwd(), "/scripts/x.mjs")'):
+            for reach in ("package", "external", ["scripts/x.mjs"]):
+                with self.subTest(expr, reach=reach):
+                    self.files(**{"services__a__load.mjs": f"export const load = () => import({expr});\n",
+                                  "scripts__x.mjs": "export {};\n"})
+                    cfg = json.loads(json.dumps(IMPORT_CFG))
+                    cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/load.mjs", "expr": expr, "reach": reach}]
+                    with self.assertRaisesRegex(ValueError, "steps outside its package"):
+                        self.scan(cfg)
+
+    def test_d5_a_reader_directory_reacher_keeps_its_job_selected_or_the_path_unmapped(self):
+        # N3: test/foo.test.mjs (reader dir test/, job root) imports scripts/x.mjs, as package a does. Mapping
+        # scripts/x.mjs to [a] alone selected a and skipped the root job that runs foo.test.mjs.
+        self.files(**{"test__foo.test.mjs": 'import "../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n",
+                      "services__a__t.mjs": 'import "../../scripts/x.mjs";\n'})
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["reader_dirs"] = ["scripts", "tools", "test"]
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        _, _, report = self.scan(cfg)
+        # test/ reaches it, and scripts/ holds it (a reader-dir file may itself be an executor its job runs).
+        self.assertEqual(report["unit_imports"]["scripts/x.mjs"], ["scripts", "test"])
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("narrowed import: scripts/x.mjs is reached from test/, which reader job 'root' runs", out)
+        for rule in ({"packages": ["a"]}, "always", "any_package"):
+            with self.subTest(rule=rule):
+                cfg["jobs"] = {"root": rule}
+                rc, out = self.check(cfg)
+                self.assertNotIn("narrowed import", out)
+        # Unmapped, the path plans FULL, which runs every job: no narrowing (the package importer's own rule still asks).
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        cfg["extra_edges"] = {}
+        self.assertNotIn("narrowed import", self.check(cfg)[1])
+        # A reacher in no reader directory runs in no declared job: nothing it reaches may be mapped.
+        self.files(**{"misc__run.mjs": 'import "../scripts/x.mjs";\n'})
+        cfg["extra_edges"] = {"scripts/x.mjs": ["a"]}
+        cfg["jobs"] = {"root": "always"}
+        self.assertIn("is reached by a file outside every package and every reader directory", self.check(cfg)[1])
+
+    def test_d5_a_relative_path_at_or_above_the_repository_root_refuses(self):
+        # N4: a vitest alias "@root" -> "../.." (or baseUrl "../..") reaches every file; it was dropped.
+        for spec in ('alias: { "@root": "../.." }', 'baseUrl: "../../.."', 'root: "../../"'):
+            with self.subTest(spec):
+                self.files(**{"services__a__vitest.config.mjs": f"export default {{ {spec} }};\n"})
+                with self.assertRaisesRegex(ValueError, "the repository root or above it"):
+                    self.scan()
+                self.files(**{"services__a__vitest.config.mjs": "export default {};\n"})
+
+    def test_d5_an_importing_file_type_the_scan_does_not_parse_refuses_when_reached(self):
+        # N5: .mdx, .astro, .vue and .svelte files import modules; the closure treated them as inert data.
+        for ext in ("mdx", "astro", "vue", "svelte"):
+            with self.subTest(ext):
+                self.files(**{f"tools__page.{ext}": 'import X from "./x.mjs";\n', "tools__x.mjs": "export {};\n",
+                              "services__a__t.mjs": f'import "../../tools/page.{ext}";\n'})
+                with self.assertRaisesRegex(ValueError, f"tools/page.{ext}, a .{ext} file that can import modules"):
+                    self.scan()
+                self.files(**{"services__a__t.mjs": "export {};\n"})
+
+    # ── Root's regression vectors for the delta at 7b83bf159e (lanes/root/reviews/dotgithub-33.md), each EXACT. Common
+    # fixture: packages a, b and c under services/; the reader job root has {packages: [b]}.
+    def root_b_cfg(self):
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["reader_dirs"] = ["scripts", "test", "tools"]
+        cfg["jobs"] = {"root": {"packages": ["b"]}}
+        return cfg
+
+    def test_root_vector_r1_a_reader_dir_executor_keeps_root_selected(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.js";\n', "test__foo.test.mjs": 'import "../scripts/x.js";\n',
+                      "scripts__x.ts": "export const x = 1;\n"})
+        cfg = self.root_b_cfg()
+        _, _, report = self.scan(cfg)
+        self.assertEqual(report["imports"]["scripts/x.ts"], ["a"])
+        self.assertEqual(report["unit_imports"]["scripts/x.ts"], ["scripts", "test"])
+        cfg["extra_edges"] = {"scripts/x.ts": ["a"]}  # exactly the mapping the package importer asks for
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("narrowed import: scripts/x.ts is reached from scripts/, which reader job 'root' runs", out)
+        self.assertIn("narrowed import: scripts/x.ts is reached from test/, which reader job 'root' runs", out)
+        cfg["extra_edges"] = {"scripts/x.ts": ["a", "b"]}  # a mapping that runs root: no narrowing
+        self.assertNotIn("narrowed import", self.check(cfg)[1])
+
+    def test_root_vector_r1b_an_executor_beside_the_module_keeps_root_selected(self):
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.js";\n', "test__foo.test.mjs": 'import "../scripts/x.js";\n',
+                      "scripts__x.ts": "export const x = 1;\n", "scripts__x.test.mjs": 'import "./x.js";\n'})
+        cfg = self.root_b_cfg()
+        _, _, report = self.scan(cfg)
+        self.assertEqual(report["unit_imports"]["scripts/x.ts"], ["scripts", "test"])
+        cfg["extra_edges"] = {"scripts/x.ts": ["a"]}
+        rc, out = self.check(cfg)
+        self.assertEqual(rc, 1)
+        self.assertIn("narrowed import: scripts/x.ts is reached from scripts/", out)
+
+    def test_root_vector_b3c_a_leading_slash_escape_refuses_under_every_reach(self):
+        for reach in ("external", "package", "fixture"):
+            with self.subTest(reach=reach):
+                self.files(**{"services__a__t.mjs": 'export const l = () => import(process.cwd() + "/scripts/x.mjs");\n',
+                              "services__c__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+                cfg = self.root_b_cfg()
+                cfg["edge_scan"]["computed_imports"] = [{"file": "services/a/t.mjs",
+                                                         "expr": 'process.cwd() + "/scripts/x.mjs"', "reach": reach}]
+                with self.assertRaisesRegex(ValueError, r'steps outside its package: `process.cwd\(\) \+ "/scripts/x.mjs"`'):
+                    self.scan(cfg)
+
+    def test_root_vector_n1_every_spelling_of_a_build_output_load_refuses(self):
+        spellings = ["timeout 300 node ../dist/x.js", "npx tsx ../dist/x.js", "env -i node ../dist/x.js",
+                     "node --import ./reg.mjs ../dist/x.js", "pnpm exec node ../dist/x.js", "xargs node ../dist/x.js",
+                     "nohup node ../dist/x.js", "node --input-type=module <<'EOF'\nimport \"../dist/x.js\";\nEOF"]
+        for line in spellings:
+            with self.subTest(line):
+                self.files(**{"services__a__package.json": '{"scripts": {"test": "bash ../../tools/run.sh"}}\n',
+                              "tools__run.sh": "#!/bin/bash\n" + line + "\n", "tools__reg.mjs": "export {};\n",
+                              "scripts__x.ts": "export const x = 1;\n", "services__c__t.mjs": 'import "../../scripts/x.js";\n'})
+                with self.assertRaisesRegex(ValueError, r"\(tools/run.sh names dist/x.js, which is no tracked file or directory"):
+                    self.scan(self.root_b_cfg())
+        self.files(**{"tools__run.sh": "#!/bin/bash\n", "services__a__package.json": "{}\n"})
+        for js in ('fork("../../dist/x.js");', 'new Worker("../../dist/x.js");', 'spawn(process.execPath, ["../../dist/x.js"]);'):
+            with self.subTest(js):
+                self.files(**{"services__a__w.mjs": js + "\n"})
+                with self.assertRaisesRegex(ValueError, r"\(services/a/w.mjs names dist/x.js, which is no tracked file or directory"):
+                    self.scan(self.root_b_cfg())
+        self.files(**{"services__a__w.mjs": "export {};\n"})
+
+    def test_root_vector_r8_a_root_alias_or_base_url_refuses(self):
+        for name, body in (("vitest.config.mjs", 'export default { resolve: { alias: { "@root": path.resolve(__dirname, "../..") } } };\n'),
+                           ("tsconfig.json", '{"compilerOptions": {"baseUrl": "../.."}}\n')):
+            with self.subTest(name):
+                self.files(**{f"services__a__{name}": body, "services__a__t.test.mjs": 'import "@root/scripts/x.js";\n',
+                              "scripts__x.ts": "export const x = 1;\n", "services__c__t.mjs": 'import "../../scripts/x.js";\n'})
+                with self.assertRaisesRegex(ValueError, r"services/a/" + re.escape(name) + r" names \.\./\.\., the repository root or above it"):
+                    self.scan(self.root_b_cfg())
+                (self.repo / "services/a" / name).unlink()
+                subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+
+    def test_root_vector_n5_an_unparsed_importing_page_refuses(self):
+        for ext in ("mdx", "astro", "vue", "svelte"):
+            with self.subTest(ext):
+                self.files(**{"services__a__t.mjs": f'import "../../tools/content/page.{ext}";\n',
+                              f"tools__content__page.{ext}": 'import W from "./widget.js";\n',
+                              "tools__content__widget.ts": "export const w = 1;\n",
+                              "services__c__t.mjs": 'import "../../tools/content/widget.js";\n'})
+                with self.assertRaisesRegex(ValueError, rf"a reaches tools/content/page.{ext}, a .{ext} file that can import modules"):
+                    self.scan(self.root_b_cfg())
+                (self.repo / f"tools/content/page.{ext}").unlink()
+                self.files(**{"services__a__t.mjs": "export {};\n"})
+
+    def test_adversarial_forms_aimed_at_the_rule(self):
+        self.files(**{
+            # CRLF: the whole-file read must still find the ./ import.
+            "services__a__t.mjs": 'import "../../scripts/crlf.mjs";\r\n',
+            "scripts__crlf.mjs": 'import "./tail.mjs";\r\nexport {};\r\n',
+            "scripts__tail.mjs": 'export const t = "services/b/t.json";\r\n',
+            # A top-level directory whose name extends a package directory's: outside every package, so an edge.
+            "services__b__t.mjs": 'import "../../services-x/u.mjs";\n',
+            "services-x__u.mjs": 'export const u = "services/c/u.json";\n',
+            # The root package.json is a file outside every package: a data target.
+            "services__c__t.mjs": 'read("../../package.json");\n',
+            "package.json": '{"scripts": {"t": "pytest services/a"}}\n',
+        })
+        deps, _, report = self.scan()
+        self.assertEqual((deps["a"], deps["b"], deps["c"]), ({"b"}, {"c"}, {"a"}))
+        self.assertIn("services-x/u.mjs", report["imports"])
+
+
+class VectorHarness:
+    """Root's method for a vector: commit the fixture; run the real `check --revision`; apply check's own remedies (the
+    importers it names, a package the reader job lists, leaving an <unmapped> path unmapped, the backstop's owner or
+    full_globs, a declared dep) until rc 0; then judge the change with the real plan.classify_paths + rule_matches."""
+
+    def setUp(self):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
+    REMEDIES = (
+        (r"undeclared import edge: (\S+) imports (\S+) ", lambda c, m: E_add(c, m.group(2), m.group(1))),
+        (r"narrowed import: (\S+) is reached from \S+/, which reader job", lambda c, m: E_add(c, m.group(1), c["jobs"]["root"]["packages"][0])
+         if isinstance(c["jobs"]["root"], dict) else False),
+        (r"narrowed import: (\S+) is reached by a file outside every package and every reader",
+         lambda c, m: c.setdefault("extra_edges", {}).pop(m.group(1), None) is not None),
+        (r"unattributed mention: \S+ \(package (\S+)\) names \S+, but the mapping for (\S+) selects",
+         lambda c, m: E_add(c, m.group(2), m.group(1))),
+        (r"unattributed mention: \S+, outside every package, names \S+ by a route the scan did not record, so whatever "
+         r"runs \S+ may run (\S+) ", lambda c, m: E_list_add(c.setdefault("full_globs", []), m.group(1))),
+        (r"inert mention: \S+ names \S+, but inert_globs '[^']*' makes a change to (\S+) select nothing",
+         lambda c, m: E_list_add(c.setdefault("full_globs", []), m.group(1))),
+        (r"undeclared read: (\S+) reads (\S+) ", lambda c, m: E_list_add(c["workspace"]["packages"][m.group(1)]["deps"], m.group(2))),
+        (r"\S+/ reads (\S+), but job '(\S+)' does not list it",
+         lambda c, m: isinstance(c["jobs"][m.group(2)], dict) and E_list_add(c["jobs"][m.group(2)]["packages"], m.group(1))),
+    )
+
+    def run_case(self, case):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        repo = Path(td.name)
+        for d in ("services/a", "services/b", "services/c", ".github"):
+            (repo / d).mkdir(parents=True, exist_ok=True)
+            (repo / d / "keep.txt").write_text("k\n")
+        for path, text in case["files"].items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text(text)
+        for path, data in case.get("binary", {}).items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_bytes(base64.b64decode(data))
+        for path, target in case.get("symlinks", {}).items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, repo / path)
+        cfg = {**json.loads(json.dumps(self.CASES["base_config"])), **json.loads(json.dumps(case["cfg_set"]))}
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        for path in case.get("gitlinks", []):  # a submodule commit; its contents are never in this repository's tree
+            subprocess.run(["git", "-C", str(repo), "update-index", "--add", "--cacheinfo", f"160000,{'5' * 40},{path}"],
+                           check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-qm",
+                        "v", "--no-gpg-sign"], check=True)
+        rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        for _ in range(16):
+            (repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(repo), "--revision", rev])
+            except ValueError as err:
+                return {"verdict": "REFUSE", "refusal": str(err)}
+            if rc == 0:
+                break
+            fails = [line[5:] for line in buf.getvalue().splitlines() if line.startswith("FAIL ")]
+            progressed = False
+            for f in fails:
+                for pattern, remedy in self.REMEDIES:
+                    m = re.match(pattern, f)
+                    if m:
+                        progressed = bool(remedy(cfg, m)) or progressed
+                        break
+            if not progressed:
+                return {"verdict": "STUCK", "fails": fails}
+        pkgs = E.workspace_graph(repo, cfg)
+        self.assertTrue(pkgs, "no packages: the judgment would be vacuous")
+        sel = classify_paths([case["change"]], cfg, pkgs)
+        if sel["error"] or sel["evidence"]["full_triggers"] or sel["evidence"]["unmapped"]:
+            return {"verdict": "FULL"}
+        return {"verdict": "SELECT", "jobs": sorted(j for j, rule in cfg["jobs"].items()
+                                                     if rule == "always" or rule_matches(rule, sel["affected"])[0])}
+
+
+
+class RoundThreeVectorsTest(VectorHarness, unittest.TestCase):
+    """Root's round 3 of #33: every fresh vector and correct-plan control, run by root's method and pinned EXACT
+    (test_edges_round3_vectors.json)."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_round3_vectors.json")).read_text())
+
+    def test_every_round3_vector_refuses_plans_full_or_selects_its_runner_exactly_as_pinned(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                want = {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}
+                self.assertEqual(got, want, name)
+                if case["kind"] == "drop-vector" and got["verdict"] == "SELECT" and case.get("must_run"):
+                    self.assertIn(case["must_run"], got["jobs"], f"{name} drops its runner")
+
+    def test_the_drop_vectors_cover_every_round3_class(self):
+        kinds = {c["kind"] for c in self.CASES["cases"].values()}
+        self.assertEqual(kinds, {"drop-vector", "correct-plan control"})
+        names = sorted(self.CASES["cases"])
+        for prefix in ("F10b", "F10 ", "F15", "F13b", "F12", "F01", "F02", "F03", "F04", "F05", "L1", "F09", "F08", "F11"):
+            self.assertTrue(any(n.startswith(prefix) for n in names), prefix)
+
+
+class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
+    """Root's R4 of #33 round 3 (lanes/root/reviews/dotgithub-33.md, head 70ed2e7): the reviewer's fresh vectors, pinned
+    EXACT by the same method (test_edges_round4_vectors.json). Each drop-vector must REFUSE, plan FULL or select its
+    runner: B1 (T1, T1b, T1c, a runner one hop or more out), B2 (T4, a gitlink), B3 (T3, T3b, a symlink alias or a
+    symlink in a package), B4 (T2, an inert glob). A residual is a spelling no recorded route or token sees (README,
+    "What the backstop does not see"): it is pinned as the drop it is, so the README cannot claim more than the scan."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_round4_vectors.json")).read_text())
+
+    def test_every_round4_vector_refuses_plans_full_or_selects_its_runner_exactly_as_pinned(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                runs = got["verdict"] != "SELECT" or case["must_run"] in got["jobs"]
+                self.assertEqual(runs, case["kind"] != "residual", f"{name}: {case['kind']}")
+
+    def test_the_drop_vectors_cover_every_round4_blocker_and_the_readme_lists_every_residual(self):
+        names = sorted(self.CASES["cases"])
+        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 "):
+            self.assertTrue(any(n.startswith(prefix) and self.CASES["cases"][n]["kind"] == "drop-vector" for n in names),
+                            prefix)
+        readme = (Path(__file__).with_name("README.md")).read_text()
+        for name, case in self.CASES["cases"].items():
+            if case["kind"] == "residual":
+                self.assertIn(case["residual"], readme, f"{name}: the README must list it")
+
+
+def E_add(cfg, path, name):
+    targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])
+    return E_list_add(targets, name)
+
+
+def E_list_add(values, item):
+    if item in values:
+        return False
+    values.append(item)
+    return True
 
 
 if __name__ == "__main__":

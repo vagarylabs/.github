@@ -1,5 +1,5 @@
 {
- "$comment": "Root's R4 of .github #33 round 3 at 70ed2e7 (lanes/root/reviews/dotgithub-33.md): the reviewer's fresh vectors (T1-T11) plus T3b, pinned EXACT by root's method. A drop-vector must REFUSE, plan FULL, or select its must_run job. A residual is pinned as the drop it is, and README.md must list its class.",
+ "$comment": "Root's R4 of .github #33 round 3 at 70ed2e7 (lanes/root/reviews/dotgithub-33.md): the reviewer's fresh vectors (T1-T11) plus T3b and the directory-rule inputs T10c-T10g, pinned EXACT by root's method. A drop-vector must REFUSE, plan FULL, or select its must_run job. A residual is pinned as the drop it is, and README.md must list its class.",
  "base_config": {
   "edge_scan": {
    "exclude": [
@@ -110,6 +110,62 @@
    "must_run": "test-c",
    "verdict": "SELECT"
   },
+  "T10-ctl a package's own test dir": {
+   "cfg_set": {},
+   "change": "test/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../test/helper.mjs\";\n",
+    "services/c/package.json": "{\"scripts\": {\"test\": \"node --test test/\"}}",
+    "services/c/test/x.test.mjs": "export {};\n",
+    "test/helper.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "root",
+   "verdict": "SELECT"
+  },
+  "T10-ctl a sibling path under the dir": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "services/c/t.test.mjs": "import \"../../tools/other.mjs\";\n",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n",
+    "tools/other.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "T10-ctl bare words at the root": {
+   "cfg_set": {},
+   "change": "test/helper.mjs",
+   "files": {
+    ".github/workflows/ci.yml": "jobs:\n  test:\n    runs-on: x\n    steps:\n      - run: npm test\n",
+    "README.md": "run the test suite, then the tools\n",
+    "package.json": "{\"scripts\": {\"test\": \"node --test fixtures/test/\"}}",
+    "services/a/t.mjs": "import \"../../test/helper.mjs\";\n",
+    "test/helper.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
   "T10b node --test dir": {
    "cfg_set": {},
    "change": "tools/helper.mjs",
@@ -122,11 +178,119 @@
    "jobs": [
     "root",
     "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "T10c workflow pytest dir": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    ".github/workflows/t.yml": "jobs:\n  t:\n    steps:\n      - run: node --test tools/\n",
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "T10d ${ROOT}/tools no slash": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "services/c/package.json": "{\"scripts\": {\"test\": \"node --test \\\"${ROOT}/tools\\\"\"}}",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "T10e env concat dir": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "services/c/t.test.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [\"--test\", process.env.REPO_ROOT + \"/tools/\"]);\n",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "T10f parent dir runner": {
+   "cfg_set": {},
+   "change": "tools/sub/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/sub/helper.mjs\";\n",
+    "services/c/package.json": "{\"scripts\": {\"test\": \"node --test \\\"$REPO_ROOT/tools/\\\"\"}}",
+    "tools/sub/helper.mjs": "export const w = 1;\n",
+    "tools/sub/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "T10g glob under the dir": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "services/c/vitest.config.mjs": "export default { test: { dir: process.env.REPO_ROOT, include: [\"tools/**/*.test.mjs\"] } };\n",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
     "test-b"
    ],
    "kind": "residual",
    "must_run": "test-c",
-   "residual": "a runner that names only a directory",
+   "residual": "a directory or glob resolved against a root set elsewhere at runtime",
+   "verdict": "SELECT"
+  },
+  "T10h cd dir bare": {
+   "cfg_set": {},
+   "change": "tools/helper.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/helper.mjs\";\n",
+    "services/c/package.json": "{\"scripts\": {\"test\": \"cd \\\"$REPO_ROOT\\\" && cd tools && node --test\"}}",
+    "tools/helper.mjs": "export const w = 1;\n",
+    "tools/helper.test.mjs": "import \"./helper.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "residual",
+   "must_run": "test-c",
+   "residual": "a directory named as a bare word",
    "verdict": "SELECT"
   },
   "T11 extensionless mapped": {

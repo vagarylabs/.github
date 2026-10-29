@@ -3299,7 +3299,9 @@
       {
        "file": "services/r/x.ts",
        "name": "services/app",
-       "reach": "none"
+       "reach": "none",
+       "reason": "R4R01: the vector's `../app/${name}` prefix names services/app, a directory the fixture never tracks; it is read as a datum",
+       "review_by": "2026-11-20"
       }
      ]
     }
@@ -4620,11 +4622,16 @@
       {
        "file": "services/r/x.py",
        "name": "scripts/x.py",
-       "reach": "none"
+       "reach": [
+        "services/b"
+       ],
+       "reason": "R5R04: the stand-in for an untracked script the vector's line runs; the precision under test is the def-default cwd read of b",
+       "review_by": "2026-11-20"
       }
      ]
     }
-   }
+   },
+   "closed_by": "F09 (root's round 3 of #33): scripts/x.py is code `python3` runs, so reach \"none\" refuses; the stand-in names services/b, which the line reads anyway, so the vector still pins the def-default cwd read of b"
   },
   "R5T02_py_fstring_subst_then_dotdot_root": {
    "expect": "refuse",

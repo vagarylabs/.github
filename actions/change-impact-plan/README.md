@@ -238,24 +238,37 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      "reach"}`, where `name` is the repo path it resolves to. `reach` is `"none"` (it names nothing that runs: a test
      datum) or the tracked paths it stands for (a build output's sources), each then an edge. An entry that matches no
      route fails `check` as stale. `derive`'s report lists the declared names under `unresolved_data_names`. A path under
-     `node_modules` stays external.
+     `node_modules` stays external. Reach `"none"` refuses for a name with a code extension (F09): code something runs
+     (`spawn(process.execPath, ["../../dist/x.js"])`) reaches its sources, so it must name them.
    - **A path at or above the repository root refuses** (N4): a `"../.."` alias, `baseUrl` or `root` reaches every
      file, so no mapping of it can be narrower than FULL.
+   - **A `".."` segment is a parent step everywhere** (round 3, B2). A chain anchored at the file's own directory is
+     read in ANY position, not only as an import argument, and resolves like the path written out:
+     `path.join(__dirname, "..", "..", "lib", "x.mjs")` and `path.resolve(here, "..", "scripts", "x.mjs")` in JS,
+     `os.path.join(os.path.dirname(__file__), "..", "x")` and `Path(__file__).resolve().parents[2] / "x"` in Python.
+     So a vitest `dir: path.join(__dirname, "..", "..")` reaches the root and refuses (F15).
+   - **A relative template is a glob** (round 3, F03). `` new URL(`./w-${n}.mjs`, import.meta.url) `` in a reached
+     file stands for every tracked file it can spell (`w-*.mjs`). A parent step after a substitution, or a template
+     that spells no tracked file, refuses.
 2. **The credit.** Per importing package, the transitive closure credits the package with every read the scan finds in
-   each reached file. Cycles end. A file two packages reach credits both. The reader job keeps its own credit, so nothing
-   is ever narrower.
+   each reached file. Cycles end. A file two packages reach credits both. The reader job keeps its own credit, so crediting
+   an importer never takes a read away from the reader job (the limits of "never narrower" are under rule 5).
    - **A caller outside every package** (root's R4 of #33, fix 2, in spine's binding shape). Its computed imports are
      checked whether or not a package reaches it. A target it loads is keyed by the caller's own path, so every package
      that reaches the caller is credited with it. The caller also maps to its own selection unit: its reader
      directory's job, or `<unmapped>` when no reader directory holds it, which fails `check` (FULL). The report lists
      each one under `unowned_callers`, with its unit and the packages it reaches.
    - A `.md` file is prose: its edge is recorded and nothing is credited.
-   - A data file is credited, which only over-approximates, but imports nothing.
-   - Only code (JS/TS, Python, shell) is followed further. A reached `.mdx`, `.astro`, `.vue` or `.svelte` file can
-     import modules, and the scan does not parse it, so reaching one refuses (D5, N5).
-   - **A reacher outside every package** (D5, N3). Every code file outside every package also starts a closure of its
-     own unit: its reader directory, whose job runs it, or `<unmapped>`. What it reaches is that unit's import, listed
-     under `unit_imports` in the report.
+   - **A reached non-code file is credited, and its recorded routes are followed** (round 3, B1): its `../` paths and
+     each `./` word that names a tracked path. A compose volume `"../scripts/w.mjs:/app/w.mjs"`, a tsconfig `files`,
+     `extends` or `references`, a Makefile recipe `node ./w.mjs` and an HTML `<script src="./w.mjs">` are routes. Code
+     (JS/TS, Python, shell) is read in full. A reached `.mdx`, `.astro`, `.vue` or `.svelte` file can import modules,
+     and the scan does not parse it, so reaching one refuses (D5, N5).
+   - **A reacher outside every package** (D5, N3; round 3, B3). Every file outside every package that has a route,
+     code or not, `./` routes included, starts a closure of its own unit: its reader directory, whose job runs it, or
+     `<unmapped>`. What it reaches is that unit's import, listed under `unit_imports` in the report. So
+     `test/compose.yml` mounting `../lib/entry.mjs` runs in the test job, as `test/run.mjs` importing it would (F13b),
+     and a repository-root `run-all.mjs` is `<unmapped>` like `misc/run-all.mjs` (F12).
 3. **Fail closed.** A reached path under `always_reader_dirs` refuses. So does a reached CODE file the scan excludes,
    since its reads cannot be credited, and a symlink loop.
 4. **Computed imports: refuse unless declared** (spine's D2). A module-loading call whose argument is not one plain
@@ -269,8 +282,14 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - `"fixture"`: a test temp directory;
    - a list of repo paths, each of which then becomes an edge.
 
-   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal. The declaration list is reviewed
-   like the secret-scan registry. **The floor**, refined in spine's pre-review, decides parent steps:
+   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal.
+
+   **Both declaration lists are a registry** (root's ruling on #33 round 3). Each `computed_imports` and
+   `unresolved_names` entry also carries `reason`, non-empty text (for reach `"none"`: why the name never runs), and
+   `review_by`, an ISO date at most 30 days after today (UTC). A reasonless, expired or more-distant entry refuses, so
+   it fails toward FULL. A change to either list needs root's R4 record first, as the secret-scan registry does. A PR
+   cannot use its own new entries anyway: the action runs `check` with the BASE copy of the config and manifests
+   (`--config "$STATE/base/$CONFIG"`), which a test pins. **The floor**, refined in spine's pre-review, decides parent steps:
    - **An anchored, all-literal path is a literal import.** It is anchored when it starts at the file's own directory:
      `__dirname`, `import.meta.dirname`, or a name bound to `dirname(fileURLToPath(import.meta.url))`.
      `pathToFileURL(...).href` is unwrapped. Every component is literal, as in
@@ -294,18 +313,52 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - **on a narrowed import** (D5, N3): a path a reader unit imports, where the REAL `plan.classify_paths` under its
      mapping does not run that unit's reader job. A path left unmapped plans FULL, which runs every job, so it never
      fails here. A path reached by an `<unmapped>` file (in no reader directory, so no declared job runs it) may not be
-     mapped at all.
+     mapped at all;
+   - **on an unattributed mention: the backstop** (root's ruling on #33 round 3). It is attack-independent and fails
+     toward FULL. For every mapped path P outside every package, every OTHER tracked text file that names P's basename
+     as a token, in any syntax and excluded directories included, must be either in a package P's mapping selects, or
+     a file outside every package whose route to P the scan recorded. Being in a reader unit whose job runs is not
+     enough, since a package may run that file (F10). The planner's own config is not a mention. A failure names its
+     remedy: map P to the mentioning package too, or add P to `full_globs` so a change to it plans FULL. It catches a
+     runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`, `node "${0%/*}/w.mjs"`,
+     `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a workflow step), and a
+     basename collision goes FULL, the safe direction. One extended-regex `git grep` for the mapped extensions, then a
+     token lookup, keeps it to a few seconds on vagary-core.
+
+     Round 4 (root's R4 of round 3) widens what it checks, each fail-toward-FULL:
+     - **B1, transitively.** P's subjects are P plus every file outside every package that reaches P by a recorded
+       route, to a fixpoint (cycle-safe). Every subject's mentions are held to P's rule. So `tools/run.mjs`, which
+       imports `./worker.mjs`, cannot hide package c's `execFileSync(..., ["tools/run.mjs"])`. A mention by another
+       subject is attributed, since whatever runs that subject is checked in turn;
+     - **B2, gitlinks.** A submodule path under a mapped glob is a subject, as `plan.classify_paths` maps it;
+     - **B3, symlinks.** `git grep` reads regular files only. So each symlink's target text is read as a mention (a
+       symlink inside package c that points at P names P), and a symlink outside every package is a route to its
+       target (it starts its unit, and an alias of P becomes P's subject);
+     - **B4, inert globs.** A path an `inert_globs` glob maps to nothing is backstopped too ("inert mention"). Its
+       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first;
+     - **directories (T10b).** A runner that names only a directory runs what is beneath it, as in
+       `node --test "$REPO_ROOT/tools/"`, a workflow's `pytest scripts/`, or a config's `tools/**`. So every directory
+       that holds a subject is a subject too, written `tools/`. A token that ENDS at it, with a slash beside it, is a
+       mention when it is one of:
+       - resolved from the mentioning file's directory;
+       - resolved from the root, for a file at the root or under `.github/`, whose steps run there;
+       - named after a prefix the scan cannot resolve (`$X/`, `${X}/`, `$(...)/`, a leading `/`).
+
+       A package's own `test/` resolves inside the package, so it is not a mention of a top-level `test/`. Neither is
+       a bare word (`"scripts": {"test": ...}`, a workflow's `test:` job, "the tools" in prose).
 
    **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
    scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
    does not parse, a reacher outside every package (unless the mapping still runs its job), and a path at or above the
    root. So `check`'s mapping can only narrow FULL to a plan that still runs every importer the scan found.
 
-   **What this does not claim.** The census (`lanes/cli/scratch/import-attribution`) compares the real
-   `plan.classify_paths` with an independent oracle for every imported path in vagary-core and vagaris. That oracle
-   finds importers through quoted `./`/`../` strings, data-position names included, and through reacher units. It
-   cannot see the residuals listed below, so "never narrower" holds for the routes this scan reads, not for those
-   residuals. A path whose own `check` fails plans FULL.
+   **What this does not claim.** "Never narrower" holds for the routes this scan reads, plus, through the backstop,
+   for every runner that names the basename of the mapped file or of any of its subjects (a file, gitlink or symlink
+   outside every package that reaches it by a recorded route). It does not hold for a runner that does neither: the
+   residuals below. A path whose own `check` fails plans FULL. The census (`lanes/cli/scratch/import-attribution`)
+   compares the real `plan.classify_paths` with an independent oracle for every imported path in vagary-core and
+   vagaris; the oracle finds importers through quoted `./`/`../` strings, data-position names included, and through
+   reacher units.
 
    A declared edge then selects the importers through `plan.classify_paths`, as any `extra_edges` glob does. An
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
@@ -368,21 +421,48 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      The names then resolve by name like any import, so they are not assumed external. An iterable from a call
      (`sorted(x)`, `.split()`) stays computed.
 
-Not closed (documented residuals):
+Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
+scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b), T10g and T10h as the
+drops they are:
+- a mention that differs only in case (`tools/Worker.mjs` for `tools/worker.mjs`): the token match is exact;
+- a Python module path (`from tools.worker import f`, `python -m tools.worker`): a dotted name is not a basename;
+- a text file `.gitattributes` marks binary, and a basename inside a real binary file: `git grep -I` skips both;
+- a file in an encoding other than ASCII-compatible (UTF-16 with or without a BOM): its bytes never spell the token;
+- a directory or glob resolved against a root set elsewhere at runtime: vitest `dir: process.env.REPO_ROOT` with
+  `include: ["tools/**/*.test.mjs"]` (T10g) reads `tools/` relative to its own package. A bare relative directory in a
+  file below the root whose steps run from the root (`node --test tools/` in `scripts/run.sh`) has the same gap;
+- a directory named as a bare word (`cd tools && node --test`, T10h): a mention needs a slash beside the name, so a
+  bare `test` in a manifest or a workflow is not one;
+- a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
+  `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
+  Python `sys.path` escapes are closed by rules 6-8 above, except the residuals below;
+- a name built at runtime that never spells the basename: concatenated pieces, or a manifest's computed entries (a
+  manifest that lists the file by name is a mention, so the backstop catches it);
+- a glob in a non-code file (`include: ["**/*.mjs"]` in a config the scan does not parse), and a basename inside a
+  binary file;
+- a `./` word in a non-code file that names nothing tracked (a container path such as `./app`): it starts no route;
+- an unanchored `".."` chain (`join(base, "..", "x")` with a computed base): not resolved, and the backstop still
+  needs the basename;
 - an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
   variable);
 - a `sys.path` entry or pytest config inside a reached file outside every package (only its loaders are checked
   there);
 - `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
   default exclude);
-- an import by module name through a tsconfig `paths` alias or a bundler alias;
 - a data-driven read (code that reads a manifest, then the paths in it);
 - Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
   `import x` / `from x import` is followed;
 - a shell `source "$VAR/x"`: a substituted prefix is not resolved;
-- a symlink inside a package that points outside every package (it predates 1.5.0);
 - a chain across reader directories (`tools/a.mjs` loads `scripts/b.mjs`, which reads a package): each file's reads
   are credited to its own reader directory, not to the directory of the file that reaches it.
+
+`test_edges_round3_vectors.json` holds root's round-3 vectors of #33: 25 that dropped a true runner (B1-B4, L1 from
+vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run end to end by root's method:
+- commit, then run the real `check --revision`;
+- apply check's own remedies until rc 0;
+- judge the change with the real `plan.classify_paths` and `rule_matches`.
+
+Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
 
 `test_edges_review_vectors.json` holds 555 adversarial readers:
 - 245 from root's first three independent reviews;

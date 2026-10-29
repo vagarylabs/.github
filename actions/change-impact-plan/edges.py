@@ -26,6 +26,7 @@ import bisect
 import contextlib
 import datetime
 import fnmatch
+import hashlib
 import json
 import os
 import posixpath
@@ -1875,21 +1876,51 @@ def reviewed(kind: str, entries: list, key: str) -> None:
                          f"review_by within {REVIEW_DAYS} days, after root's R4 record)")
 
 
+# Text that runs nothing. Not `.mdx`, which compiles to JS (its imports run, and Storybook or Docusaurus collect it by
+# glob). Not `.txt`: a CMakeLists.txt builds, pytest's default --doctest-glob is `test*.txt`, and a list file can feed a
+# runner (`xargs -a tests.txt node --test`).
+PROSE_EXT = frozenset({"md", "markdown", "rst", "adoc"})
+IGNORE_LIST = re.compile(r"\.[A-Za-z0-9_-]*ignore")  # .gitignore, .dockerignore, .gitleaksignore, .prettierignore, ...
+# The package.json fields that only describe or publish a package. Every other field is read, because runner configs
+# live there too (`"mocha": {"spec": "lib/"}`, `"jest": {"roots": [...]}`, `"ava": {"files": [...]}`).
+PACKAGE_METADATA = frozenset({"name", "version", "description", "keywords", "homepage", "bugs", "license", "author",
+                              "contributors", "maintainers", "funding", "repository", "files", "directories",
+                              "publishConfig", "private", "engines", "os", "cpu"})
+
+def grep_read_everything(out, what: str) -> None:
+    """A pass that did not read every file it was asked to cannot vouch for what it did not see, so it refuses (FULL),
+    typed, never reads as a clean miss and never crashes. Two signals, because git changed: git 2.50 exits 1, the "no
+    match" status, and prints `unable to read <oid>` for a blob a partial clone lacks (lazy fetching off); git 2.56 exits
+    128 (#47's planner-tests on a GitHub-hosted runner, 2026-10-29). So any exit other than 0 (a match) or 1 (no match)
+    refuses too. The detail is git's own first stderr line, bounded."""
+    err = out.stderr or b""
+    if b"unable to read" in err or out.returncode not in (0, 1):
+        first = err.decode("utf-8", errors="replace").strip().splitlines()[:1]
+        detail = f"git grep exit {out.returncode}" + (f": {first[0][:200]}" if first else "")
+        raise ValueError(f"unresolved (reader closure unproven: {what} could not read the scanned tree ({detail}))")
+
+
 def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, environment: dict,
-                      routes_to: dict[str, set[str]], policy_files: set[str] = frozenset()) -> dict[str, list[list]]:
+                      routes_to: dict[str, set[str]], policy_files: set[str] = frozenset(), *,
+                      other_tracked: dict | None = None, only_paths: list[str] | None = None) -> dict[str, list[list]]:
     """Root's round 3 of #33, the BACKSTOP's evidence. For every tracked path P outside every package that an
     extra_edges or inert_globs glob maps, gitlinks included (round 4, B2 and B4), its SUBJECTS are P plus every file
     outside every package that reaches P by a recorded route, to a fixpoint (round 4, B1: whatever runs such a file runs
     P). Every OTHER tracked text file, excluded directories included, and every symlink, whose target text git grep
     never reads (round 4, B3), that names a subject's basename as a token is a row [file, owning package or None, whether
     it is itself a subject, the subject it names]. assess() accepts P's mapping only when each row's package is selected
-    or its file is a subject: a mention the scan did not attribute keeps P FULL, whatever spelling hid it."""
+    or its file is a subject: a mention the scan did not attribute keeps P FULL, whatever spelling hid it.
+    Per path (root's ruling): `other_tracked` is the other side's tree (BASE for the head pass, HEAD for the base pass),
+    so the subjects are mapped paths of BASE and HEAD alike (a P the PR deletes or moves, named by an unchanged file,
+    still counts); `only_paths` limits the files read to the PR's deleted and modified ones (the base pass)."""
+    if only_paths is not None and not only_paths:
+        return {}
     globs = [glob_to_regex(g) for g in sorted(set((cfg.get("extra_edges") or {}).keys())
                                               | set(cfg.get("inert_globs") or []))]
     if not globs:
         return {}
     tracked = tracked_paths(repo, revision, environment)
-    mapped = sorted(p for p in tracked if owner(p) is None and any(r.match(p) for r in globs))
+    mapped = sorted(p for p in set(tracked) | set(other_tracked or {}) if owner(p) is None and any(r.match(p) for r in globs))
     subjects: dict[str, set[str]] = {}
     for p in mapped:
         seen, queue = {p}, [p]
@@ -1913,21 +1944,36 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
     exts = sorted({b.rsplit(".", 1)[1] for b in with_ext})
     found: dict[str, set[str]] = {}
     # B3: git grep reads regular files only, so a symlink's target text (`alias.mjs -> worker.mjs`) is read here.
+    readable = set(only_paths) if only_paths is not None else None
     links = [(p, (read_source(repo, p, revision, environment) if revision else os.readlink(repo / p)))
-             for p, mode in sorted(tracked.items()) if mode == "120000"]
+             for p, mode in sorted(tracked.items()) if mode == "120000" and (readable is None or p in readable)]
+    # The base pass reads only the PR's deleted and modified files, in chunks (a long pathspec list).
+    specs = [["."]] if only_paths is None else [[":(literal)" + x for x in only_paths[i:i + 400]]
+                                                for i in range(0, len(only_paths), 400)]
 
     def grep(args: list[str]) -> list[tuple[str, str]]:
+        rows = []
+        for spec in specs:
+            rows += grep_one(args, spec)
+        return rows + links
+
+    def grep_one(args: list[str], spec: list[str]) -> list[tuple[str, str]]:
         out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-I", *args,
-                              *([revision] if revision else []), "--", "."],
+                              *([revision] if revision else []), "--", *spec],
                              capture_output=True, timeout=120, env={**environment, "LC_ALL": "C"})
-        if out.returncode not in (0, 1):
-            raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+        if only_paths is not None and b"unable to read" in (out.stderr or b""):
+            raise ValueError("unresolved (reader closure unproven: the base tree's changed files could not be read "
+                             "(a blob is missing): a missing blob plans FULL)")
+        if only_paths is not None and out.returncode not in (0, 1):
+            raise ValueError(f"unresolved (reader closure unproven: the base tree's changed files could not be read "
+                             f"(git grep exit {out.returncode}): a missing blob plans FULL)")
+        grep_read_everything(out, "the backstop's mention grep")
         rows = []
         for record in out.stdout.decode("utf-8", errors="replace").split("\n"):
             name, sep, text = record.partition("\0")
             if sep:
                 rows.append((name[len(revision) + 1:] if revision else name, text))
-        return rows + links
+        return rows
 
     def hit(f: str, base: str) -> None:
         if f in policy_files:
@@ -1951,9 +1997,72 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         for f, text in grep(["-F", *args]):
             for m in token.finditer(text):
                 hit(f, m.group(1))
+    # A runner that names only a DIRECTORY (`node --test "$REPO_ROOT/tools/"`, a workflow's `pytest scripts/`, a config's
+    # `tools/**`) runs what is beneath it, so every directory that holds a subject is a subject too, written `tools/`. A
+    # token ENDS at the directory and has a slash beside it (`tools/`, `./tools`, `$X/tools`; the bare word `test` in
+    # `"scripts": {"test": ...}` or a workflow's `test:` job is no path): resolved from the mentioning file's directory
+    # (from the root for a file at the root or under .github/, whose steps run there), or named after a prefix the scan
+    # cannot resolve (`$X/`, `${X}/`, `/`).
+    holders: dict[str, set[str]] = {}
+    for member in set().union(*subjects.values()):
+        d = posixpath.dirname(member)
+        while d:
+            holders.setdefault(d, set()).add(member)
+            d = posixpath.dirname(d)
+    if holders:
+        # One generic prefilter (any path token that ends at a slash-terminated or slash-led segment) and an exact match
+        # in Python: an alternation of every holder's path made git grep exceed its timeout on vagary-core.
+        token = re.compile(r"[^\s\"'`=,;|&<>:\\]+")  # a backslash ends one too: JSON escapes `\"$ROOT/tools/\"`
+        # Precision (root's R4 of round 4, P2 and P4), each skip on positive evidence only: prose runs nothing, so a
+        # README's "lives in src/" is no directory runner; an ignore list only excludes, except a `!lib/` line, which
+        # re-includes; and a package.json's metadata fields (its "files": ["lib/"]) publish, while every other field
+        # is read. A manifest that does not parse, or is not an object, is read whole, toward a mention.
+        manifests: dict[str, str | None] = {}
+
+        def dir_texts(f: str, text: str) -> list[str]:
+            base = posixpath.basename(f)
+            if posixpath.splitext(f)[1].lstrip(".").lower() in PROSE_EXT:
+                return []
+            if IGNORE_LIST.fullmatch(base):
+                return [ln.strip()[1:] for ln in text.splitlines() if ln.strip().startswith("!")]
+            if base != "package.json":
+                return [text]
+            if f not in manifests:
+                try:
+                    body = json.loads((read_source(repo, f, revision, environment) if revision
+                                       else (repo / f).read_text(errors="replace")).removeprefix("\ufeff"))
+                except ValueError:
+                    body = None
+                manifests[f] = (json.dumps({k: v for k, v in body.items() if k not in PACKAGE_METADATA},
+                                           ensure_ascii=False) if isinstance(body, dict) else None)
+            return [text] if manifests[f] is None else [manifests[f]]
+
+        seen_manifests: set[str] = set()
+        for f, line in grep(["-E", r"(^|[^A-Za-z0-9_.@-])[A-Za-z0-9_.@-]+/([^A-Za-z0-9_.@/-]|$)|/[A-Za-z0-9_.@-]+([^A-Za-z0-9_.@/-]|$)"]):
+            if f in policy_files or f in seen_manifests:
+                continue
+            here = "" if "/" not in f or f.startswith(".github/") else posixpath.dirname(f)
+            texts = dir_texts(f, line)
+            if posixpath.basename(f) == "package.json" and manifests.get(f) is not None:
+                seen_manifests.add(f)  # its fields are read once, whole
+            for m in (m for text in texts for m in token.finditer(text)):
+                core = m.group(0).rstrip("/")
+                if not core or ("/" not in core and not m.group(0).endswith("/")):
+                    continue  # a bare word, not a path
+                if core.startswith("/") or any(c in core for c in "$%{}()~"):
+                    # after a prefix the scan cannot resolve, by name: every holder the token ends with
+                    parts = core.split("/")
+                    named = {"/".join(parts[i:]) for i in range(1, len(parts))} & set(holders)
+                else:
+                    named = {posixpath.normpath(posixpath.join(here, core))} & set(holders)
+                for d in named:
+                    found.setdefault(d + "/", set()).add(f)
     out: dict[str, list[list]] = {}
     for p, members in sorted(subjects.items()):
-        rows = [[f, owner(f), f in members, member] for member in sorted(members) for f in sorted(found.get(member, ()))]
+        held = sorted({posixpath.dirname(m.rstrip("/")) for m in members} - {""})
+        held = sorted({a + "/" for d in held for a in [d] + [d.rsplit("/", k)[0] for k in range(1, d.count("/") + 1)]})
+        rows = [[f, owner(f), f in members, member] for member in sorted(members) + held
+                for f in sorted(found.get(member, ()))]
         if rows:
             out[p] = rows
     return out
@@ -2129,19 +2238,28 @@ def computed_import_sites(src: Source):
 
 
 def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
-         policy_files: tuple = (),
+         policy_files: tuple = (), mention_revisions: tuple = (),
          report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """The reader scan; at a revision, every file read goes through one `git cat-file --batch` process."""
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
     if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("reader scan revision must be an immutable commit")
-    with batch_reads(repo, revision, environment):
-        return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files, report=report)
+    try:
+        with batch_reads(repo, revision, environment):
+            return _scan(repo, cfg, manifest_root=manifest_root, revision=revision, policy_files=policy_files,
+                         mention_revisions=mention_revisions, report=report)
+    except subprocess.TimeoutExpired as err:
+        # F18 (root, 2026-10-29): a pass that runs out of time read only part of the tree, so the closure is unproven. It
+        # refuses like every other unproven route (FULL), by a typed refusal, never by an uncaught exception.
+        cmd = [str(x) for x in (err.cmd if isinstance(err.cmd, (list, tuple)) else [err.cmd])]
+        what = next((f"git {x}" for x in cmd if x in ("grep", "ls-tree", "ls-files", "show", "cat-file")), cmd[0])
+        raise ValueError(f"unresolved (reader closure unproven: timeout: `{what}` ran over its {err.timeout:g} s limit)") \
+            from None
 
 
 def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
-          policy_files: tuple = (),
+          policy_files: tuple = (), mention_revisions: tuple = (),
           report: dict | None = None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     es = cfg.get("edge_scan") or {}
     roots = es.get("roots") or ["services", "apps"]
@@ -2177,8 +2295,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
                           *([revision] if revision else []), "--", ".", *excludes],
                          capture_output=True, timeout=15, env={**environment, "LC_ALL": "C"})
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    grep_read_everything(out, "the reader scan")
     lit = re.compile(r"(?<![\w./-])(?:\.\./)*((?:" + alt + r")(?:/[A-Za-z0-9_.-]+)+)")
     rel = re.compile(r"(?<![\w.])((?:\.\./)+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)")
     globs = list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())
@@ -2320,8 +2437,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                               r"""["']\.\.["']|\.parents?([^A-Za-z0-9_]|$)""", *([revision] if revision else []), "--",
                               *[f"*.{e}" for e in sorted(JS_EXT | PY_EXT)], *excludes],
                              capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if listing.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
+    grep_read_everything(listing, "the reader scan")
     for path in sorted(x[len(revision) + 1:] if revision else x
                        for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
         ext = posixpath.splitext(path)[1].lstrip(".").lower()
@@ -2344,7 +2460,39 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     unowned: dict[str, dict] = {}
     imports, unused, unresolved_data, unit_imports, routes_to = import_closure(
         repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps, readers, unowned)
-    mentions = basename_mentions(repo, cfg, owner, revision, environment, routes_to, set(policy_files))
+    # Root's ruling on the backstop's consequence (2026-10-29): mentions over BASE ∪ HEAD, so a mention the PR adds
+    # flags, and so does one it removes. The base tree is data like the head: it can only add FULL paths. A file the PR
+    # did not change has the same text at both ends, so the base pass reads only the deleted and modified ones (D/M/T,
+    # with renames as D+A), from `base_repo` (the action's sparse base checkout: a blobless candidate has no base blobs).
+    # The SUBJECTS are the union of both trees (trees need no blobs): a P the PR deletes or moves stays one.
+    base_tracked: dict[str, str] = {}
+    base_passes = []
+    for base_repo, extra in mention_revisions:
+        if not re.fullmatch(r"[0-9a-f]{40}", extra):
+            raise ValueError("reader scan base revision must be an immutable commit")
+        if subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "-e", f"{extra}^{{commit}}"],
+                          capture_output=True, timeout=15, env=environment).returncode:
+            raise ValueError(f"reader scan cannot read the base revision {extra}: its mentions could not be counted")
+        base_tracked.update(tracked_paths(repo, extra, environment))
+        diff = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
+                               "--diff-filter=DMT", extra, *([revision] if revision else []), "--"],
+                              capture_output=True, timeout=60, env=environment)
+        if diff.returncode:
+            raise ValueError(f"reader scan cannot diff the base revision {extra} against the candidate")
+        base_passes.append((Path(base_repo), extra, sorted(x for x in diff.stdout.decode("utf-8", errors="surrogateescape")
+                                                          .split("\0") if x)))
+    mentions = basename_mentions(repo, cfg, owner, revision, environment, routes_to, set(policy_files),
+                                 other_tracked=base_tracked or None)
+    head_tracked = tracked_paths(repo, revision, environment) if base_passes else {}
+    for base_repo, extra, changed in base_passes:
+        if subprocess.run(["git", "--no-replace-objects", "-C", str(base_repo), "cat-file", "-e", f"{extra}^{{commit}}"],
+                          capture_output=True, timeout=15, env=environment).returncode:
+            raise ValueError(f"reader scan cannot read the base revision {extra} in {base_repo}")
+        for p, rows in basename_mentions(base_repo, cfg, owner, extra, environment, routes_to, set(policy_files),
+                                         other_tracked=head_tracked, only_paths=changed).items():
+            have = {(r[0], r[3]) for r in mentions.setdefault(p, [])}
+            mentions[p].extend(r for r in rows if (r[0], r[3]) not in have)
+            mentions[p].sort()
     if report is not None:
         report["imports"] = {path: sorted(found) for path, found in sorted(imports.items())}
         report["unit_imports"] = {path: sorted(found) for path, found in sorted(unit_imports.items())}
@@ -2599,8 +2747,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                           IMPORT_CALL_GREP, *([revision] if revision else []), "--",
                           *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {out.returncode})")
+    grep_read_everything(out, "the reader scan")
     for path in out.stdout.decode("utf-8", errors="replace").split("\0"):
         if path and revision:
             path = path[len(revision) + 1:]
@@ -2753,8 +2900,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                               r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    if listing.returncode not in (0, 1):
-        raise SystemExit(f"edges: git grep failed (exit {listing.returncode})")
+    grep_read_everything(listing, "the reader scan")
     for p in sorted(x[len(revision) + 1:] if revision else x
                     for x in listing.stdout.decode("utf-8", errors="replace").split("\0") if x):
         if owner(p) is not None or excluded(p) or p.lower().endswith(".md") or tracked.get(p) == "120000":
@@ -2821,7 +2967,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
 def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | None, config_path: Path,
            imports: dict | None = None, computed_unused: list | None = None, unit_imports: dict | None = None,
-           mentions: dict | None = None) -> dict:
+           mentions: dict | None = None, backstop_reasons: dict | None = None) -> dict:
     failures, stale = [], []
     imports = imports or {}
     unit_imports = unit_imports or {}
@@ -2869,13 +3015,16 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
                                 f"'{es_cfg.get('reader_job')}' runs, but its mapping selects "
                                 f"{sorted(selection['affected']) or 'no package'} and not that job (map it to a package "
                                 "the job lists, or leave it unmapped so it plans FULL)")
-    # Root's round 3 of #33, the BACKSTOP (attack-independent, failing toward FULL): a mapping for P is accepted only if
-    # every other tracked file that names P's basename is in a package the mapping selects, or is a file outside every
-    # package whose route to P the scan recorded. Anything else is a runner the scan did not see, by a spelling nobody
-    # listed yet: P plans FULL until the mapping covers it or full_globs says so. A basename collision goes FULL too.
+    # Root's round 3 of #33, the BACKSTOP (attack-independent, failing toward FULL): a mapping for P holds only if every
+    # other tracked file that names P's basename is in a package the mapping selects, or is a file outside every package
+    # whose route to P the scan recorded. Anything else is a runner the scan did not see, by a spelling nobody listed yet.
     # Round 4: the same holds for every file outside every package that reaches P by a recorded route (B1, its runner
-    # runs P), and for a path inert_globs maps to nothing (B4). The FAIL prefixes stay fixed; what a hop adds is at the end.
+    # runs P), for every directory holding one (T10b), and for a path inert_globs maps to nothing (B4).
+    # Its consequence is PER PATH (root's ruling, 2026-10-29): P joins `backstop_full`, which the plan treats as a full
+    # trigger, so a change to P plans FULL and every other path keeps its mapping. A basename collision goes FULL too.
+    # Declarations (a mapping that covers the mentioning package) still narrow P back out of FULL.
     inert_globs = list(cfg.get("inert_globs") or [])
+    backstop: dict[str, list[str]] = {}
     for path, rows in sorted((mentions or {}).items()):
         selection = classify_paths([path], cfg, pkgs)
         if selection["error"] or selection["evidence"]["full_triggers"] or selection["evidence"]["unmapped"]:
@@ -2885,20 +3034,20 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
         for f, own, subject, member in rows:
             if (own is not None and own in affected) or (own is None and subject):
                 continue
-            base = posixpath.basename(member)
-            via = "" if member == path else f"; {member} reaches {path} by a recorded route, so what runs it runs {path}"
+            base = member if member.endswith("/") else posixpath.basename(member)
+            via = ("" if member == path else f"; {member} holds {path} or a file that reaches it by a recorded route, so "
+                   f"what runs it runs {path}" if member.endswith("/") else
+                   f"; {member} reaches {path} by a recorded route, so what runs it runs {path}")
             if inert_rule:
-                failures.append(f"inert mention: {f} names {base}, but inert_globs {inert_rule!r} makes a change to "
-                                f"{path} select nothing (narrow the glob so it leaves {path} out, or add {path} to "
-                                f"full_globs so a change to it plans FULL){via}")
+                why = (f"{f} names {base}, but inert_globs {inert_rule!r} makes a change to {path} select nothing "
+                       f"(narrow the glob so it leaves {path} out to narrow it){via}")
             elif own is not None:
-                failures.append(f"unattributed mention: {f} (package {own}) names {base}, but the mapping for {path} "
-                                f"selects {sorted(affected) or 'no package'} (map {path} to {own} too, or add {path} to "
-                                f"full_globs so a change to it plans FULL){via}")
+                why = (f"{f} (package {own}) names {base}, but the mapping for {path} selects "
+                       f"{sorted(affected) or 'no package'} (map {path} to {own} too to narrow it){via}")
             else:
-                failures.append(f"unattributed mention: {f}, outside every package, names {base} by a route the scan did "
-                                f"not record, so whatever runs {f} may run {path} (add {path} to full_globs so a change "
-                                f"to it plans FULL, or write the route as a relative path the scan follows){via}")
+                why = (f"{f}, outside every package, names {base} by a route the scan did not record, so whatever runs "
+                       f"{f} may run {path} (write the route as a relative path the scan follows to narrow it){via}")
+            backstop.setdefault(path, []).append(why)
     for entry in computed_unused or []:
         failures.append(f"stale computed_imports entry: {entry} matches no import call")
     if readers.get("<unmapped>"):
@@ -2930,36 +3079,79 @@ def assess(pkgs: dict, cfg: dict, deps: dict, readers: dict, *, revision: str | 
               "readers": {name: sorted(values) for name, values in sorted(readers.items())},
               "imports": {path: sorted(values) for path, values in sorted(imports.items())},
               "unit_imports": {path: sorted(values) for path, values in sorted(unit_imports.items())},
-              "failures": failures, "stale": stale}
+              "backstop_full": sorted(backstop), "failures": failures, "stale": stale}
     result["assessment_sha256"] = canonical_digest(result)
+    if backstop_reasons is not None:
+        backstop_reasons.update(backstop)  # the report's reasons; never part of the bound assessment
     return result
+
+
+def sparse_pattern(path: str) -> str:
+    """`path` as one anchored, literal non-cone sparse-checkout pattern (gitignore syntax: `\\` escapes `*?[\\`, a
+    leading `!` or `#`, and a trailing space). A path holding a newline cannot be one, so it refuses."""
+    if "\n" in path or "\r" in path:
+        raise ValueError(f"unresolved (a changed path holds a line break, so the base checkout cannot name it: {path!r})")
+    out = re.sub(r"([*?\[\\])", r"\\\1", path)
+    out = re.sub(r"(?<=[^ ])( +)$", lambda m: "\\ " * len(m.group(1)), out)
+    return "/" + (("\\" + out) if out[:1] in ("!", "#") else out)
+
+
+def base_paths(repo: Path, base: str, head: str) -> list[str]:
+    """The paths the base pass reads: deleted or modified between `base` and `head` (D/M/T, renames as D+A). Trees only,
+    so a blobless candidate answers it."""
+    for rev in (base, head):
+        if not re.fullmatch(r"[0-9a-f]{40}", rev):
+            raise ValueError("base-paths revisions must be immutable commits")
+    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
+                          "--diff-filter=DMT", base, head, "--"], capture_output=True, timeout=60,
+                         env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {"GIT_NO_LAZY_FETCH": "1"})
+    if out.returncode:
+        raise ValueError(f"unresolved (base-paths cannot diff {base} against {head})")
+    return sorted(x for x in out.stdout.decode("utf-8", errors="surrogateescape").split("\0") if x)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["derive", "check"])
-    ap.add_argument("--config", required=True)
+    ap.add_argument("mode", choices=["derive", "check", "base-paths"])
+    ap.add_argument("--config")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--manifest-root", help="trusted base workspace metadata")
     ap.add_argument("--revision", help="immutable candidate commit for source reads")
     ap.add_argument("--out-json", help="write the same supported-reader check as a bound assessment")
+    ap.add_argument("--base-revision", help="the base commit: its basename mentions join the backstop's (BASE ∪ HEAD)")
+    ap.add_argument("--base-repo", help="a checkout holding the base revision's changed files (default: --repo)")
+    ap.add_argument("--github-output", help="base-paths: append the sparse patterns as the `paths` output here")
     a = ap.parse_args(argv)
     repo = Path(a.repo)
+    if a.mode == "base-paths":
+        # The action's base checkout adds these, so the base pass can read the PR's deleted and modified files.
+        patterns = [sparse_pattern(p) for p in base_paths(repo, a.base_revision or "", a.revision or "")]
+        delimiter = "EOF_" + hashlib.sha256("\n".join(patterns).encode()).hexdigest()[:16]
+        text = f"paths<<{delimiter}\n" + "".join(x + "\n" for x in patterns) + f"{delimiter}\n"
+        if a.github_output:
+            with open(a.github_output, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        print(f"base-paths: {len(patterns)} deleted or modified paths for the base checkout")
+        return 0
+    if not a.config:
+        ap.error("--config is required for derive and check")
     cfg = json.loads((repo / a.config).read_text())
     manifest_root = Path(a.manifest_root) if a.manifest_root else repo
     report: dict = {}
     # The candidate's copy of the planner config (the action reads the base copy: --config <base>/<config>).
     policy = posixpath.normpath(os.path.relpath(repo / a.config, manifest_root))
-    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report, policy_files=(policy,))
+    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report, policy_files=(policy,),
+                         mention_revisions=((a.base_repo or a.repo, a.base_revision),) if a.base_revision else ())
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
                           "readers": {k: sorted(v) for k, v in sorted(readers.items())},
                           "imports": report["imports"], "unit_imports": report["unit_imports"]}, indent=1))
         return 0
     pkgs = workspace_graph(manifest_root, cfg)
+    reasons: dict[str, list[str]] = {}
     assessment = assess(pkgs, cfg, deps, readers, revision=a.revision, config_path=repo / a.config,
                         imports=report["imports"], computed_unused=report["computed_imports_unused"],
-                        unit_imports=report["unit_imports"], mentions=report["mentions"])
+                        unit_imports=report["unit_imports"], mentions=report["mentions"], backstop_reasons=reasons)
     failures, stale = assessment["failures"], assessment["stale"]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(assessment, sort_keys=True) + "\n")
@@ -2967,8 +3159,11 @@ def main(argv=None) -> int:
         print(s)
     for f in failures:
         print("FAIL " + f)
+    for path, whys in sorted(reasons.items()):
+        for why in whys:  # one line per reason: a reason itself may hold "; "
+            print(f"BACKSTOP {path} plans FULL: {why}")
     print(f"edges: {sum(len(v) for v in deps.values())} reads between {len(deps)} packages; "
-          f"{len(failures)} undeclared, {len(stale)} stale")
+          f"{len(failures)} undeclared, {len(stale)} stale, {len(assessment['backstop_full'])} backstop FULL")
     return 1 if failures else 0
 
 

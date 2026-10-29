@@ -110,6 +110,23 @@ runs:
           --event-repository "$EVENT_REPOSITORY" --target-ref "$TARGET_REF" --server-url "$SERVER_URL" \
           --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
           --out-json "$STATE/target.json" --github-output "$GITHUB_OUTPUT"
+    # The backstop counts mentions over BASE and HEAD. A file the PR left alone reads the same at both ends, so the base
+    # side needs only the deleted and modified ones; a blobless candidate (vagaris: filter blob:none) has no base blobs,
+    # so the sparse base checkout below fetches exactly those. Trees answer the diff. A failure leaves them out, and the
+    # base pass then refuses on the missing blob (FULL), never misses a mention.
+    - name: Deleted and modified paths for the base checkout (backstop BASE side)
+      id: changed
+      if: ${{ steps.target.outputs.policy_ref != '' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        CANDIDATE_ROOT: ${{ inputs.candidate-root }}
+        CANDIDATE: ${{ github.sha }}
+        POLICY_REF: ${{ steps.target.outputs.policy_ref }}
+      run: |
+        set -euo pipefail
+        python3 -I "$GITHUB_ACTION_PATH/edges.py" base-paths --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
+          --base-revision "$POLICY_REF" --revision "$CANDIDATE" --github-output "$GITHUB_OUTPUT"
     - name: Base commit manifests and plan config (sparse)
       id: policy
       continue-on-error: true
@@ -132,6 +149,7 @@ runs:
           /uv.lock
           **/package.json
           /.github/workflows/
+          ${{ steps.changed.outputs.paths }}
     - name: Tested commit (lockfiles and workflows of the tree this run tests)
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
@@ -158,6 +176,7 @@ runs:
         CANDIDATE: ${{ github.sha }}
         EDGE_CHECK: ${{ inputs.edge-check }}
         POLICY_OUTCOME: ${{ steps.policy.outcome }}
+        POLICY_REF: ${{ steps.target.outputs.policy_ref }}
       run: |
         set -euo pipefail
         reason=""
@@ -169,7 +188,7 @@ runs:
           reason="no base policy; caller full roster required"
         elif ! python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
           --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE" \
-          --out-json "$STATE/readers.json"; then
+          --base-revision "$POLICY_REF" --base-repo "$STATE/base" --out-json "$STATE/readers.json"; then
           reason="reader closure unproven; full validation required"
         fi
         echo "force_full_reason=$reason" >> "$GITHUB_OUTPUT"

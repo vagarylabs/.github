@@ -1,5 +1,5 @@
 {
- "$comment": "1.5.1, root's rulings of 2026-10-29 (lanes/cli/RULINGS-2026-10-29-root-climb.md): (a) a name above the checkout is an unresolved name, declared by its path or a glob with a literal first segment; (b) a name at the root refuses unless declared with a reach list, and a root base whose every use joins string literals resolves to exactly those literals; (c) a lockfile is not read only when a change to it plans FULL under the config in use; and the nested-lockfile ruling: a nested lockfile selects exactly its one owning package, else FULL. Pinned EXACT by root's method (VectorHarness).",
+ "$comment": "1.5.2, root's rulings of 2026-10-29 (lanes/cli/RULINGS-2026-10-29-root-climb.md): (a) a name above the checkout is an unresolved name, declared by its path or a glob with a literal first segment; (b) a name at the root refuses unless declared with a reach list, and a root base whose every use joins string literals resolves to exactly those literals; (c) a lockfile is not read only when a change to it plans FULL under the config in use; and the nested-lockfile ruling: a nested lockfile selects exactly its one owning package, else FULL. Pinned EXACT by root's method (VectorHarness).",
  "base_config": {
   "edge_scan": {
    "exclude": [

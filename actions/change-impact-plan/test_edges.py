@@ -903,7 +903,7 @@ class ImportAttributionTest(unittest.TestCase):
                          "a change to the imported file selects its importer, not FULL")
 
     def test_python_sys_path_entries_credit_what_the_package_imports_by_name(self):
-        # 1.5.1. The entry sits in conftest.py, and the import in another test file: sys.path is process-wide.
+        # 1.5.2. The entry sits in conftest.py, and the import in another test file: sys.path is process-wide.
         self.files(**{
             "services__a__test__conftest.py": "import os, sys\n"
                                               'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))\n',
@@ -995,7 +995,7 @@ class ImportAttributionTest(unittest.TestCase):
                     self.scan(cfg)
 
     def test_python_loaders_get_fix_1_and_fix_2_shape(self):
-        # Root's R4 of #33 carried into 1.5.1's Python loaders: an unowned file's loaders are checked and select its
+        # Root's R4 of #33 carried into 1.5.2's Python loaders: an unowned file's loaders are checked and select its
         # own unit, a literal load naming no tracked file refuses, and reach "package" refuses outside every package.
         self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
         with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
@@ -1396,7 +1396,7 @@ class ImportAttributionTest(unittest.TestCase):
             ('x = os.path.join(os.path.dirname(__file__), "..", "lib")', "py"): ["../lib"],
             ('x = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")', "py"): ["../.."],
             ('HERE = os.path.dirname(__file__)\nx = os.path.join(HERE, "..", "w.py")', "py"): ["../w.py"],
-            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../.."],  # 1.5.1: the alias's own binding is no use
+            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../.."],  # 1.5.2: the alias's own binding is no use
             ('w = Path(__file__).parent / ".." / "w.py"', "py"): ["../w.py"],
             ('w = Path(__file__).parent.parent / "w.py"', "py"): ["../w.py"],
             ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "../scripts/x.sh"],
@@ -1409,7 +1409,7 @@ class ImportAttributionTest(unittest.TestCase):
             with self.subTest(control=src):
                 self.assertEqual(E.anchored_chains(E.Source(src, ext)), [], "no parent step from the anchor: no chain")
         # In a scan: a Python root base by parents[N] refuses as a root climb when it is used other than joined with
-        # string literals (1.5.1, root's ruling b); a bound base nobody uses reaches nothing.
+        # string literals (1.5.2, root's ruling b); a bound base nobody uses reaches nothing.
         self.files(**{"services__a__t.py": "import subprocess\nfrom pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
                                            "subprocess.run(['make'], cwd=ROOT)\n"})
         with self.assertRaisesRegex(ValueError, r"services/a/t.py names \.\./\.\., the repository root or above it"):
@@ -1625,7 +1625,7 @@ class ImportAttributionTest(unittest.TestCase):
                 (self.repo / f"tools/content/page.{ext}").unlink()
                 self.files(**{"services__a__t.mjs": "export {};\n"})
 
-    # ── 1.5.1: a shell script's relative paths resolve where it has `cd`'d to (spine's A2 census, FALSE-POSITIVES item 3)
+    # ── 1.5.2: a shell script's relative paths resolve where it has `cd`'d to (spine's A2 census, FALSE-POSITIVES item 3)
     def test_shell_cd_to_its_own_directory_moves_where_relative_paths_resolve(self):
         base = {"scripts__ci-test-pg.sh": "#!/bin/bash\necho pg\n", "scripts__x.sh": "#!/bin/bash\n"}
         cases = {
@@ -1887,11 +1887,11 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
                 self.assertIn(case["residual"], readme, f"{name}: the README must list it")
 
 
-class RulingsOf151Test(VectorHarness, unittest.TestCase):
-    """1.5.1, root's rulings (a), (b), (c) and the nested-lockfile ruling (test_edges_151_rulings_vectors.json), pinned
+class RulingsOf152Test(VectorHarness, unittest.TestCase):
+    """1.5.2, root's rulings (a), (b), (c) and the nested-lockfile ruling (test_edges_152_rulings_vectors.json), pinned
     EXACT: each drop-vector refuses, plans FULL or selects its runner; each control selects exactly its jobs."""
 
-    CASES = json.loads((Path(__file__).with_name("test_edges_151_rulings_vectors.json")).read_text())
+    CASES = json.loads((Path(__file__).with_name("test_edges_152_rulings_vectors.json")).read_text())
 
     def test_every_ruling_vector_is_pinned_exactly(self):
         for name, case in sorted(self.CASES["cases"].items()):

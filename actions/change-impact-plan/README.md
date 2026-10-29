@@ -40,7 +40,7 @@ Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both 
 
 Callers that adopt 1.4 must update any recomputed `plan_id` identity: it now includes `impact`, `source` and `source_meta`.
 
-## Reader scan (1.4.1; 1.5.0 adds imported files; 1.5.1 Python sys.path)
+## Reader scan (1.4.1; 1.5.0 adds imported files; 1.5.2 Python sys.path)
 
 `edges.py` classifies every workspace-root literal: `"services"`, `"apps"`, ..., also `"./services"`, `"services/"` and a
 backtick string with no substitution. It works from the WHOLE file's tokens: strings, comments, regex literals, and
@@ -241,7 +241,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      `node_modules` stays external. Reach `"none"` refuses for a name with a code extension (F09): code something runs
      (`spawn(process.execPath, ["../../dist/x.js"])`) reaches its sources, so it must name them.
    - **A path at or above the repository root refuses** (N4): a `"../.."` alias, `baseUrl` or `root` reaches every
-     file, so no mapping of it can be narrower than FULL. 1.5.1, root's rulings of 2026-10-29:
+     file, so no mapping of it can be narrower than FULL. 1.5.2, root's rulings of 2026-10-29:
      - **(a) Above the checkout** (`../vagary-voice`, `../../etc/passwd` resolved from the root), a name joins the
        unresolved-name class. It is declared in `unresolved_names` by its exact path, or by a glob over such paths whose
        first segment below the `../` steps is literal (`../vagary-voice/**`; `../**` refuses). Its reach may be `"none"`
@@ -261,7 +261,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
 
        Any other use refuses: a non-literal join, `cwd=REPO`, a template or f-string the tokens cannot see, an export
        to other files, or a literal that is itself the root or above.
-   - **A lockfile is read only when it can select less than FULL** (1.5.1, root's ruling c). Every lockfile kind
+   - **A lockfile is read only when it can select less than FULL** (1.5.2, root's ruling c). Every lockfile kind
      (`plan.LOCKFILE_NAMES`) is metadata: its `link:../x` entries run nothing. So the scan skips a lockfile when, and only
      when, `plan.classify_paths` plans a change to it FULL under the config in use. That check is per path and per
      consumer, and `derive`'s report lists the skipped ones under `lockfiles_not_read`. A skipped lockfile is not a
@@ -381,7 +381,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    undeclared one leaves the changed path unmapped, so the plan is FULL. `derive`, `check --out-json` and the bound
    assessment carry `imports`: each imported path with its importers.
 
-### Python `sys.path` entries (1.5.1)
+### Python `sys.path` entries (1.5.2)
 
 Package Python code that puts a directory on `sys.path` imports from it by NAME, so no relative path names those
 modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__file__), "..", "app")`,
@@ -406,7 +406,7 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root or a top-level
      directory outside every package. A cwd-relative string literal like `"../../shared-sdks/py"` is one;
    - a package Python file that changes `sys.path` and does not parse refuses.
-7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.1.
+7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.2.
    - It is read from the config pytest would read: the nearest directory walking up from the package that holds one of
      `pytest.ini` (it wins in its directory, even with no `[pytest]` section), `pyproject.toml`
      (`[tool.pytest.ini_options]`), `tox.ini` (`[pytest]`) or `setup.cfg` (`[tool:pytest]`).
@@ -479,7 +479,7 @@ vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run en
 
 Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
 
-`test_edges_151_rulings_vectors.json` holds 23 vectors for 1.5.1's root-climb rulings, run by the same method:
+`test_edges_152_rulings_vectors.json` holds 23 vectors for 1.5.2's root-climb rulings, run by the same method:
 - A1-A6: names above the checkout;
 - B1-B11: root bases and root declarations;
 - C1-C6: lockfiles and the nested-lockfile ruling.
@@ -501,7 +501,7 @@ Each is pinned exact: it refuses, plans FULL, or selects its runner, and each co
 - 9 for round 8: the seventh review's R7B1a-R7B1d and R7V14, and R8T01-R8T04 (the working-directory wording's
   edges: R7B1b, R7B1d, R8T01 and R8T04 refuse; R7B1a, R7B1c, R8T02 and R8T03 are named residuals; R7V14 reads);
 - 2 for the 64-level nesting bound: R8T05 (100 deep) refuses on every Python, R8T06 (exactly 64) reads.
-- 1 for 1.5.1: R6V29b keeps R6V29's rule-7 precision (a `..` with no working-directory change reads) outside a
+- 1 for 1.5.2: R6V29b keeps R6V29's rule-7 precision (a `..` with no working-directory change reads) outside a
   `sys.path` entry, because R6V29 itself now refuses under rule 6 (its entry `os.path.join(HERE, "..")` cannot be
   evaluated and holds a parent step).
 

@@ -273,7 +273,10 @@ class EchoCheckTests(unittest.TestCase):
                                           env={**ENV, "GITHUB_OUTPUT": str(out_file)})
                     self.assertEqual(rc, 1, (purpose, name))
                     self.assertIn("echo check failed", err, (purpose, name))
-                    self.assertEqual(fake.deletes(), [f"token {install_token(repo)}"], (purpose, name))
+                    # An ABSENT echo revokes only a revocable token (AbsentEchoTests); every other mismatch revokes.
+                    revoked = name != "missing" or client.PURPOSES[purpose]["revocable"]
+                    self.assertEqual(fake.deletes(), [f"token {install_token(repo)}"] if revoked else [],
+                                     (purpose, name))
                     self.assertFalse(pathlib.Path(f"{td}/t").exists(), (purpose, name))
                     self.assertEqual(out_file.read_text(), "", (purpose, name))
                     # the token was masked before the revoke, and never printed otherwise
@@ -624,11 +627,12 @@ class RevokeOnFailureTests(unittest.TestCase):
                     self.calls.append((method, url, dict(headers), data))
                     raise RuntimeError("revoke exploded")
                 return super().__call__(method, url, headers, data, timeout)
-        fake = DeleteBlowsUp(echo={"vagarylabs/vagary-core": {"permissions": None}})
+        wrong = {**client.PURPOSES["build_checkout"]["permissions"], "contents": "write"}   # a PRESENT wrong echo
+        fake = DeleteBlowsUp(echo={"vagarylabs/vagary-core": {"permissions": wrong}})
         rc, _, err, _ = run(mint_args(token_file=f"{RT}/x/t"), fake)
         self.assertEqual(rc, 1)
-        self.assertIn("echo check failed: no permissions echoed; the token was NOT revoked (unexpected RuntimeError)",
-                      err)
+        self.assertIn("echo check failed: permissions differ from build_checkout's set", err)
+        self.assertIn("the token was NOT revoked (unexpected RuntimeError)", err)
         self.assertEqual(fake.deletes(), [f"token {self.TOKEN}"])
 
     def test_an_interrupt_after_a_token_is_obtained_still_revokes_and_propagates(self):
@@ -666,6 +670,58 @@ class RevokeOnFailureTests(unittest.TestCase):
             self.assertIn("unexpected RuntimeError", err)
             self.assertEqual(fake.deletes(), [f"token {install_token('vagarylabs/a')}"])
             self.assertFalse(pathlib.Path(f"{td}/d").exists())
+
+
+class AbsentEchoTests(unittest.TestCase):
+    """An ABSENT permissions echo is the broker saying nothing, not saying something wrong. It still fails the step
+    (fail closed), but a token that is not revocable is the broker's SHARED cache entry for this caller, so it is never
+    revoked: platform #1205's CI (run 40756204707, 2026-10-28 19:47Z) revoked ci-src-vagary-platform@'s shared
+    build_checkout token exactly this way against a broker that predated the echo. A PRESENT but wrong echo, or any
+    other problem beside the absence, still revokes."""
+
+    REPO = "vagarylabs/vagary-core"
+
+    def mint(self, purpose, echo):
+        with tmpdir() as td:
+            fake = Fake(echo={self.REPO: echo})
+            rc, out, err, _ = run(mint_args(purpose=purpose, token_file=f"{td}/t"), fake)
+            return rc, out, err, fake, pathlib.Path(f"{td}/t").exists()
+
+    def test_the_1205_shape_an_absent_echo_on_a_cached_purpose_fails_and_never_deletes(self):
+        self.assertFalse(client.PURPOSES["build_checkout"]["revocable"], "control: build_checkout is the cached purpose")
+        rc, out, err, fake, written = self.mint("build_checkout", {"permissions": None})
+        self.assertEqual(rc, 1, err)
+        self.assertIn("echo check failed: no permissions echoed", err)
+        self.assertIn("NOT revoked", err)
+        self.assertEqual(fake.deletes(), [])
+        self.assertFalse(written)
+        self.assertEqual(leaked(out + err, ALL_SECRETS), [])
+
+    def test_an_absent_echo_when_the_broker_says_not_revocable_never_deletes(self):
+        for purpose in client.PURPOSES:
+            rc, _, err, fake, written = self.mint(purpose, {"permissions": None, "revocable": False})
+            self.assertEqual((rc, fake.deletes(), written), (1, [], False), (purpose, err))
+
+    def test_an_absent_echo_on_a_revocable_token_still_revokes(self):
+        for purpose in client.PURPOSES:
+            for echo in ({"permissions": None, "revocable": True},
+                         *([{"permissions": None}] if client.PURPOSES[purpose]["revocable"] else [])):
+                rc, _, err, fake, written = self.mint(purpose, echo)
+                self.assertEqual(rc, 1, (purpose, echo))
+                self.assertEqual(fake.deletes(), [f"token {install_token(self.REPO)}"], (purpose, echo, err))
+                self.assertFalse(written)
+
+    def test_an_absent_echo_beside_another_problem_still_revokes_a_shared_token(self):
+        for other in ({"repository": "vagarylabs/other"}, {"schema": "source_read/v2"}):
+            rc, _, err, fake, _ = self.mint("build_checkout", {"permissions": None, **other})
+            self.assertEqual(rc, 1, other)
+            self.assertEqual(fake.deletes(), [f"token {install_token(self.REPO)}"], (other, err))
+
+    def test_a_present_but_wrong_echo_on_a_shared_token_still_revokes(self):
+        want = client.PURPOSES["build_checkout"]["permissions"]
+        rc, _, err, fake, _ = self.mint("build_checkout", {"permissions": {**want, "contents": "write"}})
+        self.assertEqual(rc, 1)
+        self.assertEqual(fake.deletes(), [f"token {install_token(self.REPO)}"], err)
 
 
 class CachedEchoTests(unittest.TestCase):
@@ -808,10 +864,12 @@ class BrokerRevocableTests(unittest.TestCase):
                     self.assertEqual(leaked(out + err, ALL_SECRETS), [])
 
     def test_an_echo_mismatch_is_revoked_even_when_the_broker_says_not_revocable(self):
-        fake = Fake(echo={self.REPO: {"revocable": False, "permissions": None}})
+        # A PRESENT wrong echo (an ABSENT one on a non-revocable token is AbsentEchoTests: never revoked).
+        wrong = {**client.PURPOSES["image_pull"]["permissions"], "packages": "write"}
+        fake = Fake(echo={self.REPO: {"revocable": False, "permissions": wrong}})
         rc, _, err, _ = run(mint_args(purpose="image_pull", token_file=f"{RT}/x/t"), fake)
         self.assertEqual((rc, fake.deletes()), (1, [f"token {self.TOKEN}"]))
-        self.assertIn("echo check failed: no permissions echoed", err)
+        self.assertIn("echo check failed: permissions differ from image_pull's set", err)
 
     def test_each_token_of_a_dir_follows_its_own_answer(self):
         with tmpdir() as td:

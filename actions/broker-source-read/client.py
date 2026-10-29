@@ -11,8 +11,10 @@ mint    The chain, every leg keyless and short-lived:
           4. POST <broker>/v1/source/read {"repository", "purpose"}: one token per repository.
         Every credential is masked (`::add-mask::`) the moment it is received. Each broker answer is then checked
         before its token is used: the schema is source_read/v1, the repository is echoed, and the echoed
-        `permissions` EQUAL the purpose's expected set (PURPOSES, mirroring the broker). Wider, narrower, missing or
-        malformed: the token is revoked and the step fails. Then a readiness probe: GET <api>/repos/<owner>/<name>
+        `permissions` EQUAL the purpose's expected set (PURPOSES, mirroring the broker). Wider, narrower or malformed:
+        the token is revoked and the step fails. Missing (an older broker sends no echo): the step fails, and the
+        token is revoked only if it is revocable, because a non-revocable one is the broker's shared cache entry.
+        Then a readiness probe: GET <api>/repos/<owner>/<name>
         must answer 200 within --readiness-seconds, because a fresh installation token is not visible everywhere at
         once (vagaris #825, core #920).
         All or nothing: on any failure nothing is written, and every token already minted for a revocable purpose is
@@ -76,7 +78,8 @@ TRANSPORT_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutErr
 # build_checkout token per caller: Minter's cache scope includes holder = the caller's sub (:606-611), and every job of
 # one CI service account shares that sub, so they share one token for up to about 55 minutes. Revoking it would revoke
 # it under every concurrent and later job of that caller. A token whose echo check FAILS is revoked whatever its
-# purpose and whatever the broker says, because a wrong token is wrong for every holder.
+# purpose and whatever the broker says, because a wrong token is wrong for every holder. The one exception is an echo
+# that is merely ABSENT on a non-revocable token: that is no evidence of a wrong token, and the token is shared.
 PURPOSES = {
     "build_checkout": {"permissions": {"contents": "read", "metadata": "read"}, "revocable": False},
     "image_pull": {"permissions": {"packages": "read", "metadata": "read"}, "revocable": True},
@@ -225,6 +228,10 @@ def broker_id_token(service_account: str, audience: str, access: str, http: Call
     return mask(body.get("token"), "generate-id-token", out)
 
 
+# The one echo problem that is the broker saying nothing rather than something wrong (mint: no revoke for a shared token).
+NO_PERMISSIONS_ECHO = "no permissions echoed"
+
+
 def echo_problems(body: dict, repository: str, purpose: str) -> list[str]:
     """What is wrong with a broker 200 for this repository and purpose; empty when it is exactly right."""
     problems = []
@@ -234,7 +241,7 @@ def echo_problems(body: dict, repository: str, purpose: str) -> list[str]:
         problems.append("the broker echoed a different repository")
     want, got = PURPOSES[purpose]["permissions"], body.get("permissions")
     if got is None:
-        problems.append("no permissions echoed")
+        problems.append(NO_PERMISSIONS_ECHO)
     elif not isinstance(got, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in got.items()):
         problems.append("permissions echo is malformed")
     elif got != want:
@@ -371,7 +378,8 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
     unexpected exception, an interrupt) first revokes, then re-raises THE ORIGINAL exception unchanged; a failing
     revoke is reported, never raised in its place.
       - A token whose echo check failed is revoked whatever its purpose and whatever the broker says: it is wrong for
-        every holder. A present non-boolean `revocable` is such a failure.
+        every holder. A present non-boolean `revocable` is such a failure. EXCEPT when the ONLY problem is an absent
+        permissions echo and the token is not revocable: the step still fails, and the shared token is left alone.
       - Every other token is revoked when it is revocable: the broker's `revocable` when the reply carries it, else
         the purpose's rule. Under that rule an older broker's build_checkout token is not revoked: it is the broker's
         cached token for this caller (Minter's cache scope; SOURCE_READ_UNCACHED_PURPOSES), shared by every job of the
@@ -395,7 +403,16 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
             revocable[repo], said[repo] = revocable_echo(body, purpose), revocable_said(body)
             problems = echo_problems(body, repo, purpose)
             if problems:
-                outcome = _revoke_noting(obtained.pop(repo), api, http, sleep)
+                tok = obtained.pop(repo)
+                if problems == [NO_PERMISSIONS_ECHO] and not revocable[repo]:
+                    # An ABSENT echo is not evidence of a wrong token: a broker older than the echo sends none. A
+                    # token that is not revocable is the broker's SHARED cache entry for this caller, so revoking it
+                    # would revoke it under every concurrent and later job of that caller (platform #1205,
+                    # 2026-10-28 19:47Z). Fail closed, and leave it to the broker.
+                    raise LegFailed(f"{leg}: echo check failed: {NO_PERMISSIONS_ECHO}; the token was NOT revoked: "
+                                    f"{purpose} is not revocable here, so the broker shares it across this caller's "
+                                    f"jobs")
+                outcome = _revoke_noting(tok, api, http, sleep)
                 raise LegFailed(f"{leg}: echo check failed: {'; '.join(problems)}; the token was {outcome}")
             cached[repo] = cached_echo(body)
         wait_ready(obtained, api, readiness, http, sleep, clock)

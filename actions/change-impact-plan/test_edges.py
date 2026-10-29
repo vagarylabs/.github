@@ -1903,7 +1903,7 @@ class RulingsOf151Test(VectorHarness, unittest.TestCase):
 
     def test_each_ruling_has_vectors(self):
         names = sorted(self.CASES["cases"])
-        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
                        "C1", "C2", "C3", "C4", "C5", "C6"):
             self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 

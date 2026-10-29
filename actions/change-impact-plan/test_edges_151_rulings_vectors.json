@@ -307,6 +307,22 @@
    "must_run": "test-a",
    "verdict": "SELECT"
   },
+  "B11 the inline fileURLToPath root idiom": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.test.mjs": "import path from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { execFileSync } from \"node:child_process\";\nconst REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), \"../..\");\nexecFileSync(\"node\", [path.join(REPO_ROOT, \"scripts/x.mjs\")]);\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
   "B2 root base bound, every use literal": {
    "cfg_set": {},
    "change": "scripts/y.mjs",

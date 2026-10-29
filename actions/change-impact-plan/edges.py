@@ -2062,7 +2062,10 @@ PY_DIR_ANCHOR = re.compile(r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:os\.path\.)?dirname
                            r"__file__\s*\)?\s*\)\s*$")
 PY_PATH_ANCHOR = re.compile(r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:pathlib\.)?Path\(\s*__file__\s*\)((?:\.(?:resolve|absolute)\(\s*\))*)"
                             r"((?:\.parent\b|\.parents\[\s*\d+\s*\])*)\s*$")
-JS_INLINE_ANCHORS = (["__dirname"], ["import", ".", "meta", ".", "dirname"])
+_URL_DIR = ["fileURLToPath", "(", "import", ".", "meta", ".", "url", ")", ")"]  # dirname(fileURLToPath(import.meta.url))
+JS_INLINE_ANCHORS = (["__dirname"], ["import", ".", "meta", ".", "dirname"],  # 1.5.1: the inline fileURLToPath forms too
+                     ["path", ".", "dirname", "("] + _URL_DIR, ["dirname", "("] + _URL_DIR,
+                     ["path", ".", "dirname", "(", "url", "."] + _URL_DIR, ["dirname", "(", "url", "."] + _URL_DIR)
 PY_INLINE_ANCHORS = (["os", ".", "path", ".", "dirname", "(", "__file__", ")"], ["dirname", "(", "__file__", ")"],
                      ["os", ".", "path", ".", "dirname", "(", "os", ".", "path", ".", "abspath", "(", "__file__", ")", ")"],
                      ["os", ".", "path", ".", "dirname", "(", "os", ".", "path", ".", "realpath", "(", "__file__", ")", ")"])

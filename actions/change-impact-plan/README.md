@@ -250,7 +250,8 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      - **(b) At the root** (`.`), a name refuses unless declared with a reach list. `"none"` refuses, because a name at
        the root reaches every file. A **root base** needs no declaration when every use joins string literals: it then
        stands for exactly those literals. A root base is a chain anchored at the file's directory that resolves to the
-       root (vagaris's `realpathSync(path.resolve(__dirname, "../../.."))`, core's
+       root (vagaris's `realpathSync(path.resolve(__dirname, "../../.."))` and
+       `path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")`, core's
        `Path(__file__).resolve().parents[3]`). Its uses are:
        - the base, through `realpathSync`, `normalize`, `str` or `Path`, as the first argument of a `join` or `resolve`
          whose other arguments are all plain string literals;
@@ -478,9 +479,9 @@ vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run en
 
 Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
 
-`test_edges_151_rulings_vectors.json` holds 22 vectors for 1.5.1's root-climb rulings, run by the same method:
+`test_edges_151_rulings_vectors.json` holds 23 vectors for 1.5.1's root-climb rulings, run by the same method:
 - A1-A6: names above the checkout;
-- B1-B10: root bases and root declarations;
+- B1-B11: root bases and root declarations;
 - C1-C6: lockfiles and the nested-lockfile ruling.
 
 `test_edges_review_vectors.json` holds 555 adversarial readers:

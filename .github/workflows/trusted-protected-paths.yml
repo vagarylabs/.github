@@ -1964,7 +1964,7 @@ jobs:
           def run_sibling_read(m, repo, base, head):
               mode = m["sibling_read"]["mode"]
               resolve_head(base, head)
-              files = [p for p in git("ls-tree", "-r", "--name-only", head).splitlines() if _SR_FILE.search(p)]
+              files = workflow_files(head)
               rows = []
               for path in files:
                   text = blob(head, path)
@@ -2148,7 +2148,7 @@ jobs:
               if not _PIN_SHA.match(ref):
                   return ("short_sha" if _PIN_HEXISH.match(ref) else "tag_ref"), uses, label
               parts = name.split("/")
-              if parts[0] == "vagarylabs":
+              if parts[0].lower() == "vagarylabs":  # GitHub owners are case-insensitive: VagaryLabs/ is first party too
                   m = _PIN_INTERNAL.match(label or "")
                   return (None if m and len(parts) > 1 and m.group("repo") == parts[1] else "wrong_internal"), uses, label
               if not label:
@@ -2174,11 +2174,16 @@ jobs:
               return out
 
 
+          def workflow_files(head):
+              """The head tree's workflow and composite-action files, NUL-separated so no name is quoted or skipped."""
+              return [p for p in git("ls-tree", "-r", "-z", "--name-only", head).split("\0") if p and _SR_FILE.search(p)]
+
+
           def run_pins(m, repo, base, head):
               pins = m["pins"]
               mode = pins["mode"]
               resolve_head(base, head)
-              files = [p for p in git("ls-tree", "-r", "--name-only", head).splitlines() if _SR_FILE.search(p)]
+              files = workflow_files(head)
               rows, used = [], set()
               for path in files:
                   for line, cls, uses, label in pin_findings(blob(head, path) or ""):
@@ -2228,51 +2233,85 @@ jobs:
           WL_MAX_LISTED = 200
 
 
+          def _zizmor_shape(doc):
+              """None when `doc` is zizmor's JSON finding list, else why it is not."""
+              if not isinstance(doc, list):
+                  return "zizmor output is %s, not a finding list" % type(doc).__name__
+              for i, f in enumerate(doc):
+                  if not (isinstance(f, dict) and isinstance(f.get("ident"), str) and isinstance(f.get("locations"), list)
+                          and isinstance(f.get("determinations"), dict) and isinstance(f["determinations"].get("severity"), str)):
+                      return "zizmor finding %d is not a finding (ident, determinations.severity, locations)" % i
+              return None
+
+
+          def _actionlint_shape(doc, rc):
+              """None when `doc` is actionlint's JSON error list and agrees with its exit code, else why it is not."""
+              if not isinstance(doc, list):
+                  return "actionlint output is %s, not an error list" % type(doc).__name__
+              for i, e in enumerate(doc):
+                  if not (isinstance(e, dict) and all(isinstance(e.get(k), str) for k in ("kind", "filepath", "message"))
+                          and isinstance(e.get("line"), int)):
+                      return "actionlint error %d is not an error (kind, filepath, line, message)" % i
+              if (rc == 1) != bool(doc):
+                  return "actionlint exited %d with %d errors" % (rc, len(doc))
+              return None
+
+
           def _zizmor_rows(doc):
               rows = []
-              for f in doc if isinstance(doc, list) else []:
-                  if not isinstance(f, dict):
-                      continue
-                  sev = (f.get("determinations") or {}).get("severity") or "Unknown"
+              for f in doc:
+                  sev = f["determinations"]["severity"]
                   path, line = "?", 0
-                  for loc in f.get("locations") or []:
-                      key = ((loc.get("symbolic") or {}).get("key") or {})
+                  for loc in f["locations"]:
+                      key = ((loc.get("symbolic") or {}).get("key") or {}) if isinstance(loc, dict) else {}
                       local = key.get("Local") if isinstance(key, dict) else None
                       if isinstance(local, dict) and (local.get("given_path") or local.get("verbatim_path")):
                           path = str(local.get("given_path") or local["verbatim_path"])
                           path = path[2:] if path.startswith("./") else path
-                      row = (((loc.get("concrete") or {}).get("location") or {}).get("start_point") or {}).get("row")
+                      row = (((loc.get("concrete") or {}).get("location") or {}).get("start_point") or {}).get("row") \
+                          if isinstance(loc, dict) else None
                       if isinstance(row, int):
                           line = row + 1
                       break
-                  rows.append((str(f.get("ident") or "?"), str(sev), path, line, str(f.get("desc") or "")))
+                  rows.append((f["ident"], sev, path, line, str(f.get("desc") or "")))
               return rows
 
 
           def _actionlint_rows(doc):
-              return [(str(e.get("kind") or "?"), str(e.get("filepath") or "?"), int(e.get("line") or 0), str(e.get("message") or ""))
-                      for e in (doc if isinstance(doc, list) else []) if isinstance(e, dict)]
+              return [(e["kind"], e["filepath"], e["line"], e["message"]) for e in doc]
 
 
-          def _load_tool(path, rc, ok_codes):
-              """(rows document, why INCOMPLETE or None)."""
+          def _load_tool(tool, path, rc, fetched, ok_codes, shape):
+              """(the tool's JSON document, why the run is INCOMPLETE or None). The output must have the tool's own shape: an empty
+              file, `{}`, `null` or `[1, 2]` is not a clean run (root's R4 of #41, B3)."""
+              if fetched != "success":
+                  return None, "was not fetched (step outcome %s)" % fetched
+              if rc == 124:
+                  return None, "timed out"
               if rc not in ok_codes:
                   return None, "exited %d" % rc
               try:
                   with open(path, encoding="utf-8") as fh:
-                      text = fh.read()
-                  return (json.loads(text) if text.strip() else []), None
+                      doc = json.loads(fh.read())
               except (OSError, ValueError) as exc:
                   return None, "output did not parse (%s)" % type(exc).__name__
+              why = shape(doc, rc) if tool == "actionlint" else shape(doc)
+              return (None, why) if why else (doc, None)
 
 
-          def run_workflow_lint(m, repo, head, zizmor, zizmor_rc, actionlint, actionlint_rc):
+          def run_workflow_lint(m, repo, head, zizmor, zizmor_rc, actionlint, actionlint_rc, zizmor_fetch="success",
+                                actionlint_fetch="success"):
               mode = m["workflow_lint"]["mode"]
               level = "error" if mode == "enforce" else "warning"
-              zdoc, zwhy = _load_tool(zizmor, zizmor_rc, (0,))          # --no-exit-codes: non-zero is a tool failure
-              adoc, awhy = _load_tool(actionlint, actionlint_rc, (0, 1))  # 1: findings, anything else a tool failure
-              lines = ["## Workflow lint: %s" % repo, "zizmor (offline audits) and actionlint over head `%s` (manifest "
-                       "`workflow_lint`, mode `%s`)." % (head, mode)]
+              lines = ["## Workflow lint: %s" % repo, "zizmor (offline, no PR-controlled config, ignores or .gitignore) and "
+                       "actionlint (the trusted config) over head `%s` (manifest `workflow_lint`, mode `%s`)." % (head, mode)]
+              resolve_head(None, head)
+              if not workflow_files(head):
+                  lines.append("Nothing to audit: the head tree has no workflow or composite-action file.")
+                  summary(lines)
+                  return 0
+              zdoc, zwhy = _load_tool("zizmor", zizmor, zizmor_rc, zizmor_fetch, (0,), _zizmor_shape)
+              adoc, awhy = _load_tool("actionlint", actionlint, actionlint_rc, actionlint_fetch, (0, 1), _actionlint_shape)
               findings = 0
               for tool, why in (("zizmor", zwhy), ("actionlint", awhy)):
                   if why:
@@ -2322,6 +2361,8 @@ jobs:
               ap.add_argument("--zizmor-rc", type=int, help="workflow-lint: zizmor's exit code")
               ap.add_argument("--actionlint", help="workflow-lint: actionlint's JSON output")
               ap.add_argument("--actionlint-rc", type=int, help="workflow-lint: actionlint's exit code")
+              ap.add_argument("--zizmor-fetch", default="success", help="workflow-lint: the zizmor fetch step's outcome")
+              ap.add_argument("--actionlint-fetch", default="success", help="workflow-lint: the actionlint fetch step's outcome")
               a = ap.parse_args(argv)
               try:
                   if a.base is None and a.mode not in ("timeout-floor", "sibling-read", "pins", "workflow-lint"):
@@ -2331,7 +2372,8 @@ jobs:
                   if a.mode == "workflow-lint":
                       if None in (a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc):
                           raise IntegrityError("workflow-lint needs --zizmor, --zizmor-rc, --actionlint and --actionlint-rc")
-                      return run_workflow_lint(m, a.repo, a.head, a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc)
+                      return run_workflow_lint(m, a.repo, a.head, a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc,
+                                               a.zizmor_fetch, a.actionlint_fetch)
                   fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor,
                         "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
                   return fn(m, a.repo, a.base, a.head)
@@ -2400,28 +2442,28 @@ jobs:
                   "repo": "vagarylabs/vagaris",
                   "file": ".github/workflows/change-review.yml",
                   "uses": "vagarylabs/vagaris/.github/workflows/change-review-reviewer.yml@main",
-                  "reason": "the review identity is bound to refs/heads/main (server/src/__tests__/fleet-workload-session.test.ts:569), so this call must stay @main",
+                  "reason": "the review identity is bound to refs/heads/main (server/src/__tests__/fleet-workload-session.test.ts:569), so this call must stay @main. PERMANENT: it is not retired when vagarylabs/.github cuts releases",
                   "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
                 },
                 {
                   "repo": "*",
                   "file": "*",
                   "uses": "vagarylabs/.github/.github/workflows/issue-triage.yml@main",
-                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases",
+                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases. PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
                   "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
                 },
                 {
                   "repo": "*",
                   "file": "*",
                   "uses": "vagarylabs/.github/.github/workflows/secret-scan.yml@main",
-                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases",
+                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases. PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
                   "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
                 },
                 {
                   "repo": "*",
                   "file": "*",
                   "uses": "vagarylabs/.github/.github/workflows/secret-scan-sweep.yml@main",
-                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases (same class as secret-scan)",
+                  "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases (same class as secret-scan, root-confirmed 2026-10-29). PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
                   "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
                 }
               ]

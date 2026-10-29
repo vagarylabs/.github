@@ -473,7 +473,7 @@ class ParserTests(unittest.TestCase):
                 total += len(jobs)
         integrity = classify.parse_workflow((ROOT / ".github/workflows/trusted-workflow-integrity.yml").read_text())[0]
         self.assertEqual([(j["id"], classify._floor_declared(j["timeout"])[0]) for j in integrity],
-                         [("trusted-workflow-integrity", "10"), ("timeout-floor", "10"), ("workflow-lint", "10")])
+                         [("trusted-workflow-integrity", "10"), ("timeout-floor", "10"), ("workflow-lint", "20")])
 
     def test_source_is_ascii(self):
         # Inlined into a YAML run block: a literal BOM or other invisible character there is a hazard, so escapes only.

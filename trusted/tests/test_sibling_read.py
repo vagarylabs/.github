@@ -118,7 +118,7 @@ class Mode(unittest.TestCase):
         m = {"sibling_read": {"mode": mode}}
         out = io.StringIO()
         with mock.patch.object(classify, "resolve_head"), \
-                mock.patch.object(classify, "git", return_value="\n".join(files)), \
+                mock.patch.object(classify, "git", return_value="\0".join(files) + "\0"), \
                 mock.patch.object(classify, "blob", side_effect=lambda sha, path: files[path]), \
                 mock.patch.object(classify, "summary"), contextlib.redirect_stdout(out):
             code = classify.run_sibling_read(m, "vagarylabs/x", None, "a" * 40)

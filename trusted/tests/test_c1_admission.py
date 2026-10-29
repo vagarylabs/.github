@@ -34,6 +34,7 @@ class PinVerdict(unittest.TestCase):
                            (f"vagarylabs/.github/actions/x@{SHA}", "wrong_internal"),
                            (f"vagarylabs/.github/actions/x@{SHA} # v1.2.3", "wrong_internal"),
                            (f"vagarylabs/.github/actions/x@{SHA} # vagaris #40 merge", "wrong_internal"),
+                           (f"VagaryLabs/.github/actions/x@{SHA} # v1.2.3", "wrong_internal"),
                            ("vagarylabs/.github/.github/workflows/secret-scan.yml@main", "tag_ref"),
                            ("docker://alpine:3.20", "docker_tag"),
                            ("docker://alpine@sha256:abc", "docker_tag")):
@@ -103,7 +104,7 @@ class PinsMode(unittest.TestCase):
         m = {"pins": {"mode": mode, "exemptions": list(exemptions)}}
         out = io.StringIO()
         with mock.patch.object(classify, "resolve_head"), \
-                mock.patch.object(classify, "git", return_value="\n".join(files)), \
+                mock.patch.object(classify, "git", return_value="\0".join(files) + "\0"), \
                 mock.patch.object(classify, "blob", side_effect=lambda sha, path: files[path]), \
                 mock.patch.object(classify, "summary", side_effect=lambda lines: out.write("\n".join(lines) + "\n")), \
                 contextlib.redirect_stdout(out):
@@ -120,6 +121,13 @@ class PinsMode(unittest.TestCase):
         code, out = self.run_mode("enforce", files)
         self.assertEqual(code, 1)
         self.assertIn("::error file=.github/workflows/w.yml", out)
+
+    def test_a_name_git_would_quote_is_still_read(self):
+        # The listing is NUL-separated: a non-ASCII or quoted workflow name is read, not skipped (root, #41 non-blocking).
+        files = {'.github/workflows/caf\u00e9 "x".yml': "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n"}
+        code, out = self.run_mode("enforce", files)
+        self.assertEqual(code, 1)
+        self.assertIn("tag_ref", out)
 
     def test_a_clean_tree_passes_in_enforce(self):
         files = {".github/workflows/w.yml": f"jobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA} # v4.4.0\n",
@@ -155,16 +163,18 @@ ACTIONLINT = [{"kind": "expression", "filepath": ".github/workflows/w.yml", "lin
 
 
 class WorkflowLintMode(unittest.TestCase):
-    def run_mode(self, mode, zizmor, zrc, actionlint, arc):
+    def run_mode(self, mode, zizmor, zrc, actionlint, arc, zfetch="success", afetch="success",
+                 listing=".github/workflows/w.yml\0README.md\0"):
         m = {"workflow_lint": {"mode": mode}}
         with tempfile.TemporaryDirectory() as td:
             z, a = pathlib.Path(td, "z.json"), pathlib.Path(td, "a.json")
             z.write_text(zizmor if isinstance(zizmor, str) else json.dumps(zizmor))
             a.write_text(actionlint if isinstance(actionlint, str) else json.dumps(actionlint))
             out = io.StringIO()
-            with mock.patch.object(classify, "summary", side_effect=lambda lines: out.write("\n".join(lines) + "\n")), \
+            with mock.patch.object(classify, "resolve_head"), mock.patch.object(classify, "git", return_value=listing), \
+                    mock.patch.object(classify, "summary", side_effect=lambda lines: out.write("\n".join(lines) + "\n")), \
                     contextlib.redirect_stdout(out):
-                code = classify.run_workflow_lint(m, "vagarylabs/x", "a" * 40, str(z), zrc, str(a), arc)
+                code = classify.run_workflow_lint(m, "vagarylabs/x", "a" * 40, str(z), zrc, str(a), arc, zfetch, afetch)
         return code, out.getvalue()
 
     def test_findings_are_reported_with_their_place_and_counted(self):
@@ -180,7 +190,8 @@ class WorkflowLintMode(unittest.TestCase):
     def test_a_tool_that_did_not_run_is_incomplete_never_clean(self):
         for why, args in (("zizmor exited 2", ([], 2, [], 0)), ("actionlint exited 3", ([], 0, [], 3)),
                           ("zizmor output did not parse", ("{not json", 0, [], 0)),
-                          ("actionlint output did not parse", ([], 0, "[{", 1))):
+                          ("actionlint output did not parse", ([], 0, "[{", 1)),
+                          ("zizmor timed out", ([], 124, [], 0)), ("actionlint exited 127", ([], 0, [], 127))):
             with self.subTest(why):
                 code, out = self.run_mode("report", *args)
                 self.assertEqual(code, 0, "report-only")
@@ -188,8 +199,37 @@ class WorkflowLintMode(unittest.TestCase):
                 self.assertEqual(self.run_mode("enforce", *args)[0], 1, "an incomplete scan refuses in enforce")
 
     def test_clean_runs_pass_in_enforce(self):
-        code, out = self.run_mode("enforce", [], 0, "", 0)
+        code, out = self.run_mode("enforce", [], 0, [], 0)
         self.assertEqual(code, 0, out)
+
+    def test_an_output_without_the_tool_s_shape_is_incomplete(self):
+        # Root's R4 of #41, B3: an empty file, {}, null, [1, 2] or a wrapped list is not a clean run.
+        for z in ("", "{}", "null", "[1, 2]", '{"findings": []}', '[{"ident": "x"}]', "3"):
+            with self.subTest(zizmor=z):
+                code, out = self.run_mode("report", z, 0, [], 0)
+                self.assertEqual(code, 0)
+                self.assertIn("INCOMPLETE: zizmor", out)
+                self.assertNotIn("zizmor: 0 findings", out)
+                self.assertEqual(self.run_mode("enforce", z, 0, [], 0)[0], 1)
+        for a, rc in (("", 0), ("{}", 0), ("null", 0), ("[]", 1), ('[{"kind": "x"}]', 1), (json.dumps(ACTIONLINT), 0)):
+            with self.subTest(actionlint=a, rc=rc):
+                code, out = self.run_mode("report", [], 0, a, rc)
+                self.assertIn("INCOMPLETE: actionlint", out)
+                self.assertEqual(self.run_mode("enforce", [], 0, a, rc)[0], 1)
+
+    def test_a_failed_fetch_is_incomplete_and_green_in_report(self):
+        # Root's R4 of #41, B2: in mode report the required check stays green; enforce refuses an incomplete scan.
+        for zf, af in (("failure", "success"), ("success", "failure"), ("cancelled", "skipped")):
+            with self.subTest(zizmor=zf, actionlint=af):
+                code, out = self.run_mode("report", [], 0, [], 0, zf, af)
+                self.assertEqual(code, 0)
+                self.assertIn("was not fetched", out)
+                self.assertEqual(self.run_mode("enforce", [], 0, [], 0, zf, af)[0], 1)
+
+    def test_a_head_with_nothing_to_audit_is_clean_without_the_tools(self):
+        code, out = self.run_mode("enforce", "", 3, "", 2, "failure", "failure", listing="README.md\0src/a.py\0")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Nothing to audit", out)
 
 
 class WorkflowWiring(unittest.TestCase):
@@ -208,12 +248,39 @@ class WorkflowWiring(unittest.TestCase):
                 self.assertEqual(lock[(tool, version)], (url, digest))
                 self.assertRegex(sha, r"^[0-9a-f]{40}$")
 
-    def test_the_tools_run_offline_and_their_exit_codes_reach_the_classifier(self):
+    def test_the_tools_read_no_pr_config_and_their_exit_codes_reach_the_classifier(self):
         wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
-        self.assertIn('"$t/zizmor" --no-exit-codes --no-online-audits --format json . ', wf)
-        self.assertIn("--zizmor-rc \"$zrc\"", wf)
-        self.assertIn("--actionlint-rc \"$arc\"", wf)
-        self.assertIn('classify.py" pins --manifest "$d/manifest.json"', wf)
+        self.assertIn('timeout 120 "$t/zizmor" --no-exit-codes --offline --no-config --no-ignores --collect=all '
+                      '--strict-collection', wf)
+        self.assertIn('timeout 120 "$t/actionlint" -config-file "$d/actionlint.yaml" -shellcheck= -pyflakes=', wf)
+        for arg in ('--zizmor-rc "$zrc"', '--zizmor-fetch "$Z_FETCH"', '--actionlint-rc "$arc"',
+                    '--actionlint-fetch "$A_FETCH"', 'classify.py" pins --manifest "$d/manifest.json"'):
+            self.assertIn(arg, wf)
+        # The trusted actionlint config is inlined from trusted/actionlint.yaml, never read from the PR.
+        self.assertIn("cat > \"$d/actionlint.yaml\" <<'TRUSTED_ACTIONLINT_YAML'", wf)
+
+    def test_the_trusted_actionlint_config_is_inlined_byte_for_byte(self):
+        wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
+        body = wf.split("<<'TRUSTED_ACTIONLINT_YAML'\n", 1)[1].split("\n          TRUSTED_ACTIONLINT_YAML", 1)[0]
+        src = (ROOT / "trusted" / "actionlint.yaml").read_text().rstrip("\n")
+        self.assertEqual("\n".join(l[10:] for l in body.split("\n")), src)
+        self.assertIn("vl-light", src)
+
+    def test_report_mode_cannot_go_red_on_a_fetch_and_every_step_is_bounded(self):
+        # Root's R4 of #41, B2: each fetch is bounded and continue-on-error (its outcome goes to classify.py), each
+        # tool run is under `timeout`, and the job's timeout covers the sum.
+        wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
+        job = wf.split("\n  workflow-lint:\n", 1)[1]
+        self.assertIn("timeout-minutes: 20", job.split("steps:", 1)[0])
+        for step in ("fetch_zizmor", "fetch_actionlint"):
+            block = job.split("id: %s\n" % step, 1)[1].split("\n      - ", 1)[0]
+            with self.subTest(step):
+                self.assertIn("continue-on-error: true", block)
+                self.assertIn("timeout-minutes: 5", block)
+                self.assertIn('max-time: "90"', block)
+        run = job.split("- name: Run zizmor and actionlint over the head tree", 1)[1]
+        self.assertIn("if: ${{ !cancelled() }}", run.split("run: |", 1)[0])
+        self.assertIn("timeout-minutes: 6", run.split("run: |", 1)[0])
 
 
 if __name__ == "__main__":

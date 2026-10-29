@@ -54,28 +54,28 @@
         "repo": "vagarylabs/vagaris",
         "file": ".github/workflows/change-review.yml",
         "uses": "vagarylabs/vagaris/.github/workflows/change-review-reviewer.yml@main",
-        "reason": "the review identity is bound to refs/heads/main (server/src/__tests__/fleet-workload-session.test.ts:569), so this call must stay @main",
+        "reason": "the review identity is bound to refs/heads/main (server/src/__tests__/fleet-workload-session.test.ts:569), so this call must stay @main. PERMANENT: it is not retired when vagarylabs/.github cuts releases",
         "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
       },
       {
         "repo": "*",
         "file": "*",
         "uses": "vagarylabs/.github/.github/workflows/issue-triage.yml@main",
-        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases",
+        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases. PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
         "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
       },
       {
         "repo": "*",
         "file": "*",
         "uses": "vagarylabs/.github/.github/workflows/secret-scan.yml@main",
-        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases",
+        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases. PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
         "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
       },
       {
         "repo": "*",
         "file": "*",
         "uses": "vagarylabs/.github/.github/workflows/secret-scan-sweep.yml@main",
-        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases (same class as secret-scan)",
+        "reason": "first-party .github reusable workflow called @main until vagarylabs/.github has releases (same class as secret-scan, root-confirmed 2026-10-29). PLAN-SEQUENCED: retired when .github cuts releases, then pinned to a release",
         "record": "root ruling 2026-10-29 (C1 admission exemptions); lanes/cli/C1-ADMISSION-WORKFLOW.md"
       }
     ]

@@ -1477,9 +1477,8 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
     """Root's R4 of #33 round 3 (lanes/root/reviews/dotgithub-33.md, head 70ed2e7): the reviewer's fresh vectors, pinned
     EXACT by the same method (test_edges_round4_vectors.json). Each drop-vector must REFUSE, plan FULL or select its
     runner: B1 (T1, T1b, T1c, a runner one hop or more out), B2 (T4, a gitlink), B3 (T3, T3b, a symlink alias or a
-    symlink in a package), B4 (T2, an inert glob), and a runner that names only a directory (T10b-T10f; three precision
-    controls: a package's own test/, a sibling path, bare words at the root). A residual is a spelling no recorded route or token sees (README,
-    "Not closed"): it is pinned as the drop it is, so the README cannot claim more than the scan does."""
+    symlink in a package), B4 (T2, an inert glob). A residual is a spelling no recorded route or token sees (README,
+    "What the backstop does not see"): it is pinned as the drop it is, so the README cannot claim more than the scan."""
 
     CASES = json.loads((Path(__file__).with_name("test_edges_round4_vectors.json")).read_text())
 
@@ -1493,7 +1492,7 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
 
     def test_the_drop_vectors_cover_every_round4_blocker_and_the_readme_lists_every_residual(self):
         names = sorted(self.CASES["cases"])
-        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 ", "T10b", "T10c", "T10d", "T10e", "T10f"):
+        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 "):
             self.assertTrue(any(n.startswith(prefix) and self.CASES["cases"][n]["kind"] == "drop-vector" for n in names),
                             prefix)
         readme = (Path(__file__).with_name("README.md")).read_text()

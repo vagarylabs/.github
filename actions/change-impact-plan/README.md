@@ -335,17 +335,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        symlink inside package c that points at P names P), and a symlink outside every package is a route to its
        target (it starts its unit, and an alias of P becomes P's subject);
      - **B4, inert globs.** A path an `inert_globs` glob maps to nothing is backstopped too ("inert mention"). Its
-       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first;
-     - **directories (T10b).** A runner that names only a directory runs what is beneath it, as in
-       `node --test "$REPO_ROOT/tools/"`, a workflow's `pytest scripts/`, or a config's `tools/**`. So every directory
-       that holds a subject is a subject too, written `tools/`. A token that ENDS at it, with a slash beside it, is a
-       mention when it is one of:
-       - resolved from the mentioning file's directory;
-       - resolved from the root, for a file at the root or under `.github/`, whose steps run there;
-       - named after a prefix the scan cannot resolve (`$X/`, `${X}/`, `$(...)/`, a leading `/`).
-
-       A package's own `test/` resolves inside the package, so it is not a mention of a top-level `test/`. Neither is
-       a bare word (`"scripts": {"test": ...}`, a workflow's `test:` job, "the tools" in prose).
+       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first.
 
    **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
    scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
@@ -365,17 +355,15 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    assessment carry `imports`: each imported path with its importers.
 
 Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
-scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b), T10g and T10h as the
-drops they are:
+scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b, T10b) as the drops they
+are:
 - a mention that differs only in case (`tools/Worker.mjs` for `tools/worker.mjs`): the token match is exact;
 - a Python module path (`from tools.worker import f`, `python -m tools.worker`): a dotted name is not a basename;
 - a text file `.gitattributes` marks binary, and a basename inside a real binary file: `git grep -I` skips both;
 - a file in an encoding other than ASCII-compatible (UTF-16 with or without a BOM): its bytes never spell the token;
-- a directory or glob resolved against a root set elsewhere at runtime: vitest `dir: process.env.REPO_ROOT` with
-  `include: ["tools/**/*.test.mjs"]` (T10g) reads `tools/` relative to its own package. A bare relative directory in a
-  file below the root whose steps run from the root (`node --test tools/` in `scripts/run.sh`) has the same gap;
-- a directory named as a bare word (`cd tools && node --test`, T10h): a mention needs a slash beside the name, so a
-  bare `test` in a manifest or a workflow is not one;
+- a runner that names only a directory (`node --test "$REPO_ROOT/tools/"`, where `tools/x.test.mjs` imports P): no
+  subject's basename appears. A `../` route to the directory is recorded (T10, a jest `roots` entry), so only a
+  directory named through a runtime-built prefix drops;
 - a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
   `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
   Python `sys.path` escapes are the next change;

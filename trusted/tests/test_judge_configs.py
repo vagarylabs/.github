@@ -77,7 +77,11 @@ NOT_JUDGES = {
 }
 # Judges that exist in one repository only.
 REPO_JUDGES = {
-    "vagarylabs/vagaris": ["scripts/check-vex-binary-evidence.mjs", "scripts/check-vex-scoping.mjs"],
+    "vagarylabs/vagaris": ["scripts/check-vex-binary-evidence.mjs", "scripts/check-vex-scoping.mjs",
+                           # the collection-parity ledger drives vagaris's change classifier (root, 2026-10-29): a PR
+                           # could otherwise list its own test there and drop it from selection; the census that
+                           # validates the ledger is judge code too
+                           "scripts/test-collection-exclusions.json", "scripts/check-test-collection-parity.mjs"],
 }
 
 

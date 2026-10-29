@@ -868,6 +868,189 @@
    "kind": "drop-vector",
    "must_run": "test-c",
    "verdict": "SELECT"
+  },
+  "P1 a package's own lib/ (control)": {
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "services/b/lib/y.mjs": "export const w = 1;\n",
+    "services/b/package.json": "{\"scripts\": {\"test\": \"node --test lib/\"}}",
+    "services/b/run.mjs": "import \"./lib/y.mjs\";\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "P2 root package.json files:[lib/] (precision)": {
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "package.json": "{\"files\": [\"lib/\", \"README.md\"]}",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "P2b root package.json scripts run lib/ (runner)": {
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "lib/x.test.mjs": "import \"./x.mjs\";\n",
+    "package.json": "{\"files\": [\"lib/\"], \"scripts\": {\"test\": \"node --test lib/\"}}",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P3 workflow mentions scripts/*.sh (precision)": {
+   "cfg_set": {},
+   "change": "scripts/x.mjs",
+   "files": {
+    ".github/workflows/ci.yml": "jobs:\n  lint:\n    steps:\n      - run: shellcheck scripts/*.sh\n",
+    "scripts/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../scripts/x.mjs\";\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "P4 prose 'lives in src/' in a .md (precision)": {
+   "cfg_set": {},
+   "change": "src/x.mjs",
+   "files": {
+    "README.md": "The code lives in src/ and lib/.\n",
+    "services/a/t.mjs": "import \"../../src/x.mjs\";\n",
+    "src/x.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "P2c root package.json scripts run lib/, no other reacher (backstop)": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "package.json": "{\"files\": [\"lib/\"], \"scripts\": {\"test\": \"node --test lib/\"}}"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P5 root package.json mocha spec lib/ (runner config, not metadata)": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "package.json": "{\"files\": [\"lib/\"], \"mocha\": {\"spec\": \"lib/\"}}"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P5b root package.json jest roots <rootDir>/lib/ (runner config)": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "package.json": "{\"name\": \"r\", \"jest\": {\"roots\": [\"<rootDir>/lib/\"]}}"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P5c a package.json that is not an object is read whole": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "package.json": "[\"lib/\"]"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P6 a .txt list naming lib/ is not prose": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "tests.txt": "lib/\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P7 .dockerignore re-includes !lib/ (still a mention)": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    ".dockerignore": "*\n!lib/\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
+  },
+  "P7b .dockerignore excludes lib/ (precision)": {
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    ".dockerignore": "lib/\nnode_modules/\n"
+   },
+   "jobs": [
+    "test-a"
+   ],
+   "kind": "correct-plan control",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "P4b an .mdx naming lib/ is not prose (it compiles to JS)": {
+   "backstop": true,
+   "cfg_set": {},
+   "change": "lib/x.mjs",
+   "files": {
+    "lib/x.mjs": "export const w = 1;\n",
+    "services/a/t.mjs": "import \"../../lib/x.mjs\";\n",
+    "Intro.mdx": "import { Meta } from '@storybook/blocks';\n\nExamples from lib/ run here.\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "root",
+   "verdict": "FULL"
   }
  }
 }

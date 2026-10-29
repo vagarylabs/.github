@@ -1876,6 +1876,17 @@ def reviewed(kind: str, entries: list, key: str) -> None:
                          f"review_by within {REVIEW_DAYS} days, after root's R4 record)")
 
 
+# Text that runs nothing. Not `.mdx`, which compiles to JS (its imports run, and Storybook or Docusaurus collect it by
+# glob). Not `.txt`: a CMakeLists.txt builds, pytest's default --doctest-glob is `test*.txt`, and a list file can feed a
+# runner (`xargs -a tests.txt node --test`).
+PROSE_EXT = frozenset({"md", "markdown", "rst", "adoc"})
+IGNORE_LIST = re.compile(r"\.[A-Za-z0-9_-]*ignore")  # .gitignore, .dockerignore, .gitleaksignore, .prettierignore, ...
+# The package.json fields that only describe or publish a package. Every other field is read, because runner configs
+# live there too (`"mocha": {"spec": "lib/"}`, `"jest": {"roots": [...]}`, `"ava": {"files": [...]}`).
+PACKAGE_METADATA = frozenset({"name", "version", "description", "keywords", "homepage", "bugs", "license", "author",
+                              "contributors", "maintainers", "funding", "repository", "files", "directories",
+                              "publishConfig", "private", "engines", "os", "cpu"})
+
 def grep_read_everything(out, what: str) -> None:
     """`git grep` exits 1, the "no match" status, when it cannot read a blob (a partial clone with lazy fetching off):
     it prints `unable to read <oid>` and goes on. A pass that did not read every file it was asked to cannot vouch for
@@ -1999,11 +2010,39 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         # One generic prefilter (any path token that ends at a slash-terminated or slash-led segment) and an exact match
         # in Python: an alternation of every holder's path made git grep exceed its timeout on vagary-core.
         token = re.compile(r"[^\s\"'`=,;|&<>:\\]+")  # a backslash ends one too: JSON escapes `\"$ROOT/tools/\"`
-        for f, text in grep(["-E", r"(^|[^A-Za-z0-9_.@-])[A-Za-z0-9_.@-]+/([^A-Za-z0-9_.@/-]|$)|/[A-Za-z0-9_.@-]+([^A-Za-z0-9_.@/-]|$)"]):
-            if f in policy_files:
+        # Precision (root's R4 of round 4, P2 and P4), each skip on positive evidence only: prose runs nothing, so a
+        # README's "lives in src/" is no directory runner; an ignore list only excludes, except a `!lib/` line, which
+        # re-includes; and a package.json's metadata fields (its "files": ["lib/"]) publish, while every other field
+        # is read. A manifest that does not parse, or is not an object, is read whole, toward a mention.
+        manifests: dict[str, str | None] = {}
+
+        def dir_texts(f: str, text: str) -> list[str]:
+            base = posixpath.basename(f)
+            if posixpath.splitext(f)[1].lstrip(".").lower() in PROSE_EXT:
+                return []
+            if IGNORE_LIST.fullmatch(base):
+                return [ln.strip()[1:] for ln in text.splitlines() if ln.strip().startswith("!")]
+            if base != "package.json":
+                return [text]
+            if f not in manifests:
+                try:
+                    body = json.loads((read_source(repo, f, revision, environment) if revision
+                                       else (repo / f).read_text(errors="replace")).removeprefix("\ufeff"))
+                except ValueError:
+                    body = None
+                manifests[f] = (json.dumps({k: v for k, v in body.items() if k not in PACKAGE_METADATA},
+                                           ensure_ascii=False) if isinstance(body, dict) else None)
+            return [text] if manifests[f] is None else [manifests[f]]
+
+        seen_manifests: set[str] = set()
+        for f, line in grep(["-E", r"(^|[^A-Za-z0-9_.@-])[A-Za-z0-9_.@-]+/([^A-Za-z0-9_.@/-]|$)|/[A-Za-z0-9_.@-]+([^A-Za-z0-9_.@/-]|$)"]):
+            if f in policy_files or f in seen_manifests:
                 continue
             here = "" if "/" not in f or f.startswith(".github/") else posixpath.dirname(f)
-            for m in token.finditer(text):
+            texts = dir_texts(f, line)
+            if posixpath.basename(f) == "package.json" and manifests.get(f) is not None:
+                seen_manifests.add(f)  # its fields are read once, whole
+            for m in (m for text in texts for m in token.finditer(text)):
                 core = m.group(0).rstrip("/")
                 if not core or ("/" not in core and not m.group(0).endswith("/")):
                     continue  # a bare word, not a path

@@ -365,6 +365,20 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        A package's own `test/` resolves inside the package, so it is not a mention of a top-level `test/`. Neither is
        a bare word (`"scripts": {"test": ...}`, a workflow's `test:` job, "the tools" in prose).
 
+       Three more things are not runners, so they make no directory mention (root's R4 of round 4, P2-P4, no regression
+       from 60e9f78). Each is skipped only on positive evidence:
+       - prose (`.md`, `.markdown`, `.rst`, `.adoc`), as in a README's "lives in src/". An `.mdx` is still read: it
+         compiles to JS, and Storybook or Docusaurus collect it by glob (P4b). So is a `.txt`: a CMakeLists.txt builds,
+         pytest's default `--doctest-glob` is `test*.txt`, and a list file can feed a runner (P6);
+       - an ignore list (`.gitignore`, `.dockerignore`, `.gitleaksignore`), except a `!lib/` line, which re-includes
+         (P7, P7b);
+       - a `package.json`'s metadata fields (`files`, `directories`, `repository` and the other descriptive ones), so
+         `"files": ["lib/"]` publishes and runs nothing. Every other field is read, since runner configs live there too
+         (`"mocha": {"spec": "lib/"}`, `"jest": {"roots": [...]}`; P5, P5b). A manifest that does not parse, or is not
+         an object, is read whole (P5c).
+
+       A glob argument (`shellcheck scripts/*.sh`) does not end at the directory, so it is not a mention either.
+
    **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
    scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
    does not parse, a reacher outside every package (unless the mapping still runs its job), and a path at or above the

@@ -616,15 +616,20 @@ class Sparse(TokenDirFixture):
 
     def test_git_refuses_ext_and_runs_only_its_own_helper_whatever_the_config(self):
         # Defence in depth, below the config rewrite: git() itself never allows ext:: and resets the helper list.
+        # git's built-in default already refuses ext::, so the control is a repository whose OWN config allows it
+        # (what a config written between the phases could say): only git()'s command-line guards override that.
         module = load()
         script, caught = self.catcher("direct-ext")
         ext = f"ext::{script}"
-        control = subprocess.run(["git", "-c", "protocol.ext.allow=always", "ls-remote", ext], capture_output=True,
-                                 env=dict(os.environ, SIBLING_TOKEN=SECRET), cwd=self.temp.name)
-        self.assertTrue(caught.exists(), "the ext:: control must run, or this proves nothing")
+        repo = pathlib.Path(self.temp.name) / "allows-ext"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "protocol.ext.allow", "always"], check=True)
+        subprocess.run(["git", "-C", str(repo), "ls-remote", ext], capture_output=True,
+                       env=dict(os.environ, SIBLING_TOKEN=SECRET))
+        self.assertEqual(caught.read_text() if caught.exists() else "", SECRET, "the ext:: control must run, or this proves nothing")
         caught.unlink()
         with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
-            module.git("ls-remote", ext, cwd=self.temp.name, secret=SECRET)
+            module.git("-C", str(repo), "ls-remote", ext, cwd=self.temp.name, secret=SECRET)
         self.assertFalse(caught.exists())
 
     def test_a_gitdir_that_changed_shape_between_the_phases_is_refused(self):

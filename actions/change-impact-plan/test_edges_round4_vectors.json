@@ -806,6 +806,68 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "FULL"
+  },
+  "R1 cycle a<->b": {
+   "cfg_set": {},
+   "change": "tools/worker.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "services/c/t.test.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [process.env.REPO_ROOT + \"/tools/ca.mjs\"]);\n",
+    "tools/ca.mjs": "import \"./cb.mjs\";\n",
+    "tools/cb.mjs": "import \"./ca.mjs\";\nimport \"./worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "R2 3-hop same dir": {
+   "cfg_set": {},
+   "change": "tools/worker.mjs",
+   "files": {
+    "services/a/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "services/c/t.test.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [process.env.REPO_ROOT + \"/tools/h3.mjs\"]);\n",
+    "tools/h1.mjs": "import \"./worker.mjs\";\n",
+    "tools/h2.mjs": "import \"./h1.mjs\";\n",
+    "tools/h3.mjs": "import \"./h2.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
+  },
+  "R2b 3-hop across reader dirs": {
+   "cfg_set": {},
+   "change": "tools/worker.mjs",
+   "files": {
+    "scripts/h2.mjs": "import \"../tools/h1.mjs\";\n",
+    "services/a/t.mjs": "import \"../../tools/worker.mjs\";\n",
+    "services/c/t.test.mjs": "import { execFileSync } from \"node:child_process\";\nexecFileSync(process.execPath, [process.env.REPO_ROOT + \"/test/h3.mjs\"]);\n",
+    "test/h3.mjs": "import \"../scripts/h2.mjs\";\n",
+    "tools/h1.mjs": "import \"./worker.mjs\";\n",
+    "tools/worker.mjs": "export const w = 1;\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-c",
+   "verdict": "SELECT"
   }
  }
 }

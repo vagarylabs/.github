@@ -2213,11 +2213,30 @@ jobs:
               return out
 
 
+          def _node_items(lines, at, value):
+              """The versions a `node-version` value names: one scalar, a flow list (`["20.20.2", "22.23.4"]`, a matrix), or for an
+              empty value the block list of `- x` items indented under it. [] when it is none of those."""
+              if value.startswith("[") and value.endswith("]"):
+                  return [x.strip().strip("'\"") for x in value[1:-1].split(",") if x.strip()]
+              if value:
+                  return [value]
+              indent, items = len(lines[at]) - len(lines[at].lstrip()), []
+              for nxt in lines[at + 1:]:
+                  if not nxt.strip() or nxt.lstrip().startswith("#"):
+                      continue
+                  if len(nxt) - len(nxt.lstrip()) <= indent or not nxt.lstrip().startswith("- "):
+                      break
+                  items.append(nxt.lstrip()[2:].split(" #", 1)[0].strip().strip("'\""))
+              return items
+
+
           def node_version_findings(text, head=None, path=""):
-              """[(line, class, value, None)] for every setup-node `node-version` that is not an exact X.Y.Z, and every
-              `node-version-file` whose file (read at head) does not hold one."""
+              """[(line, class, value, None)] for every `node-version` that is not an exact X.Y.Z, and every `node-version-file`
+              whose file (read at head) does not hold one. A list (a matrix, flow or block style) is exact only when every item
+              is; an empty value with no list under it is loose."""
               out = []
-              for i, line in enumerate(text.splitlines(), 1):
+              lines = text.splitlines()
+              for i, line in enumerate(lines, 1):
                   m = _NODE_VERSION.match(line)
                   if not m:
                       continue
@@ -2229,8 +2248,10 @@ jobs:
                           out.append((i, "node_version_loose", "node-version-file " + value, None))
                   elif _EXPR in value:
                       out.append((i, "node_version_expr", value, None))
-                  elif not _NODE_EXACT.match(value):
-                      out.append((i, "node_version_loose", value, None))
+                  else:
+                      items = _node_items(lines, i - 1, value)
+                      if not items or not all(_NODE_EXACT.match(x) for x in items):
+                          out.append((i, "node_version_loose", value or ", ".join(items), None))
               return out
 
 

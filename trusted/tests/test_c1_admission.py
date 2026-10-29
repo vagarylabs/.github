@@ -189,6 +189,20 @@ class OtherPinnedInputsAndF19(unittest.TestCase):
             ("node_version_expr", classify._EXPR + " matrix.node }}"), ("node_version_loose", "node-version-file .nvmrc"),
             ("node_version_loose", "node-version-file gone/.nvmrc")]))
 
+    def test_a_node_version_list_is_exact_only_when_every_item_is(self):
+        # A matrix names its Node releases as a list (vagaris release-smoke-matrix.yml): flow or block style, it is exact
+        # only when every item is an exact X.Y.Z. An empty value with no list under it stays loose.
+        wf = ("jobs:\n  a:\n    strategy:\n      matrix:\n"
+              '        node-version: ["20.20.2", "22.23.4", v24.22.1]\n'
+              "  b:\n    strategy:\n      matrix:\n        node-version: [20, \"22.23.4\"]\n"
+              "  c:\n    strategy:\n      matrix:\n        node-version:\n          - 20.20.2\n          # LTS\n"
+              "          - '22.23.4'\n        os: [ubuntu-latest]\n"
+              "  d:\n    strategy:\n      matrix:\n        node-version:\n          - 22\n          - 24.22.1\n"
+              "  e:\n    strategy:\n      matrix:\n        node-version:\n        os: [ubuntu-latest]\n")
+        code, found = self.classes({".github/workflows/w.yml": wf})
+        self.assertEqual(sorted(found), sorted([("node_version_loose", '[20, "22.23.4"]'),
+                                                ("node_version_loose", "22, 24.22.1"), ("node_version_loose", "")]))
+
     def test_f19_an_edited_pull_request_trigger_is_reported(self):
         flagged = {"flow": "on:\n  pull_request:\n    types: [opened, edited]\n",
                    "block": "on:\n  pull_request_target:\n    types:\n      - opened\n      - edited\n",

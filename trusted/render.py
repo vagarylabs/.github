@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render trusted/templates/*.yml.in into .github/workflows/*.yml.
+"""Render trusted/templates/trusted-*.yml.in and pin-audit.yml.in into .github/workflows/*.yml.
 
 Directives, each alone on its line:
   {{INCLUDE:<fragment in trusted/templates>}}  replaced by the fragment, verbatim.
@@ -38,8 +38,12 @@ def render(text):
     return "\n".join(out) + "\n"
 
 
+# The org-ruleset workflows (trusted-*), and the reusable pin audit, which inlines the same classifier.
+REUSABLE = ("pin-audit.yml.in",)
+
+
 def targets():
-    for t in sorted(TEMPLATES.glob("trusted-*.yml.in")):
+    for t in sorted(TEMPLATES.glob("trusted-*.yml.in")) + [TEMPLATES / n for n in REUSABLE]:
         yield t, OUT / t.name[: -len(".in")]
 
 

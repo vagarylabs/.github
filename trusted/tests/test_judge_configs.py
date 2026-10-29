@@ -70,6 +70,9 @@ NOT_JUDGES = {
     "cosign": "signs and verifies by flags and key references; reads no file of the tree it signs",
     "prometheus": "promtool checks the rule files it is pointed at, which are the subject, not its configuration",
     "restic": "backup, not a judge",
+    "scorecard": "report-only (U1): its result gates nothing, and the maintainer annotations it reads from the tree "
+                 "(scorecard.yml, .scorecard.yml, .github/scorecard.yml) are display context shown only with "
+                 "--show-annotations, which scorecard-weekly.yml never passes; if Scorecard ever gates, move it to JUDGES",
     "trufflehog": "every exclusion is a flag in the trusted workflow; it reads no ignore file from the tree",
 }
 # Judges that exist in one repository only.

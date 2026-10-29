@@ -117,14 +117,54 @@ class PlannerTest(unittest.TestCase):
     def tearDown(self):
         self._td.cleanup()
 
-    def run_plan(self, paths, event="pull_request", expected=None, root=None):
+    def run_plan(self, paths, event="pull_request", expected=None, root=None, readers=None):
         root = root or self.root
         cfg_path = root / ".github" / "ci-plan.json"
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else None
         return P.plan(cfg=cfg, root=root, config_path=cfg_path, paths=paths, event=event,
                       base="b" * 40, head="h" * 40, expected_count=expected,
                       scope=complete_scope(root, cfg_path, cfg, paths, event=event),
-                      reader_assessment=bound_readers(root, cfg_path, cfg))
+                      reader_assessment=readers if readers is not None else bound_readers(root, cfg_path, cfg))
+
+    def backstopped(self, flagged):
+        """A matched assessment from the REAL assess() whose backstop flags `flagged`: a ui file names its basename."""
+        cfg_path = self.root / ".github" / "ci-plan.json"
+        cfg = json.loads(cfg_path.read_text())
+        pkgs = E.workspace_graph(self.root, cfg)
+        reader_dirs = (cfg.get("edge_scan") or {}).get("reader_dirs") or []
+        deps = {name: set(info["deps"]) for name, info in pkgs.items()}
+        return E.assess(pkgs, cfg, deps, {d: set() for d in reader_dirs}, revision="c" * 40, config_path=cfg_path,
+                        mentions={flagged: [["ui/src/run.ts", "@v/ui", False, flagged]]})
+
+    # Root's ruling on the backstop's consequence (2026-10-29): PER PATH. A flagged path is a full trigger for a change
+    # that touches it; every other path keeps its mapping; the flagged set is bound into the assessment's digest.
+    def test_a_backstop_flagged_path_plans_full_and_only_that_path(self):
+        readers = self.backstopped("cli/src/client/context.ts")
+        self.assertEqual(readers["backstop_full"], ["cli/src/client/context.ts"])
+        self.assertEqual(readers["failures"], [], "a backstop hit fails nothing: its consequence is per path")
+        rec = self.run_plan(PR397, readers=readers)
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("cli/src/client/context.ts is named by a file the reader scan did not attribute (backstop)",
+                      rec["reason"])
+        self.assertEqual(rec["impact"]["status"], "unknown", "a flagged input's modeled impact is unknown")
+        other = self.run_plan(PR397, readers=self.backstopped("ui/src/elsewhere.ts"))
+        self.assertEqual(other["mode"], "reduced", "a flagged path the change does not touch narrows nothing away")
+        self.assertEqual(other["affected_packages"], ["@v/cli"])
+
+    def test_the_flagged_set_is_bound_and_must_be_well_formed(self):
+        readers = self.backstopped("cli/src/client/context.ts")
+        for name, edit, rehash in (("dropped after binding", lambda r: r.update(backstop_full=[]), False),
+                                   ("unsorted, rebound", lambda r: r.update(backstop_full=["z", "a"]), True),
+                                   ("a non-string, rebound", lambda r: r.update(backstop_full=[1]), True),
+                                   ("missing, rebound", lambda r: r.pop("backstop_full"), True)):
+            with self.subTest(name):
+                r = json.loads(json.dumps(readers))
+                edit(r)
+                if rehash:
+                    r["assessment_sha256"] = P.canonical_digest({k: v for k, v in r.items() if k != "assessment_sha256"})
+                rec = self.run_plan(PR397, readers=r)
+                self.assertEqual(rec["mode"], "full", "an assessment whose flagged set is not the bound, well-formed one "
+                                 "cannot narrow anything")
 
     def test_selection_without_source_facts_fails_closed(self):
         """Library callers that supply no observed scope cannot obtain a reduced plan (unknown never narrows)."""

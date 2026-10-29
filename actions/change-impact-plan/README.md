@@ -314,16 +314,34 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      mapping does not run that unit's reader job. A path left unmapped plans FULL, which runs every job, so it never
      fails here. A path reached by an `<unmapped>` file (in no reader directory, so no declared job runs it) may not be
      mapped at all;
-   - **on an unattributed mention: the backstop** (root's ruling on #33 round 3). It is attack-independent and fails
-     toward FULL. For every mapped path P outside every package, every OTHER tracked text file that names P's basename
-     as a token, in any syntax and excluded directories included, must be either in a package P's mapping selects, or
-     a file outside every package whose route to P the scan recorded. Being in a reader unit whose job runs is not
-     enough, since a package may run that file (F10). The planner's own config is not a mention. A failure names its
-     remedy: map P to the mentioning package too, or add P to `full_globs` so a change to it plans FULL. It catches a
-     runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`, `node "${0%/*}/w.mjs"`,
-     `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a workflow step), and a
-     basename collision goes FULL, the safe direction. One extended-regex `git grep` for the mapped extensions, then a
-     token lookup, keeps it to a few seconds on vagary-core.
+   - **NOT on an unattributed mention: that is the backstop, and its consequence is per path** (1.5.1; root's ruling
+     on #33 round 3, and on the consequence, 2026-10-29). It is attack-independent and fails toward FULL. For every mapped
+     path P outside every package, every OTHER tracked text file that names P's basename as a token, in any syntax and
+     excluded directories included, must be either in a package P's mapping selects, or a file outside every package
+     whose route to P the scan recorded. Being in a reader unit whose job runs is not enough, since a package may run
+     that file (F10). The planner's own config is not a mention.
+
+     A hit fails nothing. P joins `backstop_full` in the bound assessment, so `assessment_sha256` and the plan id bind
+     it, and `plan.py` plans FULL for a change that touches P (an inert P included), exactly as for a full trigger.
+     Every other path keeps its mapping. `check` prints each reason as `BACKSTOP <P> plans FULL: <why>`. One
+     declaration still narrows P back out: map P to the mentioning package too. The mentions are counted over BASE and
+     HEAD, so a reader the PR deletes still flags P. The planner config stays the BASE copy (the action's rule), and
+     the base tree is data like the head: it can only add FULL paths, never remove one.
+     - **The BASE pass is bounded.** A file the PR left alone reads the same at both ends, so only its deleted and
+       modified files (`git diff --no-renames --diff-filter=DMT`, a rename being D+A) are read at the base.
+       `edges.py base-paths` lists them as escaped sparse patterns. The action adds those to its sparse base checkout,
+       and `check --base-revision <base> --base-repo <that checkout>` reads them there. A blobless candidate (vagaris
+       checks out `filter: blob:none`) holds no base blobs.
+     - **The subjects are the union of both trees**, which need no blobs. So a P the PR deletes or moves, named by a
+       file the PR did not touch, is still a subject (root's condition).
+     - **Nothing unread passes as unmentioned.** `git grep` exits 1, its "no match" status, when it cannot read a blob.
+       Every grep of the scan refuses on `unable to read`, and so does a pass that times out ("reader closure
+       unproven: timeout"). Either one plans FULL.
+
+     The backstop catches a runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`,
+     `node "${0%/*}/w.mjs"`, `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a
+     workflow step), and a basename collision goes FULL, the safe direction. One extended-regex `git grep` for the
+     mapped extensions, then a token lookup, keeps it to a few seconds on vagary-core.
 
      Round 4 (root's R4 of round 3) widens what it checks, each fail-toward-FULL:
      - **B1, transitively.** P's subjects are P plus every file outside every package that reaches P by a recorded

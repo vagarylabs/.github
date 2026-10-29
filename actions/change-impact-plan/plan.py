@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.5.0"
+PLANNER_VERSION = "1.5.1"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -823,6 +823,15 @@ def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
     return result
 
 
+def backstop_full(readers) -> list[str] | None:
+    """The assessment's `backstop_full` paths when well formed (sorted, unique, non-empty strings), else None. Each is a
+    mapped path a file names by basename in a way the reader scan did not attribute: a change to it plans FULL."""
+    value = readers.get("backstop_full") if isinstance(readers, dict) else None
+    if not isinstance(value, list) or any(not isinstance(p, str) or not p for p in value) or value != sorted(set(value)):
+        return None
+    return value
+
+
 def reader_assessment_check(readers, *, revision, policy_hash, pkgs: dict, cfg: dict, scanner_sha) -> dict:
     """The one validator for a supported-reader assessment (edges.py check --out-json). It must bind the exact
     candidate, trusted policy bytes, workspace graph and scanner source. Used by the impact record and by the
@@ -862,6 +871,10 @@ def reader_assessment_check(readers, *, revision, policy_hash, pkgs: dict, cfg: 
     if readers["status"] == "matched" and readers["readers"].get("<unmapped>"):
         out.update(state="unmatched", reason="reader_assessment_unmatched")
         return out
+    # The backstop's per-path FULL set (edges.py assess): bound by assessment_sha256 above, and well formed, or the
+    # assessment cannot narrow anything.
+    if backstop_full(readers) is None:
+        return out
     out.update(status=readers["status"], sha256=supplied_hash)
     if readers["status"] != "matched" or readers["failures"]:
         out.update(state="unmatched", reason="reader_assessment_unmatched")
@@ -871,7 +884,7 @@ def reader_assessment_check(readers, *, revision, policy_hash, pkgs: dict, cfg: 
 
 
 def impact_record(record: dict, cfg: dict | None, pkgs: dict, assessment: dict | None,
-                  readers, unknown_reason: str | None) -> dict:
+                  readers, unknown_reason: str | None, paths: list[str] | None = None) -> dict:
     """Input-bound modeled impact; it never grants qualification, job selection, or reuse authority."""
     observation, validity = record["observation"], record["validity"]
     evidence = (assessment or {}).get("evidence", {})
@@ -916,6 +929,9 @@ def impact_record(record: dict, cfg: dict | None, pkgs: dict, assessment: dict |
         return result
     if evidence.get("full_triggers") or evidence.get("unmapped") or assessment["error"]:
         result["reason"] = "global_or_unmapped_inputs"
+        return result
+    if paths is None or set(paths) & set(backstop_full(readers) or []):
+        result["reason"] = "backstop_full_inputs"
         return result
     result.update(status="known", reason="modeled_cumulative_impact_not_qualification",
                   changed_packages=evidence["changed_packages"], affected_packages=sorted(assessment["affected"]),
@@ -1183,7 +1199,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         record["jobs"] = jobs
         record["matrices"] = matrices
         record["validity"] = validity_predicate(root, config_path, cfg or {}, base, head)
-        record["impact"] = impact_record(record, cfg, pkgs, assessment, reader_assessment, impact_unknown)
+        record["impact"] = impact_record(record, cfg, pkgs, assessment, reader_assessment, impact_unknown, paths)
         record["source_answer"], record["source_answer_meta"] = source_record(
             scope, cfg, pkgs, paths, expected_count, assessment, reader_assessment, config_path)
         bind_plan_id(record)
@@ -1230,6 +1246,10 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
                       + (f" (+{len(triggers) - 1} more)" if len(triggers) > 1 else ""))
     if assessment["error"]:
         return finish("full", assessment["error"])
+    flagged = sorted(set(paths) & set(backstop_full(reader_assessment) or []))
+    if flagged:
+        return finish("full", f"{flagged[0]} is named by a file the reader scan did not attribute (backstop)"
+                      + (f" (+{len(flagged) - 1} more)" if len(flagged) > 1 else ""))
     if record["evidence"]["unmapped"]:
         u = record["evidence"]["unmapped"]
         return finish("full", f"{u[0]} maps to no package (unknown impact)" + (f" (+{len(u) - 1} more)" if len(u) > 1 else ""))

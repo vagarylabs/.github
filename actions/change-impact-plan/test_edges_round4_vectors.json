@@ -61,6 +61,7 @@
  },
  "cases": {
   "T1 transitive hop": {
+   "backstop": true,
    "cfg_set": {},
    "change": "tools/worker.mjs",
    "files": {
@@ -186,6 +187,7 @@
    "verdict": "SELECT"
   },
   "T10c workflow pytest dir": {
+   "backstop": true,
    "cfg_set": {},
    "change": "tools/helper.mjs",
    "files": {
@@ -325,6 +327,7 @@
    "verdict": "REFUSE"
   },
   "T1b transitive via package.json env": {
+   "backstop": true,
    "cfg_set": {},
    "change": "tools/worker.mjs",
    "files": {
@@ -511,6 +514,7 @@
    "verdict": "SELECT"
   },
   "T2 inert glob": {
+   "backstop": true,
    "cfg_set": {
     "inert_globs": [
      "tools/fixtures/**"
@@ -791,6 +795,7 @@
    "verdict": "SELECT"
   },
   "T9 mention only in an excluded .md": {
+   "backstop": true,
    "cfg_set": {},
    "change": "tools/worker.mjs",
    "files": {

@@ -1,7 +1,14 @@
 """F14 (root, 2026-10-29): a judge must not read its config, ignore list or exception register from the tree it judges
 unless a change to that file is a ci-judge change. This file declares every judge the org runs and the tree files each
 reads. The tests fail when any of those files is unprotected in any repository profile of the trusted manifest, or when
-release-assets.lock gains a tool nobody classified. So a new judge config cannot land unprotected. Stdlib only. Run:
+release-assets.lock gains a tool nobody classified. So a new judge config cannot land unprotected.
+
+JUDGE_ACTIONS maps each judge that runs as an ACTION (by its `uses:` prefix) to its JUDGES entry. C1 workflow-lint
+will consume it to flag a consumer workflow's judge action that nobody classified (PLAN-SEQUENCED, root 2026-10-29).
+
+Known limitation: path protection covers a judge's config FILES, not inline markers in the code it judges
+(`gitleaks:allow`, `# nosemgrep`, `# zizmor: ignore[...]`, `# hadolint ignore=`). Those live in arbitrary files; C1
+runs zizmor with --no-ignores, and the others need their own flag or review. Stdlib only. Run:
   python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v
 """
 import json
@@ -29,6 +36,34 @@ JUDGES = {
             "security/vex/fixtures/scope.cdx.json"],
     "exception-register": ["docs/exception-register.json"],
     "secret-scan-registry": [".github/secret-scan-registry.json", "scripts/ci/secret-scan-registry.json"],
+    # judges that run as actions (JUDGE_ACTIONS) and read a tree file when one exists; none exists today (prevention)
+    "grype": [".grype.yaml", ".grype.yml", ".grype/config.yaml"],
+    "hadolint": [".hadolint.yaml", ".hadolint.yml"],
+    "codeql": [".github/codeql/codeql-config.yml"],
+    "snyk": [".snyk"],
+    "osv-scanner": ["osv-scanner.toml"],
+    "checkov": [".checkov.yml", ".checkov.yaml"],
+    "dependency-review": [".github/dependency-review-config.yml"],
+}
+# A judge that runs as an action, by its `uses:` prefix (owner/repo[/path]), to its JUDGES (or NOT_JUDGES) entry. The
+# prefixes are the judge actions the org's workflows use today (the C1 census), plus grype's and hadolint's own.
+JUDGE_ACTIONS = {
+    "aquasecurity/trivy-action": "trivy",
+    "github/codeql-action": "codeql",
+    "anchore/sbom-action": "syft",
+    "anchore/scan-action": "grype",
+    "hadolint/hadolint-action": "hadolint",
+    "returntocorp/semgrep-action": "semgrep",
+    "semgrep/semgrep-action": "semgrep",
+    "gitleaks/gitleaks-action": "gitleaks",
+    "zizmorcore/zizmor-action": "zizmor",
+    "lycheeverse/lychee-action": "lychee",
+    "ludeeus/action-shellcheck": "shellcheck",
+    "snyk/actions": "snyk",
+    "google/osv-scanner-action": "osv-scanner",
+    "bridgecrewio/checkov-action": "checkov",
+    "actions/dependency-review-action": "dependency-review",
+    "trufflesecurity/trufflehog": "trufflehog",
 }
 # A tool in release-assets.lock that reads no configuration from the tree it runs over, and why.
 NOT_JUDGES = {
@@ -74,6 +109,15 @@ class JudgeConfigsAreProtected(unittest.TestCase):
         self.assertEqual(unclassified, [], "classify each new release-assets.lock tool in JUDGES (with the tree files it "
                                            "reads) or NOT_JUDGES (with why it reads none)")
         self.assertEqual(sorted(set(JUDGES) & set(NOT_JUDGES)), [])
+
+    def test_every_judge_action_names_a_classified_judge(self):
+        # A judge action with no tree-file declaration (or reason it reads none) fails here, not silently later.
+        for prefix, judge in JUDGE_ACTIONS.items():
+            with self.subTest(action=prefix):
+                self.assertRegex(prefix, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?$")
+                self.assertTrue(JUDGES.get(judge) or judge in NOT_JUDGES,
+                                "%s runs the judge %r, which declares no tree file and no reason it reads none"
+                                % (prefix, judge))
 
     def test_the_declared_lists_have_teeth(self):
         # Control: a path no judge reads is not ci-judge, so the protection above is not everything-matches.

@@ -241,7 +241,33 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      `node_modules` stays external. Reach `"none"` refuses for a name with a code extension (F09): code something runs
      (`spawn(process.execPath, ["../../dist/x.js"])`) reaches its sources, so it must name them.
    - **A path at or above the repository root refuses** (N4): a `"../.."` alias, `baseUrl` or `root` reaches every
-     file, so no mapping of it can be narrower than FULL.
+     file, so no mapping of it can be narrower than FULL. 1.5.1, root's rulings of 2026-10-29:
+     - **(a) Above the checkout** (`../vagary-voice`, `../../etc/passwd` resolved from the root), a name joins the
+       unresolved-name class. It is declared in `unresolved_names` by its exact path, or by a glob over such paths whose
+       first segment below the `../` steps is literal (`../vagary-voice/**`; `../**` refuses). Its reach may be `"none"`
+       even with a code extension, since nothing above the checkout is this repository's. It may also list the tracked
+       paths it stands for.
+     - **(b) At the root** (`.`), a name refuses unless declared with a reach list. `"none"` refuses, because a name at
+       the root reaches every file. A **root base** needs no declaration when every use joins string literals: it then
+       stands for exactly those literals. A root base is a chain anchored at the file's directory that resolves to the
+       root (vagaris's `realpathSync(path.resolve(__dirname, "../../.."))`, core's
+       `Path(__file__).resolve().parents[3]`). Its uses are:
+       - the base, through `realpathSync`, `normalize`, `str` or `Path`, as the first argument of a `join` or `resolve`
+         whose other arguments are all plain string literals;
+       - a name bound to it once, whose every use is such a join, or a Python alias step with only literals
+         (`REPO / "scripts" / "ci-test-pg.sh"`), or an expression the Python evaluator above judges itself (a
+         `sys.path` entry or a loader path).
+
+       Any other use refuses: a non-literal join, `cwd=REPO`, a template or f-string the tokens cannot see, an export
+       to other files, or a literal that is itself the root or above.
+   - **A lockfile is read only when it can select less than FULL** (1.5.1, root's ruling c). Every lockfile kind
+     (`plan.LOCKFILE_NAMES`) is metadata: its `link:../x` entries run nothing. So the scan skips a lockfile when, and only
+     when, `plan.classify_paths` plans a change to it FULL under the config in use. That check is per path and per
+     consumer, and `derive`'s report lists the skipped ones under `lockfiles_not_read`. A skipped lockfile is not a
+     backstop mentioner either. A root lockfile is a builtin full trigger. A nested one is its package's dependency input
+     (root's ruling): `plan.classify_paths` maps it to exactly its owning package, so it selects that package and its
+     reverse dependents. A nested lockfile that maps to no package, or to several, plans FULL. An `inert_globs` glob
+     never hides one. A nested lockfile that selects its package is read like any other file.
    - **A `".."` segment is a parent step everywhere** (round 3, B2). A chain anchored at the file's own directory is
      read in ANY position, not only as an import argument, and resolves like the path written out:
      `path.join(__dirname, "..", "..", "lib", "x.mjs")` and `path.resolve(here, "..", "scripts", "x.mjs")` in JS,
@@ -451,6 +477,11 @@ vagary-core's exact lines, F08, F09) and 7 correct-plan controls. Each is run en
 - judge the change with the real `plan.classify_paths` and `rule_matches`.
 
 Each is pinned exact: it refuses, plans FULL, or selects its runner, and each control selects exactly its jobs.
+
+`test_edges_151_rulings_vectors.json` holds 22 vectors for 1.5.1's root-climb rulings, run by the same method:
+- A1-A6: names above the checkout;
+- B1-B10: root bases and root declarations;
+- C1-C6: lockfiles and the nested-lockfile ruling.
 
 `test_edges_review_vectors.json` holds 555 adversarial readers:
 - 245 from root's first three independent reviews;

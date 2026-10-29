@@ -718,9 +718,13 @@
      }
     }
    },
-   "verdict": "REFUSE",
+   "verdict": "SELECT",
    "must_run": "test-billing-metering",
-   "refusal": "unresolved (services/billing-metering/test/usage_agg_key_discipline_pg_unit.py names ../../.., the repository root or above it: that reaches every file, so no mapping of it can be narrower than FULL)"
+   "jobs": [
+    "root",
+    "test-app-console",
+    "test-billing-metering"
+   ]
   },
   "F09 reach none for code ext": {
    "kind": "drop-vector",

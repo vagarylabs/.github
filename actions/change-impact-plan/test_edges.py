@@ -1396,10 +1396,10 @@ class ImportAttributionTest(unittest.TestCase):
             ('x = os.path.join(os.path.dirname(__file__), "..", "lib")', "py"): ["../lib"],
             ('x = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")', "py"): ["../.."],
             ('HERE = os.path.dirname(__file__)\nx = os.path.join(HERE, "..", "w.py")', "py"): ["../w.py"],
-            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../..", "../.."],
+            ('ROOT = Path(__file__).resolve().parents[2]', "py"): ["../.."],  # 1.5.1: the alias's own binding is no use
             ('w = Path(__file__).parent / ".." / "w.py"', "py"): ["../w.py"],
             ('w = Path(__file__).parent.parent / "w.py"', "py"): ["../w.py"],
-            ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "..", "../scripts/x.sh"],
+            ('REPO = Path(__file__).resolve().parents[1]\ns = REPO / "scripts" / "x.sh"', "py"): ["..", "../scripts/x.sh"],
         }
         for (src, ext), want in cases.items():
             with self.subTest(src):
@@ -1408,10 +1408,14 @@ class ImportAttributionTest(unittest.TestCase):
                          ('p = Path(__file__).parent / "w.py"', "py"), ('p = os.path.join(base, "..")', "py")):
             with self.subTest(control=src):
                 self.assertEqual(E.anchored_chains(E.Source(src, ext)), [], "no parent step from the anchor: no chain")
-        # In a scan: a Python root base by parents[N] refuses as a root climb, from any position.
-        self.files(**{"services__a__t.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"})
+        # In a scan: a Python root base by parents[N] refuses as a root climb when it is used other than joined with
+        # string literals (1.5.1, root's ruling b); a bound base nobody uses reaches nothing.
+        self.files(**{"services__a__t.py": "import subprocess\nfrom pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
+                                           "subprocess.run(['make'], cwd=ROOT)\n"})
         with self.assertRaisesRegex(ValueError, r"services/a/t.py names \.\./\.\., the repository root or above it"):
             self.scan()
+        self.files(**{"services__a__t.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"})
+        self.scan()
 
     def test_one_batch_reader_serves_a_scans_revision_reads_byte_for_byte(self):
         # perf: one `git cat-file --batch` per scan, not one `git show` per file; the bytes are git show's exactly.
@@ -1882,6 +1886,26 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
             if case["kind"] == "residual":
                 self.assertIn(case["residual"], readme, f"{name}: the README must list it")
 
+
+class RulingsOf151Test(VectorHarness, unittest.TestCase):
+    """1.5.1, root's rulings (a), (b), (c) and the nested-lockfile ruling (test_edges_151_rulings_vectors.json), pinned
+    EXACT: each drop-vector refuses, plans FULL or selects its runner; each control selects exactly its jobs."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_151_rulings_vectors.json")).read_text())
+
+    def test_every_ruling_vector_is_pinned_exactly(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                if case["kind"] == "drop-vector" and got["verdict"] == "SELECT":
+                    self.assertIn(case["must_run"], got["jobs"], f"{name} drops its runner")
+
+    def test_each_ruling_has_vectors(self):
+        names = sorted(self.CASES["cases"])
+        for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+                       "C1", "C2", "C3", "C4", "C5", "C6"):
+            self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 
 def E_add(cfg, path, name):
     targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])

@@ -69,9 +69,15 @@
     "tools/run.sh": "#!/bin/bash\nnode \"$(dirname \"$0\")/worker.mjs\"\n",
     "tools/worker.mjs": "export const w = 1;\n"
    },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
    "kind": "drop-vector",
    "must_run": "test-c",
-   "verdict": "FULL"
+   "verdict": "SELECT"
   },
   "T1-ctl direct": {
    "cfg_set": {},
@@ -169,9 +175,15 @@
     "tools/run.sh": "#!/bin/bash\nnode \"$(dirname \"$0\")/worker.mjs\"\n",
     "tools/worker.mjs": "export const w = 1;\n"
    },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b",
+    "test-c"
+   ],
    "kind": "drop-vector",
    "must_run": "test-c",
-   "verdict": "FULL"
+   "verdict": "SELECT"
   },
   "T1c env concat hop0": {
    "cfg_set": {},

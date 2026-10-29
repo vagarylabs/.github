@@ -251,8 +251,11 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
          file, as the root does (A7-A7c; `../sibling` with `"none"` still holds, A7d);
        - a name that re-enters the checkout by its own name (`../<repo>/...`, globs included) may be this repository's
          tree: CI checks out into `.../<repo>/<repo>`. The names are the checkout directory's and, in Actions,
-         `GITHUB_REPOSITORY`'s. **Residual:** a checkout reached under any other name (a parent symlink, a directory not
-         named after the repository outside Actions) is not recognised.
+         `GITHUB_REPOSITORY`'s;
+       - 1.5.3 (root's delta R4 of #49): a name, or a glob's literal prefix, that resolves from the ACTUAL checkout path
+         at scan time to the checkout, inside it or an ancestor of it, such as `../../../_work/**` on CI's
+         `.../_work/<repo>/<repo>`. The resolution is lexical, so a path that does not exist on the scanning machine is
+         still judged. **Residual:** a parent reached through a symlink is judged by its lexical path, not its target.
      - **(b) At the root** (`.`), a name refuses unless declared with a reach list. `"none"` refuses, because a name at
        the root reaches every file. A **root base** needs no declaration when every use joins string literals: it then
        stands for exactly those literals. A root base is a chain anchored at the file's directory that resolves to the

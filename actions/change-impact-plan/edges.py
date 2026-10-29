@@ -2195,7 +2195,23 @@ def own_names(repo) -> frozenset:
     return frozenset(n for n in names if n and n not in (".", ".."))
 
 
-def unresolved_name_registry(es: dict, own: frozenset = frozenset()) -> tuple[dict, list]:
+def lands_on_checkout(name: str, checkout: str | None) -> bool:
+    """Whether a name above the checkout, or its literal prefix (the segments before a glob's first wildcard), resolved
+    against the ACTUAL checkout path, is the checkout, inside it or an ancestor of it (root's delta R4 of #49): CI's
+    `.../_work/<repo>/<repo>` makes `../../../_work/**` an ancestor though it never names the repository. Lexical, so a
+    path above the checkout that does not exist on this machine is still judged."""
+    if not checkout:
+        return False
+    prefix = []
+    for part in name.split("/"):
+        if any(c in part for c in "*?["):
+            break
+        prefix.append(part)
+    at = posixpath.normpath(posixpath.join(checkout, *prefix)) if prefix else checkout
+    return at == checkout or checkout.startswith(at.rstrip("/") + "/") or at.startswith(checkout.rstrip("/") + "/")
+
+
+def unresolved_name_registry(es: dict, own: frozenset = frozenset(), checkout: str | None = None) -> tuple[dict, list]:
     """edge_scan.unresolved_names, validated: ({(file, normalized name): entry}, [(file, glob regex, entry)]).
     A name that resolves to no tracked file or directory is an UNRESOLVED ROUTE, in any position (root's delta R4 of
     #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
@@ -2218,6 +2234,14 @@ def unresolved_name_registry(es: dict, own: frozenset = frozenset()) -> tuple[di
                          "\"none\" or a non-empty list of repo paths")
     reviewed("unresolved_names", names_declared, "name")
     by_name, globs = {}, []
+
+    def refuse_landing(d, name, above):
+        # 1.5.3 (root's delta R4 of #49): judged after a glob's shape, so a malformed glob keeps its own refusal.
+        if above and d["reach"] == "none" and lands_on_checkout(name, checkout):
+            raise ValueError(f"edge_scan.unresolved_names: {d['file']} names {d['name']}, which resolves from this checkout "
+                             "to the checkout itself, inside it, or an ancestor of it, with reach \"none\"; a name there "
+                             "reaches this repository's files, so declare the paths it reaches")
+
     for d in names_declared:
         name = posixpath.normpath(d["name"])
         above = name == ".." or name.startswith("../")
@@ -2243,8 +2267,10 @@ def unresolved_name_registry(es: dict, own: frozenset = frozenset()) -> tuple[di
                 raise ValueError(f"edge_scan.unresolved_names: {d['file']} declares {d['name']}, a glob; a glob may only "
                                  "name paths ABOVE the checkout, and its first segment below the `../` steps must be "
                                  "literal (`../repo/**`, never `../**`)")
+            refuse_landing(d, name, above)
             globs.append((d["file"], glob_to_regex(name), d))
             continue
+        refuse_landing(d, name, above)
         # Root's round 3 of #33, F09: a name with a code extension is code something runs (`spawn(process.execPath,
         # ["../../dist/x.js"])`), so reach "none" would say it runs nothing; it must name what it stands for. Above the
         # checkout nothing is this repository's, so "none" is the honest reach there (1.5.2, ruling a).
@@ -2985,7 +3011,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     edges: dict[str, set[str]] = {}  # a file -> the repo paths outside every package its relative paths name (1.5.0)
 
     shell_spans: dict[str, dict] = {}
-    scan_names, scan_name_globs = unresolved_name_registry(es, own_names(repo))
+    scan_names, scan_name_globs = unresolved_name_registry(es, own_names(repo), Path(repo).resolve().as_posix())
     scan_names_used: set = set()
     root_info: dict[str, tuple] = {}
 
@@ -3481,7 +3507,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # #33, D5): `timeout 300 node ../dist/x.js`, a heredoc, a fork/Worker/spawn argument and a test datum all read alike
     # to a scan that cannot run them. It refuses unless declared: {file, name, reach}, `name` the repo path it resolves
     # to, `reach` "none" (it names nothing that runs: a test datum) or the tracked paths it stands for (each an edge).
-    by_name, name_globs = unresolved_name_registry(es, own_names(repo))
+    by_name, name_globs = unresolved_name_registry(es, own_names(repo), Path(repo).resolve().as_posix())
     names_used: set = set()
     loader_targets: set[str] = set()  # every target a loader call names (reaches): a module position by construction
     reader_dirs = set(es.get("reader_dirs") or [])

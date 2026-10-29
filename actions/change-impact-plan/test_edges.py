@@ -928,6 +928,34 @@ class ImportAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "through its own name"):
             E.scan(self.repo, cfg)
 
+    def test_a_name_above_the_checkout_is_judged_against_the_actual_checkout_path(self):
+        # Root's delta R4 of #49 (non-blocking): on CI's .../_work/<repo>/<repo>, `../../../_work/**` is an ANCESTOR of the
+        # checkout though it never names the repository, so reach "none" must refuse it. The judgement is lexical, against
+        # the checkout path at scan time; the own-name rule still covers a layout that differs between scan and CI.
+        ci = "/x/_work/vagaris/vagaris"
+        for name, lands in (("../../../_work/**", True), ("../../vagaris", True), ("../vagaris/x.json", True),
+                            ("../../../_work/cache/x.json", False), ("../../other/x", False), ("../sibling", False),
+                            ("../../../_workspace/x", False), ("../../../_wo", False), ("../vagaris2/x", False)):
+            with self.subTest(name=name):
+                self.assertEqual(E.lands_on_checkout(name, ci), lands)
+        self.assertFalse(E.lands_on_checkout("../..", None), "no checkout path, no judgement")
+        entry = lambda name, reach="none": {"file": "scripts/run-all.mjs", "name": name, "reach": reach, "reason": "fixture",
+                                            "review_by": "2026-11-20"}
+        with self.assertRaisesRegex(ValueError, "resolves from this checkout to the checkout itself, inside it, or an ancestor"):
+            E.unresolved_name_registry({"unresolved_names": [entry("../../../_work/**")]}, frozenset({"vagaris"}), ci)
+        E.unresolved_name_registry({"unresolved_names": [entry("../../../_work/**")]}, frozenset({"vagaris"}),
+                                   "/home/me/src/vagaris")  # the same name is no ancestor of a local checkout
+        E.unresolved_name_registry({"unresolved_names": [entry("../../../_work/**", ["scripts/x.mjs"])]},
+                                   frozenset({"vagaris"}), ci)  # a reach list is accepted
+        # End to end: a literal ancestor of THIS checkout, named without `..` steps alone or the checkout's own name.
+        parent = self.repo.resolve().parent
+        name = f"../../{parent.name}/**"
+        self.assertTrue(E.lands_on_checkout(name, self.repo.resolve().as_posix()))
+        cfg = json.loads(json.dumps(IMPORT_CFG))
+        cfg["edge_scan"]["unresolved_names"] = [entry(name)]
+        with self.assertRaisesRegex(ValueError, "an ancestor of it"):
+            E.scan(self.repo, cfg)
+
     def test_every_git_grep_of_the_scan_refuses_typed_when_it_cannot_read(self):
         # Root's carry-over from #47 (556963a): no grep site of the scan may fail by a bare SystemExit. Each `git grep` the
         # scan runs on this tree is made to exit 128 in turn (git 2.56's unreadable-blob status); every one refuses typed,

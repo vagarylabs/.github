@@ -95,7 +95,8 @@ class SiblingReadFindings(unittest.TestCase):
 class Manifest(unittest.TestCase):
     def manifest(self, **sibling):
         m = {"version": 1, "default": {"protected": [{"class": "c", "patterns": ["x"]}], "ratchet_files": []},
-             "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []}}
+             "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []},
+             "pins": {"mode": "report", "exemptions": []}, "workflow_lint": {"mode": "report"}}
         m.update(sibling)
         return m
 
@@ -117,7 +118,7 @@ class Mode(unittest.TestCase):
         m = {"sibling_read": {"mode": mode}}
         out = io.StringIO()
         with mock.patch.object(classify, "resolve_head"), \
-                mock.patch.object(classify, "git", return_value="\n".join(files)), \
+                mock.patch.object(classify, "git", return_value="\0".join(files) + "\0"), \
                 mock.patch.object(classify, "blob", side_effect=lambda sha, path: files[path]), \
                 mock.patch.object(classify, "summary"), contextlib.redirect_stdout(out):
             code = classify.run_sibling_read(m, "vagarylabs/x", None, "a" * 40)

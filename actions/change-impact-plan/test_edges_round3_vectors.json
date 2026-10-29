@@ -1,5 +1,5 @@
 {
- "$comment": "Root's round-3 vectors of .github #33 (lanes/root/reviews/dotgithub-33-round3-vectors.md), pinned EXACT. Method (root's): commit, run the real `edges.py check --revision`, apply check's own remedies until rc 0, judge with plan.classify_paths + rule_matches. A drop-vector must REFUSE, plan FULL, or select its must_run job; a correct-plan control must select exactly its jobs.",
+ "$comment": "Root's round-3 vectors of .github #33 (lanes/root/reviews/dotgithub-33-round3-vectors.md), pinned EXACT. Method (root's): commit, run the real `edges.py check --revision`, apply check's own remedies until rc 0, judge with plan.classify_paths + rule_matches. A drop-vector must REFUSE, plan FULL, or select its must_run job; a correct-plan control must select exactly its jobs. A FULL that comes from the backstop's per-path consequence is pinned with \"backstop\": true.",
  "base_config": {
   "schema": 1,
   "workspace": {
@@ -546,7 +546,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "test-a"
+   "must_run": "test-a",
+   "backstop": true
   },
   "F03 new URL": {
    "kind": "drop-vector",
@@ -578,7 +579,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "test-a"
+   "must_run": "test-a",
+   "backstop": true
   },
   "F04 python subprocess": {
    "kind": "drop-vector",
@@ -610,7 +612,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "test-a"
+   "must_run": "test-a",
+   "backstop": true
   },
   "F05 cd pwd": {
    "kind": "drop-vector",
@@ -642,7 +645,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "test-a"
+   "must_run": "test-a",
+   "backstop": true
   },
   "F05 ${0%/*}": {
    "kind": "drop-vector",
@@ -674,7 +678,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "test-a"
+   "must_run": "test-a",
+   "backstop": true
   },
   "L1 core exact lines": {
    "kind": "drop-vector",
@@ -803,7 +808,8 @@
     }
    },
    "verdict": "FULL",
-   "must_run": "docs"
+   "must_run": "docs",
+   "backstop": true
   },
   "F01-ctl fork own file": {
    "kind": "correct-plan control",

@@ -341,16 +341,35 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
      mapping does not run that unit's reader job. A path left unmapped plans FULL, which runs every job, so it never
      fails here. A path reached by an `<unmapped>` file (in no reader directory, so no declared job runs it) may not be
      mapped at all;
-   - **on an unattributed mention: the backstop** (root's ruling on #33 round 3). It is attack-independent and fails
-     toward FULL. For every mapped path P outside every package, every OTHER tracked text file that names P's basename
-     as a token, in any syntax and excluded directories included, must be either in a package P's mapping selects, or
-     a file outside every package whose route to P the scan recorded. Being in a reader unit whose job runs is not
-     enough, since a package may run that file (F10). The planner's own config is not a mention. A failure names its
-     remedy: map P to the mentioning package too, or add P to `full_globs` so a change to it plans FULL. It catches a
-     runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`, `node "${0%/*}/w.mjs"`,
-     `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a workflow step), and a
-     basename collision goes FULL, the safe direction. One extended-regex `git grep` for the mapped extensions, then a
-     token lookup, keeps it to a few seconds on vagary-core.
+   - **NOT on an unattributed mention: that is the backstop, and its consequence is per path** (1.5.1; root's ruling
+     on #33 round 3, and on the consequence, 2026-10-29). It is attack-independent and fails toward FULL. For every mapped
+     path P outside every package, every OTHER tracked text file that names P's basename as a token, in any syntax and
+     excluded directories included, must be either in a package P's mapping selects, or a file outside every package
+     whose route to P the scan recorded. Being in a reader unit whose job runs is not enough, since a package may run
+     that file (F10). The planner's own config is not a mention.
+
+     A hit fails nothing. P joins `backstop_full` in the bound assessment, so `assessment_sha256` and the plan id bind
+     it, and `plan.py` plans FULL for a change that touches P (an inert P included), exactly as for a full trigger.
+     Every other path keeps its mapping. `check` prints each reason as `BACKSTOP <P> plans FULL: <why>`. One
+     declaration still narrows P back out: map P to the mentioning package too. The mentions are counted over BASE and
+     HEAD, so a reader the PR deletes still flags P. The planner config stays the BASE copy (the action's rule), and
+     the base tree is data like the head: it can only add FULL paths, never remove one.
+     - **The BASE pass is bounded.** A file the PR left alone reads the same at both ends, so only its deleted and
+       modified files (`git diff --no-renames --diff-filter=DMT`, a rename being D+A) are read at the base.
+       `edges.py base-paths` lists them as escaped sparse patterns. The action adds those to its sparse base checkout,
+       and `check --base-revision <base> --base-repo <that checkout>` reads them there. A blobless candidate (vagaris
+       checks out `filter: blob:none`) holds no base blobs.
+     - **The subjects are the union of both trees**, which need no blobs. So a P the PR deletes or moves, named by a
+       file the PR did not touch, is still a subject (root's condition).
+     - **Nothing unread passes as unmentioned.** On git 2.50 `git grep` exits 1, its "no match" status, when it cannot
+       read a blob, and prints `unable to read`; git 2.56 exits 128. Every grep of the scan refuses, typed, on either
+       signal (any exit but 0 or 1), and so does a pass that times out ("reader closure unproven: timeout"). Each one
+       plans FULL.
+
+     The backstop catches a runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`,
+     `node "${0%/*}/w.mjs"`, `Path(__file__).parent / "w.py"`, core's `parents[3] / "scripts" / "ci-test-pg.sh"`, a
+     workflow step), and a basename collision goes FULL, the safe direction. One extended-regex `git grep` for the
+     mapped extensions, then a token lookup, keeps it to a few seconds on vagary-core.
 
      Round 4 (root's R4 of round 3) widens what it checks, each fail-toward-FULL:
      - **B1, transitively.** P's subjects are P plus every file outside every package that reaches P by a recorded
@@ -362,7 +381,31 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        symlink inside package c that points at P names P), and a symlink outside every package is a route to its
        target (it starts its unit, and an alias of P becomes P's subject);
      - **B4, inert globs.** A path an `inert_globs` glob maps to nothing is backstopped too ("inert mention"). Its
-       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first.
+       remedy is to narrow the glob or add the path to `full_globs`, which `plan.classify_paths` applies first;
+     - **directories (T10b).** A runner that names only a directory runs what is beneath it, as in
+       `node --test "$REPO_ROOT/tools/"`, a workflow's `pytest scripts/`, or a config's `tools/**`. So every directory
+       that holds a subject is a subject too, written `tools/`. A token that ENDS at it, with a slash beside it, is a
+       mention when it is one of:
+       - resolved from the mentioning file's directory;
+       - resolved from the root, for a file at the root or under `.github/`, whose steps run there;
+       - named after a prefix the scan cannot resolve (`$X/`, `${X}/`, `$(...)/`, a leading `/`).
+
+       A package's own `test/` resolves inside the package, so it is not a mention of a top-level `test/`. Neither is
+       a bare word (`"scripts": {"test": ...}`, a workflow's `test:` job, "the tools" in prose).
+
+       Three more things are not runners, so they make no directory mention (root's R4 of round 4, P2-P4, no regression
+       from 60e9f78). Each is skipped only on positive evidence:
+       - prose (`.md`, `.markdown`, `.rst`, `.adoc`), as in a README's "lives in src/". An `.mdx` is still read: it
+         compiles to JS, and Storybook or Docusaurus collect it by glob (P4b). So is a `.txt`: a CMakeLists.txt builds,
+         pytest's default `--doctest-glob` is `test*.txt`, and a list file can feed a runner (P6);
+       - an ignore list (`.gitignore`, `.dockerignore`, `.gitleaksignore`), except a `!lib/` line, which re-includes
+         (P7, P7b);
+       - a `package.json`'s metadata fields (`files`, `directories`, `repository` and the other descriptive ones), so
+         `"files": ["lib/"]` publishes and runs nothing. Every other field is read, since runner configs live there too
+         (`"mocha": {"spec": "lib/"}`, `"jest": {"roots": [...]}`; P5, P5b). A manifest that does not parse, or is not
+         an object, is read whole (P5c).
+
+       A glob argument (`shellcheck scripts/*.sh`) does not end at the directory, so it is not a mention either.
 
    **The invariant: a path is mappable only when every route to it resolved** (root's delta R4 of #33). Any route the
    scan cannot resolve refuses or keeps the path FULL. That covers a name that resolves to nothing, an importing file it
@@ -439,15 +482,17 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      (`sorted(x)`, `.split()`) stays computed.
 
 Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
-scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b, T10b) as the drops they
-are:
+scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b), T10g and T10h as the
+drops they are:
 - a mention that differs only in case (`tools/Worker.mjs` for `tools/worker.mjs`): the token match is exact;
 - a Python module path (`from tools.worker import f`, `python -m tools.worker`): a dotted name is not a basename;
 - a text file `.gitattributes` marks binary, and a basename inside a real binary file: `git grep -I` skips both;
 - a file in an encoding other than ASCII-compatible (UTF-16 with or without a BOM): its bytes never spell the token;
-- a runner that names only a directory (`node --test "$REPO_ROOT/tools/"`, where `tools/x.test.mjs` imports P): no
-  subject's basename appears. A `../` route to the directory is recorded (T10, a jest `roots` entry), so only a
-  directory named through a runtime-built prefix drops;
+- a directory or glob resolved against a root set elsewhere at runtime: vitest `dir: process.env.REPO_ROOT` with
+  `include: ["tools/**/*.test.mjs"]` (T10g) reads `tools/` relative to its own package. A bare relative directory in a
+  file below the root whose steps run from the root (`node --test tools/` in `scripts/run.sh`) has the same gap;
+- a directory named as a bare word (`cd tools && node --test`, T10h): a mention needs a slash beside the name, so a
+  bare `test` in a manifest or a workflow is not one;
 - a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
   `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
   Python `sys.path` escapes are closed by rules 6-8 above, except the residuals below;

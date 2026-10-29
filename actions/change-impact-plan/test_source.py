@@ -474,7 +474,9 @@ class RealTransport(unittest.TestCase):
                 def log_message(self, *args):
                     pass
             return Handler
-        self.assertEqual(P.https_transport(self.serve(trickle(0.01)) + "/compare", {}, 0.5, 1024)[::2], (200, b"{}"),
+        # F5: the control only proves a complete answer inside the deadline is read, so it gets 5 s for ~80 ms of
+        # trickle. At 0.5 s it ran out of time once under load; the refusal below keeps its 0.5 s wall clock.
+        self.assertEqual(P.https_transport(self.serve(trickle(0.01)) + "/compare", {}, 5.0, 1024)[::2], (200, b"{}"),
                          "positive control: the same answer inside the deadline is read")
         url = self.serve(trickle(0.15))
         started = time.monotonic()

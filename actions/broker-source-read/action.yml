@@ -1,0 +1,148 @@
+# Broker source read: a read-only GitHub installation token for a sibling repository, minted by the Source & Delivery
+# broker for THIS job's GitHub OIDC identity. No App key sits in Actions secrets. It replaces
+# actions/create-github-app-token with SOURCE_READ_APP_ID / SOURCE_READ_APP_PRIVATE_KEY: the internal Source Access App
+# is retired (operator ruling 2026-10-14; source-access move plan row C4). The ONE shared client; no repository keeps
+# a copy.
+#
+# The job needs `permissions: id-token: write` (plus whatever else it uses: a job-level block replaces the defaults).
+# Pin a SHA, never @main.
+#
+#   - uses: vagarylabs/.github/actions/broker-source-read@<commit sha>
+#     with:
+#       purpose: build_checkout                   # build_checkout | image_pull | repository_census
+#       repository: vagarylabs/vagary-core
+#       provider: projects/121438167237/locations/global/workloadIdentityPools/github/providers/github-vagaris-source-read
+#       service_account: ci-src-vagaris@vl-build-prod.iam.gserviceaccount.com
+#       audience: https://source-delivery-broker-ccknatkt3q-el.a.run.app
+#       token-file: ${{ runner.temp }}/broker-tokens/vagary-core
+#   - run: ...   # read the file into an env var that a git credential helper reads; never argv, never a URL
+#   - if: ${{ always() }}
+#     uses: vagarylabs/.github/actions/broker-source-read@<same sha>
+#     with:
+#       mode: revoke
+#       purpose: build_checkout
+#       token-file: ${{ runner.temp }}/broker-tokens/vagary-core
+#
+# What mint checks, in order, failing loud on each:
+#   - the purpose is one CI may ask for, and every input is well formed: before any network call;
+#   - GitHub OIDC -> STS at `provider` -> generateIdToken for `service_account` (audience `audience`) -> POST
+#     <audience>/v1/source/read, one token per repository, 429/5xx retried with a bound; every credential masked the
+#     moment it arrives;
+#   - the ECHO: the broker's answer must carry schema source_read/v1, the repository asked for, and `permissions`
+#     EQUAL to the purpose's set (client.py PURPOSES, mirroring the broker). Wider, narrower or missing: the token is
+#     revoked and the step fails;
+#   - readiness: GET /repos/<owner>/<name> answers 200 within `readiness-seconds` (a fresh installation token is not
+#     visible everywhere at once; same bound and backoff as sibling-repo-read).
+# All or nothing: on any failure nothing is written, and tokens already minted for a revocable purpose are revoked.
+# The `cached` output and log line repeat the broker's word on whether the token came from its cache: true, false,
+# or unknown when the reply does not say (today it never does).
+#
+# Revoke reads the token from its file and removes the file. Whether it calls DELETE /installation/token follows the
+# broker: when the mint reply carried a boolean `revocable`, mint recorded it under $RUNNER_TEMP and revoke deletes iff
+# it was true (a non-boolean `revocable` fails the mint, token revoked). Only for an older broker whose reply has no
+# `revocable` does the purpose decide: image_pull and repository_census (minted uncached) are deleted; build_checkout
+# is NOT, because that broker caches it per caller and hands the same token to every job of that service account for
+# up to about 55 minutes, so deleting it would break every concurrent and later job. The revoke step is required after
+# the last use of every token, so the file never outlives the job's need.
+#
+# Script and tests: client.py, test_client.py (python3 -m unittest discover -s actions/broker-source-read -p 'test_*.py').
+name: broker-source-read
+description: Mint a read-only GitHub installation token through the Source & Delivery broker from this job's OIDC identity, or revoke one.
+inputs:
+  mode:
+    description: mint, or revoke (reads token-file / token-dir, deletes revocable tokens, removes the files).
+    required: false
+    default: mint
+  purpose:
+    description: The broker purpose, which fixes the permission set. build_checkout (contents+metadata read), image_pull (packages+metadata read) or repository_census (pull_requests+checks+metadata read). Required in both modes.
+    required: true
+  repository:
+    description: mint only. owner/name; several (spaces, commas or newlines) only with token-dir, one token per repository.
+    required: false
+    default: ""
+  provider:
+    description: mint only. The Workload Identity Federation provider, projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<id>. Per repository and workflow.
+    required: false
+    default: ""
+  service_account:
+    description: mint only. The keyless service account the federated identity mints a broker ID token for, e.g. ci-src-vagaris@vl-build-prod.iam.gserviceaccount.com.
+    required: false
+    default: ""
+  audience:
+    description: mint only. The broker's https origin (the binding's audience), e.g. https://source-delivery-broker-ccknatkt3q-el.a.run.app.
+    required: false
+    default: ""
+  token-file:
+    description: The 0600 file the token is written to (mint, one repository) or read from (revoke). An absolute path strictly inside $RUNNER_TEMP (no `..`, no symlink leading out), e.g. $RUNNER_TEMP/broker-tokens/<name> (runner.temp in an expression).
+    required: false
+    default: ""
+  token-dir:
+    description: The 0700 directory holding one 0600 file `<owner>__<name>` per repository (mint, several repositories; revoke). An absolute path strictly inside $RUNNER_TEMP, like token-file.
+    required: false
+    default: ""
+  output:
+    description: mint only, build_checkout only. `true` also sets the step output `token` (masked; one repository). A revocable purpose must use a file, and so must a token the broker marks revocable (with no token-file or token-dir that mint fails and revokes the token).
+    required: false
+    default: "false"
+  readiness-seconds:
+    description: mint only. The bound, in seconds, for the token to see every repository (GET /repos/<owner>/<name> answers 200).
+    required: false
+    default: "60"
+outputs:
+  token:
+    description: The minted token, only when `output` is true (masked). Prefer token-file.
+    value: ${{ steps.mint.outputs.token }}
+  cached:
+    description: mint only. Whether the broker handed back a token from its cache, as the broker says it. true, false, or unknown when its reply does not say, which is every reply today (the source_read/v1 answer carries no cached field; client.py cached_echo names what the broker must add). Several repositories give their common value, or mixed.
+    value: ${{ steps.mint.outputs.cached }}
+runs:
+  using: composite
+  steps:
+    - id: mode
+      shell: bash
+      env:
+        BSR_MODE: ${{ inputs.mode }}
+        BSR_OUTPUT: ${{ inputs.output }}
+      run: |
+        case "$BSR_MODE" in
+          mint|revoke) ;;
+          *) echo "::error::broker-source-read: mode must be mint or revoke, not '$BSR_MODE'"; exit 1 ;;
+        esac
+        case "$BSR_OUTPUT" in
+          true|false) ;;
+          *) echo "::error::broker-source-read: output must be true or false, not '$BSR_OUTPUT'"; exit 1 ;;
+        esac
+    - id: mint
+      if: ${{ inputs.mode == 'mint' }}
+      shell: bash
+      env:
+        BSR_PURPOSE: ${{ inputs.purpose }}
+        BSR_REPOSITORY: ${{ inputs.repository }}
+        BSR_PROVIDER: ${{ inputs.provider }}
+        BSR_SERVICE_ACCOUNT: ${{ inputs.service_account }}
+        BSR_AUDIENCE: ${{ inputs.audience }}
+        BSR_TOKEN_FILE: ${{ inputs.token-file }}
+        BSR_TOKEN_DIR: ${{ inputs.token-dir }}
+        BSR_OUTPUT: ${{ inputs.output }}
+        BSR_READINESS: ${{ inputs.readiness-seconds }}
+      run: |
+        set -euo pipefail
+        args=(mint --purpose "$BSR_PURPOSE" --repositories "$BSR_REPOSITORY" --provider "$BSR_PROVIDER"
+              --service-account "$BSR_SERVICE_ACCOUNT" --audience "$BSR_AUDIENCE" --readiness-seconds "$BSR_READINESS")
+        if [ -n "$BSR_TOKEN_FILE" ]; then args+=(--token-file "$BSR_TOKEN_FILE"); fi
+        if [ -n "$BSR_TOKEN_DIR" ]; then args+=(--token-dir "$BSR_TOKEN_DIR"); fi
+        if [ "$BSR_OUTPUT" = true ]; then args+=(--github-output token); fi
+        python3 -I "$GITHUB_ACTION_PATH/client.py" "${args[@]}"
+    - id: revoke
+      if: ${{ inputs.mode == 'revoke' }}
+      shell: bash
+      env:
+        BSR_PURPOSE: ${{ inputs.purpose }}
+        BSR_TOKEN_FILE: ${{ inputs.token-file }}
+        BSR_TOKEN_DIR: ${{ inputs.token-dir }}
+      run: |
+        set -euo pipefail
+        args=(revoke --purpose "$BSR_PURPOSE")
+        if [ -n "$BSR_TOKEN_FILE" ]; then args+=(--token-file "$BSR_TOKEN_FILE"); fi
+        if [ -n "$BSR_TOKEN_DIR" ]; then args+=(--token-dir "$BSR_TOKEN_DIR"); fi
+        python3 -I "$GITHUB_ACTION_PATH/client.py" "${args[@]}"

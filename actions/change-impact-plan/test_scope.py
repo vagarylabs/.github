@@ -562,7 +562,7 @@ class ActionContract(unittest.TestCase):
                 output = root / (enabled + "-" + checkout + "-output")
                 env = dict(os.environ, CONFIG=".github/ci-plan.json", STATE=str(root),
                            GITHUB_WORKSPACE=str(root), CANDIDATE_ROOT=".", CANDIDATE="a" * 40,
-                           EDGE_CHECK=enabled, POLICY_OUTCOME=checkout, GITHUB_ACTION_PATH=str(Path(__file__).parent), GITHUB_OUTPUT=str(output))
+                           EDGE_CHECK=enabled, POLICY_OUTCOME=checkout, POLICY_REF="", GITHUB_ACTION_PATH=str(Path(__file__).parent), GITHUB_OUTPUT=str(output))
                 result = subprocess.run(["bash", "-eu", "-c", body], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 reason = output.read_text().strip().split("=", 1)[1]

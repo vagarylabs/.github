@@ -14,7 +14,7 @@ from pathlib import Path
 
 import datetime
 import edges as E
-from plan import classify_paths, rule_matches
+from plan import backstop_full, classify_paths, rule_matches
 
 # Root's ruling on #33 round 3: computed_imports and unresolved_names are a registry, each entry with a reason and a
 # review_by at most 30 days after today(). The suite pins today(); fixtures that are not about the review get REVIEW.
@@ -1467,6 +1467,193 @@ class ImportAttributionTest(unittest.TestCase):
         deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=rev)  # a whole scan through the reader
         self.assertIn("a", deps)
 
+    def test_the_backstop_counts_base_and_head_mentions(self):
+        # Root's per-path ruling, condition (1): the flagged set is computed over BASE and HEAD. A PR that deletes the
+        # only reader of tools/worker.mjs while changing it still plans that path FULL, since the deleted reader ran
+        # it at the base; a reader the PR adds is a HEAD mention. The planner config is the BASE copy either way
+        # (action.yml): the base tree is data like the head, and it can only add FULL paths, never remove one.
+        def commit(message):
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
+                            "commit", "-qm", message, "--no-gpg-sign"], check=True)
+            return subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+
+        cfg = reviewed_cfg(IMPORT_CFG)
+        cfg["extra_edges"] = {"tools/worker.mjs": ["a"]}
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        runner = 'import { execFileSync } from "node:child_process";\nexecFileSync(process.execPath, ["tools/worker.mjs"]);\n'
+        self.files(**{"services__a__t.mjs": 'import "../../tools/worker.mjs";\n', "tools__worker.mjs": "export {};\n",
+                      "services__c__t.test.mjs": runner})
+        base = commit("base: c runs tools/worker.mjs")
+        (self.repo / "services/c/t.test.mjs").unlink()
+        (self.repo / "tools/worker.mjs").write_text("export const changed = 1;\n")
+        head = commit("head: the PR deletes c's runner and changes worker.mjs")
+
+        def flagged(*extra):
+            out = self.repo / ".git" / "readers.json"
+            with redirect_stdout(io.StringIO()):
+                rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo), "--revision", head,
+                             "--out-json", str(out), *extra])
+            return rc, json.loads(out.read_text())["backstop_full"]
+
+        self.assertEqual(flagged(), (0, []), "control: HEAD alone no longer names the deleted reader")
+        self.assertEqual(flagged("--base-revision", base), (0, ["tools/worker.mjs"]), "BASE: the deleted reader counts")
+        (self.repo / "services/c/t.test.mjs").write_text(runner)
+        head = commit("head: the PR adds the reader back")
+        self.assertEqual(flagged()[1], ["tools/worker.mjs"], "a reader the PR adds is a HEAD mention")
+        with self.assertRaisesRegex(ValueError, "base revision must be an immutable commit"):
+            flagged("--base-revision", "main")
+
+    def _commit(self, repo, message):
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-qm",
+                        message, "--no-gpg-sign"], check=True)
+        return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    def _flagged(self, repo, head, *extra):
+        out = Path(tempfile.mkdtemp()) / "readers.json"
+        with redirect_stdout(io.StringIO()):
+            rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(repo), "--revision", head,
+                         "--out-json", str(out), *extra])
+        return rc, json.loads(out.read_text())["backstop_full"]
+
+    def test_the_subjects_are_both_trees_a_deleted_or_moved_p_still_counts(self):
+        # Root's condition on the base-only reduction: the SUBJECT side is BASE ∪ HEAD. The PR deletes (or renames) mapped
+        # tools/old.mjs; an UNCHANGED file of package c still runs it by name, so the head pass must test that mention.
+        cfg = reviewed_cfg(IMPORT_CFG)
+        cfg["extra_edges"] = {"tools/**": ["a"]}
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        self.files(**{"services__a__t.mjs": 'import "../../tools/old.mjs";\n', "tools__old.mjs": "export {};\n",
+                      "services__c__run.test.mjs": 'import { execFileSync } from "node:child_process";\n'
+                                                   'execFileSync(process.execPath, ["tools/old.mjs"]);\n'})
+        base = self._commit(self.repo, "base")
+        for how in ("delete", "rename"):
+            with self.subTest(how):
+                subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", base], check=True)
+                (self.repo / "services/a/t.mjs").write_text("export {};\n")
+                if how == "delete":
+                    (self.repo / "tools/old.mjs").unlink()
+                else:
+                    (self.repo / "tools/old.mjs").rename(self.repo / "tools/new.mjs")
+                head = self._commit(self.repo, how)
+                self.assertNotIn("tools/old.mjs", self._flagged(self.repo, head)[1], "control: HEAD alone has no old.mjs")
+                self.assertIn("tools/old.mjs", self._flagged(self.repo, head, "--base-revision", base)[1],
+                              "a P only BASE maps, named by an unchanged file, is a subject")
+
+    def test_a_blobless_candidate_reads_the_base_side_from_the_sparse_base_checkout(self):
+        # vagaris checks out `filter: blob:none`, so its candidate holds no base blobs (and the scan never fetches). The
+        # base pass reads the PR's deleted and modified files from the action's sparse base checkout instead.
+        cfg = reviewed_cfg(IMPORT_CFG)
+        cfg["extra_edges"] = {"tools/worker.mjs": ["a"]}
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
+        runner = 'import { execFileSync } from "node:child_process";\nexecFileSync(process.execPath, ["tools/worker.mjs"]);\n'
+        self.files(**{"services__a__t.mjs": 'import "../../tools/worker.mjs";\n', "tools__worker.mjs": "export {};\n",
+                      "services__c__t.test.mjs": runner})
+        base = self._commit(self.repo, "base")
+        (self.repo / "services/c/t.test.mjs").unlink()
+        (self.repo / "tools/worker.mjs").write_text("export const changed = 1;\n")
+        head = self._commit(self.repo, "head")
+        subprocess.run(["git", "-C", str(self.repo), "config", "uploadpack.allowFilter", "true"], check=True)
+        work = Path(tempfile.mkdtemp())
+        cand, basechk = work / "cand", work / "base"
+        url = "file://" + str(self.repo)
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", url, str(cand)], check=True)
+        subprocess.run(["git", "-C", str(cand), "checkout", "-q", head], check=True)
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", url, str(basechk)], check=True)
+        subprocess.run(["git", "-C", str(basechk), "sparse-checkout", "set", "--no-cone", "/.github/ci-plan.json",
+                        "/services/c/t.test.mjs", "/tools/worker.mjs"], check=True)
+        subprocess.run(["git", "-C", str(basechk), "checkout", "-q", base], check=True)
+        with self.assertRaisesRegex(ValueError, "the base tree's changed files could not be read"):
+            self._flagged(cand, head, "--base-revision", base)  # control: the candidate holds no base blobs
+        self.assertEqual(self._flagged(cand, head, "--base-revision", base, "--base-repo", str(basechk)),
+                         (0, ["tools/worker.mjs"]))
+
+    def test_a_grep_that_cannot_read_a_blob_refuses_instead_of_missing(self):
+        # git grep exits 1 ("no match") when a blob is absent (a partial clone, no lazy fetch) and prints only
+        # `unable to read`. Every grep of the scan treats that as a refusal, never as a clean miss.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        head = self._commit(self.repo, "head")
+        subprocess.run(["git", "-C", str(self.repo), "config", "uploadpack.allowFilter", "true"], check=True)
+        cand = Path(tempfile.mkdtemp()) / "cand"
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", "file://" + str(self.repo), str(cand)],
+                       check=True)
+        subprocess.run(["git", "-C", str(cand), "sparse-checkout", "set", "--no-cone", "/scripts/"], check=True)
+        subprocess.run(["git", "-C", str(cand), "checkout", "-q", head], check=True)  # services/a/t.mjs: no blob
+        with self.assertRaisesRegex(ValueError, "reader closure unproven: the reader scan could not read the scanned tree"):
+            E.scan(cand, reviewed_cfg(IMPORT_CFG), revision=head)
+        deps, _ = E.scan(self.repo, reviewed_cfg(IMPORT_CFG), revision=head)  # control: every blob present
+        self.assertIn("a", deps)
+
+    def test_both_unreadable_signals_refuse_typed_whatever_the_git_version(self):
+        # git 2.50 prints `unable to read` and exits 1; git 2.56 exits 128 (#47's planner-tests, 2026-10-29). Both are a
+        # typed refusal with git's first stderr line; 0 (a match) and 1 with a clean stderr (no match) are not.
+        run = lambda rc, err=b"": subprocess.CompletedProcess(["git", "grep"], rc, b"", err)
+        for out, detail in ((run(1, b"error: 'HEAD:a.mjs': unable to read 1234\n"), "git grep exit 1: error: 'HEAD:a.mjs': unable to read 1234"),
+                            (run(128, b"fatal: missing blob object 'abcd'\n"), "git grep exit 128: fatal: missing blob object 'abcd'"),
+                            (run(2), "git grep exit 2")):
+            with self.assertRaises(ValueError) as caught:
+                E.grep_read_everything(out, "the reader scan")
+            self.assertEqual(str(caught.exception), "unresolved (reader closure unproven: the reader scan could not read "
+                                                    f"the scanned tree ({detail}))")
+        for out in (run(0), run(1)):
+            E.grep_read_everything(out, "the reader scan")  # control: a match, and a clean miss, are read
+
+    def test_a_grep_git_cannot_run_on_its_revision_refuses_typed_not_a_crash(self):
+        # Root's control, the local rc-128 path: real git grep on a revision that does not exist exits 128, as git 2.56
+        # does for an unreadable blob. The pass refuses typed with git's own line; it never crashes into FULL.
+        self.files(**{"a.mjs": "export const x = 1;\n"})
+        self._commit(self.repo, "head")
+        out = subprocess.run(["git", "-C", str(self.repo), "grep", "--no-color", "-I", "-e", "x", "f" * 40, "--"],
+                             capture_output=True, env={**os.environ, "LC_ALL": "C"})
+        self.assertEqual(out.returncode, 128)
+        with self.assertRaisesRegex(ValueError, r"reader closure unproven: the reader scan could not read the scanned tree "
+                                                r"\(git grep exit 128: fatal: "):
+            E.grep_read_everything(out, "the reader scan")
+
+    def test_base_paths_name_exactly_the_deleted_and_modified_files_for_the_sparse_base_checkout(self):
+        # The action adds these patterns to its sparse base checkout; each must check out exactly its own file, whatever
+        # characters the name holds (gitignore syntax), and an added file is not one (the base has no such file).
+        names = ["services/a/x.mjs", "odd/*star?[x].txt", "odd/!bang", "odd/#hash", "odd/trail  ", "odd/back\\slash",
+                 "odd/sp ace.js", "gone.mjs"]
+        self.files(**{n.replace("/", "__"): "v1\n" for n in names + ["kept.txt", "odd/starXx].txt"]})
+        base = self._commit(self.repo, "base")
+        for n in names[:-1]:
+            (self.repo / n).write_text("v2\n")
+        (self.repo / "gone.mjs").unlink()
+        (self.repo / "added.mjs").write_text("new\n")
+        head = self._commit(self.repo, "head")
+        self.assertEqual(E.base_paths(self.repo, base, head), sorted(names))
+        out = Path(tempfile.mkdtemp()) / "out"
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(E.main(["base-paths", "--repo", str(self.repo), "--base-revision", base, "--revision", head,
+                                     "--github-output", str(out)]), 0)
+        lines = out.read_text().split("\n")
+        self.assertTrue(lines[0].startswith("paths<<EOF_") and lines[-2] == lines[0][len("paths<<"):])
+        patterns = lines[1:-2]
+        chk = Path(tempfile.mkdtemp()) / "chk"
+        subprocess.run(["git", "clone", "-q", "--no-checkout", str(self.repo), str(chk)], check=True)
+        subprocess.run(["git", "-C", str(chk), "sparse-checkout", "set", "--no-cone", "--stdin"],
+                       input="\n".join(patterns) + "\n", text=True, check=True)
+        subprocess.run(["git", "-C", str(chk), "checkout", "-q", base], check=True)
+        present = sorted(str(p.relative_to(chk)) for p in chk.rglob("*") if p.is_file() and ".git" not in p.parts)
+        self.assertEqual(present, sorted(names), "each pattern checks out exactly its own file")
+
+    def test_a_pass_that_times_out_is_a_typed_refusal(self):
+        # F18 (root, 2026-10-29): census part 2 of #33 round 4 timed the directory pass out on vagary-core, and the
+        # TimeoutExpired escaped `check` uncaught. Any pass's timeout is now a refusal (FULL), named as one.
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        real = subprocess.run
+        def slow_grep(*a, **k):
+            if "grep" in a[0]:
+                raise subprocess.TimeoutExpired(a[0], k.get("timeout", 0))
+            return real(*a, **k)
+        with patch.object(E.subprocess, "run", slow_grep):
+            with self.assertRaisesRegex(ValueError, r"reader closure unproven: timeout: `git grep` ran over its \d+ s limit"):
+                E.scan(self.repo, reviewed_cfg(IMPORT_CFG))
+
     def test_the_action_judges_the_candidate_with_the_base_config_only(self):
         # A PR cannot use its own new registry entries: action.yml runs `check` with the BASE copy of the config and the
         # base manifests, never the candidate's (root's ruling on #33 round 3).
@@ -1475,6 +1662,12 @@ class ImportAttributionTest(unittest.TestCase):
         self.assertIn('--config "$STATE/base/$CONFIG"', call)
         self.assertIn('--manifest-root "$STATE/base"', call)
         self.assertIn('--repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE"', call)
+        # The backstop's BASE side: the base revision, read from the sparse base checkout that holds the PR's deleted and
+        # modified files (base-paths), never from the candidate, which may hold no base blobs.
+        self.assertIn('--base-revision "$POLICY_REF" --base-repo "$STATE/base"', call)
+        self.assertIn("${{ steps.changed.outputs.paths }}", text.split("name: Base commit manifests and plan config", 1)[1]
+                      .split("    - name:", 1)[0])
+        self.assertIn('edges.py" base-paths --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT"', text)
         self.assertEqual(text.count('edges.py" check'), 1, "one check call, so no other path reads a candidate config")
 
     def test_d5_a_leading_slash_is_stripped_so_a_cwd_concat_escapes(self):
@@ -1809,15 +2002,24 @@ class VectorHarness:
         for _ in range(16):
             (repo / ".github/ci-plan.json").write_text(json.dumps(cfg))
             buf = io.StringIO()
+            out_json = repo / ".git" / "readers.json"
             try:
                 with redirect_stdout(buf):
-                    rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(repo), "--revision", rev])
+                    rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(repo), "--revision", rev,
+                                 "--out-json", str(out_json)])
             except ValueError as err:
                 return {"verdict": "REFUSE", "refusal": str(err)}
-            if rc == 0:
-                break
             fails = [line[5:] for line in buf.getvalue().splitlines() if line.startswith("FAIL ")]
-            progressed = False
+            # Per path (root's ruling): a backstop hit plans that path FULL and fails nothing; its one declaration remedy
+            # (map P to the mentioning package too) still narrows it back out, so it is applied like check's own.
+            narrowed = False
+            for line in buf.getvalue().splitlines():
+                m = re.match(r"BACKSTOP (\S+) plans FULL: \S+ \(package (\S+)\) names \S+, but the mapping for \S+ selects", line)
+                if m:
+                    narrowed = bool(E_add(cfg, m.group(1), m.group(2))) or narrowed
+            if rc == 0 and not narrowed:
+                break
+            progressed = narrowed
             for f in fails:
                 for pattern, remedy in self.REMEDIES:
                     m = re.match(pattern, f)
@@ -1831,6 +2033,10 @@ class VectorHarness:
         sel = classify_paths([case["change"]], cfg, pkgs)
         if sel["error"] or sel["evidence"]["full_triggers"] or sel["evidence"]["unmapped"]:
             return {"verdict": "FULL"}
+        # The backstop's consequence is per path (root's ruling, 2026-10-29): plan.py plans FULL for a changed path in
+        # the bound assessment's backstop_full, exactly as it does for a full trigger.
+        if case["change"] in (backstop_full(json.loads(out_json.read_text())) or []):
+            return {"verdict": "FULL", "backstop": True}
         return {"verdict": "SELECT", "jobs": sorted(j for j, rule in cfg["jobs"].items()
                                                      if rule == "always" or rule_matches(rule, sel["affected"])[0])}
 
@@ -1846,7 +2052,7 @@ class RoundThreeVectorsTest(VectorHarness, unittest.TestCase):
         for name, case in sorted(self.CASES["cases"].items()):
             with self.subTest(name):
                 got = self.run_case(case)
-                want = {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}
+                want = {k: case[k] for k in ("verdict", "jobs", "refusal", "backstop") if k in case}
                 self.assertEqual(got, want, name)
                 if case["kind"] == "drop-vector" and got["verdict"] == "SELECT" and case.get("must_run"):
                     self.assertIn(case["must_run"], got["jobs"], f"{name} drops its runner")
@@ -1863,8 +2069,9 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
     """Root's R4 of #33 round 3 (lanes/root/reviews/dotgithub-33.md, head 70ed2e7): the reviewer's fresh vectors, pinned
     EXACT by the same method (test_edges_round4_vectors.json). Each drop-vector must REFUSE, plan FULL or select its
     runner: B1 (T1, T1b, T1c, a runner one hop or more out), B2 (T4, a gitlink), B3 (T3, T3b, a symlink alias or a
-    symlink in a package), B4 (T2, an inert glob). A residual is a spelling no recorded route or token sees (README,
-    "What the backstop does not see"): it is pinned as the drop it is, so the README cannot claim more than the scan."""
+    symlink in a package), B4 (T2, an inert glob), and a runner that names only a directory (T10b-T10f; three precision
+    controls: a package's own test/, a sibling path, bare words at the root). A residual is a spelling no recorded route or token sees (README,
+    "Not closed"): it is pinned as the drop it is, so the README cannot claim more than the scan does."""
 
     CASES = json.loads((Path(__file__).with_name("test_edges_round4_vectors.json")).read_text())
 
@@ -1872,13 +2079,13 @@ class RoundFourVectorsTest(VectorHarness, unittest.TestCase):
         for name, case in sorted(self.CASES["cases"].items()):
             with self.subTest(name):
                 got = self.run_case(case)
-                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal", "backstop") if k in case}, name)
                 runs = got["verdict"] != "SELECT" or case["must_run"] in got["jobs"]
                 self.assertEqual(runs, case["kind"] != "residual", f"{name}: {case['kind']}")
 
     def test_the_drop_vectors_cover_every_round4_blocker_and_the_readme_lists_every_residual(self):
         names = sorted(self.CASES["cases"])
-        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 "):
+        for prefix in ("T1 ", "T1b", "T1c", "T2 ", "T3 ", "T3b", "T4 ", "T10b", "T10c", "T10d", "T10e", "T10f"):
             self.assertTrue(any(n.startswith(prefix) and self.CASES["cases"][n]["kind"] == "drop-vector" for n in names),
                             prefix)
         readme = (Path(__file__).with_name("README.md")).read_text()

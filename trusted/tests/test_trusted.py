@@ -28,6 +28,14 @@ WORKFLOWS = {n: ROOT / ".github" / "workflows" / (n + ".yml")
              for n in ("trusted-secret-scan", "trusted-workflow-integrity", "trusted-protected-paths")}
 
 
+def judge_witnessed(pattern):
+    """True when the F14 judge-config list (test_judge_configs) declares a path this pattern matches: that path is its
+    witness, so a typo in it still fails a test, and it may protect a judge's file the repository does not have yet."""
+    from test_judge_configs import JUDGES, REPO_JUDGES
+    declared = [x for paths in JUDGES.values() for x in paths] + [x for paths in REPO_JUDGES.values() for x in paths]
+    return any(classify.fnmatch.fnmatchcase(x, pattern) for x in declared)
+
+
 def manifest():
     return classify.validate_manifest(json.loads(MANIFEST.read_text()))
 
@@ -52,10 +60,16 @@ class ManifestTests(unittest.TestCase):
         # in this repository's history; only further exposure is stopped.)
         paths = FIXTURE.read_text().split()
         self.assertEqual(paths, sorted(paths))
-        self.assertEqual(len(paths), sum(len(p["patterns"]) for p in manifest()["repos"]["vagarylabs/vps-ansible"]["protected"]))
+        # A judge-config pattern (F14) with no file in vps-ansible yet is witnessed by test_judge_configs' declared
+        # path instead, which it must match; one that has a real file here (.gitleaks.toml) keeps its real witness.
         entry = manifest()["repos"]["vagarylabs/vps-ansible"]
+        real = lambda pat: any(classify.fnmatch.fnmatchcase(x, pat) for x in paths)
+        own = [pat for p in entry["protected"] for pat in p["patterns"] if real(pat) or not judge_witnessed(pat)]
+        self.assertEqual(len(paths), len(own))
         for p in entry["protected"]:
             for pat in p["patterns"]:
+                if judge_witnessed(pat) and not real(pat):
+                    continue
                 with self.subTest(pattern=pat):
                     self.assertTrue(any(classify.fnmatch.fnmatchcase(x, pat) for x in paths))
         for rf in entry["ratchet_files"]:
@@ -90,7 +104,7 @@ class ManifestTests(unittest.TestCase):
         entry = manifest()["repos"]["vagarylabs/vagaris"]
         for p in entry["protected"]:
             for pat in p["patterns"]:
-                if pat in default:
+                if pat in default or judge_witnessed(pat):
                     continue
                 with self.subTest(pattern=pat):
                     self.assertTrue(any(classify.fnmatch.fnmatchcase(x, pat) for x in paths))
@@ -242,7 +256,8 @@ class WorkflowTests(unittest.TestCase):
     def test_inline_copies_are_byte_identical(self):
         # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        for name, copies in (("trusted-workflow-integrity", 2), ("trusted-protected-paths", 1)):
+        # trusted-workflow-integrity: integrity, timeout-floor and workflow-lint (C1) each write the trusted bytes.
+        for name, copies in (("trusted-workflow-integrity", 3), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
             found = list(re.finditer(
                 r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))

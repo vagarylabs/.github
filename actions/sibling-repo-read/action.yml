@@ -85,18 +85,26 @@ runs:
         repositories: ${{ inputs.repositories }}
         permission-contents: read
         permission-packages: read
+    # The two steps that hold the token run in a RESET shell (root's class item on #37): job steps before this one may
+    # run PR-controlled code, which can write GITHUB_PATH, GITHUB_ENV or BASH_ENV. So the shell is started by absolute
+    # path with BASH_ENV, ENV and the dynamic-loader variables unset and PATH=/usr/bin:/bin, and read.py runs under
+    # `python3 -I -S`: no PYTHON* variables, no user or site packages, no script-directory imports. A PR-built venv or
+    # a python3 earlier on PATH never receives the token. This narrows the channel; it does not close it: code that
+    # already runs in this job can still reach the runner itself. Minting before any PR code runs closes it.
     - id: ready
-      shell: bash
+      shell: /usr/bin/env -u BASH_ENV -u ENV -u LD_PRELOAD -u LD_LIBRARY_PATH -u LD_AUDIT -u DYLD_INSERT_LIBRARIES -u DYLD_LIBRARY_PATH PATH=/usr/bin:/bin /bin/bash --noprofile --norc -euo pipefail {0}
       env:
         SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}
         SIBLING_API: ${{ github.api_url }}
         SIBLING_OWNER: ${{ inputs.owner }}
         SIBLING_REPOS: ${{ inputs.repositories }}
         SIBLING_BOUND: ${{ inputs.readiness-seconds }}
-      run: python3 -I "$GITHUB_ACTION_PATH/read.py" ready --api "$SIBLING_API" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" --bound "$SIBLING_BOUND"
+      run: |
+        command -v python3 >/dev/null || { echo "::error::sibling-repo-read: no python3 on the reset PATH /usr/bin:/bin"; exit 1; }
+        python3 -I -S "$GITHUB_ACTION_PATH/read.py" ready --api "$SIBLING_API" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" --bound "$SIBLING_BOUND"
     - id: read
       if: ${{ inputs.bare != '' || inputs.checkouts != '' }}
-      shell: bash
+      shell: /usr/bin/env -u BASH_ENV -u ENV -u LD_PRELOAD -u LD_LIBRARY_PATH -u LD_AUDIT -u DYLD_INSERT_LIBRARIES -u DYLD_LIBRARY_PATH PATH=/usr/bin:/bin /bin/bash --noprofile --norc -euo pipefail {0}
       env:
         SIBLING_TOKEN: ${{ steps.mint.outputs.token || steps.mint_packages.outputs.token }}
         SIBLING_SERVER: ${{ github.server_url }}
@@ -105,8 +113,7 @@ runs:
         SIBLING_BARE: ${{ inputs.bare }}
         SIBLING_CHECKOUTS: ${{ inputs.checkouts }}
       run: |
-        set -euo pipefail
         args=()
         while IFS= read -r pair; do [ -n "$pair" ] && args+=(--bare "$pair"); done <<< "$SIBLING_BARE"
         while IFS= read -r pair; do [ -n "$pair" ] && args+=(--checkout "$pair"); done <<< "$SIBLING_CHECKOUTS"
-        python3 -I "$GITHUB_ACTION_PATH/read.py" clone --server "$SIBLING_SERVER" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" "${args[@]}"
+        python3 -I -S "$GITHUB_ACTION_PATH/read.py" clone --server "$SIBLING_SERVER" --owner "$SIBLING_OWNER" --repos "$SIBLING_REPOS" "${args[@]}"

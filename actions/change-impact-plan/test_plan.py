@@ -37,14 +37,24 @@ CONFIG = {
         "canary_dry_run": "full_only",
         "e2e": {"packages": ["@v/ui"]},
     },
+    # 1.7.0: which packages' test files each unit executes. The hub packages' tests run in the full plan any change to
+    # them gets; every other test-owning package is run by a unit a change to it selects.
+    "test_jobs": {"e2e": ["@v/ui"]},
     "matrices": {
         "general_tests": [
-            {"include": {"group": "general-server-a"}, "rule": "full_only"},
-            {"include": {"group": "general-workspaces-a"}, "rule": {"packages": ["@v/ui", "@v/cli"]}},
-            {"include": {"group": "general-workspaces-b"}, "rule": {"any_except": ["@v/server", "@v/ui", "@v/cli"]}},
+            {"include": {"group": "general-server-a"}, "rule": "full_only", "tests": "*"},
+            {"include": {"group": "general-workspaces-a"}, "rule": {"packages": ["@v/ui", "@v/cli"]},
+             "tests": ["@v/ui", "@v/cli"]},
+            {"include": {"group": "general-workspaces-b"}, "rule": {"any_except": ["@v/server", "@v/ui", "@v/cli"]},
+             "tests": ["@v/adapter-utils", "@v/adapter-claude", "@v/tooling"]},
         ]
     },
 }
+
+# The fixture candidate's tracked test files (1.7.0's inventory): one or two per test-owning package.
+TEST_FILES = ["cli/src/__tests__/context-commands.test.ts", "cli/src/commands/client/feature-claim.test.ts",
+              "packages/db/src/d.test.ts", "packages/tooling/src/t.test.ts", "server/src/__tests__/s.test.ts",
+              "ui/src/app.test.tsx"]
 
 PACKAGES = {
     "packages/shared": ("@v/shared", []),
@@ -117,14 +127,15 @@ class PlannerTest(unittest.TestCase):
     def tearDown(self):
         self._td.cleanup()
 
-    def run_plan(self, paths, event="pull_request", expected=None, root=None, readers=None):
+    def run_plan(self, paths, event="pull_request", expected=None, root=None, readers=None, test_files=TEST_FILES):
         root = root or self.root
         cfg_path = root / ".github" / "ci-plan.json"
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else None
         return P.plan(cfg=cfg, root=root, config_path=cfg_path, paths=paths, event=event,
                       base="b" * 40, head="h" * 40, expected_count=expected,
                       scope=complete_scope(root, cfg_path, cfg, paths, event=event),
-                      reader_assessment=readers if readers is not None else bound_readers(root, cfg_path, cfg))
+                      reader_assessment=readers if readers is not None else bound_readers(root, cfg_path, cfg),
+                      test_files=test_files)
 
     def backstopped(self, flagged):
         """A matched assessment from the REAL assess() whose backstop flags `flagged`: a ui file names its basename."""
@@ -455,6 +466,150 @@ class PlannerTest(unittest.TestCase):
             self.assertTrue(json.loads(kv["run"])["canary_dry_run"])
             self.assertEqual(len(json.loads(kv["matrices"])["general_tests"]), 3)
             self.assertIn("immutable scope checkout is required", (Path(td) / "s.md").read_text())
+
+
+class TestInventory(unittest.TestCase):
+    """1.7.0 (S6, root's conditions 2026-10-30): a narrowed plan needs a declaration of which packages' test files each
+    unit executes, and that declaration must leave no test file of the candidate unrun by every unit its change selects."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = make_repo(Path(self._td.name))
+        self.cfg_path = self.root / ".github" / "ci-plan.json"
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def plan_with(self, cfg, test_files=TEST_FILES, paths=PR397, event="pull_request"):
+        self.cfg_path.write_text(json.dumps(cfg))
+        return P.plan(cfg=cfg, root=self.root, config_path=self.cfg_path, paths=paths, event=event,
+                      base="b" * 40, head="h" * 40, expected_count=None,
+                      scope=complete_scope(self.root, self.cfg_path, cfg, paths, event=event),
+                      reader_assessment=bound_readers(self.root, self.cfg_path, cfg), test_files=test_files)
+
+    def config(self, **changes):
+        cfg = json.loads(json.dumps(CONFIG))
+        cfg.update(changes)
+        return cfg
+
+    def test_a_complete_declaration_narrows_and_records_the_inventory(self):
+        rec = self.plan_with(self.config())
+        self.assertEqual(rec["mode"], "reduced", rec["reason"])
+        inventory = rec["test_inventory"]
+        self.assertEqual(inventory["files"], len(TEST_FILES))
+        self.assertEqual(inventory["packages"]["@v/cli"]["covered_by"], ['general_tests{"group":"general-workspaces-a"}'])
+        self.assertEqual(inventory["packages"]["@v/server"]["covered_by"], "full plan (a change to it affects a hub)")
+        self.assertEqual(inventory["gaps"], [])
+        other = self.plan_with(self.config(), test_files=TEST_FILES + ["cli/src/new.test.ts"])
+        self.assertNotEqual(other["plan_id"], rec["plan_id"], "the inventory is bound into the plan id")
+
+    def test_no_declaration_never_narrows_and_says_why(self):
+        cfg = self.config()
+        del cfg["test_jobs"]
+        for entry in cfg["matrices"]["general_tests"]:
+            entry.pop("tests")
+        for paths in (PR397, ["docs/cli/context.md"]):
+            rec = self.plan_with(cfg, paths=paths)
+            self.assertEqual(rec["mode"], "full")
+            self.assertIn("no test_jobs declaration", rec["reason"])
+            self.assertIsNone(rec["test_inventory"])
+
+    def test_an_unreadable_inventory_never_narrows(self):
+        rec = self.plan_with(self.config(), test_files=None)
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["reason"], "the candidate's test inventory could not be read")
+
+    def test_a_test_owning_package_no_selected_unit_runs_is_red(self):
+        cfg = self.config()
+        cfg["matrices"]["general_tests"][1]["tests"] = ["@v/ui"]  # @v/cli's tests are now declared nowhere
+        with self.assertRaisesRegex(ValueError, r"the tests of @v/cli \(2 file\(s\), e\.g\. cli/src/__tests__/context-commands"
+                                    r"\.test\.ts\) run in no unit a change to @v/cli selects"):
+            self.plan_with(cfg)
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            self.plan_with(cfg, event="merge_group")  # red on every event, not only where it would narrow
+
+    def test_a_unit_whose_rule_never_selects_the_package_does_not_cover_it(self):
+        cfg = self.config()
+        cfg["matrices"]["general_tests"][1]["tests"] = ["@v/ui"]
+        cfg["test_jobs"] = {"e2e": ["@v/ui", "@v/cli"], "canary_dry_run": ["@v/cli"]}  # e2e: {packages: [ui]}; canary: full_only
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            self.plan_with(cfg)
+        cfg["test_jobs"]["build"] = ["@v/cli"]  # any_package: a change to cli selects it
+        self.assertEqual(self.plan_with(cfg)["mode"], "reduced")
+
+    def test_a_unit_selected_through_a_dependent_covers_the_package(self):
+        # A change to @v/tooling also affects every package that depends on it; a unit that a dependent selects runs
+        # then too. With @v/cli depending on @v/tooling, workspaces-a ({packages: [ui, cli]}) covers tooling's tests.
+        cfg = self.config(workspace={"type": "pnpm", "extra_deps": {"@v/cli": ["@v/tooling"]}})
+        cfg["matrices"]["general_tests"][1]["tests"] = ["@v/ui", "@v/cli", "@v/tooling"]
+        cfg["matrices"]["general_tests"][2]["tests"] = ["@v/adapter-utils", "@v/adapter-claude"]
+        rec = self.plan_with(cfg)
+        self.assertEqual(rec["test_inventory"]["packages"]["@v/tooling"]["covered_by"],
+                         ['general_tests{"group":"general-workspaces-a"}'])
+        del cfg["workspace"]["extra_deps"]
+        with self.assertRaisesRegex(ValueError, "the tests of @v/tooling"):
+            self.plan_with(cfg)
+
+    def test_a_package_whose_change_reaches_a_hub_is_covered_by_the_full_plan(self):
+        rec = self.plan_with(self.config(), test_files=TEST_FILES + ["packages/shared/src/x.test.ts"])
+        self.assertEqual(rec["test_inventory"]["packages"]["@v/shared"]["covered_by"], "full plan (a change to it affects a hub)")
+
+    def test_a_test_file_outside_every_package_needs_an_always_units_path(self):
+        files = TEST_FILES + ["scripts/check-thing.test.mjs", "tests/e2e/flow.spec.ts"]
+        with self.assertRaisesRegex(ValueError, r"2 test file\(s\) outside every package run in no always-unit's declared "
+                                    r"paths, e\.g\. scripts/check-thing\.test\.mjs, tests/e2e/flow\.spec\.ts"):
+            self.plan_with(self.config(), test_files=files)
+        cfg = self.config(jobs={**CONFIG["jobs"], "policy": "always"})
+        cfg["test_jobs"] = {"e2e": ["@v/ui"], "policy": ["path:scripts/**", "path:tests/**"]}
+        rec = self.plan_with(cfg, test_files=files)
+        self.assertEqual(rec["mode"], "reduced", rec["reason"])
+        self.assertEqual(rec["test_inventory"]["unowned"], {"files": 2, "uncovered": 0})
+        cfg["test_jobs"]["policy"] = ["path:scripts/**"]
+        with self.assertRaisesRegex(ValueError, r"1 test file\(s\) outside every package .* tests/e2e/flow\.spec\.ts"):
+            self.plan_with(cfg, test_files=files)
+        cfg["test_jobs"]["policy"] = "*"
+        self.assertEqual(self.plan_with(cfg, test_files=files)["mode"], "reduced", '"*" on an always unit covers everything')
+
+    def test_a_path_entry_on_a_unit_a_narrowed_plan_can_skip_is_refused(self):
+        cfg = self.config()
+        cfg["test_jobs"] = {"e2e": ["@v/ui", "path:scripts/**"]}
+        with self.assertRaisesRegex(ValueError, r'e2e declares path:scripts/\*\*, but a path entry needs a unit whose rule is "always"'):
+            self.plan_with(cfg)
+
+    def test_a_declaration_must_name_real_jobs_and_packages(self):
+        for test_jobs, message in (({"nope": ["@v/ui"]}, r"test_jobs names undeclared job\(s\) \['nope'\]"),
+                                   ({"e2e": ["@v/missing"]}, "names undeclared package '@v/missing'"),
+                                   ({"e2e": "@v/ui"}, 'must be "\\*" or a list'),
+                                   ({"e2e": ["path:"]}, "declares an empty path entry"),
+                                   (["e2e"], "test_jobs must map a job")):
+            with self.assertRaisesRegex(ValueError, message):
+                self.plan_with(self.config(test_jobs=test_jobs))
+        with self.assertRaisesRegex(ValueError, "test_globs must be a list"):
+            self.plan_with(self.config(test_globs="**/*.check.ts"))
+
+    def test_test_globs_add_to_the_conventions_and_never_remove(self):
+        self.assertTrue(P.is_test_file("ui/src/app.test.tsx", []))
+        self.assertTrue(P.is_test_file("server/tests/helpers/fixture.ts", []), "code under tests/ is test code")
+        self.assertTrue(P.is_test_file("services/a/test_api.py", []))
+        self.assertFalse(P.is_test_file("ui/src/app.tsx", []))
+        self.assertFalse(P.is_test_file("ui/node_modules/x/a.test.js", []))
+        self.assertFalse(P.is_test_file("server/tests/data.json", []), "a fixture that is not code is not a test file")
+        self.assertTrue(P.is_test_file("ui/src/app.check.ts", ["**/*.check.ts"]))
+        self.assertTrue(P.is_test_file("ui/src/app.test.tsx", ["**/*.check.ts"]), "an extra glob removes nothing")
+
+    def test_selection_rules_are_monotone_so_closure_coverage_holds_for_every_plan(self):
+        # The coverage check judges a unit against the package's own closure; a plan affecting the package has a
+        # superset of it. Every rule kind that matches a set matches each superset.
+        import itertools
+        universe = sorted(name for name, _ in PACKAGES.values())
+        rules = ["always", "full_only", "any_package", {"packages": ["@v/ui"]}, {"any_except": ["@v/server", "@v/ui"]}]
+        for rule in rules:
+            for size in range(0, 4):
+                for subset in itertools.combinations(universe, size):
+                    if not P.rule_matches(rule, set(subset))[0]:
+                        continue
+                    for extra in universe:
+                        self.assertTrue(P.rule_matches(rule, set(subset) | {extra})[0], (rule, subset, extra))
 
 
 if __name__ == "__main__":

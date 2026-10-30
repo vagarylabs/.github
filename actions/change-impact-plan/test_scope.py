@@ -25,7 +25,7 @@ class FrozenScope(unittest.TestCase):
         self.cfg = {"schema": 1, "workspace": {"type": "declared", "packages": {
             "server": {"dir": "server", "deps": []}, "ui": {"dir": "ui", "deps": []}}},
             "hub_packages": ["server"], "inert_globs": ["docs/**"],
-            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}}
+            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]}}
         for directory in ("server", "ui", "docs", ".github"):
             (self.root / directory).mkdir()
         self.config = self.root / ".github/ci-plan.json"
@@ -103,6 +103,24 @@ class FrozenScope(unittest.TestCase):
             P.main(args)
         self.assertFalse(plan_file.exists())
         self.assertFalse(github_output.exists())
+
+    def test_the_test_inventory_is_read_from_the_candidate_commit(self):
+        # 1.7.0: the candidate adds a ui test file the base does not have; the plan's inventory holds it, so it was read
+        # from the candidate's tree (the scope root at the candidate), not from the trusted-base policy checkout.
+        self.make_candidate("ui/a.test.ts", "it('runs', () => {});\n")
+        with patch.object(P, "candidate_test_files", wraps=P.candidate_test_files) as read:
+            result = self.cli_plan()
+        # This fixture's policy clone holds the candidate commit too, so pin the root the inventory is read from.
+        self.assertEqual([(call.args[0], call.args[1]) for call in read.call_args_list], [(self.root, self.candidate)])
+        self.assertEqual(result["mode"], "reduced", result["reason"])
+        self.assertEqual(result["test_inventory"]["files"], 1)
+        self.assertEqual(result["test_inventory"]["packages"]["ui"]["covered_by"], ["ui_tests"])
+
+    def test_a_candidate_test_file_no_unit_runs_is_red_before_any_plan_is_published(self):
+        self.make_candidate("docs/check.test.ts", "it('runs', () => {});\n")
+        with self.assertRaisesRegex(ValueError, r"1 test file\(s\) outside every package run in no always-unit's "
+                                    r"declared paths, e\.g\. docs/check\.test\.ts"):
+            self.cli_plan()
 
 
     def canonical_plan(self, target=None, observation_changes=None, final_target=None, context_changes=None,

@@ -41,7 +41,7 @@ class SourceFixture(unittest.TestCase):
         self.cfg = {"schema": 1, "workspace": {"type": "declared", "packages": {
             "server": {"dir": "server", "deps": []}, "ui": {"dir": "ui", "deps": []}}},
             "hub_packages": ["server"], "inert_globs": ["docs/**"],
-            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}},
+            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]},
             "matrices": {"suite": [{"include": {"group": "ui"}, "rule": {"packages": ["ui"]}},
                                    {"include": {"group": "server"}, "rule": "full_only"}]}}
         for directory in ("server", "ui", "docs", ".github/workflows"):
@@ -163,7 +163,7 @@ class SourceAnswerVectors(SourceFixture):
         self.assertIs(meta["selection_authority"], False)
         self.assertNotIn("authorization", envelope)
         self.assertEqual(envelope["analyzer"], {"id": "ci.change-impact-plan", "version": P.PLANNER_VERSION})
-        self.assertEqual(P.PLANNER_VERSION, "1.5.3")
+        self.assertEqual(P.PLANNER_VERSION, "1.7.0")
         self.assertEqual(envelope["revisions"], {"object_format": "sha1", "base_sha": self.base, "head_sha": self.candidate})
         self.assertEqual(envelope["repository"], {"provider": "github", "organization_id": "github-owner:202",
                                                   "repository_id": "101"})

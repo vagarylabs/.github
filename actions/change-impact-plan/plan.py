@@ -741,7 +741,14 @@ def pnpm_graph(patterns: list[str], manifests: list[tuple[str, object]], extra_d
         pkgs[name] = {"dir": rel_dir, "deps": deps}
     for info in pkgs.values():
         info["deps"] = {d for d in info["deps"] if d in pkgs}
+    return apply_extra_deps(pkgs, extra_deps)
+
+
+def apply_extra_deps(pkgs: dict[str, dict], extra_deps) -> dict[str, dict]:
+    """The plan config's `workspace.extra_deps` edges, added to a pnpm graph built from the tree."""
     extra = extra_deps or {}
+    if not isinstance(extra, dict):
+        raise ValueError("extra_deps must map a workspace package to a list of its extra dependencies")
     if set(extra) - set(pkgs):
         raise ValueError("extra_deps names an undeclared workspace package")
     for name, dependencies in extra.items():
@@ -1056,6 +1063,20 @@ def source_record(scope: dict | None, cfg: dict | None, pkgs: dict, paths: list[
     return envelope, meta
 
 
+def validate_config_shape(cfg: dict, pkgs: dict[str, dict]) -> None:
+    """The JSON type of every config field selection reads, so a config that would crash or be silently mis-read by the
+    next plan (a string `hub_packages` iterates as characters and never matches a hub) is an error before it lands."""
+    for key in ("full_globs", "inert_globs", "hub_packages"):
+        value = cfg.get(key)
+        if value is not None and (not isinstance(value, list) or any(not isinstance(v, str) or not v for v in value)):
+            raise ValueError(f"{key} must be a list of non-empty strings")
+    edges = cfg.get("extra_edges")
+    if edges is not None and (not isinstance(edges, dict) or any(
+            not key or not isinstance(targets, list) or any(not isinstance(t, str) or not t for t in targets)
+            for key, targets in edges.items())):
+        raise ValueError("extra_edges must map a non-empty glob to a list of package names")
+
+
 def validate_selection_rules(cfg: dict, pkgs: dict[str, dict]) -> None:
     """A misspelled obligation cannot become a successful empty package intersection."""
     def validate(rule):
@@ -1126,9 +1147,10 @@ def is_test_file(path: str, extra_globs: list[str]) -> bool:
 
 
 def declares_tests(cfg: dict | None) -> bool:
-    return bool(cfg) and ("test_jobs" in cfg or any(
+    matrices = (cfg or {}).get("matrices")
+    return bool(cfg) and ("test_jobs" in cfg or isinstance(matrices, dict) and any(
         isinstance(entry, dict) and "tests" in entry
-        for entries in (cfg.get("matrices") or {}).values() if isinstance(entries, list) for entry in entries))
+        for entries in matrices.values() if isinstance(entries, list) for entry in entries))
 
 
 def test_units(cfg: dict) -> list[tuple[str, object, object]]:
@@ -1211,49 +1233,96 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
             "packages": packages, "unowned": {"files": len(unowned), "uncovered": len(uncovered)}, "gaps": gaps}
 
 
+def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
+    """A plan config's bytes as a JSON object, or why they are malformed. The base and a candidate are read by the same
+    rule (F29), so a config one of them refuses is refused by the other too. The schema is the caller's check: a config
+    at another schema is not malformed, only one this planner does not read."""
+    try:
+        cfg = json.loads(raw)
+    except RecursionError:
+        return None, "the plan config nests too deeply to parse"
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
+        return None, f"the plan config is not valid JSON: {exc}"
+    if not isinstance(cfg, dict):
+        return None, f"the plan config is a JSON {type(cfg).__name__}, not an object"
+    return cfg, None
+
+
 def candidate_planning_inputs(scope_root: Path, candidate: str, config_rel: str) -> dict | None:
-    """The CANDIDATE's own plan config and workspace graph, read from its commit's objects (the checkout can be sparse);
-    None when any part is unreadable or unsupported, and the caller then falls back to the base. F29 (root's ruling,
-    2026-10-30): these decide only whether a change is RED, never how narrow its plan is."""
+    """The CANDIDATE's own plan config and workspace graph, read from its commit's objects (the checkout can be sparse).
+    F29 (root's ruling, 2026-10-30): these decide only whether a change is RED, never how narrow its plan is.
+    - None: git cannot produce the config, or the tree's own workspace inputs (pnpm-workspace.yaml, the manifests). The
+      base then decides. A broken manifest is the tree's defect, not the config's, and the base reads it the same way.
+    - {"errors": [...]}: the config was read but cannot govern a plan (it does not parse, is not a schema-1 object, or its
+      workspace is malformed). The change is RED, so a broken config never lands to wedge the base.
+    - {"cfg": None, "pkgs": {}, "note": why}: nothing this planner validates. The change has no config at that path,
+      or its config is at a schema this planner does not read. It plans FULL (no config governs it), never RED, so a
+      schema migration cannot wedge a workflow still pinned to an older planner.
+    - {"cfg": cfg, "pkgs": pkgs} otherwise."""
     if not re.fullmatch(r"[0-9a-f]{40}", candidate or "") or not config_rel or not SAFE_PATH.fullmatch(config_rel):
         return None
+
+    def show(path: str) -> bytes:
+        return git_observe(scope_root, "show", f"{candidate}:{path}")[1]
+
     try:
-        def show(path: str) -> str:
-            return git_observe(scope_root, "show", f"{candidate}:{path}")[1].decode("utf-8")
-        cfg = json.loads(show(config_rel))
-        if not isinstance(cfg, dict) or cfg.get("schema") != 1:
-            return None
-        ws = cfg.get("workspace") or {"type": "none"}
+        listed = git_observe(scope_root, "ls-tree", "-z", "--name-only", candidate, "--", config_rel)[1]
+        raw = show(config_rel) if listed else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if raw is None:
+        return {"cfg": None, "pkgs": {}, "note": "this change removes it"}
+    cfg, problem = parse_plan_config(raw)
+    if problem:
+        return {"errors": [problem]}
+    if cfg.get("schema") != 1:
+        return {"cfg": None, "pkgs": {}, "note": f"this change's config is schema {cfg.get('schema')!r}, which this "
+                                                  "planner does not read"}
+    ws = cfg.get("workspace") or {"type": "none"}
+    if not isinstance(ws, dict):
+        return {"errors": [f"the plan config's workspace is a JSON {type(ws).__name__}, not an object"]}
+    try:
         if ws.get("type") == "pnpm":
-            names = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)[1].decode("utf-8").split("\0")
-            manifests = [(name.rsplit("/", 1)[0] if "/" in name else ".", (lambda p=name: show(p)))
-                         for name in sorted(names) if name == "package.json" or name.endswith("/package.json")]
-            pkgs = pnpm_graph(parse_pnpm_workspace_patterns(show("pnpm-workspace.yaml")), manifests, ws.get("extra_deps"))
+            try:
+                names = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)[1].decode("utf-8").split("\0")
+                manifests = [(name.rsplit("/", 1)[0] if "/" in name else ".", (lambda p=name: show(p).decode("utf-8")))
+                             for name in sorted(names) if name == "package.json" or name.endswith("/package.json")]
+                pkgs = pnpm_graph(parse_pnpm_workspace_patterns(show("pnpm-workspace.yaml").decode("utf-8")), manifests)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, subprocess.SubprocessError):
+                return None
+            pkgs = apply_extra_deps(pkgs, ws.get("extra_deps"))
         elif ws.get("type") == "declared":
             pkgs = declared_packages(ws)
         elif ws.get("type") == "none":
             pkgs = {}
         else:
-            return None
-        return {"cfg": cfg, "pkgs": pkgs}
-    except (OSError, ValueError, UnicodeError, KeyError, TypeError, subprocess.SubprocessError):
-        return None
+            raise ValueError(f"unknown workspace type {ws.get('type')!r}")
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+        return {"errors": [f"the plan config's workspace cannot be read: {type(exc).__name__}: {exc}"]}
+    return {"cfg": cfg, "pkgs": pkgs}
 
 
 def config_errors(cfg: dict, pkgs: dict[str, dict], test_files: list[str] | None) -> tuple[list[str], dict | None]:
     """Every reason `cfg` cannot govern a plan over `pkgs`: an invalid selection rule or test declaration, or an
-    incomplete test inventory. Returns (errors, the inventory record when it was computed)."""
+    incomplete test inventory. Returns (errors, the inventory record when it was computed). A value of the wrong JSON
+    type anywhere is an error with a message, never a traceback."""
     errors = []
-    for check in (validate_selection_rules, validate_test_declarations):
+    for check in (validate_config_shape, validate_selection_rules, validate_test_declarations):
         try:
             check(cfg, pkgs)
         except (ValueError, KeyError, TypeError) as exc:
             errors.append(str(exc) or type(exc).__name__)
+        except (AttributeError, RecursionError) as exc:
+            errors.append(f"the plan config has a value of the wrong type ({type(exc).__name__}: {exc})")
     inventory = None
     if not errors and declares_tests(cfg) and test_files is not None:
-        inventory = test_inventory(cfg, pkgs, test_files)
-        if inventory["gaps"]:
-            errors.append("test inventory: " + "; ".join(inventory["gaps"]))
+        try:
+            inventory = test_inventory(cfg, pkgs, test_files)
+        except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+            errors.append(f"test inventory: the plan config has a value of the wrong type ({type(exc).__name__}: {exc})")
+        else:
+            if inventory["gaps"]:
+                errors.append("test inventory: " + "; ".join(inventory["gaps"]))
     return errors, inventory
 
 
@@ -1336,7 +1405,8 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
          tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None,
          reader_assessment: dict | None = None, test_files: list[str] | None = None,
-         candidate_inputs: dict | None = None) -> dict:
+         candidate_inputs: dict | None = None, red_test_files: list[str] | None = None,
+         base_config_error: str | None = None) -> dict:
     if paths is not None and (not isinstance(paths, list) or any(
             not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
             or any(part in (".", "..") for part in p.split("/")) for p in paths)):
@@ -1377,6 +1447,10 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         jobs, matrices = {}, {}
         cfg_jobs = (cfg or {}).get("jobs") or {}
         cfg_mats = (cfg or {}).get("matrices") or {}
+        # A base config this change repairs can hold either as the wrong JSON type (F29). Only a full plan reaches here
+        # then, and a full plan with no job list runs the caller's complete roster.
+        cfg_jobs = cfg_jobs if isinstance(cfg_jobs, dict) else {}
+        cfg_mats = cfg_mats if isinstance(cfg_mats, dict) else {}
         for job, rule in sorted(cfg_jobs.items()):
             if mode == "reused":
                 jobs[job] = {"run": False, "reason": f"reused: {reason}"}
@@ -1411,8 +1485,26 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
     reuse, why = reuse_verdict(receipt, tested, event)
     record["reuse"] = {"reused": reuse, "reason": why}
 
+    # F29 (root's ruling, 2026-10-30): a gate that reads its rules from the base can wedge itself. A change that breaks
+    # the config passes against the old base and lands, and every later change, the fix included, is red. So the BASE
+    # config, graph and test globs decide whether a plan may narrow (F14: a change cannot widen its own selection),
+    # while the CANDIDATE's own config and graph (from its commit's objects) decide whether the change is RED: a change
+    # that breaks the config is red before it lands, and one that repairs a broken base plans FULL. The candidate can
+    # only move a plan between RED and FULL, never narrower. Only when git cannot produce the candidate's config does
+    # the base decide both.
+    candidate_errors = None
+    if candidate_inputs is not None:
+        if "errors" in candidate_inputs:
+            candidate_errors = list(candidate_inputs["errors"])
+        elif candidate_inputs["cfg"] is None:
+            candidate_errors = []  # no config this planner reads (removed, or another schema): nothing to validate
+        else:
+            candidate_errors, _ = config_errors(candidate_inputs["cfg"], candidate_inputs["pkgs"], red_test_files)
+
     ws = (cfg or {}).get("workspace") or {"type": "none"}
     try:
+        if not isinstance(ws, dict):
+            raise ValueError(f"workspace is a JSON {type(ws).__name__}, not an object")
         if ws.get("type") == "pnpm":
             pkgs = discover_pnpm_packages(root, ws.get("extra_deps"))
         elif ws.get("type") == "declared":
@@ -1421,21 +1513,16 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
             pkgs = {}
         else:
             raise ValueError(f"unknown workspace type {ws.get('type')!r}")
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+        if candidate_errors:
+            raise ValueError("; ".join(candidate_errors)) from exc
         return finish("full", f"workspace graph unreadable: {exc}")
 
-    if cfg is not None:
-        # F29 (root's ruling, 2026-10-30): a gate that reads its rules from the base can wedge itself. A change that
-        # breaks the config passes against the old base and lands, and every later change, the fix included, is red.
-        # So the BASE config and graph decide whether a plan may narrow (F14: a change cannot widen its own selection),
-        # while the CANDIDATE's own config and graph (from its commit's objects) decide whether the change is RED: a
-        # change that breaks the config is red before it lands, and one that repairs a broken base plans FULL. The
-        # candidate can only move a plan between RED and FULL, never narrower. Unreadable candidate inputs: the base
-        # decides both, as before.
-        base_errors, record["test_inventory"] = config_errors(cfg, pkgs, test_files)
-        candidate_errors = None
-        if candidate_inputs is not None:
-            candidate_errors, _ = config_errors(candidate_inputs["cfg"], candidate_inputs["pkgs"], test_files)
+    if cfg is not None or base_config_error is not None or candidate_errors:
+        if cfg is not None:
+            base_errors, record["test_inventory"] = config_errors(cfg, pkgs, test_files)
+        else:
+            base_errors = [base_config_error] if base_config_error is not None else []
         red = candidate_errors if candidate_errors is not None else base_errors
         record["config_check"] = {"red_decided_by": "candidate" if candidate_errors is not None else "base",
                                   "base_errors": base_errors[:INVENTORY_SAMPLE],
@@ -1445,9 +1532,10 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
             raise ValueError("; ".join(red))
         if base_errors:
             forced_full_reason = forced_full_reason or (
-                "the base's plan config cannot govern a narrowed plan (" + "; ".join(base_errors)[:400]
-                + "); this change's own config is valid and complete, so it plans FULL and can land (F29)")
-        if event in ("pull_request", "pull_request_target", "merge_group") and not impact_unknown:
+                "the base's plan config cannot govern a narrowed plan (" + "; ".join(base_errors)[:400] + "); "
+                + (candidate_inputs.get("note") or "this change's own config is valid and complete")
+                + ", so it plans FULL and can land (F29)")
+        elif cfg is not None and event in ("pull_request", "pull_request_target", "merge_group") and not impact_unknown:
             assessment = classify_paths(paths, cfg, pkgs)
 
     if reuse and cfg is not None and not forced_full_reason:
@@ -1602,10 +1690,12 @@ def main(argv=None) -> int:
         scope["provider"] = provider_compare(a.repository, scope.get("diff_base") or scope["base"], scope["candidate"],
                                              token=os.environ.get("GH_TOKEN", ""), api_url=a.api_url,
                                              transport=https_transport)
+    base_config_error = None
     if config_path.is_file() and a.policy_checkout_outcome in ("", "success") \
         and (a.event != "merge_group" or scope["status"] == "known"):
-        cfg = json.loads(config_path.read_text())
-        if cfg.get("schema") != 1:
+        # F29: a base config that cannot be read is the base's error, not a crash, so a change that repairs it can land.
+        cfg, base_config_error = parse_plan_config(config_path.read_bytes())
+        if cfg is not None and cfg.get("schema") != 1:
             cfg, forced = None, f"plan config schema {cfg.get('schema')!r} is not 1"
     readers = None
     if a.reader_assessment:
@@ -1614,19 +1704,30 @@ def main(argv=None) -> int:
         except (OSError, ValueError, UnicodeError):
             pass
     paths = scope.get("paths")
+    known = scope["status"] == "known" and bool(a.scope_root)
     candidate_inputs = candidate_planning_inputs(Path(a.scope_root), scope.get("candidate") or "", a.config) \
-        if cfg is not None and scope["status"] == "known" and a.scope_root else None
-    # The inventory is read whenever EITHER config declares tests (a change introducing a declaration is judged by it),
-    # with both configs' test_globs: an extra glob only adds obligations, so the union is the strict direction.
-    declaring = [c for c in (cfg, (candidate_inputs or {}).get("cfg")) if c is not None and declares_tests(c)]
-    globs = [g for c in declaring for g in (c.get("test_globs") if isinstance(c.get("test_globs"), list) else [])]
-    test_files = candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", globs) \
-        if declaring and scope["status"] == "known" and a.scope_root else None
+        if known else None
+    candidate_cfg = (candidate_inputs or {}).get("cfg")
+
+    def globs_of(c: dict) -> list:
+        return c.get("test_globs") if isinstance(c.get("test_globs"), list) else []
+
+    # Two readings of the candidate's tree (F14). The BASE's test globs decide narrowing: the base inventory and the
+    # empty or unreadable inventory guards. Both configs' globs decide only whether the candidate is RED: an extra glob
+    # only adds obligations, so the union is the strict direction, and a glob the candidate adds can never make an
+    # inventory non-empty for the narrowing guards.
+    test_files = candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", globs_of(cfg)) \
+        if known and cfg is not None and declares_tests(cfg) else None
+    red_globs = [g for c in (cfg, candidate_cfg) if c is not None and declares_tests(c) for g in globs_of(c)]
+    red_test_files = None
+    if known and candidate_cfg is not None and declares_tests(candidate_cfg):
+        red_test_files = test_files if test_files is not None and set(red_globs) == set(globs_of(cfg)) \
+            else candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", red_globs)
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
                receipt=None, scope=scope, reader_assessment=readers, test_files=test_files,
-               candidate_inputs=candidate_inputs)
+               candidate_inputs=candidate_inputs, red_test_files=red_test_files, base_config_error=base_config_error)
     if a.event == "merge_group" and scope["status"] == "known":
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)

@@ -1,7 +1,11 @@
 """edges.py tests: a read in code is an edge, a read in a comment or Markdown is not, and check fails on an
 undeclared read (the RED case) while a declared one passes."""
 import base64
+import importlib.util
 import io
+import marshal
+import shutil
+import sys
 import json
 import re
 import os
@@ -2221,6 +2225,45 @@ def E_list_add(values, item):
         return False
     values.append(item)
     return True
+
+
+class PlannerReadFromSource(unittest.TestCase):
+    """N2 (root's review of .github #52): edges.py compiles its sibling plan.py from SOURCE. A plan bytecode file planted
+    in the action directory (the runner's shared action cache) never runs, and none is written there."""
+
+    def _copy(self, tmp: str) -> Path:
+        actions = Path(tmp) / "change-impact-plan"
+        actions.mkdir()
+        for name in ("edges.py", "plan.py"):
+            shutil.copy(Path(__file__).with_name(name), actions / name)
+        return actions
+
+    def test_a_planted_plan_bytecode_never_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = self._copy(tmp)
+            src = actions / "plan.py"
+            st = src.stat()
+            # A pyc the import system would accept for this plan.py (its magic, the source's mtime and size), whose code
+            # exits 77: if anything imports plan through the import system, the run exits 77.
+            header = (importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
+                      + (int(st.st_mtime) & 0xFFFFFFFF).to_bytes(4, "little") + (st.st_size & 0xFFFFFFFF).to_bytes(4, "little"))
+            cache = actions / "__pycache__"
+            cache.mkdir()
+            planted = cache / f"plan.{sys.implementation.cache_tag}.pyc"
+            planted.write_bytes(header + marshal.dumps(compile("import sys\nsys.exit(77)\n", str(src), "exec")))
+            out = subprocess.run([sys.executable, "-I", str(actions / "edges.py"), "--help"], capture_output=True, text=True,
+                                 timeout=120)
+            self.assertNotEqual(out.returncode, 77, "the planted bytecode ran in place of plan.py")
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), [planted.name], "nothing else was written to the cache")
+
+    def test_running_edges_writes_no_bytecode_into_the_action_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = self._copy(tmp)
+            out = subprocess.run([sys.executable, "-I", str(actions / "edges.py"), "--help"], capture_output=True, text=True,
+                                 timeout=120)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual([p for p in actions.rglob("__pycache__")], [])
 
 
 if __name__ == "__main__":

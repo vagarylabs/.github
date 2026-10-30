@@ -496,7 +496,9 @@ class RealTransport(unittest.TestCase):
                         f"spec=importlib.util.spec_from_file_location('worker',{str(Path(P.__file__).resolve())!r}); "
                         "p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p); "
                         + injected_code + "; sys.exit(p._provider_http_worker())")
-                argv = [sys.executable, "-I", "-c", code]
+                # -B: loading plan.py from a file spec would write its bytecode into this source tree (the action
+                # directory), which edges.py no longer reads but a test must not leave behind either.
+                argv = [sys.executable, "-I", "-B", "-c", code]
             worker = real(argv, **kwargs)
             workers.append(worker)
             return worker

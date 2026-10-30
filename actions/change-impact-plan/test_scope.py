@@ -88,10 +88,97 @@ class FrozenScope(unittest.TestCase):
             self.assertEqual(P.main(arguments), 0)
         return json.loads(output.read_text())
 
-    def test_invalid_matrix_reference_publishes_no_plan_or_reduction_outputs(self):
-        self.make_candidate("ui/a.ts", "UI change\n")
+    def invalid_matrix_args(self):
         self.cfg["matrices"] = {"tests": [{"include": {"group": "missing"},
                                            "rule": {"packages": ["undeclared"]}}]}
+        policy = Path(self.temp.name) / "policy"
+        (policy / ".github").mkdir(parents=True)
+        (policy / ".github/ci-plan.json").write_text(json.dumps(self.cfg))
+        plan_file, github_output = Path(self.temp.name) / "new-plan.json", Path(self.temp.name) / "github-output"
+        args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
+                "--repository", "fixture/repo", "--event", "pull_request", "--base", self.base,
+                "--head", self.head, "--candidate", self.candidate, "--out-json", str(plan_file),
+                "--github-output", str(github_output)]
+        return args, plan_file, github_output
+
+    def commit_tree(self, files: dict) -> str:
+        """A candidate on self.base whose tree changes `files` (path -> text, or None to delete); returns the PR head."""
+        self.git("reset", "--hard", self.base)
+        for path, text in files.items():
+            target = self.root / path
+            if text is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+        self.git("add", "-A")
+        tree = self.git("write-tree")
+        self.head = self.git("commit-tree", tree, "-p", self.base, input=b"head\n")
+        self.candidate = self.git("commit-tree", tree, "-p", self.base, "-p", self.head, input=b"merge\n")
+        self.git("reset", "--hard", self.candidate)
+        return self.head
+
+    def test_the_f29_deadlock_ends_full_never_red_forever(self):
+        # root's F29 vector: (1) a change REMOVING ui's declaration entry is now RED in its own run (judged by its own
+        # config); (2) were such a removal on main anyway (an override), the change RESTORING it plans FULL and lands.
+        removed = json.loads(json.dumps(self.cfg)); removed["test_jobs"] = {}
+        self.commit_tree({".github/ci-plan.json": json.dumps(removed)})
+        with self.assertRaisesRegex(ValueError, "the tests of ui"):
+            self.cli_plan()
+        self.base = self.head  # the wedged base: its declaration has the gap
+        self.commit_tree({".github/ci-plan.json": json.dumps(self.cfg), "ui/a.test.ts": "it('restored', () => {});\n"})
+        rec = self.cli_plan()
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("(F29)", rec["reason"])
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+
+    def test_a_change_introducing_an_incomplete_declaration_is_red(self):
+        # The base declares nothing; the change adds a declaration that leaves ui's tests uncovered. The inventory is read
+        # because the CANDIDATE declares, so the change is red before it lands (else it would wedge main, F29).
+        bare = json.loads(json.dumps(self.cfg)); del bare["test_jobs"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(bare)})
+        self.base = self.head
+        incomplete = json.loads(json.dumps(bare)); incomplete["test_jobs"] = {"server_tests": ["server"]}
+        self.commit_tree({".github/ci-plan.json": json.dumps(incomplete)})
+        with self.assertRaisesRegex(ValueError, "the tests of ui"):
+            self.cli_plan()
+
+    def test_a_new_package_with_its_tests_and_its_declaration_lands_in_one_change(self):
+        # The base's graph does not know the package, so its tests are outside every package there (the base cannot
+        # narrow: FULL); the candidate's own graph and declaration cover them, so the change is not red.
+        grown = json.loads(json.dumps(self.cfg))
+        grown["workspace"]["packages"]["api"] = {"dir": "api", "deps": []}
+        grown["jobs"]["api_tests"] = {"packages": ["api"]}
+        grown["test_jobs"]["api_tests"] = ["api"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(grown), "api/a.py": "x = 1\n", "api/test_a.py": "def test_a(): pass\n"})
+        rec = self.cli_plan()
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+        # Without its declaration the same change is red: the candidate's graph owns the tests and nothing runs them.
+        undeclared = json.loads(json.dumps(grown)); del undeclared["test_jobs"]["api_tests"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(undeclared), "api/a.py": "x = 1\n", "api/test_a.py": "def test_a(): pass\n"})
+        with self.assertRaisesRegex(ValueError, "the tests of api"):
+            self.cli_plan()
+
+    def test_a_change_repairing_an_invalid_base_config_plans_full_instead_of_red(self):
+        # F29 (root's ruling, 2026-10-30): the base's config is broken, the candidate's own config is valid; red would
+        # wedge main forever (the fix itself is judged by the broken base), so the plan is FULL and the fix can land.
+        self.make_candidate("ui/a.ts", "UI change\n")
+        args, plan_file, _ = self.invalid_matrix_args()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(P.main(args), 0)
+        rec = json.loads(plan_file.read_text())
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("this change's own config is valid and complete, so it plans FULL and can land (F29)", rec["reason"])
+        self.assertEqual(rec["config_check"]["red_decided_by"], "candidate")
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+        self.assertTrue(any("undeclared package" in e for e in rec["config_check"]["base_errors"]))
+
+    def test_invalid_matrix_reference_publishes_no_plan_or_reduction_outputs(self):
+        # The candidate's OWN config is the invalid one, so the change is red before it can land.
+        invalid = json.loads(json.dumps(self.cfg))
+        invalid["matrices"] = {"tests": [{"include": {"group": "missing"}, "rule": {"packages": ["undeclared"]}}]}
+        self.make_candidate(".github/ci-plan.json", json.dumps(invalid))
         policy = Path(self.temp.name) / "policy"
         (policy / ".github").mkdir(parents=True)
         (policy / ".github/ci-plan.json").write_text(json.dumps(self.cfg))
@@ -311,7 +398,9 @@ class FrozenScope(unittest.TestCase):
 
     def test_target_policy_not_predecessor_or_candidate_config_is_used(self):
         target = self.base
-        malicious = json.loads(json.dumps(self.cfg)); malicious["jobs"] = {}
+        # A VALID but narrower candidate config (server_tests removed): F29 lets it decide only RED vs FULL, never the
+        # plan's selection, which stays the trusted target's (F14).
+        malicious = json.loads(json.dumps(self.cfg)); malicious["jobs"] = {"ui_tests": {"packages": ["ui"]}}
         self.make_candidate(".github/ci-plan.json", json.dumps(malicious))
         self.base = self.candidate
         self.make_candidate("docs/readme.md", "docs tail\n")

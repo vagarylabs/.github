@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.7.0"
+PLANNER_VERSION = "1.7.1"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -691,7 +691,10 @@ def sha256_tree(root: Path, rel_dir: str) -> str | None:
 
 def read_pnpm_workspace_patterns(root: Path) -> list[str]:
     """Reads the `packages:` list of pnpm-workspace.yaml without a YAML dependency (the runner has none)."""
-    text = (root / "pnpm-workspace.yaml").read_text()
+    return parse_pnpm_workspace_patterns((root / "pnpm-workspace.yaml").read_text())
+
+
+def parse_pnpm_workspace_patterns(text: str) -> list[str]:
     patterns, in_packages = [], False
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
@@ -710,19 +713,23 @@ def read_pnpm_workspace_patterns(root: Path) -> list[str]:
 
 
 def discover_pnpm_packages(root: Path, extra_deps: dict | None = None) -> dict[str, dict]:
-    patterns = read_pnpm_workspace_patterns(root)
+    manifests = [(m.parent.relative_to(root).as_posix(), m.read_text) for m in sorted(root.rglob("package.json"))]
+    return pnpm_graph(read_pnpm_workspace_patterns(root), manifests, extra_deps)
+
+
+def pnpm_graph(patterns: list[str], manifests: list[tuple[str, object]], extra_deps: dict | None = None) -> dict[str, dict]:
+    """The workspace graph from the workspace patterns and (directory, read-manifest) pairs, from any reader."""
     include = [p for p in patterns if not p.startswith("!")]
     exclude = [p[1:] for p in patterns if p.startswith("!")]
     pkgs: dict[str, dict] = {}
-    for manifest in sorted(root.rglob("package.json")):
-        rel_dir = manifest.parent.relative_to(root).as_posix()
+    for rel_dir, read_manifest in manifests:
         if rel_dir == "." or "node_modules" in rel_dir.split("/"):
             continue
         if not any(glob_to_regex(p).match(rel_dir) for p in include):
             continue
         if any(glob_to_regex(p).match(rel_dir) or rel_dir.startswith(p.rstrip("/*") + "/") for p in exclude):
             continue
-        data = json.loads(manifest.read_text())
+        data = json.loads(read_manifest())
         name = data.get("name")
         if not name:
             raise ValueError(f"{rel_dir}/package.json has no name")
@@ -1204,6 +1211,52 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
             "packages": packages, "unowned": {"files": len(unowned), "uncovered": len(uncovered)}, "gaps": gaps}
 
 
+def candidate_planning_inputs(scope_root: Path, candidate: str, config_rel: str) -> dict | None:
+    """The CANDIDATE's own plan config and workspace graph, read from its commit's objects (the checkout can be sparse);
+    None when any part is unreadable or unsupported, and the caller then falls back to the base. F29 (root's ruling,
+    2026-10-30): these decide only whether a change is RED, never how narrow its plan is."""
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate or "") or not config_rel or not SAFE_PATH.fullmatch(config_rel):
+        return None
+    try:
+        def show(path: str) -> str:
+            return git_observe(scope_root, "show", f"{candidate}:{path}")[1].decode("utf-8")
+        cfg = json.loads(show(config_rel))
+        if not isinstance(cfg, dict) or cfg.get("schema") != 1:
+            return None
+        ws = cfg.get("workspace") or {"type": "none"}
+        if ws.get("type") == "pnpm":
+            names = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)[1].decode("utf-8").split("\0")
+            manifests = [(name.rsplit("/", 1)[0] if "/" in name else ".", (lambda p=name: show(p)))
+                         for name in sorted(names) if name == "package.json" or name.endswith("/package.json")]
+            pkgs = pnpm_graph(parse_pnpm_workspace_patterns(show("pnpm-workspace.yaml")), manifests, ws.get("extra_deps"))
+        elif ws.get("type") == "declared":
+            pkgs = declared_packages(ws)
+        elif ws.get("type") == "none":
+            pkgs = {}
+        else:
+            return None
+        return {"cfg": cfg, "pkgs": pkgs}
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+
+
+def config_errors(cfg: dict, pkgs: dict[str, dict], test_files: list[str] | None) -> tuple[list[str], dict | None]:
+    """Every reason `cfg` cannot govern a plan over `pkgs`: an invalid selection rule or test declaration, or an
+    incomplete test inventory. Returns (errors, the inventory record when it was computed)."""
+    errors = []
+    for check in (validate_selection_rules, validate_test_declarations):
+        try:
+            check(cfg, pkgs)
+        except (ValueError, KeyError, TypeError) as exc:
+            errors.append(str(exc) or type(exc).__name__)
+    inventory = None
+    if not errors and declares_tests(cfg) and test_files is not None:
+        inventory = test_inventory(cfg, pkgs, test_files)
+        if inventory["gaps"]:
+            errors.append("test inventory: " + "; ".join(inventory["gaps"]))
+    return errors, inventory
+
+
 def candidate_test_files(scope_root: Path, candidate: str, extra_globs) -> list[str] | None:
     """The candidate commit's tracked test files, from its tree (no checkout content is read); None if unreadable."""
     if not re.fullmatch(r"[0-9a-f]{40}", candidate or ""):
@@ -1274,14 +1327,16 @@ def bind_plan_id(record: dict) -> None:
                            "e": record["inputs"]["event"], "observation": record["observation"],
                            "jobs": record["jobs"], "matrices": record["matrices"], "impact": record["impact"],
                            "source": record["source_answer"], "source_meta": record["source_answer_meta"],
-                           "test_inventory": record.get("test_inventory")}, sort_keys=True)
+                           "test_inventory": record.get("test_inventory"), "config_check": record.get("config_check")},
+                          sort_keys=True)
     record["plan_id"] = hashlib.sha256(identity.encode()).hexdigest()[:12]
 
 
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
          tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None,
-         reader_assessment: dict | None = None, test_files: list[str] | None = None) -> dict:
+         reader_assessment: dict | None = None, test_files: list[str] | None = None,
+         candidate_inputs: dict | None = None) -> dict:
     if paths is not None and (not isinstance(paths, list) or any(
             not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
             or any(part in (".", "..") for part in p.split("/")) for p in paths)):
@@ -1306,6 +1361,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         "observation": {key: value for key, value in (scope or {}).items() if key != "paths"},
         "requires_full_caller_roster": cfg is None,
         "test_inventory": None,
+        "config_check": None,
     }
 
     pkgs, assessment = {}, None
@@ -1331,7 +1387,9 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
                 jobs[job] = {"run": run, "reason": why}
         for name, entries in sorted(cfg_mats.items()):
             inc, skipped = [], []
-            for entry in entries:
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict) or not isinstance(entry.get("include"), dict):
+                    continue  # a malformed entry of a base config this change repairs (F29); a full plan runs the roster
                 if mode == "reused":
                     skipped.append({"entry": entry["include"], "reason": f"reused: {reason}"})
                     continue
@@ -1367,14 +1425,28 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         return finish("full", f"workspace graph unreadable: {exc}")
 
     if cfg is not None:
-        validate_selection_rules(cfg, pkgs)
-        validate_test_declarations(cfg, pkgs)
-        if declares_tests(cfg) and test_files is not None:
-            record["test_inventory"] = test_inventory(cfg, pkgs, test_files)
-            # A declaration, once made, must be complete: a test the configuration lets a narrowed plan skip is RED on
-            # every event, never a silently smaller suite (root's S6 condition 3).
-            if record["test_inventory"]["gaps"]:
-                raise ValueError("test inventory: " + "; ".join(record["test_inventory"]["gaps"]))
+        # F29 (root's ruling, 2026-10-30): a gate that reads its rules from the base can wedge itself. A change that
+        # breaks the config passes against the old base and lands, and every later change, the fix included, is red.
+        # So the BASE config and graph decide whether a plan may narrow (F14: a change cannot widen its own selection),
+        # while the CANDIDATE's own config and graph (from its commit's objects) decide whether the change is RED: a
+        # change that breaks the config is red before it lands, and one that repairs a broken base plans FULL. The
+        # candidate can only move a plan between RED and FULL, never narrower. Unreadable candidate inputs: the base
+        # decides both, as before.
+        base_errors, record["test_inventory"] = config_errors(cfg, pkgs, test_files)
+        candidate_errors = None
+        if candidate_inputs is not None:
+            candidate_errors, _ = config_errors(candidate_inputs["cfg"], candidate_inputs["pkgs"], test_files)
+        red = candidate_errors if candidate_errors is not None else base_errors
+        record["config_check"] = {"red_decided_by": "candidate" if candidate_errors is not None else "base",
+                                  "base_errors": base_errors[:INVENTORY_SAMPLE],
+                                  "candidate_errors": (candidate_errors or [])[:INVENTORY_SAMPLE]}
+        if red:
+            # A declaration, once made, must be complete (root's S6 condition 3); a selection rule must name real packages.
+            raise ValueError("; ".join(red))
+        if base_errors:
+            forced_full_reason = forced_full_reason or (
+                "the base's plan config cannot govern a narrowed plan (" + "; ".join(base_errors)[:400]
+                + "); this change's own config is valid and complete, so it plans FULL and can land (F29)")
         if event in ("pull_request", "pull_request_target", "merge_group") and not impact_unknown:
             assessment = classify_paths(paths, cfg, pkgs)
 
@@ -1542,12 +1614,19 @@ def main(argv=None) -> int:
         except (OSError, ValueError, UnicodeError):
             pass
     paths = scope.get("paths")
-    test_files = candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", cfg.get("test_globs")) \
-        if cfg is not None and declares_tests(cfg) and scope["status"] == "known" and a.scope_root else None
+    candidate_inputs = candidate_planning_inputs(Path(a.scope_root), scope.get("candidate") or "", a.config) \
+        if cfg is not None and scope["status"] == "known" and a.scope_root else None
+    # The inventory is read whenever EITHER config declares tests (a change introducing a declaration is judged by it),
+    # with both configs' test_globs: an extra glob only adds obligations, so the union is the strict direction.
+    declaring = [c for c in (cfg, (candidate_inputs or {}).get("cfg")) if c is not None and declares_tests(c)]
+    globs = [g for c in declaring for g in (c.get("test_globs") if isinstance(c.get("test_globs"), list) else [])]
+    test_files = candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", globs) \
+        if declaring and scope["status"] == "known" and a.scope_root else None
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
-               receipt=None, scope=scope, reader_assessment=readers, test_files=test_files)
+               receipt=None, scope=scope, reader_assessment=readers, test_files=test_files,
+               candidate_inputs=candidate_inputs)
     if a.event == "merge_group" and scope["status"] == "known":
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)

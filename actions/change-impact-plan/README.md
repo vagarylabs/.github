@@ -672,12 +672,22 @@ executes, and checks that declaration against the candidate's own test files.
     - a test file in a package directory the base's graph does not know is outside every package, so it needs an
       always-unit `path:` entry in the base.
     - Order the changes: land the package (or its directory's `path:` entry) and its declaration first, then its tests.
-  - **Known residual, liveness.** A change that REMOVES a declaration entry is judged against the base's complete
-    declaration, so it lands. After that, every pull request is red, including the one that restores the entry
-    (reproduced through `main()`, 2026-10-30). The same class predates 1.7.0 for selection rules, which are also
-    validated on the base config. Until it is closed (cli's finding to root: the consumer runner gate refuses a change
-    whose OWN declaration has a gap, and the planner decides red on the candidate's declaration while narrowing stays on
-    the base's), a consumer must not merge a declaration removal past its own runner gate.
+  - **Liveness: who decides RED (1.7.1, F29).** A gate that read its rules only from the base could wedge itself. A
+    change that removed a declaration entry, or broke a selection rule, passed against the old base and landed, and
+    then every change was red, including the fix (reproduced through `main()`, 2026-10-30; root's failure registry F29).
+    Since 1.7.1:
+    - the BASE config and graph still decide whether a plan may NARROW (F14: a change cannot widen its own selection);
+    - the CANDIDATE's own config and workspace graph, read from its commit's git objects (the checkout can be sparse),
+      decide whether the change is RED. Errors are invalid selection rules, an invalid declaration, or an inventory gap.
+    - So a change that breaks the config is red BEFORE it lands. A change that repairs a broken base plans FULL (its
+      reason names F29) and can land. A change that adds a package, its tests and its declaration together is not red
+      (the base cannot narrow it, so it plans FULL).
+    - The candidate's config can only move a plan between RED and FULL, never narrower. When the candidate's inputs are
+      unreadable, the base decides both, as before.
+    - The inventory is read whenever EITHER config declares tests, with both configs' `test_globs` (the strict
+      direction).
+    - `plan.config_check = {red_decided_by, base_errors, candidate_errors}` is bound into `plan_id`.
+    - Each consumer's runner gate still validates the candidate's declaration in its own CI (root's prevention layer).
 
 ## Compatibility and validation
 

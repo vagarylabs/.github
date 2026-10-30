@@ -639,6 +639,31 @@ class TestInventory(unittest.TestCase):
         self.assertFalse(P.is_test_file("node_modules/x/a.test.js", []))
         self.assertTrue(P.is_test_file("ui/foo_node_modules/x.test.ts", []), "a directory merely ending in node_modules")
 
+    def test_red_is_the_candidates_call_and_narrowing_the_bases_f29(self):
+        gapped = self.config()
+        gapped["matrices"]["general_tests"][1]["tests"] = ["@v/ui"]  # the base leaves @v/cli's tests uncovered
+        complete = self.config()
+        # No readable candidate inputs: the base decides, as before (red).
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            self.plan_with(gapped)
+        # The candidate repairs the gap: FULL, never red-forever, never narrowed.
+        self.cfg_path.write_text(json.dumps(gapped))
+        rec = P.plan(cfg=gapped, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                     base="b" * 40, head="h" * 40, expected_count=None,
+                     scope=complete_scope(self.root, self.cfg_path, gapped, PR397),
+                     reader_assessment=bound_readers(self.root, self.cfg_path, gapped), test_files=TEST_FILES,
+                     candidate_inputs={"cfg": complete, "pkgs": E.workspace_graph(self.root, complete)})
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["config_check"]["red_decided_by"], "candidate")
+        # The candidate introduces the gap on a complete base: red.
+        self.cfg_path.write_text(json.dumps(complete))
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            P.plan(cfg=complete, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                   base="b" * 40, head="h" * 40, expected_count=None,
+                   scope=complete_scope(self.root, self.cfg_path, complete, PR397),
+                   reader_assessment=bound_readers(self.root, self.cfg_path, complete), test_files=TEST_FILES,
+                   candidate_inputs={"cfg": gapped, "pkgs": E.workspace_graph(self.root, gapped)})
+
     def test_selection_rules_are_monotone_so_closure_coverage_holds_for_every_plan(self):
         # The coverage check judges a unit against the package's own closure; a plan affecting the package has a
         # superset of it. Every rule kind that matches a set matches each superset.

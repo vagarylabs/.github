@@ -703,7 +703,9 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
         args = ["--config", self.config_rel, "--root", str(policy), "--scope-root", str(self.root),
                 "--repository", "fixture/repo", "--tested-root", str(self.root), "--out-json", str(out),
                 "--repository-id", "101", "--repository-owner-id", "202", "--event", "pull_request",
-                "--base", self.base, "--head", self.head, "--candidate", self.candidate]
+                "--base", self.base, "--head", self.head, "--candidate", self.candidate,
+                # action.yml always passes a summary; its write is part of what can fail (root's #57 RC3)
+                "--summary", str(self.tmp / f"summary-{self.runs}.md")]
         if (policy / self.config_rel).is_file():
             # As action.yml's readers step: a reader check that fails (a broken base config can crash it) forces FULL;
             # it never stops the plan, so the candidate still decides RED.
@@ -853,6 +855,31 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
         self.change({"ui/ci-plan.json": "[]"})
         self.assert_red("the plan config is a JSON list, not an object")
 
+    def test_a_lone_surrogate_in_a_config_string_is_red_and_its_repair_lands(self):
+        # Root's #57 RC3: "\udce9" is valid JSON but no Unicode text. It parsed, then crashed the summary's strict UTF-8
+        # write of the name it carried, so a candidate holding one planned FULL and landed (P2), and after it the repair
+        # (P1) and every unrelated change (P3) were red. Now it is malformed, for a candidate and a base alike.
+        def weird_job():
+            cfg = json.loads(json.dumps(self.CFG)); cfg["jobs"]["ui_tests\udce9"] = cfg["jobs"].pop("ui_tests")
+            cfg["test_jobs"] = {"ui_tests\udce9": ["ui"]}
+            return json.dumps(cfg)  # escaped as \\udce9: valid JSON
+        def weird_package():
+            cfg = json.loads(json.dumps(self.CFG))
+            cfg["workspace"]["packages"]["ui\udce9"] = cfg["workspace"]["packages"].pop("ui")
+            cfg["jobs"]["ui_tests"] = {"packages": ["ui\udce9"]}; cfg["test_jobs"] = {"ui_tests": ["ui\udce9"]}
+            return json.dumps(cfg)
+        for name, weird in (("job", weird_job), ("package", weird_package)):
+            with self.subTest(name=name):
+                self.fixture(self.CFG)
+                self.change({"ui/ci-plan.json": weird()})
+                self.assert_red("not valid Unicode")  # P2: red before it lands
+                self.fixture(None, text=weird())
+                self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+                result = self.assert_mode("full", ".", [])  # P1: the repair lands; the base config cannot be read
+                self.assertIn("not valid Unicode", result["config_check"]["base_errors"][0])
+                self.change({"ui/a.ts": "x\n"})
+                self.assert_red("not valid Unicode")  # P3: only a repair lands
+
     def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
         # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
         # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an
@@ -994,7 +1021,7 @@ class NonUtf8TreeNames(unittest.TestCase):
         args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
                 "--repository", "fixture/repo", "--out-json", str(out), "--repository-id", "101",
                 "--repository-owner-id", "202", "--event", "pull_request", "--base", self.base, "--head", self.head,
-                "--candidate", self.candidate]
+                "--candidate", self.candidate, "--summary", str(self.tmp / f"summary-{self.runs}.md")]
         readers = self.tmp / f"readers-{self.runs}.json"
         try:  # as action.yml's readers step: a failed reader check forces FULL, it never stops the plan
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -1055,6 +1082,18 @@ class NonUtf8TreeNames(unittest.TestCase):
         self.change({**self.config(), self.WEIRD: None})
         self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair that also deletes the name (T3)")
 
+    def test_a_base_gap_naming_a_non_utf8_test_file_does_not_crash_the_repair_plan_or_its_summary(self):
+        # Root's #57 RC3, G2: the base's inventory gap names a test file whose name is not UTF-8, so the FULL plan's
+        # reason carries the undecodable bytes, and the summary's strict write crashed the repair. It is written escaped.
+        gapped = json.loads(json.dumps(self.CFG)); gapped["test_jobs"] = {}
+        files = {**self.FILES, b"pkgs/ui/a\xe9.test.ts": b"it()\n", **self.config(gapped)}
+        files.pop(b"pkgs/ui/a.test.ts")
+        self.base = self.commit(files, [])
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"))
+        summary = (self.tmp / f"summary-{self.runs}.md").read_bytes().decode("utf-8")  # strict: it is valid UTF-8
+        self.assertIn("\\udce9", summary, "the undecodable byte is written as an escape, never as raw bytes")
+
     def test_the_inventory_reads_each_name_on_its_own_so_a_test_behind_a_non_utf8_name_is_judged(self):
         weird_test = b"pkgs/server/caf\xe9.test.ts"
         self.change({self.WEIRD: b"x\n", weird_test: b"it()\n"})
@@ -1072,6 +1111,20 @@ class NonUtf8TreeNames(unittest.TestCase):
 
 
 class ActionContract(unittest.TestCase):
+    def test_the_plan_steps_final_print_escapes_a_reason_it_cannot_encode(self):
+        # Root's #57 RC3 item 3: action.yml prints the plan's reason after the plan step. A reason carrying undecodable
+        # tree bytes (a lone surrogate) must print escaped, not fail the step. This runs the step's own line.
+        text = (Path(__file__).parent / "action.yml").read_text()
+        match = re.search(r"python3 -c '([^']*)' \"\$STATE/plan\.json\"", text)
+        self.assertIsNotNone(match, "the plan step's final print")
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "plan.json"
+            plan.write_text(json.dumps({"plan_id": "abc", "mode": "full", "reason": "tests of ui (pkgs/ui/a\udce9.test.ts)"}))
+            env = {key: value for key, value in os.environ.items() if key not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+            done = subprocess.run([sys.executable, "-c", match.group(1), str(plan)], capture_output=True, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"\\udce9", done.stdout)
+
     def test_action_has_no_mutable_path_api_or_stale_receipt_input(self):
         text = (Path(__file__).parent / "action.yml").read_text()
         self.assertNotIn("/pulls/", text)

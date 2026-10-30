@@ -1244,6 +1244,13 @@ def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
         return None, f"the plan config is not valid JSON: {exc}"
     if not isinstance(cfg, dict):
         return None, f"the plan config is a JSON {type(cfg).__name__}, not an object"
+    # `"\udce9"` is valid JSON but no Unicode text: a lone surrogate parses, then crashes every strict UTF-8 write of a
+    # name it carries (the step summary's job lines), so it is malformed here, for the base and a candidate alike
+    # (root's #57 RC3).
+    try:
+        json.dumps(cfg, ensure_ascii=False).encode("utf-8")
+    except (UnicodeError, RecursionError):
+        return None, "the plan config holds a string that is not valid Unicode (a lone surrogate escape)"
     return cfg, None
 
 
@@ -1758,7 +1765,8 @@ def main(argv=None) -> int:
     if a.out_json:
         Path(a.out_json).write_text(text + "\n")
     if a.summary:
-        with open(a.summary, "a") as fh:
+        # Names in the summary can still hold undecodable tree bytes (a test file listed per name): escape, never crash.
+        with open(a.summary, "a", encoding="utf-8", errors="backslashreplace") as fh:
             fh.write(summary_markdown(rec))
     # Publish last. The caller must still require this step/job to succeed:
     # filesystem failures can interrupt even a final output write.

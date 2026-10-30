@@ -698,8 +698,16 @@ executes, and checks that declaration against the candidate's own test files.
       (a dropped hub, a dropped rule) or graph (a dropped dependency edge) changes nothing about selection, at any
       config path, including one no full trigger matches.
     - A config at a schema other than 1 is refused the same way: RED as the candidate. As the base, a schema-1 repair
-      plans FULL ("plan config schema N is not 1") and an unrelated change still at that schema stays red. The planner a
-      change runs is the one its own workflow pins, so a migration moves the pin and the schema in one change.
+      plans FULL ("plan config schema N is not 1") and an unrelated change still at that schema stays red. Where the
+      planner a change runs is the one its own workflow pins, a migration moves the pin and the schema in one change.
+      Where the pin is held outside the change (core's ruleset-pinned services lane, NATIVE_WORKFLOW_PIN), the planner
+      pin that reads the new schema lands first, and the schema follows.
+    - The candidate's tree is listed name by name: a name that is not UTF-8 (`docs/caf\xe9.txt`) is kept as bytes, so it
+      never makes the candidate unreadable, and a test file behind one is still inventoried (root's #57 RC2: one such
+      name made the base decide, and an invalid rule landed and wedged main).
+    - The candidate's config is read even when the SCOPE is unknown (a non-UTF-8 path in the diff, for one): it needs
+      only the candidate commit, never the diff, and it moves the plan between RED and FULL only. So a typo landing
+      beside such a path is red, and its repair lands with or without deleting the path.
     - The base decides both only when git cannot produce the candidate's config, or when the candidate's
       pnpm-workspace.yaml or a workspace manifest cannot be produced or does not parse. That is the tree's defect, not
       the config's: pnpm install refuses it in the change's own CI, so the planner does not judge it (a manifest edit is

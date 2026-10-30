@@ -921,6 +921,156 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
         self.assert_mode("full", "no plan config on the base commit", [])
 
 
+
+class NonUtf8TreeNames(unittest.TestCase):
+    """Root's #57 RC2: one file name that is not UTF-8, anywhere in a pnpm tree, made the candidate unreadable, so the base
+    decided and an invalid rule landed and wedged main. Trees are built with plumbing (a macOS filesystem cannot hold such
+    a name); the policy root is a sparse checkout like the action's. Ported from the R4 reviewer's harness (plumb.py)."""
+
+    CFG = {"schema": 1, "workspace": {"type": "pnpm"}, "hub_packages": ["server"], "inert_globs": ["docs/**"],
+           "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]}}
+    FILES = {b"pnpm-workspace.yaml": b"packages:\n  - 'pkgs/*'\n", b"package.json": b'{"name":"root","private":true}\n',
+             b"pkgs/ui/package.json": b'{"name":"ui"}\n', b"pkgs/server/package.json": b'{"name":"server"}\n',
+             b"pkgs/ui/a.ts": b"x\n", b"pkgs/ui/a.test.ts": b"it()\n", b"pkgs/server/a.ts": b"x\n"}
+    WEIRD = b"docs/caf\xe9.txt"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.tmp, self.runs, self.commits = Path(self.temp.name), 0, 0
+        self.root = self.tmp / "candidate"
+        self.root.mkdir()
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                        GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        self.git("init", "-q")
+        self.base = self.commit({**self.FILES, b".github/ci-plan.json": json.dumps(self.CFG).encode()}, [])
+
+    def git(self, *args, input=None, cwd=None, env=None):
+        return subprocess.check_output(["git", *args], cwd=cwd or self.root, env=env or self.env, input=input,
+                                       stderr=subprocess.PIPE).strip()
+
+    def commit(self, files, parents):
+        self.commits += 1
+        env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{self.commits}"))
+        lines = b"".join(b"100644 " + self.git("hash-object", "-w", "--stdin", input=data) + b"\t" + path + b"\n"
+                         for path, data in sorted(files.items()))
+        self.git("update-index", "--index-info", input=lines, env=env)
+        args = ["commit-tree", self.git("write-tree", env=env).decode()]
+        for parent in parents:
+            args += ["-p", parent]
+        return self.git(*args, input=f"commit {self.commits}\n".encode()).decode()
+
+    def files_at(self, rev):
+        files = {}
+        for entry in self.git("ls-tree", "-r", "-z", rev).split(b"\0"):
+            if entry:
+                meta, path = entry.split(b"\t", 1)
+                # Raw bytes: git() strips its output, which would edit every blob and touch every path.
+                files[path] = subprocess.check_output(["git", "cat-file", "blob", meta.split()[2].decode()],
+                                                      cwd=self.root, env=self.env)
+        return files
+
+    def change(self, edits):
+        files = self.files_at(self.base)
+        for path, data in edits.items():
+            if data is None:
+                files.pop(path)
+            else:
+                files[path] = data
+        self.head = self.commit(files, [self.base])
+        self.candidate = self.commit(files, [self.base, self.head])
+        self.git("update-ref", "--no-deref", "HEAD", self.candidate)
+
+    def run_plan(self):
+        self.runs += 1
+        policy = self.tmp / f"policy-{self.runs}"
+        self.git("clone", "-q", "--no-checkout", "--no-hardlinks", str(self.root), str(policy))
+        self.git("sparse-checkout", "set", "--no-cone", ".github/ci-plan.json", "/pnpm-workspace.yaml", "/pnpm-lock.yaml",
+                 "**/package.json", "/.github/workflows/", cwd=policy)
+        self.git("checkout", "-q", "--detach", self.base, cwd=policy)
+        out = self.tmp / f"plan-{self.runs}.json"
+        args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
+                "--repository", "fixture/repo", "--out-json", str(out), "--repository-id", "101",
+                "--repository-owner-id", "202", "--event", "pull_request", "--base", self.base, "--head", self.head,
+                "--candidate", self.candidate]
+        readers = self.tmp / f"readers-{self.runs}.json"
+        try:  # as action.yml's readers step: a failed reader check forces FULL, it never stops the plan
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                E.main(["check", "--config", str(policy / ".github/ci-plan.json"), "--repo", str(self.root),
+                        "--manifest-root", str(policy), "--revision", self.candidate, "--out-json", str(readers)])
+            args += ["--reader-assessment", str(readers)]
+        except (Exception, SystemExit):  # noqa: BLE001
+            args += ["--force-full-reason", "reader closure unproven; full validation required"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(P.main(args), 0)
+        except ValueError as exc:
+            return ("RED", str(exc))
+        record = json.loads(out.read_text())
+        return (record["mode"], (record.get("config_check") or {}).get("red_decided_by"))
+
+    def land(self):
+        self.base = self.head
+
+    def config(self, cfg=None, text=None):
+        return {b".github/ci-plan.json": text if text is not None else json.dumps(cfg or self.CFG).encode()}
+
+    def test_the_plumbing_fixture_changes_only_the_paths_it_edits(self):
+        self.change({b"pkgs/ui/a.ts": b"y\n"})
+        self.assertEqual(self.git("diff", "--name-only", self.base, self.head), b"pkgs/ui/a.ts")
+        self.assertEqual(self.run_plan(), ("reduced", "candidate"), "control: a ui change narrows on the clean tree")
+
+    def test_an_invalid_rule_beside_a_non_utf8_name_is_red_and_its_repair_lands(self):
+        bad = json.loads(json.dumps(self.CFG)); bad["jobs"]["ui_tests"] = {"packages": ["nope"]}
+        self.change(self.config(bad))
+        self.assertEqual(self.run_plan()[0], "RED", "control: the invalid-rule change on a clean tree")
+        self.change({self.WEIRD: b"x\n"})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "adding the name (S1)")
+        self.land()
+        self.change(self.config(bad))
+        self.assertEqual(self.run_plan()[0], "RED", "the invalid rule on the weird tree (S2): was FULL, decided by the base")
+        self.land()  # were it on main anyway
+        self.change({b"pkgs/ui/a.ts": b"y\n"})
+        self.assertEqual(self.run_plan()[0], "RED", "an unrelated change on the broken base (S3)")
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the rule's repair (S4)")
+        self.change({**self.config(), self.WEIRD: None})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair that also deletes the name (S5)")
+        self.change({self.WEIRD: None})
+        self.assertEqual(self.run_plan()[0], "RED", "deleting the name alone repairs nothing (S6)")
+
+    def test_a_typo_beside_a_new_non_utf8_name_is_red_though_the_scope_is_unknown(self):
+        # A non-UTF-8 path in the DIFF makes the scope unknown; the candidate's own config is still read (it needs only
+        # the candidate commit), so the typo cannot land beside it (T1), and its repair lands either way (T2, T3).
+        typo = json.dumps(self.CFG).encode()[:-1]
+        self.change({**self.config(text=typo), self.WEIRD: b"x\n"})
+        result = self.run_plan()
+        self.assertEqual(result[0], "RED")
+        self.assertIn("the plan config is not valid JSON", result[1])
+        self.land()  # were it on main anyway
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair (T2)")
+        self.change({**self.config(), self.WEIRD: None})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair that also deletes the name (T3)")
+
+    def test_the_inventory_reads_each_name_on_its_own_so_a_test_behind_a_non_utf8_name_is_judged(self):
+        weird_test = b"pkgs/server/caf\xe9.test.ts"
+        self.change({self.WEIRD: b"x\n", weird_test: b"it()\n"})
+        names = P.candidate_test_files(self.root, self.candidate, [])
+        self.assertIsNotNone(names, "one undecodable name does not make the whole inventory unreadable")
+        self.assertIn(weird_test.decode("utf-8", "surrogateescape"), names)
+        self.assertIn("pkgs/ui/a.test.ts", names)
+        # server's tests run in no unit a change to server selects (server_tests is full_only), and the hub rule
+        # covers it: the gap check reads the weird-named file and accepts it only through the hub.
+        cfg = json.loads(json.dumps(self.CFG)); cfg["hub_packages"] = []
+        self.change({self.WEIRD: b"x\n", weird_test: b"it()\n", **self.config(cfg)})
+        result = self.run_plan()
+        self.assertEqual(result[0], "RED")
+        self.assertIn("the tests of server", result[1])
+
+
 class ActionContract(unittest.TestCase):
     def test_action_has_no_mutable_path_api_or_stale_receipt_input(self):
         text = (Path(__file__).parent / "action.yml").read_text()

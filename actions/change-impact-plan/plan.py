@@ -1284,9 +1284,12 @@ def candidate_planning_inputs(scope_root: Path, candidate: str, config_rel: str)
     try:
         if ws.get("type") == "pnpm":
             try:
-                names = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)[1].decode("utf-8").split("\0")
+                # Filter the listing at the BYTE level and decode only the manifests (root's #57 RC2): one undecodable
+                # name anywhere in the tree (docs/caf\xe9.txt) must not hand the decision to the base, which then wedges.
+                listing = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)[1].split(b"\0")
+                names = [n.decode("utf-8") for n in listing if n == b"package.json" or n.endswith(b"/package.json")]
                 manifests = [(name.rsplit("/", 1)[0] if "/" in name else ".", (lambda p=name: show(p).decode("utf-8")))
-                             for name in sorted(names) if name == "package.json" or name.endswith("/package.json")]
+                             for name in sorted(names)]
                 pkgs = pnpm_graph(parse_pnpm_workspace_patterns(show("pnpm-workspace.yaml").decode("utf-8")), manifests)
             except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, subprocess.SubprocessError):
                 return None
@@ -1333,9 +1336,11 @@ def candidate_test_files(scope_root: Path, candidate: str, extra_globs) -> list[
     globs = extra_globs if isinstance(extra_globs, list) and all(isinstance(g, str) and g for g in extra_globs) else []
     try:
         _, out = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)
-        names = out.decode("utf-8").split("\0")
-    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
+    # Each name on its own, undecodable bytes kept as surrogates (root's #57 RC2): one non-UTF-8 name anywhere must not
+    # make the whole inventory unreadable, and a test file behind such a name is still judged.
+    names = [n.decode("utf-8", "surrogateescape") for n in out.split(b"\0")]
     return sorted(name for name in names if name and is_test_file(name, globs))
 
 
@@ -1705,8 +1710,12 @@ def main(argv=None) -> int:
             pass
     paths = scope.get("paths")
     known = scope["status"] == "known" and bool(a.scope_root)
-    candidate_inputs = candidate_planning_inputs(Path(a.scope_root), scope.get("candidate") or "", a.config) \
-        if known else None
+    # The candidate's own config decides RED even when the SCOPE is unknown (root's #57 RC2, item 2): reading it needs
+    # only the candidate commit, never the diff, and it can only move a plan between RED and FULL. A non-UTF-8 path in
+    # the diff makes the scope unknown, and a typo landing beside one must still be red; its repair must still land.
+    candidate_sha = scope.get("candidate") or a.candidate or ""
+    readable = bool(a.scope_root) and bool(re.fullmatch(r"[0-9a-f]{40}", candidate_sha))
+    candidate_inputs = candidate_planning_inputs(Path(a.scope_root), candidate_sha, a.config) if readable else None
     candidate_cfg = (candidate_inputs or {}).get("cfg")
 
     def globs_of(c: dict) -> list:
@@ -1720,9 +1729,9 @@ def main(argv=None) -> int:
         if known and cfg is not None and declares_tests(cfg) else None
     red_globs = [g for c in (cfg, candidate_cfg) if c is not None and declares_tests(c) for g in globs_of(c)]
     red_test_files = None
-    if known and candidate_cfg is not None and declares_tests(candidate_cfg):
+    if readable and candidate_cfg is not None and declares_tests(candidate_cfg):
         red_test_files = test_files if test_files is not None and set(red_globs) == set(globs_of(cfg)) \
-            else candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", red_globs)
+            else candidate_test_files(Path(a.scope_root), candidate_sha, red_globs)
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),

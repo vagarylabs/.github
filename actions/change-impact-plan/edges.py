@@ -34,13 +34,32 @@ import re
 import subprocess
 import sys
 import threading
+import types
 from pathlib import Path
 
-# -I excludes cwd/PYTHONPATH; only this immutable action's own sibling planner may provide graph code.
-if sys.flags.isolated:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plan import declared_packages, discover_pnpm_packages, canonical_digest, graph_digest, sha256_file, glob_to_regex, \
-    first_match, classify_paths, rule_matches, LOCKFILE_NAMES
+
+def _plan_module():
+    """plan.py, the sibling planner from this same immutable action directory, compiled from its SOURCE and never
+    through the import system. An import (the old `sys.path.insert` + `from plan import ...` under -I) writes
+    __pycache__/plan.cpython-*.pyc into the runner's shared action cache and reads one back, so a bytecode file planted
+    there by an earlier job on a persistent self-hosted runner would run in place of the source (root's review of
+    .github #52, N2). -I already keeps cwd and PYTHONPATH out. A test that has imported plan.py itself (the same
+    file) shares that module."""
+    path = Path(__file__).resolve().parent / "plan.py"
+    loaded = sys.modules.get("plan")
+    if loaded is not None and getattr(loaded, "__file__", None) and Path(loaded.__file__).resolve() == path:
+        return loaded
+    module = types.ModuleType("plan")
+    module.__file__ = str(path)
+    sys.modules["plan"] = module  # its dataclasses and annotations resolve their module by name
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+    return module
+
+
+_plan = _plan_module()
+declared_packages, discover_pnpm_packages, canonical_digest = _plan.declared_packages, _plan.discover_pnpm_packages, _plan.canonical_digest
+graph_digest, sha256_file, glob_to_regex = _plan.graph_digest, _plan.sha256_file, _plan.glob_to_regex
+first_match, classify_paths, rule_matches, LOCKFILE_NAMES = _plan.first_match, _plan.classify_paths, _plan.rule_matches, _plan.LOCKFILE_NAMES
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 

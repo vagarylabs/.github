@@ -229,7 +229,7 @@ runs:
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
           --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
-        python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
+        python3 -c 'import json,sys; sys.stdout.reconfigure(errors="backslashreplace"); r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
     - name: Remove attempt-local inputs
       if: ${{ always() && steps.state.outputs.directory != '' }}
       shell: bash

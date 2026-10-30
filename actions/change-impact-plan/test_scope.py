@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -88,10 +89,97 @@ class FrozenScope(unittest.TestCase):
             self.assertEqual(P.main(arguments), 0)
         return json.loads(output.read_text())
 
-    def test_invalid_matrix_reference_publishes_no_plan_or_reduction_outputs(self):
-        self.make_candidate("ui/a.ts", "UI change\n")
+    def invalid_matrix_args(self):
         self.cfg["matrices"] = {"tests": [{"include": {"group": "missing"},
                                            "rule": {"packages": ["undeclared"]}}]}
+        policy = Path(self.temp.name) / "policy"
+        (policy / ".github").mkdir(parents=True)
+        (policy / ".github/ci-plan.json").write_text(json.dumps(self.cfg))
+        plan_file, github_output = Path(self.temp.name) / "new-plan.json", Path(self.temp.name) / "github-output"
+        args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
+                "--repository", "fixture/repo", "--event", "pull_request", "--base", self.base,
+                "--head", self.head, "--candidate", self.candidate, "--out-json", str(plan_file),
+                "--github-output", str(github_output)]
+        return args, plan_file, github_output
+
+    def commit_tree(self, files: dict) -> str:
+        """A candidate on self.base whose tree changes `files` (path -> text, or None to delete); returns the PR head."""
+        self.git("reset", "--hard", self.base)
+        for path, text in files.items():
+            target = self.root / path
+            if text is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+        self.git("add", "-A")
+        tree = self.git("write-tree")
+        self.head = self.git("commit-tree", tree, "-p", self.base, input=b"head\n")
+        self.candidate = self.git("commit-tree", tree, "-p", self.base, "-p", self.head, input=b"merge\n")
+        self.git("reset", "--hard", self.candidate)
+        return self.head
+
+    def test_the_f29_deadlock_ends_full_never_red_forever(self):
+        # root's F29 vector: (1) a change REMOVING ui's declaration entry is now RED in its own run (judged by its own
+        # config); (2) were such a removal on main anyway (an override), the change RESTORING it plans FULL and lands.
+        removed = json.loads(json.dumps(self.cfg)); removed["test_jobs"] = {}
+        self.commit_tree({".github/ci-plan.json": json.dumps(removed)})
+        with self.assertRaisesRegex(ValueError, "the tests of ui"):
+            self.cli_plan()
+        self.base = self.head  # the wedged base: its declaration has the gap
+        self.commit_tree({".github/ci-plan.json": json.dumps(self.cfg), "ui/a.test.ts": "it('restored', () => {});\n"})
+        rec = self.cli_plan()
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("(F29)", rec["reason"])
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+
+    def test_a_change_introducing_an_incomplete_declaration_is_red(self):
+        # The base declares nothing; the change adds a declaration that leaves ui's tests uncovered. The inventory is read
+        # because the CANDIDATE declares, so the change is red before it lands (else it would wedge main, F29).
+        bare = json.loads(json.dumps(self.cfg)); del bare["test_jobs"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(bare)})
+        self.base = self.head
+        incomplete = json.loads(json.dumps(bare)); incomplete["test_jobs"] = {"server_tests": ["server"]}
+        self.commit_tree({".github/ci-plan.json": json.dumps(incomplete)})
+        with self.assertRaisesRegex(ValueError, "the tests of ui"):
+            self.cli_plan()
+
+    def test_a_new_package_with_its_tests_and_its_declaration_lands_in_one_change(self):
+        # The base's graph does not know the package, so its tests are outside every package there (the base cannot
+        # narrow: FULL); the candidate's own graph and declaration cover them, so the change is not red.
+        grown = json.loads(json.dumps(self.cfg))
+        grown["workspace"]["packages"]["api"] = {"dir": "api", "deps": []}
+        grown["jobs"]["api_tests"] = {"packages": ["api"]}
+        grown["test_jobs"]["api_tests"] = ["api"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(grown), "api/a.py": "x = 1\n", "api/test_a.py": "def test_a(): pass\n"})
+        rec = self.cli_plan()
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+        # Without its declaration the same change is red: the candidate's graph owns the tests and nothing runs them.
+        undeclared = json.loads(json.dumps(grown)); del undeclared["test_jobs"]["api_tests"]
+        self.commit_tree({".github/ci-plan.json": json.dumps(undeclared), "api/a.py": "x = 1\n", "api/test_a.py": "def test_a(): pass\n"})
+        with self.assertRaisesRegex(ValueError, "the tests of api"):
+            self.cli_plan()
+
+    def test_a_change_repairing_an_invalid_base_config_plans_full_instead_of_red(self):
+        # F29 (root's ruling, 2026-10-30): the base's config is broken, the candidate's own config is valid; red would
+        # wedge main forever (the fix itself is judged by the broken base), so the plan is FULL and the fix can land.
+        self.make_candidate("ui/a.ts", "UI change\n")
+        args, plan_file, _ = self.invalid_matrix_args()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(P.main(args), 0)
+        rec = json.loads(plan_file.read_text())
+        self.assertEqual(rec["mode"], "full")
+        self.assertIn("this change's own config is valid and complete, so it plans FULL and can land (F29)", rec["reason"])
+        self.assertEqual(rec["config_check"]["red_decided_by"], "candidate")
+        self.assertEqual(rec["config_check"]["candidate_errors"], [])
+        self.assertTrue(any("undeclared package" in e for e in rec["config_check"]["base_errors"]))
+
+    def test_invalid_matrix_reference_publishes_no_plan_or_reduction_outputs(self):
+        # The candidate's OWN config is the invalid one, so the change is red before it can land.
+        invalid = json.loads(json.dumps(self.cfg))
+        invalid["matrices"] = {"tests": [{"include": {"group": "missing"}, "rule": {"packages": ["undeclared"]}}]}
+        self.make_candidate(".github/ci-plan.json", json.dumps(invalid))
         policy = Path(self.temp.name) / "policy"
         (policy / ".github").mkdir(parents=True)
         (policy / ".github/ci-plan.json").write_text(json.dumps(self.cfg))
@@ -311,7 +399,9 @@ class FrozenScope(unittest.TestCase):
 
     def test_target_policy_not_predecessor_or_candidate_config_is_used(self):
         target = self.base
-        malicious = json.loads(json.dumps(self.cfg)); malicious["jobs"] = {}
+        # A VALID but narrower candidate config (server_tests removed): F29 lets it decide only RED vs FULL, never the
+        # plan's selection, which stays the trusted target's (F14).
+        malicious = json.loads(json.dumps(self.cfg)); malicious["jobs"] = {"ui_tests": {"packages": ["ui"]}}
         self.make_candidate(".github/ci-plan.json", json.dumps(malicious))
         self.base = self.candidate
         self.make_candidate("docs/readme.md", "docs tail\n")
@@ -552,7 +642,489 @@ class FrozenScope(unittest.TestCase):
         self.assertNotEqual(first["plan_id"], value["plan_id"])
 
 
+
+class ConfigOutsideFullTriggers(unittest.TestCase):
+    """F14 and F29 end to end through main(), with the plan config at a path no full trigger matches (root's #57 RC).
+    At .github/ci-plan.json every config change is FULL by the builtin .github/** trigger, which hides whether selection
+    reads the base or the candidate. Ported from the R4 reviewer's harness (vectors a1-a10)."""
+
+    CFG = {"schema": 1, "workspace": {"type": "declared", "packages": {
+        "server": {"dir": "server", "deps": []}, "ui": {"dir": "ui", "deps": []}}},
+        "hub_packages": ["server"], "inert_globs": ["docs/**"],
+        "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]}}
+    FILES = {"server/a.py": "before\n", "ui/a.ts": "before\n", "ui/a.test.ts": "before\n", "docs/readme.md": "before\n"}
+
+    def fixture(self, cfg, files=None, config_rel="ui/ci-plan.json", text=None):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.tmp, self.config_rel, self.runs = Path(self.temp.name), config_rel, 0
+        self.root = self.tmp / "candidate"
+        self.root.mkdir()
+        self.git("init", "-q")
+        tree = dict(self.FILES if files is None else files)
+        tree[config_rel] = text if text is not None else json.dumps(cfg)
+        for path, body in tree.items():
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text(body)
+        self.git("add", "-A")
+        self.base = self.git("commit-tree", self.git("write-tree"), input=b"base\n")
+        self.git("reset", "-q", "--hard", self.base)
+
+    def git(self, *args, input=None, cwd=None):
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                   GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+                   GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        return subprocess.check_output(["git", *args], cwd=cwd or self.root, env=env, input=input,
+                                       stderr=subprocess.PIPE).decode().strip()
+
+    def change(self, files):
+        """The candidate merge(base, head), head = base plus `files` (path -> text, or None to delete)."""
+        self.git("reset", "-q", "--hard", self.base)
+        for path, body in files.items():
+            if body is None:
+                (self.root / path).unlink()
+            else:
+                (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+                (self.root / path).write_text(body)
+        self.git("add", "-A")
+        tree = self.git("write-tree")
+        self.head = self.git("commit-tree", tree, "-p", self.base, input=b"head\n")
+        self.candidate = self.git("commit-tree", tree, "-p", self.base, "-p", self.head, input=b"merge\n")
+        self.git("reset", "-q", "--hard", self.candidate)
+
+    def run_plan(self):
+        """main() against a trusted-base policy checkout; the published plan, or the ValueError of a RED change."""
+        self.runs += 1
+        policy = self.tmp / f"policy-{self.runs}"
+        self.git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(self.root), str(policy))
+        self.git("-C", str(policy), "reset", "--quiet", "--hard", self.base)
+        out = self.tmp / f"plan-{self.runs}.json"
+        args = ["--config", self.config_rel, "--root", str(policy), "--scope-root", str(self.root),
+                "--repository", "fixture/repo", "--tested-root", str(self.root), "--out-json", str(out),
+                "--repository-id", "101", "--repository-owner-id", "202", "--event", "pull_request",
+                "--base", self.base, "--head", self.head, "--candidate", self.candidate,
+                # action.yml always passes a summary; its write is part of what can fail (root's #57 RC3)
+                "--summary", str(self.tmp / f"summary-{self.runs}.md")]
+        if (policy / self.config_rel).is_file():
+            # As action.yml's readers step: a reader check that fails (a broken base config can crash it) forces FULL;
+            # it never stops the plan, so the candidate still decides RED.
+            readers = self.tmp / f"readers-{self.runs}.json"
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    E.main(["check", "--config", str(policy / self.config_rel), "--repo", str(self.root),
+                            "--manifest-root", str(policy), "--revision", self.candidate, "--out-json", str(readers)])
+                args += ["--reader-assessment", str(readers)]
+            except (Exception, SystemExit):  # noqa: BLE001 - any failure, exactly as the step's `if ! edges.py check`
+                args += ["--force-full-reason", "reader closure unproven; full validation required"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(P.main(args), 0)
+        except ValueError as exc:
+            self.assertFalse(out.exists(), "a RED change publishes no plan")
+            return exc
+        return json.loads(out.read_text())
+
+    def assert_red(self, pattern):
+        result = self.run_plan()
+        self.assertIsInstance(result, ValueError, result if isinstance(result, ValueError) else result["reason"])
+        self.assertRegex(str(result), pattern)
+
+    def assert_mode(self, mode, reason, run):
+        result = self.run_plan()
+        self.assertIsInstance(result, dict, str(result))
+        self.assertEqual((result["mode"], sorted(k for k, v in result["jobs"].items() if v["run"])), (mode, run),
+                         result["reason"])
+        self.assertRegex(result["reason"], reason)
+        return result
+
+    def land(self):
+        self.base = self.head
+
+    def test_a_glob_only_the_candidate_adds_never_fills_the_inventory_the_base_narrows_by_f14(self):
+        # Root's #57 RC 1 (a1). The tree holds no conventional test file, so the base's inventory is empty.
+        files = {"server/a.py": "before\n", "ui/a.ts": "before\n", "ui/check.sh": "run\n", "docs/readme.md": "before\n"}
+        globbed = json.loads(json.dumps(self.CFG)); globbed["test_globs"] = ["ui/a.ts"]
+        empty = "the candidate's test inventory is empty while a declaration exists: refused as unproven"
+        self.fixture(self.CFG, files)
+        self.change({"ui/a.ts": "x\n"})
+        self.assert_mode("full", empty, ["server_tests", "ui_tests"])
+        # The candidate's glob makes ui/a.ts a test of ui (covered, so not red), but cannot narrow its own plan.
+        self.change({"ui/ci-plan.json": json.dumps(globbed), "ui/a.ts": "x\n"})
+        self.assert_mode("full", empty, ["server_tests", "ui_tests"])
+        # Positive control: the same glob on the BASE fills the inventory, and the same change narrows.
+        self.fixture(globbed, files)
+        self.change({"ui/a.ts": "x\n"})
+        self.assert_mode("reduced", "affected: ui", ["ui_tests"])
+
+    def test_a_glob_the_candidate_adds_is_an_obligation_and_a_glob_it_drops_still_binds_it(self):
+        # The union of both configs' globs decides RED: an extra glob only adds obligations.
+        self.fixture(self.CFG)
+        added = json.loads(json.dumps(self.CFG)); added["test_globs"] = ["docs/*.check.sh"]
+        self.change({"ui/ci-plan.json": json.dumps(added), "docs/x.check.sh": "run\n"})
+        self.assert_red(r"1 test file\(s\) outside every package .*docs/x\.check\.sh")
+        # The base's glob still binds the change that drops it (M12): ui's check files lose their unit in the same change.
+        base = json.loads(json.dumps(self.CFG)); base["test_globs"] = ["ui/*.check.sh"]
+        self.fixture(base, {**self.FILES, "ui/x.check.sh": "run\n"})
+        dropped = json.loads(json.dumps(self.CFG)); dropped["test_jobs"] = {}
+        self.change({"ui/ci-plan.json": json.dumps(dropped), "ui/a.test.ts": None})
+        self.assert_red(r"the tests of ui \(1 file\(s\), e\.g\. ui/x\.check\.sh\)")
+
+    def test_a_narrower_candidate_config_cannot_narrow_its_own_plan(self):
+        # a9 (kills selection reading the candidate's config): the candidate drops the hub and changes the hub's code.
+        self.fixture(self.CFG)
+        unhubbed = json.loads(json.dumps(self.CFG)); unhubbed["hub_packages"] = []
+        self.change({"ui/ci-plan.json": json.dumps(unhubbed), "server/a.py": "x\n"})
+        result = self.assert_mode("full", "hub package affected: server", ["server_tests", "ui_tests"])
+        self.assertEqual(result["config_check"], {"red_decided_by": "candidate", "base_errors": [], "candidate_errors": []})
+
+    def test_a_narrower_candidate_graph_cannot_narrow_its_own_plan(self):
+        # a10 (kills selection reading the candidate's graph): ui depends on lib; the candidate drops the edge, lib changes.
+        cfg = {"schema": 1, "workspace": {"type": "declared", "packages": {
+            "lib": {"dir": "lib", "deps": []}, "ui": {"dir": "ui", "deps": ["lib"]}}},
+            "hub_packages": [], "inert_globs": ["docs/**"],
+            "jobs": {"lib_tests": {"packages": ["lib"]}, "ui_tests": {"packages": ["ui"]}},
+            "test_jobs": {"lib_tests": ["lib"], "ui_tests": ["ui"]}}
+        self.fixture(cfg, {"lib/a.py": "x\n", "lib/test_a.py": "def test(): pass\n", "ui/a.ts": "x\n",
+                           "ui/a.test.ts": "it()\n"}, config_rel="lib/ci-plan.json")
+        cut = json.loads(json.dumps(cfg)); cut["workspace"]["packages"]["ui"]["deps"] = []
+        self.change({"lib/ci-plan.json": json.dumps(cut), "lib/a.py": "y\n"})
+        self.assert_mode("reduced", "affected: lib, ui", ["lib_tests", "ui_tests"])
+
+    def test_a_malformed_candidate_config_is_red_and_a_change_repairing_a_malformed_base_plans_full(self):
+        # Root's #57 RC 2 (a2): a JSON typo, or a config that is not an object, is red BEFORE it lands ...
+        for text, words in ((json.dumps(self.CFG)[:-1], "the plan config is not valid JSON"),
+                            ("[]", "the plan config is a JSON list, not an object")):
+            with self.subTest(text=text[:12]):
+                self.fixture(self.CFG)
+                self.change({"ui/ci-plan.json": text})
+                self.assert_red(words)
+                # ... and were one on the base anyway, the valid repair plans FULL with no job list, so the caller runs
+                # its complete roster (F29), instead of being red forever.
+                self.fixture(None, text=text)
+                self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+                result = self.assert_mode("full", ".", [])
+                self.assertTrue(result["requires_full_caller_roster"])
+                self.assertEqual(result["config_check"], {"red_decided_by": "candidate", "base_errors": [
+                    result["config_check"]["base_errors"][0]], "candidate_errors": []})
+                self.assertIn(words, result["config_check"]["base_errors"][0])
+                # An unrelated change on that base is still red: only the repair can land.
+                self.change({"ui/a.ts": "x\n"})
+                self.assert_red(words)
+
+    def test_a_value_of_the_wrong_json_type_is_a_message_never_a_traceback(self):
+        # Root's #57 RC 3 and 4 (a3, a5). Each broken config is red with a message as the candidate. As the base, its
+        # valid repair plans FULL, and the base's error is the candidate's message: one rule reads both. (None: the
+        # base's own error is that message; a string: the base never reaches the config check, and this is the reason.)
+        def broken(**fields):
+            cfg = json.loads(json.dumps(self.CFG)); cfg.update(fields)
+            return json.dumps(cfg)
+        cases = [
+            (broken(jobs=["ui_tests"], test_jobs={}), r"the plan config has a value of the wrong type \(AttributeError", None),
+            (broken(workspace="declared"), "the plan config's workspace is a JSON str, not an object",
+             "workspace graph unreadable: workspace is a JSON str, not an object"),
+            (broken(matrices={"m": [{"rule": "always"}]}), "invalid matrix entry", None),
+            ('{"schema":1,"x":' + "[" * 100000 + "]" * 100000 + "}", "the plan config nests too deeply to parse", None),
+            (broken(matrices=["general"]), "invalid job or matrix selection policy", None),
+            # Fields only selection reads: a list extra_edges crashed classify_paths on the base (every change red, the
+            # repair included), and a string hub_packages iterated as characters, so the hub never matched.
+            (broken(extra_edges=["ui/**"]), "extra_edges must map a non-empty glob to a list of package names", None),
+            (broken(hub_packages="server"), "hub_packages must be a list of non-empty strings", None),
+            (broken(workspace={"type": "declared", "packages": {"server": {"deps": []}, "ui": {"dir": "ui", "deps": []}}}),
+             "the plan config's workspace cannot be read: KeyError: 'dir'", "workspace graph unreadable: 'dir'"),
+        ]
+        for text, red, repaired in cases:
+            with self.subTest(red=red):
+                self.fixture(self.CFG)
+                self.change({"ui/ci-plan.json": text})
+                self.assert_red(red)
+                self.fixture(None, text=text)
+                self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+                result = self.run_plan()
+                self.assertIsInstance(result, dict, str(result))
+                self.assertEqual((result["mode"], result["jobs"] == {} or all(j["run"] for j in result["jobs"].values())),
+                                 ("full", True))
+                if repaired is None:
+                    self.assertEqual(result["config_check"]["red_decided_by"], "candidate")
+                    self.assertEqual(result["config_check"]["candidate_errors"], [])
+                    self.assertRegex("; ".join(result["config_check"]["base_errors"]), red)
+                else:
+                    self.assertEqual(result["reason"], repaired)
+        # A base whose workspace cannot be read plans FULL, but a change whose own config is broken is still red.
+        self.fixture(None, text=broken(workspace="declared"))
+        self.change({"ui/ci-plan.json": "[]"})
+        self.assert_red("the plan config is a JSON list, not an object")
+
+    def test_a_lone_surrogate_in_a_config_string_is_red_and_its_repair_lands(self):
+        # Root's #57 RC3: "\udce9" is valid JSON but no Unicode text. It parsed, then crashed the summary's strict UTF-8
+        # write of the name it carried, so a candidate holding one planned FULL and landed (P2), and after it the repair
+        # (P1) and every unrelated change (P3) were red. Now it is malformed, for a candidate and a base alike.
+        def weird_job():
+            cfg = json.loads(json.dumps(self.CFG)); cfg["jobs"]["ui_tests\udce9"] = cfg["jobs"].pop("ui_tests")
+            cfg["test_jobs"] = {"ui_tests\udce9": ["ui"]}
+            return json.dumps(cfg)  # escaped as \\udce9: valid JSON
+        def weird_package():
+            cfg = json.loads(json.dumps(self.CFG))
+            cfg["workspace"]["packages"]["ui\udce9"] = cfg["workspace"]["packages"].pop("ui")
+            cfg["jobs"]["ui_tests"] = {"packages": ["ui\udce9"]}; cfg["test_jobs"] = {"ui_tests": ["ui\udce9"]}
+            return json.dumps(cfg)
+        for name, weird in (("job", weird_job), ("package", weird_package)):
+            with self.subTest(name=name):
+                self.fixture(self.CFG)
+                self.change({"ui/ci-plan.json": weird()})
+                self.assert_red("not valid Unicode")  # P2: red before it lands
+                self.fixture(None, text=weird())
+                self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+                result = self.assert_mode("full", ".", [])  # P1: the repair lands; the base config cannot be read
+                self.assertIn("not valid Unicode", result["config_check"]["base_errors"][0])
+                self.change({"ui/a.ts": "x\n"})
+                self.assert_red("not valid Unicode")  # P3: only a repair lands
+
+    def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
+        # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
+        # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an
+        # unrelated change, still at schema 2, stays red.
+        later = json.loads(json.dumps(self.CFG)); later["schema"] = 2; later["test_jobs"] = {}
+        self.fixture(self.CFG)
+        self.change({"ui/ci-plan.json": json.dumps(later)})
+        self.assert_red(r"plan config schema 2 is not 1")
+        self.fixture(later)
+        self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+        self.assert_mode("full", "plan config schema 2 is not 1", [])
+        self.change({"ui/a.ts": "x\n"})
+        self.assert_red(r"plan config schema 2 is not 1")
+
+    def test_a_pnpm_graph_narrows_by_the_base_and_reds_by_the_candidates_own_edges(self):
+        # pnpm: the graph comes from the tree (pnpm-workspace.yaml, manifests) plus the config's extra_deps. A manifest
+        # edit is a builtin full trigger (**/package.json), so the config's extra_deps is the one route by which a
+        # candidate's graph could be narrower than the base's.
+        cfg = {"schema": 1, "workspace": {"type": "pnpm", "extra_deps": {"b": ["a"]}}, "hub_packages": [],
+               "inert_globs": ["docs/**"], "jobs": {"a_tests": {"packages": ["a"]}, "b_tests": {"packages": ["b"]}},
+               "test_jobs": {"a_tests": ["a"], "b_tests": ["b"]}}
+        files = {"pnpm-workspace.yaml": "packages:\n  - 'pkgs/*'\n", "package.json": '{"name": "root"}\n',
+                 "pkgs/a/package.json": '{"name": "a"}\n', "pkgs/a/x.test.ts": "it()\n",
+                 "pkgs/b/package.json": '{"name": "b"}\n', "pkgs/b/y.test.ts": "it()\n"}
+        self.fixture(cfg, files, config_rel="pkgs/b/ci-plan.json")
+        self.change({"pkgs/a/x.test.ts": "it('x')\n"})
+        self.assert_mode("reduced", "affected: a, b", ["a_tests", "b_tests"])
+        # The candidate drops the b -> a edge and changes a: the base's graph still has the edge (the M2 shape, pnpm).
+        cut = json.loads(json.dumps(cfg)); del cut["workspace"]["extra_deps"]
+        self.change({"pkgs/b/ci-plan.json": json.dumps(cut), "pkgs/a/x.test.ts": "it('x')\n"})
+        self.assert_mode("reduced", "affected: a, b", ["a_tests", "b_tests"])
+        # An extra_deps entry naming no package is the config's error: red.
+        ghost = json.loads(json.dumps(cfg)); ghost["workspace"]["extra_deps"] = {"b": ["ghost"]}
+        self.change({"pkgs/b/ci-plan.json": json.dumps(ghost)})
+        self.assert_red("the plan config's workspace cannot be read: ValueError: extra_deps for b contains an undeclared")
+        # A manifest that does not parse is the tree's defect (pnpm install refuses it): the base decides, never red.
+        self.change({"pkgs/b/package.json": '{"name": "b",'})
+        result = self.assert_mode("full", r"pkgs/b/package\.json matches full trigger", ["a_tests", "b_tests"])
+        self.assertEqual(result["config_check"]["red_decided_by"], "base")
+
+    def test_a_change_removing_the_config_has_nothing_of_its_own_to_validate(self):
+        # Absent is not unreadable: git lists the candidate's tree and the path is not in it. On a broken base the
+        # removal plans FULL and can land; the base decides nothing it cannot read.
+        gapped = json.loads(json.dumps(self.CFG)); gapped["test_jobs"] = {}
+        self.fixture(gapped)
+        self.change({"ui/ci-plan.json": None})
+        result = self.assert_mode("full", r"this change removes it, so it plans FULL and can land \(F29\)",
+                                  ["server_tests", "ui_tests"])
+        self.assertEqual(result["config_check"]["candidate_errors"], [])
+        self.fixture(None, text="[]")
+        self.change({"ui/ci-plan.json": None})
+        self.assertEqual(self.assert_mode("full", ".", [])["config_check"]["red_decided_by"], "candidate")
+        self.fixture(self.CFG)
+        self.change({"ui/ci-plan.json": None, "ui/a.ts": "x\n"})
+        self.assert_mode("reduced", "affected: ui", ["ui_tests"])
+
+    def test_a_change_introducing_a_config_is_judged_by_it(self):
+        # No config on the base: nothing narrows, but a change that introduces a broken one is red before it lands.
+        self.fixture(None, text="{}")
+        self.git("rm", "-q", "--cached", "ui/ci-plan.json")
+        (self.root / "ui/ci-plan.json").unlink()
+        self.base = self.git("commit-tree", self.git("write-tree"), input=b"no config\n")
+        self.change({"ui/ci-plan.json": "[]"})
+        self.assert_red("the plan config is a JSON list, not an object")
+        self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
+        self.assert_mode("full", "no plan config on the base commit", [])
+
+
+
+class NonUtf8TreeNames(unittest.TestCase):
+    """Root's #57 RC2: one file name that is not UTF-8, anywhere in a pnpm tree, made the candidate unreadable, so the base
+    decided and an invalid rule landed and wedged main. Trees are built with plumbing (a macOS filesystem cannot hold such
+    a name); the policy root is a sparse checkout like the action's. Ported from the R4 reviewer's harness (plumb.py)."""
+
+    CFG = {"schema": 1, "workspace": {"type": "pnpm"}, "hub_packages": ["server"], "inert_globs": ["docs/**"],
+           "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]}}
+    FILES = {b"pnpm-workspace.yaml": b"packages:\n  - 'pkgs/*'\n", b"package.json": b'{"name":"root","private":true}\n',
+             b"pkgs/ui/package.json": b'{"name":"ui"}\n', b"pkgs/server/package.json": b'{"name":"server"}\n',
+             b"pkgs/ui/a.ts": b"x\n", b"pkgs/ui/a.test.ts": b"it()\n", b"pkgs/server/a.ts": b"x\n"}
+    WEIRD = b"docs/caf\xe9.txt"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.tmp, self.runs, self.commits = Path(self.temp.name), 0, 0
+        self.root = self.tmp / "candidate"
+        self.root.mkdir()
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                        GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        self.git("init", "-q")
+        self.base = self.commit({**self.FILES, b".github/ci-plan.json": json.dumps(self.CFG).encode()}, [])
+
+    def git(self, *args, input=None, cwd=None, env=None):
+        return subprocess.check_output(["git", *args], cwd=cwd or self.root, env=env or self.env, input=input,
+                                       stderr=subprocess.PIPE).strip()
+
+    def commit(self, files, parents):
+        self.commits += 1
+        env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{self.commits}"))
+        lines = b"".join(b"100644 " + self.git("hash-object", "-w", "--stdin", input=data) + b"\t" + path + b"\n"
+                         for path, data in sorted(files.items()))
+        self.git("update-index", "--index-info", input=lines, env=env)
+        args = ["commit-tree", self.git("write-tree", env=env).decode()]
+        for parent in parents:
+            args += ["-p", parent]
+        return self.git(*args, input=f"commit {self.commits}\n".encode()).decode()
+
+    def files_at(self, rev):
+        files = {}
+        for entry in self.git("ls-tree", "-r", "-z", rev).split(b"\0"):
+            if entry:
+                meta, path = entry.split(b"\t", 1)
+                # Raw bytes: git() strips its output, which would edit every blob and touch every path.
+                files[path] = subprocess.check_output(["git", "cat-file", "blob", meta.split()[2].decode()],
+                                                      cwd=self.root, env=self.env)
+        return files
+
+    def change(self, edits):
+        files = self.files_at(self.base)
+        for path, data in edits.items():
+            if data is None:
+                files.pop(path)
+            else:
+                files[path] = data
+        self.head = self.commit(files, [self.base])
+        self.candidate = self.commit(files, [self.base, self.head])
+        self.git("update-ref", "--no-deref", "HEAD", self.candidate)
+
+    def run_plan(self):
+        self.runs += 1
+        policy = self.tmp / f"policy-{self.runs}"
+        self.git("clone", "-q", "--no-checkout", "--no-hardlinks", str(self.root), str(policy))
+        self.git("sparse-checkout", "set", "--no-cone", ".github/ci-plan.json", "/pnpm-workspace.yaml", "/pnpm-lock.yaml",
+                 "**/package.json", "/.github/workflows/", cwd=policy)
+        self.git("checkout", "-q", "--detach", self.base, cwd=policy)
+        out = self.tmp / f"plan-{self.runs}.json"
+        args = ["--config", ".github/ci-plan.json", "--root", str(policy), "--scope-root", str(self.root),
+                "--repository", "fixture/repo", "--out-json", str(out), "--repository-id", "101",
+                "--repository-owner-id", "202", "--event", "pull_request", "--base", self.base, "--head", self.head,
+                "--candidate", self.candidate, "--summary", str(self.tmp / f"summary-{self.runs}.md")]
+        readers = self.tmp / f"readers-{self.runs}.json"
+        try:  # as action.yml's readers step: a failed reader check forces FULL, it never stops the plan
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                E.main(["check", "--config", str(policy / ".github/ci-plan.json"), "--repo", str(self.root),
+                        "--manifest-root", str(policy), "--revision", self.candidate, "--out-json", str(readers)])
+            args += ["--reader-assessment", str(readers)]
+        except (Exception, SystemExit):  # noqa: BLE001
+            args += ["--force-full-reason", "reader closure unproven; full validation required"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(P.main(args), 0)
+        except ValueError as exc:
+            return ("RED", str(exc))
+        record = json.loads(out.read_text())
+        return (record["mode"], (record.get("config_check") or {}).get("red_decided_by"))
+
+    def land(self):
+        self.base = self.head
+
+    def config(self, cfg=None, text=None):
+        return {b".github/ci-plan.json": text if text is not None else json.dumps(cfg or self.CFG).encode()}
+
+    def test_the_plumbing_fixture_changes_only_the_paths_it_edits(self):
+        self.change({b"pkgs/ui/a.ts": b"y\n"})
+        self.assertEqual(self.git("diff", "--name-only", self.base, self.head), b"pkgs/ui/a.ts")
+        self.assertEqual(self.run_plan(), ("reduced", "candidate"), "control: a ui change narrows on the clean tree")
+
+    def test_an_invalid_rule_beside_a_non_utf8_name_is_red_and_its_repair_lands(self):
+        bad = json.loads(json.dumps(self.CFG)); bad["jobs"]["ui_tests"] = {"packages": ["nope"]}
+        self.change(self.config(bad))
+        self.assertEqual(self.run_plan()[0], "RED", "control: the invalid-rule change on a clean tree")
+        self.change({self.WEIRD: b"x\n"})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "adding the name (S1)")
+        self.land()
+        self.change(self.config(bad))
+        self.assertEqual(self.run_plan()[0], "RED", "the invalid rule on the weird tree (S2): was FULL, decided by the base")
+        self.land()  # were it on main anyway
+        self.change({b"pkgs/ui/a.ts": b"y\n"})
+        self.assertEqual(self.run_plan()[0], "RED", "an unrelated change on the broken base (S3)")
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the rule's repair (S4)")
+        self.change({**self.config(), self.WEIRD: None})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair that also deletes the name (S5)")
+        self.change({self.WEIRD: None})
+        self.assertEqual(self.run_plan()[0], "RED", "deleting the name alone repairs nothing (S6)")
+
+    def test_a_typo_beside_a_new_non_utf8_name_is_red_though_the_scope_is_unknown(self):
+        # A non-UTF-8 path in the DIFF makes the scope unknown; the candidate's own config is still read (it needs only
+        # the candidate commit), so the typo cannot land beside it (T1), and its repair lands either way (T2, T3).
+        typo = json.dumps(self.CFG).encode()[:-1]
+        self.change({**self.config(text=typo), self.WEIRD: b"x\n"})
+        result = self.run_plan()
+        self.assertEqual(result[0], "RED")
+        self.assertIn("the plan config is not valid JSON", result[1])
+        self.land()  # were it on main anyway
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair (T2)")
+        self.change({**self.config(), self.WEIRD: None})
+        self.assertEqual(self.run_plan(), ("full", "candidate"), "the repair that also deletes the name (T3)")
+
+    def test_a_base_gap_naming_a_non_utf8_test_file_does_not_crash_the_repair_plan_or_its_summary(self):
+        # Root's #57 RC3, G2: the base's inventory gap names a test file whose name is not UTF-8, so the FULL plan's
+        # reason carries the undecodable bytes, and the summary's strict write crashed the repair. It is written escaped.
+        gapped = json.loads(json.dumps(self.CFG)); gapped["test_jobs"] = {}
+        files = {**self.FILES, b"pkgs/ui/a\xe9.test.ts": b"it()\n", **self.config(gapped)}
+        files.pop(b"pkgs/ui/a.test.ts")
+        self.base = self.commit(files, [])
+        self.change(self.config())
+        self.assertEqual(self.run_plan(), ("full", "candidate"))
+        summary = (self.tmp / f"summary-{self.runs}.md").read_bytes().decode("utf-8")  # strict: it is valid UTF-8
+        self.assertIn("\\udce9", summary, "the undecodable byte is written as an escape, never as raw bytes")
+
+    def test_the_inventory_reads_each_name_on_its_own_so_a_test_behind_a_non_utf8_name_is_judged(self):
+        weird_test = b"pkgs/server/caf\xe9.test.ts"
+        self.change({self.WEIRD: b"x\n", weird_test: b"it()\n"})
+        names = P.candidate_test_files(self.root, self.candidate, [])
+        self.assertIsNotNone(names, "one undecodable name does not make the whole inventory unreadable")
+        self.assertIn(weird_test.decode("utf-8", "surrogateescape"), names)
+        self.assertIn("pkgs/ui/a.test.ts", names)
+        # server's tests run in no unit a change to server selects (server_tests is full_only), and the hub rule
+        # covers it: the gap check reads the weird-named file and accepts it only through the hub.
+        cfg = json.loads(json.dumps(self.CFG)); cfg["hub_packages"] = []
+        self.change({self.WEIRD: b"x\n", weird_test: b"it()\n", **self.config(cfg)})
+        result = self.run_plan()
+        self.assertEqual(result[0], "RED")
+        self.assertIn("the tests of server", result[1])
+
+
 class ActionContract(unittest.TestCase):
+    def test_the_plan_steps_final_print_escapes_a_reason_it_cannot_encode(self):
+        # Root's #57 RC3 item 3: action.yml prints the plan's reason after the plan step. A reason carrying undecodable
+        # tree bytes (a lone surrogate) must print escaped, not fail the step. This runs the step's own line.
+        text = (Path(__file__).parent / "action.yml").read_text()
+        match = re.search(r"python3 -c '([^']*)' \"\$STATE/plan\.json\"", text)
+        self.assertIsNotNone(match, "the plan step's final print")
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "plan.json"
+            plan.write_text(json.dumps({"plan_id": "abc", "mode": "full", "reason": "tests of ui (pkgs/ui/a\udce9.test.ts)"}))
+            env = {key: value for key, value in os.environ.items() if key not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+            done = subprocess.run([sys.executable, "-c", match.group(1), str(plan)], capture_output=True, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"\\udce9", done.stdout)
+
     def test_action_has_no_mutable_path_api_or_stale_receipt_input(self):
         text = (Path(__file__).parent / "action.yml").read_text()
         self.assertNotIn("/pulls/", text)

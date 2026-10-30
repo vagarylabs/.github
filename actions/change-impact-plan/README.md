@@ -652,7 +652,8 @@ executes, and checks that declaration against the candidate's own test files.
     - a test file inside a package that matches `inert_globs`, because a change to it would be classified inert and
       select nothing.
   - With no declaration, the plan is FULL with the reason `no test_jobs declaration`.
-  - An unreadable inventory, or an empty one while a declaration exists, is FULL (refused as unproven).
+  - An unreadable inventory, or an empty one while a declaration exists, is FULL (refused as unproven). These guards
+    read the candidate's tree with the BASE's `test_globs` only (1.7.1), so a glob a change adds cannot fill them.
 - **Record.** `plan.test_inventory = {schema, files, digest, packages: {P: {files, covered_by}}, unowned: {files,
   uncovered}, gaps}` is bound into `plan_id`.
 - **Not claimed.** The planner cannot see which files a unit really executes. That binding is the consumer's runner
@@ -666,18 +667,61 @@ executes, and checks that declaration against the candidate's own test files.
     planner cannot see whether the consumer's workflow actually runs the matrix's PARENT job. So the consumer must run
     the parent job whenever any of its entries is included (vagaris builds its matrix from the plan, so it qualifies). A
     parent job gated by something else makes the entry's coverage claim untrue.
-  - **Declare first.** The declaration is read from the BASE (a change cannot widen its own coverage), so a pull request
-    cannot fix its own gap:
-    - first tests for a package the base does not cover go red;
-    - a test file in a package directory the base's graph does not know is outside every package, so it needs an
-      always-unit `path:` entry in the base.
-    - Order the changes: land the package (or its directory's `path:` entry) and its declaration first, then its tests.
-  - **Known residual, liveness.** A change that REMOVES a declaration entry is judged against the base's complete
-    declaration, so it lands. After that, every pull request is red, including the one that restores the entry
-    (reproduced through `main()`, 2026-10-30). The same class predates 1.7.0 for selection rules, which are also
-    validated on the base config. Until it is closed (cli's finding to root: the consumer runner gate refuses a change
-    whose OWN declaration has a gap, and the planner decides red on the candidate's declaration while narrowing stays on
-    the base's), a consumer must not merge a declaration removal past its own runner gate.
+  - **Declaring in the same change (1.7.1).** Whether a change is red is decided by its OWN declaration (see Liveness
+    below), so a change can add a package, its tests and its declaration together, or fix its own gap. The BASE still
+    decides narrowing (a change cannot widen its own coverage), so such a change plans FULL rather than narrowed:
+    - first tests for a package the base does not cover are covered by the change's own declaration, and the base's
+      inventory has a gap, so the plan is FULL;
+    - a test file in a package directory the base's graph does not know is outside every package there, so the base
+      cannot narrow either.
+    - The change after it narrows as usual, because its base now holds the declaration.
+  - **Liveness: who decides RED (1.7.1, F29).** A gate that read its rules only from the base could wedge itself. A
+    change that removed a declaration entry, or broke a selection rule, passed against the old base and landed, and
+    then every change was red, including the fix (reproduced through `main()`, 2026-10-30; root's failure registry F29).
+    Since 1.7.1:
+    - the BASE config and graph still decide whether a plan may NARROW (F14: a change cannot widen its own selection);
+    - the CANDIDATE's own config and workspace graph, read from its commit's git objects (the checkout can be sparse),
+      decide whether the change is RED. Errors are:
+      - a config that does not parse (a JSON typo, nesting too deep) or is not a JSON object;
+      - a value of the wrong JSON type anywhere (a list where an object belongs, a string workspace), or an unknown
+        workspace type. Each is a message, never a traceback. This includes the fields only selection reads
+        (`full_globs`, `inert_globs`, `hub_packages`, `extra_edges`): a list `extra_edges` used to crash the next
+        plan, and a string `hub_packages` was read as its characters, so the hub never matched;
+      - invalid selection rules, an invalid declaration, or an inventory gap.
+    - One rule reads both configs, so a malformed BASE config is the base's error with the same message, not a crash.
+    - So a change that breaks the config is red BEFORE it lands, a syntax error included. A change that repairs a
+      broken base plans FULL (its `config_check` names the base's errors) and can land. When the base config cannot be
+      read at all, the FULL plan carries no job list, so the caller runs its complete roster. An unrelated change on a
+      broken base stays red: only a repair lands. A change that adds a package, its tests and its declaration together
+      is not red (the base cannot narrow it, so it plans FULL).
+    - The candidate's config can only move a plan between RED and FULL, never narrower. A narrower candidate config
+      (a dropped hub, a dropped rule) or graph (a dropped dependency edge) changes nothing about selection, at any
+      config path, including one no full trigger matches.
+    - A config at a schema other than 1 is refused the same way: RED as the candidate. As the base, a schema-1 repair
+      plans FULL ("plan config schema N is not 1") and an unrelated change still at that schema stays red. Where the
+      planner a change runs is the one its own workflow pins, a migration moves the pin and the schema in one change.
+      Where the pin is held outside the change (core's ruleset-pinned services lane, NATIVE_WORKFLOW_PIN), the planner
+      pin that reads the new schema lands first, and the schema follows.
+    - The candidate's tree is listed name by name: a name that is not UTF-8 (`docs/caf\xe9.txt`) is kept as bytes, so it
+      never makes the candidate unreadable, and a test file behind one is still inventoried (root's #57 RC2: one such
+      name made the base decide, and an invalid rule landed and wedged main).
+    - The candidate's config is read even when the SCOPE is unknown (a non-UTF-8 path in the diff, for one): it needs
+      only the candidate commit, never the diff, and it moves the plan between RED and FULL only. So a typo landing
+      beside such a path is red, and its repair lands with or without deleting the path.
+    - The base decides both only when git cannot produce the candidate's config, or when the candidate's
+      pnpm-workspace.yaml or a workspace manifest cannot be produced or does not parse. That is the tree's defect, not
+      the config's: pnpm install refuses it in the change's own CI, so the planner does not judge it (a manifest edit is
+      a builtin full trigger, so that change is FULL). Once it lands, the base's graph is unreadable and every plan is
+      FULL until it is fixed.
+    - Nothing of the candidate's own is validated when it has no config at that path (it removes it): a removal on a
+      broken base plans FULL and can land.
+    - The candidate's tree is read twice. With the BASE's `test_globs` for the base inventory and the narrowing guards;
+      with both configs' `test_globs` for the candidate's RED check only (an extra glob only adds obligations). So a
+      change that drops a glob is still bound by it: the files it matched need coverage in that change.
+    - In the action, a reader check that fails on a broken base config forces FULL. It never stops the plan, so the
+      candidate still decides RED.
+    - `plan.config_check = {red_decided_by, base_errors, candidate_errors}` is bound into `plan_id`.
+    - Each consumer's runner gate still validates the candidate's declaration in its own CI (root's prevention layer).
 
 ## Compatibility and validation
 

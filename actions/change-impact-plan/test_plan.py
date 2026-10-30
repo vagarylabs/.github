@@ -350,7 +350,9 @@ class PlannerTest(unittest.TestCase):
             self.assertTrue(json.loads(value["plan"])["requires_full_caller_roster"])
             output.unlink()
             base.write_text("{malformed")
-            with self.assertRaises(json.JSONDecodeError):
+            # 1.7.1 (F29): a malformed base is the base's error, with a message, not a parser traceback. With no
+            # readable candidate the base decides, so it still fails closed and publishes nothing.
+            with self.assertRaisesRegex(ValueError, "the plan config is not valid JSON"):
                 P.main(args)
             self.assertFalse(output.exists())
             base.unlink()
@@ -638,6 +640,78 @@ class TestInventory(unittest.TestCase):
         self.assertFalse(P.is_test_file("ui/node_modules/x/a.test.js", []))
         self.assertFalse(P.is_test_file("node_modules/x/a.test.js", []))
         self.assertTrue(P.is_test_file("ui/foo_node_modules/x.test.ts", []), "a directory merely ending in node_modules")
+
+    def test_red_is_the_candidates_call_and_narrowing_the_bases_f29(self):
+        gapped = self.config()
+        gapped["matrices"]["general_tests"][1]["tests"] = ["@v/ui"]  # the base leaves @v/cli's tests uncovered
+        complete = self.config()
+        # No readable candidate inputs: the base decides, as before (red).
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            self.plan_with(gapped)
+        # The candidate repairs the gap: FULL, never red-forever, never narrowed.
+        self.cfg_path.write_text(json.dumps(gapped))
+        rec = P.plan(cfg=gapped, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                     base="b" * 40, head="h" * 40, expected_count=None,
+                     scope=complete_scope(self.root, self.cfg_path, gapped, PR397),
+                     reader_assessment=bound_readers(self.root, self.cfg_path, gapped), test_files=TEST_FILES,
+                     candidate_inputs={"cfg": complete, "pkgs": E.workspace_graph(self.root, complete)},
+                     red_test_files=TEST_FILES)
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["config_check"]["red_decided_by"], "candidate")
+        # The candidate introduces the gap on a complete base: red.
+        self.cfg_path.write_text(json.dumps(complete))
+        with self.assertRaisesRegex(ValueError, "the tests of @v/cli"):
+            P.plan(cfg=complete, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                   base="b" * 40, head="h" * 40, expected_count=None,
+                   scope=complete_scope(self.root, self.cfg_path, complete, PR397),
+                   reader_assessment=bound_readers(self.root, self.cfg_path, complete), test_files=TEST_FILES,
+                   candidate_inputs={"cfg": gapped, "pkgs": E.workspace_graph(self.root, gapped)},
+                   red_test_files=TEST_FILES)
+
+    def test_the_candidates_red_reads_its_own_inventory_and_the_bases_narrowing_reads_the_bases_f14(self):
+        # Root's #57 RC 1: two readings of one tree. `test_files` (the base's globs) feeds the base inventory and the
+        # narrowing guards; `red_test_files` (both configs' globs) feeds only the candidate's RED check.
+        complete = self.config()
+        self.cfg_path.write_text(json.dumps(complete))
+
+        def run(test_files, red_test_files):
+            return P.plan(cfg=complete, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                          base="b" * 40, head="h" * 40, expected_count=None,
+                          scope=complete_scope(self.root, self.cfg_path, complete, PR397),
+                          reader_assessment=bound_readers(self.root, self.cfg_path, complete), test_files=test_files,
+                          candidate_inputs={"cfg": complete, "pkgs": E.workspace_graph(self.root, complete)},
+                          red_test_files=red_test_files)
+
+        narrowed = run(TEST_FILES, TEST_FILES)
+        self.assertEqual(narrowed["mode"], "reduced", narrowed["reason"])
+        # A test file only the union of globs sees, with no unit covering it, makes the candidate red.
+        with self.assertRaisesRegex(ValueError, r"outside every package .*docs/extra\.check\.sh"):
+            run(TEST_FILES, TEST_FILES + ["docs/extra.check.sh"])
+        # The union's files never stand in for the base's: an empty base reading cannot narrow, whatever the union holds.
+        rec = run([], TEST_FILES)
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["reason"], "the candidate's test inventory is empty while a declaration exists: refused as unproven")
+        self.assertEqual(rec["test_inventory"]["files"], 0)
+        rec = run(None, TEST_FILES)
+        self.assertEqual(rec["reason"], "the candidate's test inventory could not be read")
+
+    def test_the_config_check_is_bound_into_the_plan_id(self):
+        # Two plans that differ only in who decided RED (the candidate, or the base when the candidate is unreadable)
+        # are different plans: config_check is part of the identity plan_id binds.
+        complete = self.config()
+        self.cfg_path.write_text(json.dumps(complete))
+        common = dict(cfg=complete, root=self.root, config_path=self.cfg_path, paths=PR397, event="pull_request",
+                      base="b" * 40, head="h" * 40, expected_count=None,
+                      scope=complete_scope(self.root, self.cfg_path, complete, PR397),
+                      reader_assessment=bound_readers(self.root, self.cfg_path, complete), test_files=TEST_FILES)
+        by_base = P.plan(**common)
+        by_candidate = P.plan(**common, candidate_inputs={"cfg": complete, "pkgs": E.workspace_graph(self.root, complete)},
+                              red_test_files=TEST_FILES)
+        self.assertEqual((by_base["config_check"]["red_decided_by"], by_candidate["config_check"]["red_decided_by"]),
+                         ("base", "candidate"))
+        rest = lambda rec: {key: value for key, value in rec.items() if key not in ("config_check", "plan_id")}
+        self.assertEqual(rest(by_base), rest(by_candidate))
+        self.assertNotEqual(by_base["plan_id"], by_candidate["plan_id"])
 
     def test_selection_rules_are_monotone_so_closure_coverage_holds_for_every_plan(self):
         # The coverage check judges a unit against the package's own closure; a plan affecting the package has a

@@ -20,6 +20,11 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.2 adds the `source_dir` output: `GITHUB_ACTION_PATH`, the directory this step ran `plan.py`, `edges.py` and `action.yml` from. It is written only after the plan is published, so a refused plan has none, and no existing output changes.
+- It is a LOCATOR, never authority.
+- A consumer that reads those files (core's orphan gate, for one) hashes them and must match BOTH `plan.validity.{planner,reader,action}_source_sha256` AND its own policy-pinned copies.
+- Any other byte, or a missing file, is a refusal, never a fallback.
+
 - `source_answer` follows the SRC-01 source-context envelope (vagary-core `contracts/source/v1`, pinned in `plan.SOURCE_CONTRACT`). It covers repository identity (provider-stable `github.repository_id` and owner id), the pinned diff base and candidate SHAs, the analyzer (`ci.change-impact-plan` + version), how the candidate was materialized (history depth, clone filter and sparse patterns recorded independently, plus the policy files actually read), and completeness.
 - `authorization` is deliberately absent. A CI job token is not a source-access grant. Consumers must obtain the canonical `authorize()` result themselves and must not treat this envelope as authorized.
 - Completeness is derived, never asserted. Each of the following makes it partial or unknown, which makes the plan **FULL**:

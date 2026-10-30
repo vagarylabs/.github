@@ -1,5 +1,6 @@
 """Immutable scope controls; real Git objects, no provider credentials or network."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -880,6 +881,16 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
                 self.change({"ui/a.ts": "x\n"})
                 self.assert_red("not valid Unicode")  # P3: only a repair lands
 
+    def test_the_unicode_check_names_its_own_failure_never_the_other(self):
+        # Root's #57 RC3 INFO: the serialize check's two failures carry their own messages. A config nested deep
+        # enough to parse but not to serialize is not a lone surrogate. Parsing refuses deep nesting first, so the
+        # serialize RecursionError is reached by patching the dump.
+        with patch.object(P.json, "dumps", side_effect=RecursionError):
+            self.assertEqual(P.parse_plan_config(b'{"schema":1}'), (None, "the plan config nests too deeply to serialize"))
+        self.assertEqual(P.parse_plan_config(b'{"schema":1,"x":"\\udce9"}'),
+                         (None, "the plan config holds a string that is not valid Unicode (a lone surrogate escape)"))
+        self.assertEqual(P.parse_plan_config(b'{"schema":1}'), ({"schema": 1}, None))
+
     def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
         # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
         # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an
@@ -1111,6 +1122,53 @@ class NonUtf8TreeNames(unittest.TestCase):
 
 
 class ActionContract(unittest.TestCase):
+    def test_source_dir_is_the_action_path_and_is_written_only_after_the_plan_is_published(self):
+        # 1.7.2 (codex's S6 core adoption): `source_dir` locates the bytes that ran; the existing outputs are unchanged.
+        text = (Path(__file__).parent / "action.yml").read_text()
+        for name in ("mode", "plan_id", "run", "matrices", "plan", "tested", "source_dir"):
+            self.assertRegex(text, rf"\n  {name}:\n    description:[^\n]*(?:\n      [^\n]*)*\n    value: \$\{{\{{ steps\.plan\.outputs\.{name} \}}\}}\n")
+        plan_step = text[text.index("    - name: Plan\n"):text.index("    - name: Remove attempt-local inputs")]
+        write = "printf 'source_dir=%s\\n' \"$GITHUB_ACTION_PATH\" >> \"$GITHUB_OUTPUT\""
+        self.assertIn(write, plan_step)
+        self.assertLess(plan_step.index('python3 -I "$GITHUB_ACTION_PATH/plan.py"'), plan_step.index(write),
+                        "a refused plan (plan.py fails the step) publishes no source_dir")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "out"
+            env = {"PATH": os.environ["PATH"], "GITHUB_ACTION_PATH": "/runner/_work/_actions/x/y", "GITHUB_OUTPUT": str(output)}
+            subprocess.run(["bash", "-c", "set -euo pipefail; " + write], check=True, env=env)
+            self.assertEqual(output.read_text(), "source_dir=/runner/_work/_actions/x/y\n")
+
+    def test_a_consumer_of_source_dir_verifies_the_bytes_by_the_records_hashes_and_refuses_a_one_byte_change(self):
+        # The contract a consumer relies on: the record's validity hashes ARE the bytes under source_dir, so the path is
+        # only a locator. A consumer that reads there and finds any other byte, or a missing file, refuses.
+        here = Path(__file__).parent
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "ci-plan.json"
+            config.write_text("{}")
+            validity = P.validity_predicate(Path(tmp), config, {}, "b" * 40, "h" * 40)
+
+            def consumer_accepts(source_dir: Path) -> bool:
+                wanted = {"plan.py": "planner_source_sha256", "edges.py": "reader_source_sha256",
+                          "action.yml": "action_source_sha256"}
+                for name, key in wanted.items():
+                    path = source_dir / name
+                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != validity[key]:
+                        return False
+                return True
+
+            self.assertTrue(consumer_accepts(here), "the directory the planner ran from matches its own record")
+            copy = Path(tmp) / "source"
+            copy.mkdir()
+            for name in ("plan.py", "edges.py", "action.yml"):
+                (copy / name).write_bytes((here / name).read_bytes())
+            self.assertTrue(consumer_accepts(copy), "control: an exact copy matches")
+            data = bytearray((copy / "plan.py").read_bytes()); data[-1] ^= 1
+            (copy / "plan.py").write_bytes(bytes(data))
+            self.assertFalse(consumer_accepts(copy), "one changed byte is refused")
+            (copy / "plan.py").write_bytes((here / "plan.py").read_bytes())
+            (copy / "edges.py").unlink()
+            self.assertFalse(consumer_accepts(copy), "a missing file is refused, never skipped")
+
     def test_the_plan_steps_final_print_escapes_a_reason_it_cannot_encode(self):
         # Root's #57 RC3 item 3: action.yml prints the plan's reason after the plan step. A reason carrying undecodable
         # tree bytes (a lone surrogate) must print escaped, not fail the step. This runs the step's own line.

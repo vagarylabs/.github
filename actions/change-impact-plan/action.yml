@@ -79,6 +79,13 @@ outputs:
   tested:
     description: JSON identity of the tested tree (tree, lockfile and workflow hashes, planner version).
     value: ${{ steps.plan.outputs.tested }}
+  source_dir:
+    description: >-
+      The absolute directory on the runner that this step ran plan.py, edges.py and action.yml from
+      (GITHUB_ACTION_PATH). A locator, never authority: a consumer hashes the files it reads there and must match
+      both plan.validity's planner/reader/action source hashes and its own pinned copies, refusing on any
+      mismatch or absence (1.7.2).
+    value: ${{ steps.plan.outputs.source_dir }}
 runs:
   using: composite
   steps:
@@ -230,6 +237,8 @@ runs:
           --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
         python3 -c 'import json,sys; sys.stdout.reconfigure(errors="backslashreplace"); r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
+        # The directory the hashed sources ran from (1.7.2): only after the plan is published, so a refused plan has none.
+        printf 'source_dir=%s\n' "$GITHUB_ACTION_PATH" >> "$GITHUB_OUTPUT"
     - name: Remove attempt-local inputs
       if: ${{ always() && steps.state.outputs.directory != '' }}
       shell: bash

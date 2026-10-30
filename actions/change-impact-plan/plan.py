@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.5.3"
+PLANNER_VERSION = "1.7.0"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -795,6 +795,12 @@ def graph_digest(pkgs: dict[str, dict]) -> str:
         for name, info in sorted(pkgs.items())]})
 
 
+def is_inert(path: str, cfg: dict) -> str | None:
+    """The inert glob a path matches, or None. A nested lockfile is never inert (it is a package's dependency input)."""
+    nested_lockfile = "/" in path and path.rsplit("/", 1)[1] in LOCKFILE_NAMES
+    return None if nested_lockfile else first_match(path, list(cfg.get("inert_globs") or []))
+
+
 def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
     """One path/owner/reverse-closure computation for legacy selection and informational impact."""
     evidence = {"full_triggers": [], "unmapped": [], "inert": [], "changed_packages": []}
@@ -807,7 +813,7 @@ def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
     changed: set[str] = set()
     for path in paths:
         nested_lockfile = "/" in path and path.rsplit("/", 1)[1] in LOCKFILE_NAMES
-        if not nested_lockfile and first_match(path, list(cfg.get("inert_globs") or [])):
+        if is_inert(path, cfg):
             evidence["inert"].append(path)
             continue
         owners = set()
@@ -1088,6 +1094,129 @@ def rule_matches(rule, affected: set[str]) -> tuple[bool, str]:
     raise ValueError(f"unknown rule {rule!r}; expected one of {RULE_KINDS}")
 
 
+# ---------- test inventory (1.7.0, S6) ----------
+# Every tracked test file of the candidate must run in SOME unit (a job, or a matrix entry) that a change to its owner
+# selects; otherwise a narrowed plan skips it and nothing says so. The planner cannot see which files a unit executes,
+# so the config DECLARES it: `test_jobs: {job: [...] | "*"}` and a matrix entry's `tests`. A declaration lists package
+# names and `path:<glob>` entries; a path entry covers test files outside every package and is allowed only on a unit
+# whose rule is "always", because such a file cannot be tied to an affected package. Whether a unit really executes
+# what it declares is each consumer's existing runner gate (vagaris check-test-collection-parity, core
+# check_orphan_test_files.py); this check closes the config hole, those close the runner hole.
+# The union of the consumers' runner-gate conventions: vagaris check-test-collection-parity (*.test.* / *.spec.*), and
+# core check_orphan_test_files.py (those, test_*.py / *_test.py, *_test.go, and runner files under test/ directories).
+TEST_FILE = re.compile(r"(?:^|/)[^/]+\.(?:test|spec)\.[^/]+$|(?:^|/)test_[^/]+\.py$|(?:^|/)[^/]+_test\.(?:py|go)$"
+                       r"|(?:^|/)(?:__tests__|tests?)/")
+TEST_CODE = re.compile(r"\.(?:[cm]?[jt]sx?|py|go)$")
+NODE_MODULES = re.compile(r"(?:^|/)node_modules/")
+INVENTORY_SAMPLE = 20
+
+
+def is_test_file(path: str, extra_globs: list[str]) -> bool:
+    """The consumers' test-file conventions; a config's `test_globs` may ADD to them, never remove."""
+    if NODE_MODULES.search(path):
+        return False
+    return bool(first_match(path, extra_globs)) or bool(TEST_CODE.search(path) and TEST_FILE.search(path))
+
+
+def declares_tests(cfg: dict | None) -> bool:
+    return bool(cfg) and ("test_jobs" in cfg or any(
+        isinstance(entry, dict) and "tests" in entry
+        for entries in (cfg.get("matrices") or {}).values() if isinstance(entries, list) for entry in entries))
+
+
+def test_units(cfg: dict) -> list[tuple[str, object, object]]:
+    """(unit id, selection rule, test declaration or None) for every job and matrix entry."""
+    declared = cfg.get("test_jobs") or {}
+    units = [(job, rule, declared.get(job)) for job, rule in sorted((cfg.get("jobs") or {}).items())]
+    for name, entries in sorted((cfg.get("matrices") or {}).items()):
+        for entry in entries:
+            units.append((name + json.dumps(entry["include"], sort_keys=True, separators=(",", ":")),
+                          entry.get("rule", "always"), entry.get("tests")))
+    return units
+
+
+def validate_test_declarations(cfg: dict, pkgs: dict[str, dict]) -> None:
+    """A declaration that names nothing real, or a path entry on a unit a narrowed plan can skip, is refused."""
+    globs = cfg.get("test_globs")
+    if globs is not None and (not isinstance(globs, list) or any(not isinstance(g, str) or not g for g in globs)):
+        raise ValueError("test_globs must be a list of non-empty globs")
+    declared = cfg.get("test_jobs")
+    if declared is not None:
+        if not isinstance(declared, dict):
+            raise ValueError("test_jobs must map a job to its test declaration")
+        unknown = set(declared) - set(cfg.get("jobs") or {})
+        if unknown:
+            raise ValueError(f"test_jobs names undeclared job(s) {sorted(unknown)}")
+    for unit, rule, decl in test_units(cfg):
+        if decl is None or decl == "*":
+            continue
+        if not isinstance(decl, list) or any(not isinstance(e, str) or not e for e in decl):
+            raise ValueError(f'the test declaration of {unit} must be "*" or a list of packages and path: globs')
+        for entry in decl:
+            if entry.startswith("path:"):
+                if not entry[len("path:"):]:
+                    raise ValueError(f"{unit} declares an empty path entry")
+                if rule != "always":
+                    raise ValueError(f'{unit} declares {entry}, but a path entry needs a unit whose rule is "always": '
+                                     "a test file outside every package cannot be tied to an affected package")
+            elif entry not in pkgs:
+                raise ValueError(f"the test declaration of {unit} names undeclared package {entry!r}")
+
+
+def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> dict:
+    """The candidate's test files by owner and the units that cover them; `gaps` names every test-owning package and
+    file outside every package that no unit a change would select runs. A package whose change affects a hub is
+    covered by the full plan that change always gets."""
+    hubs = set(cfg.get("hub_packages") or [])
+    units = test_units(cfg)
+    owned: dict[str, list[str]] = {}
+    unowned: list[str] = []
+    for path in sorted(test_files):
+        owner = owner_package(path, pkgs)
+        (owned.setdefault(owner, []) if owner else unowned).append(path)
+    packages, gaps = {}, []
+    for name, files in sorted(owned.items()):
+        closure = reverse_closure(pkgs, {name})
+        if closure & hubs:
+            packages[name] = {"files": len(files), "covered_by": "full plan (a change to it affects a hub)"}
+            continue
+        # Selection rules are monotone in the affected set, so a unit that runs for this closure runs for every plan
+        # that affects the package (whose affected set contains the closure).
+        covering = [unit for unit, rule, decl in units
+                    if decl is not None and (decl == "*" or name in decl) and rule_matches(rule, closure)[0]]
+        packages[name] = {"files": len(files), "covered_by": covering}
+        if not covering:
+            gaps.append(f"the tests of {name} ({len(files)} file(s), e.g. {files[0]}) run in no unit a change to "
+                        f"{name} selects")
+    # A test file inside a package that an inert glob matches: a change to it is classified inert and selects nothing,
+    # so its declared unit would never run for it (root's #56 R4, blocker 1).
+    inert = [(path, glob) for files in owned.values() for path in files if (glob := is_inert(path, cfg))]
+    if inert:
+        gaps.append(f"{len(inert)} test file(s) inside a package match inert_globs, so a change to one runs nothing, e.g. "
+                    + ", ".join(f"{path} ({glob})" for path, glob in inert[:INVENTORY_SAMPLE]))
+    always = [decl for _, rule, decl in units if rule == "always" and decl is not None]
+    uncovered = [path for path in unowned if not any(
+        decl == "*" or first_match(path, [e[len("path:"):] for e in decl if e.startswith("path:")]) for decl in always)]
+    if uncovered:
+        gaps.append(f"{len(uncovered)} test file(s) outside every package run in no always-unit's declared paths, e.g. "
+                    + ", ".join(uncovered[:INVENTORY_SAMPLE]))
+    return {"schema": 1, "files": len(test_files), "digest": canonical_digest(sorted(test_files)),
+            "packages": packages, "unowned": {"files": len(unowned), "uncovered": len(uncovered)}, "gaps": gaps}
+
+
+def candidate_test_files(scope_root: Path, candidate: str, extra_globs) -> list[str] | None:
+    """The candidate commit's tracked test files, from its tree (no checkout content is read); None if unreadable."""
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate or ""):
+        return None
+    globs = extra_globs if isinstance(extra_globs, list) and all(isinstance(g, str) and g for g in extra_globs) else []
+    try:
+        _, out = git_observe(scope_root, "ls-tree", "-r", "-z", "--name-only", candidate)
+        names = out.decode("utf-8").split("\0")
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        return None
+    return sorted(name for name in names if name and is_test_file(name, globs))
+
+
 def validity_predicate(root: Path, config_path: Path, cfg: dict, base: str, head: str) -> dict:
     lockfiles = {}
     for lf in ("pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock", "uv.lock"):
@@ -1144,14 +1273,15 @@ def bind_plan_id(record: dict) -> None:
     identity = json.dumps({"v": record["validity"], "p": record["inputs"]["paths_sha256"],
                            "e": record["inputs"]["event"], "observation": record["observation"],
                            "jobs": record["jobs"], "matrices": record["matrices"], "impact": record["impact"],
-                           "source": record["source_answer"], "source_meta": record["source_answer_meta"]}, sort_keys=True)
+                           "source": record["source_answer"], "source_meta": record["source_answer_meta"],
+                           "test_inventory": record.get("test_inventory")}, sort_keys=True)
     record["plan_id"] = hashlib.sha256(identity.encode()).hexdigest()[:12]
 
 
 def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | None, event: str,
          base: str, head: str, expected_count: int | None, forced_full_reason: str | None = None,
          tested: dict | None = None, receipt: dict | None = None, scope: dict | None = None,
-         reader_assessment: dict | None = None) -> dict:
+         reader_assessment: dict | None = None, test_files: list[str] | None = None) -> dict:
     if paths is not None and (not isinstance(paths, list) or any(
             not isinstance(p, str) or not p or "\0" in p or p.startswith("/")
             or any(part in (".", "..") for part in p.split("/")) for p in paths)):
@@ -1175,6 +1305,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         "tested": tested,
         "observation": {key: value for key, value in (scope or {}).items() if key != "paths"},
         "requires_full_caller_roster": cfg is None,
+        "test_inventory": None,
     }
 
     pkgs, assessment = {}, None
@@ -1237,6 +1368,13 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
 
     if cfg is not None:
         validate_selection_rules(cfg, pkgs)
+        validate_test_declarations(cfg, pkgs)
+        if declares_tests(cfg) and test_files is not None:
+            record["test_inventory"] = test_inventory(cfg, pkgs, test_files)
+            # A declaration, once made, must be complete: a test the configuration lets a narrowed plan skip is RED on
+            # every event, never a silently smaller suite (root's S6 condition 3).
+            if record["test_inventory"]["gaps"]:
+                raise ValueError("test inventory: " + "; ".join(record["test_inventory"]["gaps"]))
         if event in ("pull_request", "pull_request_target", "merge_group") and not impact_unknown:
             assessment = classify_paths(paths, cfg, pkgs)
 
@@ -1274,6 +1412,15 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
     _, source_meta = source_record(scope, cfg, pkgs, paths, expected_count, assessment, reader_assessment, config_path)
     if source_meta["decision"] != "IMPACT_INPUT":
         return finish("full", "source answer not complete: " + ", ".join(source_meta["reason_codes"]), affected)
+    # 1.7.0: a narrowed plan also needs the candidate's test inventory, judged complete above.
+    if not declares_tests(cfg):
+        return finish("full", "no test_jobs declaration: a narrowed plan cannot show that every test it skips belongs "
+                      "to a package the change does not affect", affected)
+    if test_files is None:
+        return finish("full", "the candidate's test inventory could not be read", affected)
+    if not test_files:
+        return finish("full", "the candidate's test inventory is empty while a declaration exists: refused as unproven",
+                      affected)
     if not affected:
         return finish("reduced", "only inert paths changed", affected)
     return finish("reduced", "affected: " + ", ".join(sorted(affected)), affected)
@@ -1291,6 +1438,11 @@ def summary_markdown(rec: dict) -> str:
     if rec["affected_packages"]:
         lines.append("")
         lines.append("affected: " + ", ".join(f"`{p}`" for p in rec["affected_packages"]))
+    inventory = rec.get("test_inventory")
+    if inventory:
+        lines.append("")
+        lines.append(f"test inventory: {inventory['files']} file(s) in {len(inventory['packages'])} package(s) and "
+                     f"{inventory['unowned']['files']} outside every package, each run by a unit its change selects")
     lines += ["", "| job | runs | reason |", "|---|---|---|"]
     for job, j in rec["jobs"].items():
         lines.append(f"| {job} | {'yes' if j['run'] else 'skipped by plan'} | {j['reason']} |")
@@ -1390,10 +1542,12 @@ def main(argv=None) -> int:
         except (OSError, ValueError, UnicodeError):
             pass
     paths = scope.get("paths")
+    test_files = candidate_test_files(Path(a.scope_root), scope.get("candidate") or "", cfg.get("test_globs")) \
+        if cfg is not None and declares_tests(cfg) and scope["status"] == "known" and a.scope_root else None
     rec = plan(cfg=cfg, root=root, config_path=config_path, paths=paths, event=a.event, base=a.base,
                head=a.head, expected_count=a.expected_count, forced_full_reason=forced,
                tested=tested_identity(Path(a.tested_root) if a.tested_root else None, scope.get("tree") or ""),
-               receipt=None, scope=scope, reader_assessment=readers)
+               receipt=None, scope=scope, reader_assessment=readers, test_files=test_files)
     if a.event == "merge_group" and scope["status"] == "known":
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)

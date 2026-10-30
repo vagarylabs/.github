@@ -607,6 +607,78 @@ pinned, and the suite asserts it exactly, so a residual that reads less (or more
 
 These are bounded by the 10-22 ruling: main runs FULL after every merge, and a red main blocks landings.
 
+## Test inventory (1.7.0, S6)
+
+A narrowed plan skips the jobs a change does not select. Before 1.7.0 nothing checked that every test file still ran
+in SOME job a change to its owner selects, so a test missing from the configuration could silently disappear from
+every narrowed plan. 1.7.0 makes the config declare which packages' test files each unit (a job or a matrix entry)
+executes, and checks that declaration against the candidate's own test files.
+
+```json
+{
+  "jobs": {"policy": "always", "e2e": {"packages": ["@v/ui"]}},
+  "test_jobs": {"e2e": ["@v/ui"], "policy": ["path:scripts/**"]},
+  "matrices": {"general_tests": [
+    {"include": {"group": "server"}, "rule": "full_only", "tests": "*"},
+    {"include": {"group": "workspaces"}, "rule": {"packages": ["@v/ui", "@v/cli"]}, "tests": ["@v/ui", "@v/cli"]}
+  ]},
+  "test_globs": ["**/*.check.ts"]
+}
+```
+
+- **Declaration.**
+  - `test_jobs` maps a job to `"*"` or to a list; a matrix entry carries the same value as `tests`.
+  - A list holds package names and `path:<glob>` entries. A path entry covers test files outside every package.
+  - A path entry is allowed only on a unit whose rule is `always`, because such a file cannot be tied to an affected
+    package, so its unit must run on every narrowed plan.
+- **Inventory.**
+  - The candidate commit's tracked test files, read from its tree: `git ls-tree` in the scope root at the candidate,
+    never the trusted-base checkout.
+  - A test file is `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.py`, `*_test.go`, or code (js/ts family, Python, Go) under
+    `__tests__/`, `test/` or `tests/`, outside any `node_modules/` path segment. This is the union of the consumers'
+    runner gates (vagaris check-test-collection-parity, core check_orphan_test_files.py). `test_globs` may add to these
+    conventions, never remove from them.
+- **Coverage.**
+  - A test-owning package is covered when some unit declares it (or `"*"`) and the unit's rule selects the package's
+    reverse closure. `full_only` never counts.
+  - Selection rules are monotone in the affected set, so such a unit runs on every plan that affects the package.
+  - A package whose change reaches a hub is covered by the full plan it always gets.
+  - A test file outside every package is covered by an `always` unit whose `"*"` or `path:` entry matches it.
+- **Verdicts.**
+  - With a declaration, any uncovered package or file is an error (the step fails) on EVERY event, so a gap is never a
+    silently smaller suite. So is:
+    - a declaration naming an unknown job or package;
+    - a path entry on a unit a narrowed plan can skip;
+    - a test file inside a package that matches `inert_globs`, because a change to it would be classified inert and
+      select nothing.
+  - With no declaration, the plan is FULL with the reason `no test_jobs declaration`.
+  - An unreadable inventory, or an empty one while a declaration exists, is FULL (refused as unproven).
+- **Record.** `plan.test_inventory = {schema, files, digest, packages: {P: {files, covered_by}}, unowned: {files,
+  uncovered}, gaps}` is bound into `plan_id`.
+- **Not claimed.** The planner cannot see which files a unit really executes. That binding is the consumer's runner
+  gate: vagaris `check-test-collection-parity`, core `check_orphan_test_files.py`. A unit declared `"*"` or a `path:`
+  entry that its job does not collect must be refused there. This check closes the config hole; those gates close the
+  runner hole.
+- **Adoption.**
+  - A consumer moving its pin to 1.7.0 gets FULL plans until it declares. A declaration must be complete from its first
+    commit.
+  - **Matrix gating precondition.** A matrix entry's `tests` count as coverage whenever the entry's rule selects it. The
+    planner cannot see whether the consumer's workflow actually runs the matrix's PARENT job. So the consumer must run
+    the parent job whenever any of its entries is included (vagaris builds its matrix from the plan, so it qualifies). A
+    parent job gated by something else makes the entry's coverage claim untrue.
+  - **Declare first.** The declaration is read from the BASE (a change cannot widen its own coverage), so a pull request
+    cannot fix its own gap:
+    - first tests for a package the base does not cover go red;
+    - a test file in a package directory the base's graph does not know is outside every package, so it needs an
+      always-unit `path:` entry in the base.
+    - Order the changes: land the package (or its directory's `path:` entry) and its declaration first, then its tests.
+  - **Known residual, liveness.** A change that REMOVES a declaration entry is judged against the base's complete
+    declaration, so it lands. After that, every pull request is red, including the one that restores the entry
+    (reproduced through `main()`, 2026-10-30). The same class predates 1.7.0 for selection rules, which are also
+    validated on the base config. Until it is closed (cli's finding to root: the consumer runner gate refuses a change
+    whose OWN declaration has a gap, and the planner decides red on the candidate's declaration while narrowing stays on
+    the base's), a consumer must not merge a declaration removal past its own runner gate.
+
 ## Compatibility and validation
 
 Legacy `mode`, `run` and `matrices` behavior is preserved. Disabling reader checks does not authorize narrower validation. Existing callers must explicitly adopt the new immutable version; changing this repository does not migrate their pins.

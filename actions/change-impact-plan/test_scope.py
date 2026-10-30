@@ -853,17 +853,45 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
         self.change({"ui/ci-plan.json": "[]"})
         self.assert_red("the plan config is a JSON list, not an object")
 
-    def test_a_config_at_another_schema_is_not_read_and_never_red(self):
-        # Not malformed, only a version this planner does not read: a schema migration must not wedge a workflow still
-        # pinned to an older planner. The base still decides narrowing; once landed, no config governs (FULL).
-        self.fixture(self.CFG)
+    def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
+        # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
+        # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an
+        # unrelated change, still at schema 2, stays red.
         later = json.loads(json.dumps(self.CFG)); later["schema"] = 2; later["test_jobs"] = {}
+        self.fixture(self.CFG)
         self.change({"ui/ci-plan.json": json.dumps(later)})
-        result = self.assert_mode("reduced", "affected: ui", ["ui_tests"])
-        self.assertEqual(result["config_check"]["candidate_errors"], [])
-        self.land()
-        self.change({"ui/a.ts": "x\n"})
+        self.assert_red(r"plan config schema 2 is not 1")
+        self.fixture(later)
+        self.change({"ui/ci-plan.json": json.dumps(self.CFG)})
         self.assert_mode("full", "plan config schema 2 is not 1", [])
+        self.change({"ui/a.ts": "x\n"})
+        self.assert_red(r"plan config schema 2 is not 1")
+
+    def test_a_pnpm_graph_narrows_by_the_base_and_reds_by_the_candidates_own_edges(self):
+        # pnpm: the graph comes from the tree (pnpm-workspace.yaml, manifests) plus the config's extra_deps. A manifest
+        # edit is a builtin full trigger (**/package.json), so the config's extra_deps is the one route by which a
+        # candidate's graph could be narrower than the base's.
+        cfg = {"schema": 1, "workspace": {"type": "pnpm", "extra_deps": {"b": ["a"]}}, "hub_packages": [],
+               "inert_globs": ["docs/**"], "jobs": {"a_tests": {"packages": ["a"]}, "b_tests": {"packages": ["b"]}},
+               "test_jobs": {"a_tests": ["a"], "b_tests": ["b"]}}
+        files = {"pnpm-workspace.yaml": "packages:\n  - 'pkgs/*'\n", "package.json": '{"name": "root"}\n',
+                 "pkgs/a/package.json": '{"name": "a"}\n', "pkgs/a/x.test.ts": "it()\n",
+                 "pkgs/b/package.json": '{"name": "b"}\n', "pkgs/b/y.test.ts": "it()\n"}
+        self.fixture(cfg, files, config_rel="pkgs/b/ci-plan.json")
+        self.change({"pkgs/a/x.test.ts": "it('x')\n"})
+        self.assert_mode("reduced", "affected: a, b", ["a_tests", "b_tests"])
+        # The candidate drops the b -> a edge and changes a: the base's graph still has the edge (the M2 shape, pnpm).
+        cut = json.loads(json.dumps(cfg)); del cut["workspace"]["extra_deps"]
+        self.change({"pkgs/b/ci-plan.json": json.dumps(cut), "pkgs/a/x.test.ts": "it('x')\n"})
+        self.assert_mode("reduced", "affected: a, b", ["a_tests", "b_tests"])
+        # An extra_deps entry naming no package is the config's error: red.
+        ghost = json.loads(json.dumps(cfg)); ghost["workspace"]["extra_deps"] = {"b": ["ghost"]}
+        self.change({"pkgs/b/ci-plan.json": json.dumps(ghost)})
+        self.assert_red("the plan config's workspace cannot be read: ValueError: extra_deps for b contains an undeclared")
+        # A manifest that does not parse is the tree's defect (pnpm install refuses it): the base decides, never red.
+        self.change({"pkgs/b/package.json": '{"name": "b",'})
+        result = self.assert_mode("full", r"pkgs/b/package\.json matches full trigger", ["a_tests", "b_tests"])
+        self.assertEqual(result["config_check"]["red_decided_by"], "base")
 
     def test_a_change_removing_the_config_has_nothing_of_its_own_to_validate(self):
         # Absent is not unreadable: git lists the candidate's tree and the path is not in it. On a broken base the

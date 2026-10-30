@@ -697,12 +697,16 @@ executes, and checks that declaration against the candidate's own test files.
     - The candidate's config can only move a plan between RED and FULL, never narrower. A narrower candidate config
       (a dropped hub, a dropped rule) or graph (a dropped dependency edge) changes nothing about selection, at any
       config path, including one no full trigger matches.
-    - The base decides both only when git cannot produce the candidate's config, or the tree's own workspace inputs
-      (pnpm-workspace.yaml, a manifest). A broken manifest is the tree's defect, and the base reads it the same way.
-    - Nothing of the candidate's own is validated when it has no config at that path (it removes it), or when its
-      config is at a schema other than 1. Another schema is a version this planner does not read, not a malformed
-      config: it plans per the base now, and FULL once it is the base. So a schema migration cannot wedge a workflow
-      still pinned to an older planner.
+    - A config at a schema other than 1 is refused the same way: RED as the candidate. As the base, a schema-1 repair
+      plans FULL ("plan config schema N is not 1") and an unrelated change still at that schema stays red. The planner a
+      change runs is the one its own workflow pins, so a migration moves the pin and the schema in one change.
+    - The base decides both only when git cannot produce the candidate's config, or when the candidate's
+      pnpm-workspace.yaml or a workspace manifest cannot be produced or does not parse. That is the tree's defect, not
+      the config's: pnpm install refuses it in the change's own CI, so the planner does not judge it (a manifest edit is
+      a builtin full trigger, so that change is FULL). Once it lands, the base's graph is unreadable and every plan is
+      FULL until it is fixed.
+    - Nothing of the candidate's own is validated when it has no config at that path (it removes it): a removal on a
+      broken base plans FULL and can land.
     - The candidate's tree is read twice. With the BASE's `test_globs` for the base inventory and the narrowing guards;
       with both configs' `test_globs` for the candidate's RED check only (an extra glob only adds obligations). So a
       change that drops a glob is still bound by it: the files it matched need coverage in that change.

@@ -1235,8 +1235,7 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
 
 def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
     """A plan config's bytes as a JSON object, or why they are malformed. The base and a candidate are read by the same
-    rule (F29), so a config one of them refuses is refused by the other too. The schema is the caller's check: a config
-    at another schema is not malformed, only one this planner does not read."""
+    rule (F29), so a config one of them refuses is refused by the other too. The schema is the caller's check."""
     try:
         cfg = json.loads(raw)
     except RecursionError:
@@ -1251,13 +1250,13 @@ def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
 def candidate_planning_inputs(scope_root: Path, candidate: str, config_rel: str) -> dict | None:
     """The CANDIDATE's own plan config and workspace graph, read from its commit's objects (the checkout can be sparse).
     F29 (root's ruling, 2026-10-30): these decide only whether a change is RED, never how narrow its plan is.
-    - None: git cannot produce the config, or the tree's own workspace inputs (pnpm-workspace.yaml, the manifests). The
-      base then decides. A broken manifest is the tree's defect, not the config's, and the base reads it the same way.
+    - None: git cannot produce the config. Also when the tree's own workspace inputs (pnpm-workspace.yaml, a workspace
+      manifest) cannot be produced or do not parse: that is the tree's defect, not the config's, and pnpm install refuses
+      it in the change's own CI. The base then decides; once such a change lands, the base's graph is unreadable and
+      every plan is FULL until it is fixed.
     - {"errors": [...]}: the config was read but cannot govern a plan (it does not parse, is not a schema-1 object, or its
       workspace is malformed). The change is RED, so a broken config never lands to wedge the base.
-    - {"cfg": None, "pkgs": {}, "note": why}: nothing this planner validates. The change has no config at that path,
-      or its config is at a schema this planner does not read. It plans FULL (no config governs it), never RED, so a
-      schema migration cannot wedge a workflow still pinned to an older planner.
+    - {"cfg": None, "pkgs": {}, "note": why}: the change has no config at that path (it removes it): nothing to validate.
     - {"cfg": cfg, "pkgs": pkgs} otherwise."""
     if not re.fullmatch(r"[0-9a-f]{40}", candidate or "") or not config_rel or not SAFE_PATH.fullmatch(config_rel):
         return None
@@ -1276,8 +1275,9 @@ def candidate_planning_inputs(scope_root: Path, candidate: str, config_rel: str)
     if problem:
         return {"errors": [problem]}
     if cfg.get("schema") != 1:
-        return {"cfg": None, "pkgs": {}, "note": f"this change's config is schema {cfg.get('schema')!r}, which this "
-                                                  "planner does not read"}
+        # The planner a change runs is the one its own workflow pins, so a schema migration moves the pin in the same
+        # change; a config this planner cannot read is refused here, as the base refuses it.
+        return {"errors": [f"plan config schema {cfg.get('schema')!r} is not 1"]}
     ws = cfg.get("workspace") or {"type": "none"}
     if not isinstance(ws, dict):
         return {"errors": [f"the plan config's workspace is a JSON {type(ws).__name__}, not an object"]}
@@ -1497,7 +1497,7 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
         if "errors" in candidate_inputs:
             candidate_errors = list(candidate_inputs["errors"])
         elif candidate_inputs["cfg"] is None:
-            candidate_errors = []  # no config this planner reads (removed, or another schema): nothing to validate
+            candidate_errors = []  # the change removes the config: nothing of its own to validate
         else:
             candidate_errors, _ = config_errors(candidate_inputs["cfg"], candidate_inputs["pkgs"], red_test_files)
 

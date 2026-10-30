@@ -164,7 +164,7 @@ class SourceAnswerVectors(SourceFixture):
         self.assertIs(meta["selection_authority"], False)
         self.assertNotIn("authorization", envelope)
         self.assertEqual(envelope["analyzer"], {"id": "ci.change-impact-plan", "version": P.PLANNER_VERSION})
-        self.assertEqual(P.PLANNER_VERSION, "1.7.1")
+        self.assertEqual(P.PLANNER_VERSION, "1.7.2")
         self.assertEqual(envelope["revisions"], {"object_format": "sha1", "base_sha": self.base, "head_sha": self.candidate})
         self.assertEqual(envelope["repository"], {"provider": "github", "organization_id": "github-owner:202",
                                                   "repository_id": "101"})

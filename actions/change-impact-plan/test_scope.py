@@ -1,5 +1,6 @@
 """Immutable scope controls; real Git objects, no provider credentials or network."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1111,6 +1112,53 @@ class NonUtf8TreeNames(unittest.TestCase):
 
 
 class ActionContract(unittest.TestCase):
+    def test_source_dir_is_the_action_path_and_is_written_only_after_the_plan_is_published(self):
+        # 1.7.2 (codex's S6 core adoption): `source_dir` locates the bytes that ran; the existing outputs are unchanged.
+        text = (Path(__file__).parent / "action.yml").read_text()
+        for name in ("mode", "plan_id", "run", "matrices", "plan", "tested", "source_dir"):
+            self.assertRegex(text, rf"\n  {name}:\n    description:[^\n]*(?:\n      [^\n]*)*\n    value: \$\{{\{{ steps\.plan\.outputs\.{name} \}}\}}\n")
+        plan_step = text[text.index("    - name: Plan\n"):text.index("    - name: Remove attempt-local inputs")]
+        write = "printf 'source_dir=%s\\n' \"$GITHUB_ACTION_PATH\" >> \"$GITHUB_OUTPUT\""
+        self.assertIn(write, plan_step)
+        self.assertLess(plan_step.index('python3 -I "$GITHUB_ACTION_PATH/plan.py"'), plan_step.index(write),
+                        "a refused plan (plan.py fails the step) publishes no source_dir")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "out"
+            env = {"PATH": os.environ["PATH"], "GITHUB_ACTION_PATH": "/runner/_work/_actions/x/y", "GITHUB_OUTPUT": str(output)}
+            subprocess.run(["bash", "-c", "set -euo pipefail; " + write], check=True, env=env)
+            self.assertEqual(output.read_text(), "source_dir=/runner/_work/_actions/x/y\n")
+
+    def test_a_consumer_of_source_dir_verifies_the_bytes_by_the_records_hashes_and_refuses_a_one_byte_change(self):
+        # The contract a consumer relies on: the record's validity hashes ARE the bytes under source_dir, so the path is
+        # only a locator. A consumer that reads there and finds any other byte, or a missing file, refuses.
+        here = Path(__file__).parent
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "ci-plan.json"
+            config.write_text("{}")
+            validity = P.validity_predicate(Path(tmp), config, {}, "b" * 40, "h" * 40)
+
+            def consumer_accepts(source_dir: Path) -> bool:
+                wanted = {"plan.py": "planner_source_sha256", "edges.py": "reader_source_sha256",
+                          "action.yml": "action_source_sha256"}
+                for name, key in wanted.items():
+                    path = source_dir / name
+                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != validity[key]:
+                        return False
+                return True
+
+            self.assertTrue(consumer_accepts(here), "the directory the planner ran from matches its own record")
+            copy = Path(tmp) / "source"
+            copy.mkdir()
+            for name in ("plan.py", "edges.py", "action.yml"):
+                (copy / name).write_bytes((here / name).read_bytes())
+            self.assertTrue(consumer_accepts(copy), "control: an exact copy matches")
+            data = bytearray((copy / "plan.py").read_bytes()); data[-1] ^= 1
+            (copy / "plan.py").write_bytes(bytes(data))
+            self.assertFalse(consumer_accepts(copy), "one changed byte is refused")
+            (copy / "plan.py").write_bytes((here / "plan.py").read_bytes())
+            (copy / "edges.py").unlink()
+            self.assertFalse(consumer_accepts(copy), "a missing file is refused, never skipped")
+
     def test_the_plan_steps_final_print_escapes_a_reason_it_cannot_encode(self):
         # Root's #57 RC3 item 3: action.yml prints the plan's reason after the plan step. A reason carrying undecodable
         # tree bytes (a lone surrogate) must print escaped, not fail the step. This runs the step's own line.

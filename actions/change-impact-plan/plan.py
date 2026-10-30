@@ -795,6 +795,12 @@ def graph_digest(pkgs: dict[str, dict]) -> str:
         for name, info in sorted(pkgs.items())]})
 
 
+def is_inert(path: str, cfg: dict) -> str | None:
+    """The inert glob a path matches, or None. A nested lockfile is never inert (it is a package's dependency input)."""
+    nested_lockfile = "/" in path and path.rsplit("/", 1)[1] in LOCKFILE_NAMES
+    return None if nested_lockfile else first_match(path, list(cfg.get("inert_globs") or []))
+
+
 def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
     """One path/owner/reverse-closure computation for legacy selection and informational impact."""
     evidence = {"full_triggers": [], "unmapped": [], "inert": [], "changed_packages": []}
@@ -807,7 +813,7 @@ def classify_paths(paths: list[str], cfg: dict, pkgs: dict[str, dict]) -> dict:
     changed: set[str] = set()
     for path in paths:
         nested_lockfile = "/" in path and path.rsplit("/", 1)[1] in LOCKFILE_NAMES
-        if not nested_lockfile and first_match(path, list(cfg.get("inert_globs") or [])):
+        if is_inert(path, cfg):
             evidence["inert"].append(path)
             continue
         owners = set()
@@ -1096,15 +1102,18 @@ def rule_matches(rule, affected: set[str]) -> tuple[bool, str]:
 # whose rule is "always", because such a file cannot be tied to an affected package. Whether a unit really executes
 # what it declares is each consumer's existing runner gate (vagaris check-test-collection-parity, core
 # check_orphan_test_files.py); this check closes the config hole, those close the runner hole.
-TEST_FILE = re.compile(r"(?:^|/)[^/]+\.(?:test|spec)\.[^/]+$|(?:^|/)test_[^/]+\.py$|(?:^|/)[^/]+_test\.py$"
+# The union of the consumers' runner-gate conventions: vagaris check-test-collection-parity (*.test.* / *.spec.*), and
+# core check_orphan_test_files.py (those, test_*.py / *_test.py, *_test.go, and runner files under test/ directories).
+TEST_FILE = re.compile(r"(?:^|/)[^/]+\.(?:test|spec)\.[^/]+$|(?:^|/)test_[^/]+\.py$|(?:^|/)[^/]+_test\.(?:py|go)$"
                        r"|(?:^|/)(?:__tests__|tests?)/")
-TEST_CODE = re.compile(r"\.(?:[cm]?[jt]sx?|py)$")
+TEST_CODE = re.compile(r"\.(?:[cm]?[jt]sx?|py|go)$")
+NODE_MODULES = re.compile(r"(?:^|/)node_modules/")
 INVENTORY_SAMPLE = 20
 
 
 def is_test_file(path: str, extra_globs: list[str]) -> bool:
     """The consumers' test-file conventions; a config's `test_globs` may ADD to them, never remove."""
-    if "node_modules/" in path:
+    if NODE_MODULES.search(path):
         return False
     return bool(first_match(path, extra_globs)) or bool(TEST_CODE.search(path) and TEST_FILE.search(path))
 
@@ -1179,6 +1188,12 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
         if not covering:
             gaps.append(f"the tests of {name} ({len(files)} file(s), e.g. {files[0]}) run in no unit a change to "
                         f"{name} selects")
+    # A test file inside a package that an inert glob matches: a change to it is classified inert and selects nothing,
+    # so its declared unit would never run for it (root's #56 R4, blocker 1).
+    inert = [(path, glob) for files in owned.values() for path in files if (glob := is_inert(path, cfg))]
+    if inert:
+        gaps.append(f"{len(inert)} test file(s) inside a package match inert_globs, so a change to one runs nothing, e.g. "
+                    + ", ".join(f"{path} ({glob})" for path, glob in inert[:INVENTORY_SAMPLE]))
     always = [decl for _, rule, decl in units if rule == "always" and decl is not None]
     uncovered = [path for path in unowned if not any(
         decl == "*" or first_match(path, [e[len("path:"):] for e in decl if e.startswith("path:")]) for decl in always)]
@@ -1403,6 +1418,9 @@ def plan(*, cfg: dict | None, root: Path, config_path: Path, paths: list[str] | 
                       "to a package the change does not affect", affected)
     if test_files is None:
         return finish("full", "the candidate's test inventory could not be read", affected)
+    if not test_files:
+        return finish("full", "the candidate's test inventory is empty while a declaration exists: refused as unproven",
+                      affected)
     if not affected:
         return finish("reduced", "only inert paths changed", affected)
     return finish("reduced", "affected: " + ", ".join(sorted(affected)), affected)

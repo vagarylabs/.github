@@ -46,7 +46,8 @@ class SourceFixture(unittest.TestCase):
                                    {"include": {"group": "server"}, "rule": "full_only"}]}}
         for directory in ("server", "ui", "docs", ".github/workflows"):
             (self.root / directory).mkdir(parents=True)
-        files = {"server/a.py": "before\n", "ui/a.ts": "before\n", "docs/readme.md": "before\n",
+        # ui/a.test.ts: 1.7.0 refuses to narrow on an empty test inventory, so the fixture owns one test file.
+        files = {"server/a.py": "before\n", "ui/a.ts": "before\n", "ui/a.test.ts": "before\n", "docs/readme.md": "before\n",
                  "ui/package.json": '{"name": "ui"}\n', ".github/workflows/ci.yml": "name: ci\n"}
         for name, text in files.items():
             (self.root / name).write_text(text)

@@ -402,9 +402,19 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(self.run_plan(["fixtures/a.json"])["mode"], "full")
 
     def test_config_cannot_remove_builtin_triggers(self):
-        cfg = dict(CONFIG, inert_globs=["**"])
+        # Without a test declaration (so the 1.7.0 inventory does not apply), an all-inert config still plans FULL on a
+        # builtin trigger.
+        cfg = json.loads(json.dumps(CONFIG))
+        cfg["inert_globs"] = ["**"]
+        del cfg["test_jobs"]
+        for entry in cfg["matrices"]["general_tests"]:
+            entry.pop("tests")
         (self.root / ".github" / "ci-plan.json").write_text(json.dumps(cfg))
         self.assertEqual(self.run_plan(["pnpm-lock.yaml"])["mode"], "full")
+        # With a declaration, an inert glob over the test files is itself refused: a change to one would run nothing.
+        (self.root / ".github" / "ci-plan.json").write_text(json.dumps(dict(CONFIG, inert_globs=["**"])))
+        with self.assertRaisesRegex(ValueError, "inside a package match inert_globs"):
+            self.run_plan(["pnpm-lock.yaml"])
 
     # Reuse of an identical tree's full run (push only).
     def tested(self, tree="t" * 40):
@@ -596,6 +606,38 @@ class TestInventory(unittest.TestCase):
         self.assertFalse(P.is_test_file("server/tests/data.json", []), "a fixture that is not code is not a test file")
         self.assertTrue(P.is_test_file("ui/src/app.check.ts", ["**/*.check.ts"]))
         self.assertTrue(P.is_test_file("ui/src/app.test.tsx", ["**/*.check.ts"]), "an extra glob removes nothing")
+
+    def test_a_test_file_inside_a_package_that_an_inert_glob_matches_is_red(self):
+        # root's #56 R4 blocker 1: a changed inert path selects nothing, so its tests would never run.
+        cfg = self.config(inert_globs=["docs/**", "doc/**", "ui/src/*.test.tsx"])
+        with self.assertRaisesRegex(ValueError, r"1 test file\(s\) inside a package match inert_globs, so a change to one runs "
+                                    r"nothing, e\.g\. ui/src/app\.test\.tsx \(ui/src/\*\.test\.tsx\)"):
+            self.plan_with(cfg, paths=["ui/src/app.test.tsx"])
+        # A test file outside every package may match an inert glob: its always-unit runs on every plan.
+        cfg = self.config(jobs={**CONFIG["jobs"], "policy": "always"}, inert_globs=["docs/**", "doc/**"])
+        cfg["test_jobs"] = {"e2e": ["@v/ui"], "policy": ["path:docs/**"]}
+        rec = self.plan_with(cfg, test_files=TEST_FILES + ["docs/examples/snippet.test.ts"])
+        self.assertEqual(rec["mode"], "reduced", rec["reason"])
+
+    def test_go_tests_are_inventoried_and_owe_coverage(self):
+        # root's #56 R4 blocker 2: core's runner gate counts *_test.go; the inventory must too (both halves of the predicate).
+        self.assertTrue(P.is_test_file("services/tts/internal/synth_test.go", []))
+        self.assertFalse(P.is_test_file("services/tts/internal/synth.go", []), "Go source is not a test file")
+        self.assertTrue(P.is_test_file("services/tts/test/helpers.go", []), "Go code under test/ is test code")
+        with self.assertRaisesRegex(ValueError, r"the tests of @v/tooling \(1 file\(s\), e\.g\. packages/tooling/pkg/x_test\.go\)"):
+            cfg = self.config()
+            cfg["matrices"]["general_tests"][2]["tests"] = ["@v/adapter-utils", "@v/adapter-claude"]
+            self.plan_with(cfg, test_files=[f for f in TEST_FILES if "tooling" not in f] + ["packages/tooling/pkg/x_test.go"])
+
+    def test_an_empty_inventory_with_a_declaration_never_narrows(self):
+        rec = self.plan_with(self.config(), test_files=[])
+        self.assertEqual(rec["mode"], "full")
+        self.assertEqual(rec["reason"], "the candidate's test inventory is empty while a declaration exists: refused as unproven")
+
+    def test_node_modules_is_a_path_segment(self):
+        self.assertFalse(P.is_test_file("ui/node_modules/x/a.test.js", []))
+        self.assertFalse(P.is_test_file("node_modules/x/a.test.js", []))
+        self.assertTrue(P.is_test_file("ui/foo_node_modules/x.test.ts", []), "a directory merely ending in node_modules")
 
     def test_selection_rules_are_monotone_so_closure_coverage_holds_for_every_plan(self):
         # The coverage check judges a unit against the package's own closure; a plan affecting the package has a

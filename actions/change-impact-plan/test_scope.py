@@ -30,7 +30,8 @@ class FrozenScope(unittest.TestCase):
             (self.root / directory).mkdir()
         self.config = self.root / ".github/ci-plan.json"
         self.config.write_text(json.dumps(self.cfg))
-        for name in ("server/a.py", "ui/a.ts", "docs/readme.md"):
+        # ui/a.test.ts: 1.7.0 refuses to narrow on an empty test inventory, so the fixture owns one test file.
+        for name in ("server/a.py", "ui/a.ts", "ui/a.test.ts", "docs/readme.md"):
             (self.root / name).write_text("before\n")
         self.git("add", ".")
         self.base = self.git("commit-tree", self.git("write-tree"), input=b"base\n")

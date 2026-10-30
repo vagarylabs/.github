@@ -1249,8 +1249,10 @@ def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
     # (root's #57 RC3).
     try:
         json.dumps(cfg, ensure_ascii=False).encode("utf-8")
-    except (UnicodeError, RecursionError):
+    except UnicodeError:
         return None, "the plan config holds a string that is not valid Unicode (a lone surrogate escape)"
+    except RecursionError:
+        return None, "the plan config nests too deeply to serialize"
     return cfg, None
 
 

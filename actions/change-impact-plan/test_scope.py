@@ -881,6 +881,16 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
                 self.change({"ui/a.ts": "x\n"})
                 self.assert_red("not valid Unicode")  # P3: only a repair lands
 
+    def test_the_unicode_check_names_its_own_failure_never_the_other(self):
+        # Root's #57 RC3 INFO: the serialize check's two failures carry their own messages. A config nested deep
+        # enough to parse but not to serialize is not a lone surrogate. Parsing refuses deep nesting first, so the
+        # serialize RecursionError is reached by patching the dump.
+        with patch.object(P.json, "dumps", side_effect=RecursionError):
+            self.assertEqual(P.parse_plan_config(b'{"schema":1}'), (None, "the plan config nests too deeply to serialize"))
+        self.assertEqual(P.parse_plan_config(b'{"schema":1,"x":"\\udce9"}'),
+                         (None, "the plan config holds a string that is not valid Unicode (a lone surrogate escape)"))
+        self.assertEqual(P.parse_plan_config(b'{"schema":1}'), ({"schema": 1}, None))
+
     def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
         # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
         # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an

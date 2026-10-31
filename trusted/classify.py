@@ -11,7 +11,8 @@ imported. Ratchet constants are read with ast.parse, which parses and never runs
 
 Integrity mode also REPORTS the FL-4 test-weakening predicates: content predicates over the +/- lines of
 the PR's diff (a test skip, a retry, continue-on-error, a swallowed test failure, a deleted test with no
-successor, a loosened budget or timeout). The report never changes the exit code; see weakening_report().
+successor, a loosened budget or timeout, a new `timeout under test:` exemption). The report never changes the exit
+code; see weakening_report().
 
 Timeout-floor mode checks every job's timeout-minutes in the head tree's workflows against the manifest's
 completion floor (timeout_floor); see the timeout floor section and run_timeout_floor().
@@ -387,6 +388,9 @@ _SKIP_BATS = re.compile(r"^\s*(?P<tok>skip)\b")
 _FLAKY_PY = re.compile(r"(?P<tok>@pytest\.mark\.flaky)\b")
 _SLOW_JS = re.compile(r"(?<![\w$.])(?P<tok>test\.slow)\s*\(")
 _HAS_ASSERTIONS = re.compile(r"\b(?P<tok>expect\.hasAssertions)\s*\(")
+# The test-bounds (K2) exemption: a short wall-clock bound marked as the behaviour under test. A net-new mark clears
+# a finding there, so it is listed here as a weakening too (root's K2 condition 3).
+_BOUND_MARK = re.compile(r"(?P<tok>timeout under test:)")
 _COE = re.compile(r"^\s*(?:-\s+)?continue-on-error\s*:\s*(?P<v>[^#]*?)\s*(?:#.*)?$")
 
 _SWALLOW = re.compile(r"\|\|\s*(?P<s>true\b|:(?=\s|$|[;)\"'])|exit\s+0\b|echo\b|printf\b)")
@@ -487,6 +491,7 @@ TOKEN_RULES = [
     ("test-retry", "py", _tokens(_FLAKY_PY), "add"),
     ("budget-loosened", "js-testlike", _tokens(_SLOW_JS), "add"),
     ("budget-loosened", "js-testlike", _tokens(_HAS_ASSERTIONS), "remove"),
+    ("bound-exempted", "testlike-any", _tokens(_BOUND_MARK), "add"),
     ("continue-on-error", "workflow", coe_tokens, "add"),
     ("swallowed-failure", "shell", swallow_tokens, "add"),
 ]

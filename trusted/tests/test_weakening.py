@@ -33,6 +33,7 @@ BASE = {
         "  expect(took).toBeLessThan(200)\n"
         "})\n"),
     "src/b.test.ts": "it('b', () => {})\n",
+    "src/marked.test.ts": "it('m', () => {}, 5000) // timeout under test: the 5 s latency contract\nit('n', () => {})\n",
     "src/moved.test.ts": "describe('m', () => {\n  it.skip('legacy', () => {})\n  it('kept', () => {})\n})\n",
     "src/c.ts": "export const c = 1\n",
     "src/c.test.ts": "import { c } from './c'\nit('c', () => { expect(c).toBe(1) })\n",
@@ -219,6 +220,21 @@ class WeakeningCases(unittest.TestCase):
         got = self.findings({"src/b.test.ts": "test.describe.only('b', () => {})\ntest.skip(isWebkit)\n"})
         self.assertEqual(sorted(f["detail"] for f in got if f["rule"] == "test-skip"),
                          ["adds `test.describe.only`", "adds `test.skip`"])
+
+    def test_red_a_new_bound_mark(self):
+        got = self.findings({
+            "src/b.test.ts": BASE["src/b.test.ts"] + "it('x', () => {}, 5000) // timeout under test: a latency contract\n",
+            "tests/test_x.py": BASE["tests/test_x.py"] + "    p.communicate(timeout=5)  # timeout under test: reap after kill\n"})
+        self.assertEqual(sorted((f["path"], f["line"], f["detail"]) for f in got if f["rule"] == "bound-exempted"),
+                         [("src/b.test.ts", 2, "adds `timeout under test:`"),
+                          ("tests/test_x.py", 3, "adds `timeout under test:`")])
+
+    def test_green_a_kept_moved_or_quoted_bound_mark(self):
+        marked = BASE["src/marked.test.ts"]
+        got = self.findings({"src/marked.test.ts": "it('n', () => {})\n" + marked.split("\n")[0] + "\n",
+                             "docs/test-bounds.md": "Mark the line `// timeout under test: <why>`.\n"})
+        self.assertEqual([f for f in got if f["rule"] == "bound-exempted"], [],
+                         "a moved mark is not new, and a doc that quotes one is not scanned")
 
     def test_red_pytest_skip(self):
         self.assertFlagged({"tests/test_x.py": "import pytest\n\n@pytest.mark.skip(reason='x')\n" + BASE["tests/test_x.py"]},

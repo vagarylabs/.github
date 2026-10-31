@@ -99,6 +99,8 @@ jobs:
         run: |
           python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v
           python3 -m unittest discover -s actions/changed-tests-plan -p 'test_*.py' -v
+          python3 -m unittest discover -s actions/full-run-receipt -p 'test_*.py' -v
+          python3 -m unittest discover -s actions/full-run-reuse -p 'test_*.py' -v
           python3 -m unittest discover -s distribution -p 'test_*.py' -v
 
   fetch-release-asset-tests:

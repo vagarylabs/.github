@@ -1,0 +1,16 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 1
+   }
+  ]
+ },
+ "files": {
+  "s.test.mjs": {
+   "finding": 2,
+   "cleared": 1
+  }
+ }
+}

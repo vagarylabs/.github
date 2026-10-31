@@ -1,0 +1,1 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 3}]}, "files": {"ok.test.ts": {"cleared": 5}}}

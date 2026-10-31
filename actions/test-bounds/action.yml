@@ -1,0 +1,78 @@
+# test-bounds (K2): the one shared check that test code does not bound a wait with a short wall-clock value.
+# Contract, rules and the resolver: check.py's docstring and README.md. The configuration and the shrink-only counts
+# live in the CONSUMER's .github/test-bounds.baseline.json (give it a CODEOWNERS entry).
+#
+#   test-bounds:
+#     timeout-minutes: 8   # >= the 6-minute completion floor; vagaris's census takes about a minute
+#     steps:
+#       - uses: actions/checkout@<sha>        # depth 1 is enough: the check fetches the base commit alone
+#       - uses: vagarylabs/.github/actions/test-bounds@<sha>       # pin a SHA, never @main
+#         with:
+#           base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+#
+# On pull_request and merge_group the base IS the event's (read from GITHUB_EVENT_PATH); an input that is empty,
+# names another commit or the head is refused, so a workflow edit cannot switch off the base-judged checks. The event
+# is the runner's GITHUB_EVENT_NAME, never an input. ast-grep runs isolated from the consumer's sgconfig.yml.
+#
+# The ast-grep binary is the one release-assets.lock pins (per runner arch), fetched through fetch-release-asset's
+# script and its tool cache. Every run starts with the self-test over fixtures/, so a gutted rule fails the step.
+name: test-bounds
+description: Refuse short wall-clock bounds in test code; a shrink-only baseline per file and rule.
+inputs:
+  base:
+    description: >-
+      The commit the change is judged against. On pull_request and merge_group it must equal the event's base
+      (refused otherwise). On push and workflow_dispatch: the commit before (github.event.before); empty or all
+      zeros judges every file against the committed counts only.
+    required: false
+    default: ""
+  findings:
+    description: Where to write the findings JSON (every bound, its status and reason; marks; UNSCANNED).
+    required: false
+    default: ${{ runner.temp }}/test-bounds-findings.json
+outputs:
+  problems:
+    description: Number of problems (0 when the step passed).
+    value: ${{ steps.check.outputs.problems }}
+  new-marks:
+    description: Number of `timeout under test:` marks this change adds.
+    value: ${{ steps.check.outputs.new-marks }}
+  findings-file:
+    description: The findings JSON.
+    value: ${{ steps.check.outputs.findings-file }}
+runs:
+  using: composite
+  steps:
+    - id: tool
+      shell: bash
+      env:
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_ARCH_NAME" in
+          X64) arch=x86_64 ;;
+          ARM64) arch=aarch64 ;;
+          *) echo "::error::test-bounds: no pinned ast-grep for runner arch '$RUNNER_ARCH_NAME'"; exit 1 ;;
+        esac
+        lock="$GITHUB_ACTION_PATH/../../release-assets.lock"
+        mapfile -t pins < <(awk -v a="app-${arch}-unknown-linux-gnu.zip" \
+          '$1 == "ast-grep" && $2 == "0.42.1" && $3 ~ ("/" a "$") { print }' "$lock")
+        [ "${#pins[@]}" -eq 1 ] || { echo "::error::test-bounds: expected one locked ast-grep 0.42.1 asset for $arch"; exit 1; }
+        read -r ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256 extra <<< "${pins[0]}"
+        [ -z "$extra" ] || { echo "::error::test-bounds: malformed ast-grep lock entry"; exit 1; }
+        export ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256
+        export ASSET_DEST="$RUNNER_TEMP/test-bounds/ast-grep.zip"
+        bash "$GITHUB_ACTION_PATH/../fetch-release-asset/fetch.sh"
+        bin="$RUNNER_TEMP/test-bounds/bin"
+        python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("ast-grep", sys.argv[2])' "$ASSET_DEST" "$bin"
+        chmod 0755 "$bin/ast-grep"
+        version=$("$bin/ast-grep" --version)
+        [ "$version" = "ast-grep 0.42.1" ] || { echo "::error::test-bounds: the binary reports '$version'"; exit 1; }
+        echo "sg=$bin/ast-grep" >> "$GITHUB_OUTPUT"
+    - id: check
+      shell: bash
+      env:
+        TEST_BOUNDS_SG: ${{ steps.tool.outputs.sg }}
+        TB_BASE: ${{ inputs.base }}
+        TB_FINDINGS: ${{ inputs.findings }}
+      run: python3 -I "$GITHUB_ACTION_PATH/check.py" check --base "$TB_BASE" --findings "$TB_FINDINGS"

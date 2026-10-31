@@ -1,0 +1,28 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 2
+   }
+  ]
+ },
+ "files": {
+  "recovered.test.ts": {
+   "finding": 1
+  },
+  "u2028.test.ts": {
+   "finding": 1
+  }
+ },
+ "unparsable": [
+  "broken.test.ts",
+  "digit.test.ts",
+  "latin1.test.ts",
+  "template-word.test.ts",
+  "test_cpython.py"
+ ],
+ "recovered": [
+  "recovered.test.ts"
+ ]
+}

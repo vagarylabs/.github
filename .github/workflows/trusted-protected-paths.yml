@@ -354,7 +354,7 @@ jobs:
           # (job/step level, inline references), each names at most WEAKENING_MAX_REFS references, and a head-side line over
           # WEAKENING_MAX_LINE is not read.
 
-          WEAKENING_VERSION = "fl4-v1"
+          WEAKENING_VERSION = "fl4-v2"
           WEAKENING_EFFECT = "ci-policy:test-weakening"
           WEAKENING_MAX_FILES = 3000
           WEAKENING_MAX_PATCH_BYTES = 2000000     # one file's diff; a larger one is dropped as it streams: INCOMPLETE
@@ -473,9 +473,15 @@ jobs:
           _FLAKY_PY = re.compile(r"(?P<tok>@pytest\.mark\.flaky)\b")
           _SLOW_JS = re.compile(r"(?<![\w$.])(?P<tok>test\.slow)\s*\(")
           _HAS_ASSERTIONS = re.compile(r"\b(?P<tok>expect\.hasAssertions)\s*\(")
-          # The test-bounds (K2) exemption: a short wall-clock bound marked as the behaviour under test. A net-new mark clears
-          # a finding there, so it is listed here as a weakening too (root's K2 condition 3).
-          _BOUND_MARK = re.compile(r"(?P<tok>timeout under test:)")
+          # The test-bounds (K2) exemption: a short wall-clock bound marked as the behaviour under test (root's K2 condition 3:
+          # a mark is never silent). FL-4 lists EVERY added line that holds one, in any file and on any line, a comment-only
+          # line included, with no netting against removed marks (root's #61 R4): a visibility rule must never under-report,
+          # and listing a moved mark again is the safe direction. Case and spacing are loosened, so the exact token the F5
+          # check honours (`timeout under test:`) is always matched. The F5 check's own output is never read: it is an
+          # untrusted job. _BOUND_MARK_PICKAXE is the same pattern as a POSIX ERE, for git's -G file preselection.
+          _BOUND_MARK = re.compile(r"timeout\s+under\s+test\s*:", re.I)
+          _BOUND_MARK_PICKAXE = ("[Tt][Ii][Mm][Ee][Oo][Uu][Tt][[:space:]]+[Uu][Nn][Dd][Ee][Rr][[:space:]]+[Tt][Ee][Ss][Tt]"
+                                 "[[:space:]]*:")
           _COE = re.compile(r"^\s*(?:-\s+)?continue-on-error\s*:\s*(?P<v>[^#]*?)\s*(?:#.*)?$")
 
           _SWALLOW = re.compile(r"\|\|\s*(?P<s>true\b|:(?=\s|$|[;)\"'])|exit\s+0\b|echo\b|printf\b)")
@@ -576,7 +582,6 @@ jobs:
               ("test-retry", "py", _tokens(_FLAKY_PY), "add"),
               ("budget-loosened", "js-testlike", _tokens(_SLOW_JS), "add"),
               ("budget-loosened", "js-testlike", _tokens(_HAS_ASSERTIONS), "remove"),
-              ("bound-exempted", "testlike-any", _tokens(_BOUND_MARK), "add"),
               ("continue-on-error", "workflow", coe_tokens, "add"),
               ("swallowed-failure", "shell", swallow_tokens, "add"),
           ]
@@ -1232,6 +1237,64 @@ jobs:
               return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first, floor)
 
 
+          _MARK_DIFF = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "--no-renames", "--unified=0")
+
+
+          def mark_findings(budget, mb, head, incomplete, room):
+              """`bound-exempted` for every added line of the diff that holds the test-bounds mark (see _BOUND_MARK). git's -G
+              preselects the files whose patch adds or removes such a line, and ONE combined diff of those files (per pathspec
+              batch, as scan_patches reads) is scanned: every added marked line is listed. A path git quotes is diffed on its
+              own. A stop or an over-cap diff is INCOMPLETE, never a clean pass."""
+              try:
+                  raw = git_read(budget, _MARK_DIFF[:-1] + ("--name-only", "-z", "-G" + _BOUND_MARK_PICKAXE, mb, head),
+                                 WEAKENING_MAX_CENSUS_BYTES)
+              except Exhausted as exc:
+                  incomplete.append("%s while listing the files that add a `timeout under test:` mark; no mark is listed"
+                                    % _stop_reason(exc.kind))
+                  return []
+              paths = sorted(p for p in raw.decode("utf-8", "surrogateescape").split("\0") if p)
+              want = {"diff --git a/%s b/%s" % (p, p): p for p in paths}
+              out, done = [], set()
+
+              def scan(path, patch):
+                  done.add(path)
+                  if patch is None:
+                      incomplete.append("%s: diff larger than %d bytes; its `timeout under test:` marks are not listed"
+                                        % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
+                      return
+                  for n, t in parse_patch(patch)[0]:
+                      if _BOUND_MARK.search(t):
+                          if len(out) >= room:
+                              raise Exhausted("findings")
+                          out.append(_finding("bound-exempted", path, n, "adds `timeout under test:`"))
+              try:
+                  for batch in pathspec_batches([(p, {p}) for p in paths]):
+                      chunks = git_chunks(budget, _MARK_DIFF + (mb, head, "--")
+                                          + tuple(":(literal)" + q for q in sorted(q for _, ps in batch for q in ps)))
+                      try:
+                          for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
+                              path = want.get(header)
+                              if path is not None and path not in done:
+                                  scan(path, patch)
+                      finally:
+                          chunks.close()
+                  for path in paths:
+                      if path in done:
+                          continue
+                      try:
+                          patch = git_read(budget, _MARK_DIFF + (mb, head, "--", ":(literal)" + path),
+                                           WEAKENING_MAX_PATCH_BYTES).decode("utf-8", "replace")
+                      except Exhausted as exc:
+                          if exc.kind != "cap":
+                              raise
+                          patch = None
+                      scan(path, patch)
+              except Exhausted as exc:
+                  incomplete.append("%s after %d of %d files that add a `timeout under test:` mark; the rest are not listed"
+                                    % (_stop_reason(exc.kind), len(done), len(paths)))
+              return out
+
+
           def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room, floor=None):
               """Fill results[i] for every i in todo; the stop kind, or None when every file was read. Once the files scanned hold
               room findings, the next file stops the scan ("findings"): a PR of `it.skip(` makes ~125k findings per MB of diff.
@@ -1321,6 +1384,7 @@ jobs:
                                     % (_stop_reason(stop), len(results), in_scope))
               for i in sorted(results):
                   findings += results[i]
+              findings += mark_findings(budget, mb, head, incomplete, WEAKENING_MAX_FINDINGS - len(findings))
               heads = {row[3]: row[6] for row in scoped if row[0] != "D"}
               floor_raises(budget, findings, heads, floor, incomplete)
               listed = findings[:WEAKENING_MAX_LISTED]

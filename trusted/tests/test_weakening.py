@@ -33,6 +33,7 @@ BASE = {
         "  expect(took).toBeLessThan(200)\n"
         "})\n"),
     "src/b.test.ts": "it('b', () => {})\n",
+    "src/marked.test.ts": "it('m', () => {}, 5000) // timeout under test: the 5 s latency contract\nit('n', () => {})\n",
     "src/moved.test.ts": "describe('m', () => {\n  it.skip('legacy', () => {})\n  it('kept', () => {})\n})\n",
     "src/c.ts": "export const c = 1\n",
     "src/c.test.ts": "import { c } from './c'\nit('c', () => { expect(c).toBe(1) })\n",
@@ -219,6 +220,41 @@ class WeakeningCases(unittest.TestCase):
         got = self.findings({"src/b.test.ts": "test.describe.only('b', () => {})\ntest.skip(isWebkit)\n"})
         self.assertEqual(sorted(f["detail"] for f in got if f["rule"] == "test-skip"),
                          ["adds `test.describe.only`", "adds `test.skip`"])
+
+    def marks(self, files):
+        return sorted((f["path"], f["line"]) for f in self.findings(files) if f["rule"] == "bound-exempted")
+
+    def test_red_a_new_bound_mark(self):
+        got = self.findings({
+            "src/b.test.ts": BASE["src/b.test.ts"] + "it('x', () => {}, 5000) // timeout under test: a latency contract\n",
+            "tests/test_x.py": BASE["tests/test_x.py"] + "    p.communicate(timeout=5)  # timeout under test: reap after kill\n"})
+        self.assertEqual(sorted((f["path"], f["line"], f["detail"]) for f in got if f["rule"] == "bound-exempted"),
+                         [("src/b.test.ts", 2, "adds `timeout under test:`"),
+                          ("tests/test_x.py", 3, "adds `timeout under test:`")])
+
+    def test_red_a_mark_on_a_comment_only_line(self):
+        # B1 (root's #61 R4): the F5 check honours a mark whose comment spans the bound's line, so a comment-only
+        # line, and the inner line of a block comment, are listed too.
+        self.assertEqual(self.marks({"src/b.test.ts": BASE["src/b.test.ts"]
+                                     + "// timeout under test: the latency contract\n"
+                                     + "/* a multi-line note\n   timeout under test: the reap */ it('c', () => {}, 50)\n"}),
+                         [("src/b.test.ts", 2), ("src/b.test.ts", 4)])
+
+    def test_red_a_mark_moved_to_another_bound_is_listed(self):
+        # B2: a removed mark never cancels an added one; the moved mark is listed again (the safe direction).
+        marked = BASE["src/marked.test.ts"].split("\n")
+        moved = marked[0].split(" //")[0] + "\n" + marked[1] + " // timeout under test: a different contract\n"
+        self.assertEqual(self.marks({"src/marked.test.ts": moved}), [("src/marked.test.ts", 2)])
+
+    def test_red_a_mark_in_any_file_in_any_case(self):
+        self.assertEqual(self.marks({"src/helpers/wait.ts": "export const W = 5000 // Timeout Under Test: helper\n",
+                                     "docs/test-bounds.md": "Mark the line `// timeout under test: <why>`.\n"}),
+                         [("docs/test-bounds.md", 1), ("src/helpers/wait.ts", 1)],
+                         "no test-name filter and case-insensitive: over-reporting is the safe side")
+
+    def test_green_an_unchanged_or_removed_mark(self):
+        self.assertEqual(self.marks({"src/marked.test.ts": BASE["src/marked.test.ts"] + "it('o', () => {})\n"}), [])
+        self.assertEqual(self.marks({"src/marked.test.ts": "it('n', () => {})\n"}), [])
 
     def test_red_pytest_skip(self):
         self.assertFlagged({"tests/test_x.py": "import pytest\n\n@pytest.mark.skip(reason='x')\n" + BASE["tests/test_x.py"]},
@@ -477,7 +513,24 @@ class WeakeningCases(unittest.TestCase):
         with mock.patch.object(subprocess, "Popen", popen):
             findings, incomplete, in_scope = self.repo.scan(head)
         self.assertEqual((len(findings), incomplete, in_scope), (12, [], 12))
-        self.assertEqual(calls.count(["git", "diff"]), 2, calls)
+        # The listing, the combined diff, and the bound-mark preselection (-G), which finds no mark here.
+        self.assertEqual(calls.count(["git", "diff"]), 3, calls)
+
+    def test_one_combined_diff_for_every_marked_file(self):
+        head = self.repo.case({"src/m%d.ts" % i: "export const M = 5 // timeout under test: m%d\n" % i
+                               for i in range(12)})
+        real, calls = subprocess.Popen, []
+
+        def popen(args, *a, **kw):
+            calls.append(list(args[:2]))
+            return real(args, *a, **kw)
+        with mock.patch.object(subprocess, "Popen", popen):
+            findings, incomplete, _ = self.repo.scan(head)
+        self.assertEqual(sorted(f["path"] for f in findings if f["rule"] == "bound-exempted"),
+                         sorted("src/m%d.ts" % i for i in range(12)))
+        self.assertEqual(incomplete, [])
+        # The listing, the bound-mark preselection and ONE combined diff of the marked files: never one per file.
+        self.assertEqual(calls.count(["git", "diff"]), 3, calls)
 
     # --- references are listed, never honoured --------------------------------------------------
 
@@ -507,7 +560,7 @@ class IntegrityReportTests(unittest.TestCase):
         code, out = self.repo.integrity(head)
         self.assertEqual(code, 0, out)
         self.assertIn("No protected workflow or ratchet change.", out)
-        self.assertIn("### Test-weakening predicates (FL-4 `fl4-v1`, report-only)", out)
+        self.assertIn("### Test-weakening predicates (FL-4 `fl4-v2`, report-only)", out)
         self.assertIn("- WEAKENING test-skip `src/b.test.ts:1` adds `it.skip`; no quarantine or approval reference", out)
         self.assertIn("::warning file=src/b.test.ts,line=1,title=test weakening (FL-4)::test-skip: adds `it.skip`", out)
 

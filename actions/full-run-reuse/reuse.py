@@ -98,7 +98,7 @@ def required_checks(get, repo: str, branch: str) -> set[str]:
     if not isinstance(rules, list):
         raise ValueError("branch rules are not a list")
     required = set()
-    for rule in rules:
+    for rule in rules:  # every rule: several rulesets, repository- and organization-sourced, may each require checks
         if rule.get("type") == "required_status_checks":
             for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
                 required.add(check["context"])
@@ -204,6 +204,10 @@ def lookup(env: dict, get, sleep=time.sleep, now=time.monotonic) -> tuple[str, l
         required = required_checks(get, repo, env["DEFAULT_BRANCH"])
     except UNREADABLE as error:
         return "", ["required checks unreadable: " + type(error).__name__]
+    if not required:
+        # Classic branch protection, or none: the required set cannot be read here, so nothing proves that a skipped
+        # or failed job was not a required check (root's #59 delta R4). FULL, never "nothing is required".
+        return "", ["no required status checks in the default branch's rules: the full suite runs"]
     clash = sorted(required & set(cfg["ignore_jobs"]))
     if clash:
         raise ValueError(f"ignore-jobs names required check(s) {clash}: a required check is never ignored")
@@ -216,10 +220,13 @@ def lookup(env: dict, get, sleep=time.sleep, now=time.monotonic) -> tuple[str, l
         if not runs:
             return "", ["no merge_group run of this commit"]
         newest = max(runs, key=lambda r: r["id"])
+        newest_id = newest["id"]
         deadline = now() + cfg["wait_seconds"]
         while newest.get("status") != "completed" and now() < deadline:
             sleep(POLL_SECONDS)
-            newest = get(f"/repos/{repo}/actions/runs/{newest['id']}")
+            newest = get(f"/repos/{repo}/actions/runs/{newest_id}")
+            if not isinstance(newest, dict) or newest.get("id") != newest_id:
+                raise ValueError("poll returned a different or malformed run")
         reason = evaluate(get, newest, repo=repo, sha=sha, path=cfg["path"], verdict_job=cfg["verdict_job"],
                           void_steps=cfg["void_steps"], ignore_jobs=cfg["ignore_jobs"], required=required)
     except UNREADABLE as error:
@@ -227,8 +234,8 @@ def lookup(env: dict, get, sleep=time.sleep, now=time.monotonic) -> tuple[str, l
     others = len(runs) - 1
     note = f" ({others} older run(s) of this commit are never considered)" if others else ""
     if reason is not None:
-        return "", [f"newest run {newest['id']}: {reason}{note}"]
-    return str(newest["id"]), [f"newest run {newest['id']}: ACCEPTED{note}",
+        return "", [f"newest run {newest_id}: {reason}{note}"]
+    return str(newest_id), [f"newest run {newest_id}: ACCEPTED{note}",
                                f"declared event-conditional steps: {cfg['event_conditional'] or 'none'}"]
 
 

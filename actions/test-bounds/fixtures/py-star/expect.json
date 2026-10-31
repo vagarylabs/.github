@@ -1,0 +1,18 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 5
+   }
+  ]
+ },
+ "files": {
+  "pkg/test_star.py": {
+   "finding": 1
+  },
+  "pkg/test_star_src.py": {
+   "finding": 1
+  }
+ }
+}

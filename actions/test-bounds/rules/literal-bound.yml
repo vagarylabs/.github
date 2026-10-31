@@ -5,6 +5,7 @@
 # (scripts/check-test-bounds-are-hang-guards.mjs, root R4'd on #849), each split by the floor kind it is judged
 # against:
 #   case: it/test/bench/describe* bounds, testTimeout;  hook: hook bounds, hookTimeout, teardownTimeout;
+#   subprocess: the `timeout` option of a child-process call (spawn/exec/execFile/fork and their Sync forms, execa*);
 #   condition: every other call's `timeout` option, vi.waitFor/waitUntil, and timeout/deadline/budget defaults.
 # A rule only MATCHES a bound position and captures its value as $V. check.py decides whether $V is a finding: only
 # a value proven at or above the kind's floor is cleared (README.md: the resolver).
@@ -89,6 +90,12 @@ utils:
             - { kind: type_assertion }  #[typescript]
           matches: call-arg
   timeout-key: { regex: "^(?:timeout|\"timeout\"|'timeout')$" }
+  # A child-process launcher, called bare or as a member (child_process.spawnSync, cp.execFile).
+  subprocess-name: { regex: "^(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|execa|execaSync|execaCommand|execaCommandSync|execaNode)$" }
+  subprocess-callee:
+    any:
+      - { kind: identifier, matches: subprocess-name }
+      - { kind: member_expression, has: { field: property, matches: subprocess-name } }
   bound-name: { kind: identifier, regex: "(?i)timeout|deadline|budget" }
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
@@ -126,6 +133,24 @@ rule:
       kind: call_expression
       has: { field: function, matches: hook-callee }
 ---
+# A child process's `timeout` option (spawnSync(cmd, args, { timeout })): the subprocess floor, as in Python.
+id: literal-bound.option.subprocess
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, matches: timeout-key }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^timeout$", pattern: $V }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      has: { field: function, matches: subprocess-callee }
+---
 id: literal-bound.option.condition
 language: typescript
 rule:
@@ -144,7 +169,7 @@ rule:
       not:
         has:
           field: function
-          any: [{ matches: case-callee }, { matches: hook-callee }]
+          any: [{ matches: case-callee }, { matches: hook-callee }, { matches: subprocess-callee }]
 ---
 # The LAST argument of it/test/bench/describe*: any bound value with 3+ arguments (name, fn, timeout), only a literal
 # with 2 (the ratchet's rule; a 2-argument call's last argument is otherwise its body).

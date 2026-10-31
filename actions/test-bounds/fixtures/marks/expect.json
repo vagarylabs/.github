@@ -1,2 +1,19 @@
-{"config": {"trees": [{"glob": "**/*", "min_files": 2}]},
- "files": {"m.test.ts": {"marked": 1, "finding": 2}, "test_marks.py": {"marked": 1}}}
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 2
+   }
+  ]
+ },
+ "files": {
+  "m.test.ts": {
+   "marked": 1,
+   "finding": 5
+  },
+  "test_marks.py": {
+   "marked": 1
+  }
+ }
+}

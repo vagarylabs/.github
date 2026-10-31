@@ -22,6 +22,10 @@ test-bounds:
         base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 ```
 
+On pull_request and merge_group the base is the EVENT's (read from `GITHUB_EVENT_PATH`). The `base` input must
+name that same commit: an empty input, another commit, or the head is refused, so an edit to the workflow cannot
+switch off the base-judged checks. The action fetches the base commit alone when a depth-1 checkout lacks it.
+
 The consumer's `.github/test-bounds.baseline.json` holds the configuration and the counts. Give it a CODEOWNERS entry.
 
 ```json
@@ -49,7 +53,7 @@ value. The rules are in `rules/`.
 
 | rule id | languages | position | floor |
 |---|---|---|---|
-| `literal-bound.option.{case,hook,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the call decides the kind | 120 / 240 / 60 s |
+| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
@@ -58,6 +62,10 @@ value. The rules are in `rules/`.
 | `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait | 120 s |
 | `literal-bound.positional.subprocess` | py | `wait(N)`, `communicate(input, N)` | 120 s |
 | `literal-bound.default.subprocess` | py | a `timeout` parameter default | 120 s |
+
+Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not
+yet covered, and due in K2 step 2: Python `asyncio.wait_for` and pool/connect timeouts, pytest-timeout and ini
+defaults, fixed flushes, sleep-as-wait, and elapsed-time asserts.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -71,19 +79,26 @@ Otherwise it is a finding. The proof can be:
   3. Its value is exact, as above.
   4. The relative path, with its extension, `index` and `.js -> .ts` forms, resolves to exactly one tracked file.
 
-  Re-exports, namespace, default, type-only and package imports, and anything longer than one hop are not resolved.
+  Re-exports, namespace, default, type-only and package imports, a directory with a `package.json`, a Python star
+  import in either file, and anything longer than one hop are not resolved. A `typeof NAME` in a type position is a
+  read.
 - **the launcher class**: a `beforeAll` whose first argument calls a declared launcher. The launcher must be bound
   by a plain named import from its declared module, under the same guards. Such a hook is judged against the
   launcher's own floor. Embedded Postgres owns a 180 s startup, so its hook floor is 210 000 ms.
-- **a mark**: `timeout under test: <what it proves>` in a comment on the value's line. A mark without a reason clears
-  nothing. Every mark is listed, and marks this change adds are listed as NEW.
+- **a mark**: `timeout under test: <what it proves>`, with the mark's own text on the value's line (not merely a
+  comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
+  and a bound this change newly exempts is listed as NEW.
+
+ast-grep runs isolated from the consumer's `sgconfig.yml` (a `languageGlobs` line would otherwise hide files). A
+sentinel rule must parse every scanned file exactly once: a file it skips, such as one holding non-UTF-8 bytes, is
+red.
 
 ## Parsing
 
 tree-sitter recovers from what its grammar lacks. One such gap, tree-sitter-typescript #367 (open), hits
 `f<typeof import("x")>()`.
-- An ERROR node holding no identifier or digit character, or lying inside a string, cannot hide a bound. It is
-  RECOVERED: listed, never red (root's R2).
+- An ERROR node holding no identifier or digit character, or lying inside a string (but not in the code a
+  template interpolates), cannot hide a bound. It is RECOVERED: listed, never red (root's R2).
 - Any other ERROR node makes the file unparsable, which is red.
 
 ## Baseline and configuration
@@ -95,7 +110,8 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - The configuration is also judged from the base. Each of these is red:
   - a file the base scans that the candidate does not;
   - a tree removed, or given a lower `min_files`;
-  - a launcher added or lowered.
+  - a launcher added or lowered;
+  - a scanned test file renamed out of the trees.
 - A widened tree is seeded from what the base held.
 
 ## UNSCANNED

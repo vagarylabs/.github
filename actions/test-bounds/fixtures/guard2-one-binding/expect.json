@@ -1,3 +1,25 @@
-{"config": {"trees": [{"glob": "**/*", "min_files": 6}]},
- "files": {"red.test.ts": {"finding": 1}, "green.test.ts": {"cleared": 1},
-           "pkg/test_binding.py": {"finding": 1, "cleared": 1}}}
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 8
+   }
+  ]
+ },
+ "files": {
+  "red.test.ts": {
+   "finding": 1
+  },
+  "green.test.ts": {
+   "cleared": 1
+  },
+  "pkg/test_binding.py": {
+   "finding": 1,
+   "cleared": 1
+  },
+  "red-let.test.ts": {
+   "finding": 1
+  }
+ }
+}

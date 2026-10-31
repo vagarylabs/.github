@@ -102,8 +102,11 @@ class Evaluation(unittest.TestCase):
 
     def test_plain_named_imports_only(self):
         self.assertEqual(C._parse_import('import { A, B as C } from "./x";'), {"A": "A", "C": "B"})
+        # An inline `type X` specifier binds a type only, so the value specifiers beside it still count.
+        self.assertEqual(C._parse_import('import { start, type Db } from "./x";'), {"start": "start"})
+        self.assertEqual(C._parse_import('import { type } from "./x";'), {"type": "type"})
         for text in ['import type { A } from "./x";', 'import D, { A } from "./x";', 'import * as N from "./x";',
-                     'import { type A } from "./x";', 'import { A /* c */ } from "./x";']:
+                     'import { A /* c */ } from "./x";']:
             self.assertIsNone(C._parse_import(text), text)
 
 
@@ -344,18 +347,144 @@ class Marks(unittest.TestCase):
         self.assertTrue(has(v["problems"], f"{a}:1: unparsable"), v["problems"])
 
 
+class EventBase(unittest.TestCase):
+    """B3 (root's #60 R4): on pull_request and merge_group the base is the EVENT's, and the input must name it."""
+    BASE, HEAD = "a" * 40, "b" * 40
+
+    def resolve(self, given, event, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "event.json"
+            path.write_text(json.dumps(payload))
+            return C.resolve_base(given, event, {"GITHUB_EVENT_PATH": str(path)}, self.HEAD)
+
+    def test_pull_request_and_merge_group_take_the_events_base(self):
+        pr = {"pull_request": {"base": {"sha": self.BASE}}}
+        self.assertEqual(self.resolve(self.BASE, "pull_request", pr), self.BASE)
+        mg = {"merge_group": {"base_sha": self.BASE}}
+        self.assertEqual(self.resolve(self.BASE, "merge_group", mg), self.BASE)
+
+    def test_an_empty_different_or_self_base_is_refused(self):
+        pr = {"pull_request": {"base": {"sha": self.BASE}}}
+        for given in ("", "0" * 40, "c" * 40, self.HEAD):
+            with self.subTest(given=given), self.assertRaises(C.Refusal):
+                self.resolve(given, "pull_request", pr)
+        with self.assertRaises(C.Refusal):
+            self.resolve(self.HEAD, "pull_request", {"pull_request": {"base": {"sha": self.HEAD}}})
+        with self.assertRaises(C.Refusal):
+            self.resolve(self.BASE, "merge_group", {"pull_request": {"base": {"sha": self.BASE}}})
+
+    def test_a_missing_event_payload_refuses(self):
+        with self.assertRaises(C.Refusal):
+            C.resolve_base(self.BASE, "pull_request", {}, self.HEAD)
+
+    def test_push_and_local_runs_take_the_input(self):
+        self.assertEqual(C.resolve_base(self.BASE, "push", {}, self.HEAD), self.BASE)
+        self.assertIsNone(C.resolve_base("", "push", {}, self.HEAD))
+        self.assertIsNone(C.resolve_base("0" * 40, "", {}, self.HEAD))
+        with self.assertRaises(C.Refusal):
+            C.resolve_base(self.HEAD, "push", {}, self.HEAD)
+
+
+class Isolation(unittest.TestCase):
+    """B1 and B2 (root's #60 R4): no file the scan cannot vouch for reads as clean."""
+
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def test_a_consumer_sgconfig_cannot_hide_the_scanned_files(self):
+        a = "s/__tests__/a.test.ts"
+        self.repo.commit({a: file("a", 0, 2), BL: baseline({a: 2}),
+                          "sgconfig.yml": 'languageGlobs:\n  css: ["*.test.ts"]\nruleDirs: []\n'})
+        v = self.repo.verdict(None)
+        self.assertEqual(v["counts"], {a: {C.RULE: 2}}, "the findings are still found")
+        self.assertEqual(v["problems"], [])
+
+    def test_a_non_utf8_test_file_is_red(self):
+        a, b = "s/__tests__/a.test.ts", "s/__tests__/b.test.ts"
+        self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+        (self.repo.dir / b).write_bytes(b'it("caf\xe9", async () => {}, 5_000);\n')
+        self.repo.git("add", b)
+        self.repo.git("commit", "-q", "-m", "latin-1")
+        v = self.repo.verdict(None)
+        self.assertTrue(has(v["problems"], f"{b}: unparsable (not UTF-8"), v["problems"])
+
+    def test_a_file_the_scan_skips_is_red_whatever_the_cause(self):
+        # The sentinel is the positive control behind B1 and B2: any file ast-grep does not parse (a skip this test
+        # simulates by dropping that file's matches) is unparsable, never a clean file with no findings.
+        a, b = "s/__tests__/a.test.ts", "s/__tests__/b.test.ts"
+        self.repo.commit({a: file("a", 0, 1), b: file("b", 0, 1), BL: baseline({a: 1, b: 1})})
+        real = C.sg_scan
+        C.sg_scan = lambda root, rules, files: [m for m in real(root, rules, files) if m["file"] != b]
+        try:
+            v = self.repo.verdict(None)
+        finally:
+            C.sg_scan = real
+        self.assertTrue(has(v["problems"], f"{b}: unparsable (ast-grep parsed it 0 time(s)"), v["problems"])
+
+    def test_a_failing_ast_grep_refuses(self):
+        a = "s/__tests__/a.test.ts"
+        self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+        old = os.environ.get("TEST_BOUNDS_SG")
+        os.environ["TEST_BOUNDS_SG"] = "/usr/bin/false"
+        try:
+            with self.assertRaisesRegex(C.Refusal, "ast-grep scan exited"):
+                self.repo.verdict(None)
+        finally:
+            if old is None:
+                os.environ.pop("TEST_BOUNDS_SG", None)
+            else:
+                os.environ["TEST_BOUNDS_SG"] = old
+
+
+class TreesAndMarks(unittest.TestCase):
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def test_a_test_file_renamed_out_of_the_trees_is_red(self):
+        a, h = "s/__tests__/a.test.ts", "s/__tests__/a.cases.ts"
+        base = self.repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
+        self.repo.commit({a: None, h: file("a", 0, 2), BL: baseline({})})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"{a} is renamed to {h}, outside the scanned trees"), v["problems"])
+
+    def test_a_tree_file_in_an_unread_language_is_unscanned(self):
+        a = "s/__tests__/a.test.ts"
+        self.repo.commit({a: file("a", 0, 1), "s/__tests__/fixture.json": "{}\n",
+                          BL: baseline({a: 1}, trees=[{"glob": "s/__tests__/**", "min_files": 1}])})
+        v = self.repo.verdict(None)
+        self.assertEqual(v["unscanned"]["language"], ["s/__tests__/fixture.json"])
+
+    def test_a_base_mark_moved_onto_a_bound_is_new(self):
+        # S16: the base held the mark on no bound; moved onto a short bound, it newly exempts one.
+        a = "s/__tests__/a.test.ts"
+        base = self.repo.commit({a: "// timeout under test: the 5 s latency contract\nit(\"x\", async () => {});\n",
+                                 BL: baseline({})})
+        self.repo.commit({a: 'it("x", async () => {}, 5_000); // timeout under test: the 5 s latency contract\n'})
+        v = self.repo.verdict(base)
+        self.assertEqual([(m["file"], m["line"]) for m in v["new_marks"]], [(a, 1)])
+        self.assertEqual(v["problems"], [], "a mark clears its finding; it is listed as NEW, not failed")
+
+
 class Cli(unittest.TestCase):
     def test_exit_codes(self):
         repo = Repo()
         try:
             a = "s/__tests__/a.test.ts"
             repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
+            clean = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
             run = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
-                                                "--root", str(repo.dir)], capture_output=True, text=True,
-                                               env={**os.environ, "GITHUB_STEP_SUMMARY": "", "GITHUB_OUTPUT": ""})
+                                                "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
             ok = run("check")
             self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
             self.assertIn("2 finding(s) counted", ok.stdout)
+            self.assertIn("covered (py): subprocess timeouts only", ok.stdout, "coverage is printed, never implied")
+            self.assertIn("UNSCANNED:", ok.stdout)
             bad = run("check", "--base", "not-a-sha")
             self.assertEqual(bad.returncode, 2, bad.stdout)
             repo.commit({a: file("a", 0, 3)})
@@ -372,6 +501,21 @@ class Cli(unittest.TestCase):
             self.assertEqual(json.loads((repo.dir / BL).read_text())["trees"], TREES, "the configuration is kept")
             seeded = run("write-baseline", "--seed")
             self.assertEqual(seeded.returncode, 1, "a seed is refused once counts exist")
+            # In Actions the event is the runner's: a flag cannot turn a pull_request into a push, and the base must
+            # be the event's (B3).
+            event = repo.dir / "event.json"
+            base = repo.git("rev-parse", "HEAD~1")
+            event.write_text(json.dumps({"pull_request": {"base": {"sha": base}}}))
+            ci = {**clean, "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event)}
+            as_ci = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
+                                                  "--root", str(repo.dir)], capture_output=True, text=True, env=ci)
+            for args, why in ((("check", "--event", "push", "--base", base), "is not this run's event"),
+                              (("check",), "is not the pull_request event's base"),
+                              (("check", "--base", repo.git("rev-parse", "HEAD")), "is not the pull_request event's base")):
+                r = as_ci(*args)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn(why, r.stdout)
+            self.assertEqual(as_ci("check", "--base", base).returncode, 0, "the event's own base is accepted")
         finally:
             repo.done()
 

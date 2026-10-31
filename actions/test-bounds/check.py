@@ -8,8 +8,10 @@ kind's floor, normally a named constant). Three repository gates held this class
 check-test-bounds-are-hang-guards.mjs, vagary-core test_ci_test_pg.py, vps-ansible test_subprocess_hang_guards.py);
 this check replaces them, and each adoption PR declares what it retires.
 
-ENGINE. ast-grep (pinned, rules in rules/) MATCHES every bound position and captures its value. This module is the
-post-pass. It may only CLEAR a match on positive proof:
+ENGINE. ast-grep (pinned, rules in rules/) MATCHES the bound positions COVERED lists and captures each value; it
+runs isolated from the consumer's sgconfig.yml, and a sentinel rule must parse every scanned file exactly once (a
+skipped file, such as one holding non-UTF-8 bytes, is red). This module is the post-pass. It may only CLEAR a match
+on positive proof:
   - the value evaluates EXACTLY to at least the kind's floor (FLOORS_S). Exact evaluation accepts numeric literals
     (with `_`), unary minus, and + - * of those, and nothing else. Division, templates, calls, environment reads and
     legacy octal (`0210000`) are not evaluated, so they stay findings;
@@ -19,14 +21,14 @@ post-pass. It may only CLEAR a match on positive proof:
       `from .x import NAME`) whose one target file holds `export const NAME = <literal expr>` (Python: the one
       module-level assignment). Guards: (1) NAME is bound nowhere else in the consuming file, in any scope; (2)
       exactly one binding at the source; (3) the exact evaluation above; (4) the relative path resolves to exactly
-      one tracked file. Re-exports, namespace, default and package imports, and anything longer than one hop stay
-      findings;
+      one tracked file. Re-exports, namespace, default and package imports, a package directory, a Python star
+      import in either file (it may bind any name), and anything longer than one hop stay findings;
   - or the hook belongs to a declared LAUNCHER class (config `launchers`): a hook whose first argument calls a
     launcher imported, by the same one-hop rule, from the declared module, judged against the launcher's own floor
     (vagaris: embedded Postgres owns a 180 s startup, so its beforeAll needs 210 000 ms, below the 240 s hook floor);
-  - or the line carries a mark `timeout under test: <what it proves>`. A mark is never silent: every mark is listed,
-    and a mark this change adds is listed as NEW (classify.py's weakening report lists them too). A mark with no
-    reason clears nothing.
+  - or the line carries a mark `timeout under test: <what it proves>` (the line its own text is on). A mark is
+    never silent: every mark is listed, a bound this change newly exempts is listed as NEW, and classify.py's FL-4
+    report lists every added mark. A mark without a reason (a word of three letters) clears nothing.
 
 SCOPE. The configuration lives in the consumer's .github/test-bounds.baseline.json (CODEOWNERS-reviewed): `trees`
 (globs, each with a `min_files` floor, a positive control on the glob), `exclude`, `launchers`, and `counts`. A file
@@ -42,15 +44,18 @@ BASELINE (shrink-only, per file and rule; the vagaris ratchet's semantics, root 
   - an untouched file is judged against the committed count, and the committed counts may not RAISE an untouched
     file against the base's;
   - the CONFIGURATION is judged from the base: a file the base's trees cover that the candidate's do not, a tree
-    removed or given a lower min_files, or a launcher added or lowered, is a red. A change cannot narrow what is
-    scanned or how it is judged; it can only widen it.
-Without a base, every file is judged against the committed counts and the run says so.
+    removed or given a lower min_files, a launcher added or lowered, or a test file renamed out of the trees, is a
+    red. A change cannot narrow what is scanned or how it is judged; it can only widen it.
+THE BASE. On pull_request and merge_group it is the event's (GITHUB_EVENT_PATH), and the `--base` input must name it:
+empty, another commit, or the head is refused, so the candidate workflow cannot switch these checks off. On push and
+workflow_dispatch the input is taken as given; without a base, every file is judged against the committed counts and
+the run says so. In Actions the event is GITHUB_EVENT_NAME, never a flag.
 
 SELF-TEST. Every run first runs the planted fixtures (fixtures/<case>/, each with expect.json): every rule's RED
 must produce exactly its expected findings and every GREEN none, so a gutted rule or resolver fails the check itself.
 
 Usage (exit 0 clean, 1 refused, 2 usage or tool error):
-  check.py check [--root DIR] [--base SHA] [--event NAME] [--findings FILE]
+  check.py check [--root DIR] [--base SHA] [--event NAME (local runs only)] [--findings FILE]
   check.py write-baseline [--root DIR] [--base SHA] [--seed]
   check.py self-test
 The ast-grep binary is $TEST_BOUNDS_SG (default `ast-grep` on PATH).
@@ -91,11 +96,25 @@ RULE_FILES = {"typescript": "literal-bound.yml", "tsx": "literal-bound.yml", "ja
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
-MIN_REASON = 3
+# A mark clears only with a reason: at least one word of three letters ("..." or "x" is not a reason).
+REASON = re.compile(r"[A-Za-z]{3,}")
 SIMILARITY = "30%"
 # Test-like paths, for the UNSCANNED list only (never for scope: the trees decide that).
 TEST_LIKE = re.compile(r"(?:^|/)(?:[^/]+\.(?:test|spec)\.[^/]+|test_[^/]+\.py|[^/]+_test\.(?:py|go)|[^/]+\.bats"
-                       r"|conftest\.py)$|(?:^|/)(?:__tests__|tests?)/[^/]+$")
+                       r"|conftest\.py|(?:vite|vitest|jest|playwright)\.config\.[^/]+|pytest\.ini)$"
+                       r"|(?:^|/)(?:__tests__|tests?)/[^/]+$")
+# What each language's rules read, printed with every run so a consumer never reads absence as clean (root's #60 R4).
+COVERED = {
+    "ts/tsx/js": "the `timeout` option of a call (its kind from the callee: it/test/bench/describe*, hooks, child "
+                 "processes, any other call); the last argument of it/test/bench/describe* and of hooks; "
+                 "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
+                 "hookTimeout and teardownTimeout properties",
+    "py": "subprocess timeouts only: `timeout=` of run/check_output/check_call/call/Popen/communicate/wait, "
+          "wait(N), communicate(input, N), and a `timeout` parameter default",
+    "not yet (K2 step 2)": "asyncio.wait_for and pool/connect timeouts, pytest-timeout and ini defaults, fixed "
+                           "flushes, sleep-as-wait, elapsed-time asserts",
+}
+
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 JS_TWIN = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 NAME = re.compile(r"^[A-Za-z_$][\w$]*$")
@@ -237,10 +256,17 @@ def compose_rules(lang: str, extra: list[str] = ()) -> str:
     # tree-sitter recovers from what its grammar lacks (vagaris: `f<typeof import("x")>()`). An ERROR holding no
     # identifier or digit, or lying inside a string, cannot hide a bound: it is RECOVERED and listed. Any other ERROR
     # is a red (root's R2, 10-31; tree-sitter-typescript #367 is the upstream gap).
-    strings = "[{ kind: string }, { kind: template_string }]" if lang in JS_LANGS else "[{ kind: string }]"
+    # The string excuse never reaches into code a template or f-string interpolates (root's #60 R4 L1).
+    code = "template_substitution" if lang in JS_LANGS else "interpolation"
+    template = "template_string" if lang in JS_LANGS else "string"
     out.append(f"id: parse-error\nlanguage: {lang}\nrule:\n  kind: ERROR\n  regex: \"[A-Za-z0-9_$]\"\n"
-               f"  not: {{ inside: {{ stopBy: end, any: {strings} }} }}")
+               f"  not:\n    any:\n      - inside: {{ stopBy: end, kind: string, not: {{ has: {{ stopBy: end, kind: {code} }} }} }}\n"
+               f"      - all:\n          - inside: {{ stopBy: end, kind: {template} }}\n"
+               f"          - not: {{ inside: {{ stopBy: end, kind: {code} }} }}")
     out.append(f"id: recovered\nlanguage: {lang}\nrule: {{ kind: ERROR }}")
+    # The per-file positive control (B1): every scanned file must be parsed, so its root node must match once. A file
+    # ast-grep skips (non-UTF-8 bytes, or a language mapping that hides it) never reads as clean.
+    out.append(f"id: sentinel\nlanguage: {lang}\nrule: {{ kind: {'module' if lang == 'python' else 'program'} }}")
     out.append(f"id: mark\nlanguage: {lang}\nrule: {{ kind: comment, regex: \"timeout under test:\" }}")
     return "\n---\n".join(out) + "\n"
 
@@ -253,24 +279,41 @@ def sg_binary() -> str:
 
 
 def sg_scan(root: Path, rules_text: str, files: list[str]) -> list[dict]:
-    """Every match of the rules over `files` (repo-relative, under root). A tool failure raises: fail closed."""
+    """Every match of the rules over `files` (repo-relative, under root). A tool failure raises: fail closed.
+
+    ast-grep runs ISOLATED from the consumer (root's #60 R4 B2): from a private directory, under this action's own
+    empty sgconfig.yml, on absolute paths. ast-grep finds a configuration from its working directory upward, and a
+    consumer's `languageGlobs` would otherwise re-map, and so hide, the files it scans."""
     if not files:
         return []
     sg = sg_binary()
+    root = root.resolve()
     out = []
     with tempfile.TemporaryDirectory() as tmp:
         rules = Path(tmp) / "rules.yml"
         rules.write_text(rules_text, encoding="utf-8")
+        config = Path(tmp) / "sgconfig.yml"
+        config.write_text("ruleDirs: []\n", encoding="utf-8")
         for i in range(0, len(files), SG_BATCH):
-            batch = files[i:i + SG_BATCH]
-            p = subprocess.run([sg, "scan", "-r", str(rules), "--json=stream", "--no-ignore", "hidden",
-                                "--no-ignore", "dot", "--no-ignore", "vcs", "--no-ignore", "parent", "--", *batch],
-                               cwd=root, capture_output=True, text=True)
-            if p.returncode != 0:
-                raise Refusal(f"ast-grep scan exited {p.returncode}: {p.stderr.strip()[:400]}")
-            for line in p.stdout.splitlines():
-                if line.strip():
-                    out.append(json.loads(line))
+            batch = [str(root / f) for f in files[i:i + SG_BATCH]]
+            # Streamed, one JSON object per "\n"-terminated line. Never str.splitlines(): it also splits on U+2028,
+            # which a match's text may hold raw (valid JSON), and the sentinel's match is a whole file.
+            with tempfile.TemporaryFile() as err:
+                p = subprocess.Popen([sg, "scan", "-c", str(config), "-r", str(rules), "--json=stream", "--no-ignore",
+                                      "hidden", "--no-ignore", "dot", "--no-ignore", "vcs", "--no-ignore", "parent",
+                                      "--", *batch], cwd=tmp, stdout=subprocess.PIPE, stderr=err)
+                for raw in p.stdout:
+                    if not raw.strip():
+                        continue
+                    m = json.loads(raw.decode("utf-8"))
+                    m["file"] = Path(m["file"]).resolve().relative_to(root).as_posix()
+                    if m["ruleId"] == "sentinel":
+                        m = {"ruleId": "sentinel", "file": m["file"]}  # the file is all it proves; drop its text
+                    out.append(m)
+                rc = p.wait()
+                if rc != 0:
+                    err.seek(0)
+                    raise Refusal(f"ast-grep scan exited {rc}: {err.read().decode('utf-8', 'replace').strip()[:400]}")
     return out
 
 
@@ -393,6 +436,7 @@ _REF_CONTEXTS = [
     "{ kind: augmented_assignment_expression, field: right }", "{ kind: subscript_expression }",
     "{ kind: arrow_function, field: body }", "{ kind: expression_statement }", "{ kind: await_expression }",
     "{ kind: sequence_expression }",
+    "{ kind: type_query }  #[typescript,tsx]",
     "{ kind: as_expression }  #[typescript,tsx]", "{ kind: satisfies_expression }  #[typescript,tsx]",
     "{ kind: non_null_expression }  #[typescript,tsx]", "{ kind: type_assertion }  #[typescript]",
     "{ kind: required_parameter, field: value }  #[typescript,tsx]",
@@ -436,8 +480,10 @@ def _parse_import(text: str) -> dict[str, str] | None:
         spec = spec.strip()
         if not spec:
             continue
+        if re.match(r"type\s+\S", spec):
+            continue  # an inline `type X` binds a type only, never a value the resolver reads
         s = _SPEC.match(spec)
-        if not s or s.group("imp") == "type":
+        if not s:
             return None
         out[s.group("local") or s.group("imp")] = s.group("imp")
     return out
@@ -450,6 +496,8 @@ def resolve_module(tree: Tree, importer: str, spec: str) -> tuple[str | None, st
     target = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
     if target.startswith("../") or target == "..":
         return None, f"`{spec}` leaves the repository"
+    if target + "/package.json" in tree.fileset:
+        return None, f"`{spec}` is a package directory: its package.json, not an index file, decides what loads"
     stem, ext = posixpath.splitext(target)
     if ext in JS_EXTS:
         cands = [target] + [stem + t for t in JS_TWIN.get(ext, ())]
@@ -531,6 +579,8 @@ def py_bindings(tree: ast.Module, name: str) -> list[ast.AST]:
             out.append(node)
         elif isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == name:
             out.append(node)
+        elif isinstance(node, ast.alias) and node.name == "*":
+            out.append(node)  # a star import may bind any name (root's #60 R4 B4)
         elif isinstance(node, ast.ExceptHandler) and node.name == name:
             out.append(node)
         elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
@@ -598,20 +648,33 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             + re.escape(la["name"]) + "$\" } } } }\n"
             "    - has: { field: arguments, has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, "
             "pattern: $V } }")
-    matches, marks_raw, unparsable, errors = [], {}, set(), set()
+    matches, marks_raw, unparsable, errors, parsed = [], {}, {}, set(), Counter()
+    for f in files:
+        try:
+            (tree.root / f).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            unparsable.setdefault((f, 0), "not UTF-8: ast-grep skips such a file, so nothing in it can be judged")
     for lang, group in sorted(by_lang.items()):
         extra = launch_rules if lang in JS_LANGS else []
         for m in sg_scan(tree.root, compose_rules(lang, extra), group):
-            if m["ruleId"] == "parse-error":
-                unparsable.add((m["file"], _line(m["range"])))
+            if m["ruleId"] == "sentinel":
+                parsed[m["file"]] += 1
+            elif m["ruleId"] == "parse-error":
+                unparsable.setdefault((m["file"], _line(m["range"])), "an ERROR node that could hide a bound")
             elif m["ruleId"] == "recovered":
                 errors.add((m["file"], _line(m["range"])))
             elif m["ruleId"] == "mark":
-                mk = MARK.search(m["text"])
-                for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2):
-                    marks_raw.setdefault((m["file"], ln), (mk.group("why").strip().rstrip("*/").strip() if mk else ""))
+                # The mark exempts the line its own text sits on, never the other lines of a block comment.
+                for mk in MARK.finditer(m["text"]):
+                    ln = _line(m["range"]) + m["text"].count("\n", 0, mk.start())
+                    marks_raw.setdefault((m["file"], ln), mk.group("why").strip().rstrip("*/").strip())
             else:
                 matches.append(m)
+    for f in files:
+        # An empty file has no root node to match, and nothing in it to judge.
+        if parsed[f] != 1 and (tree.root / f).read_bytes().strip():
+            unparsable.setdefault((f, 0), f"ast-grep parsed it {parsed[f]} time(s), not once: the scan cannot vouch "
+                                          "for it (non-UTF-8 bytes, or a configuration that hides the file)")
     launcher_hits = {}
     for m in matches:
         if m["ruleId"].startswith("launcher."):
@@ -659,16 +722,18 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             mark = next((marks_raw[(f, ln)] for ln in sorted(lines) if (f, ln) in marks_raw), None)
             if mark is not None:
                 rec["mark"] = mark
-                if len(mark) >= MIN_REASON:
+                if REASON.search(mark):
                     rec["status"] = "marked"
                 else:
                     rec["reason"] += "; the `timeout under test:` mark gives no reason, so it clears nothing"
         findings.setdefault(f, []).append(rec)
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
-            unparsable.add((f, 0))
-    return {"findings": findings, "marks": marks, "unparsable": sorted(unparsable),
-            "recovered": sorted(errors - unparsable)}
+            unparsable.setdefault((f, 0), "CPython cannot parse it")
+    bad = {f for f, _ in unparsable}
+    return {"findings": findings, "marks": marks,
+            "unparsable": sorted((f, ln, why) for (f, ln), why in unparsable.items()),
+            "recovered": sorted((f, ln) for f, ln in errors if f not in bad)}
 
 
 def _value_of(text: str, lang: str, file: str, resolved: dict) -> tuple[Fraction | None, str]:
@@ -993,19 +1058,27 @@ def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
                 groups.append({"old": [f] if f in base_tree.fileset else [], "now": [f]})
     old_paths = sorted({f for g in groups for f in g["old"] if f in base_tree.fileset})
     res = census(base_tree, old_paths, head_cfg["launchers"])
+    renamed_out = [(frm, to) for status, frm, to in changes
+                   if status[:1] == "R" and scope.scanned(frm) and not scope.scanned(to)]
     return {"sha": sha, "groups": groups, "base_cfg": base_cfg,
             "base_counts_all": base_cfg["counts"] if base_cfg else None, "base_found_all": counts_of(res["findings"]),
-            "base_marks": res["marks"], "skipped": b"rename detection was skipped" in d.stderr.lower()}
+            "base_marked": [{"file": f, "line": r["line"], "reason": r["mark"]} for f, recs in res["findings"].items()
+                            for r in recs if r["status"] == "marked"],
+            "renamed_out": renamed_out, "skipped": b"rename detection was skipped" in d.stderr.lower()}
 
 
-def new_marks(head_marks: list[dict], change: dict | None) -> list[dict]:
-    """Marks in the change's files that the base did not hold (by group, by reason text)."""
+def new_marks(head_findings: dict, change: dict | None) -> list[dict]:
+    """The bounds this change newly EXEMPTS by a mark: per group, the head's marked bounds that the base's marked
+    bounds (by reason) do not account for. A mark the base held on no bound, moved onto one, is new (root's #60 R4
+    L4, S16)."""
     if change is None:
         return []
     out = []
     for g in change["groups"]:
-        was = Counter(m["reason"] for m in change["base_marks"] if m["file"] in g["old"])
-        for m in sorted((m for m in head_marks if m["file"] in g["now"]), key=lambda m: (m["file"], m["line"])):
+        was = Counter(m["reason"] for m in change["base_marked"] if m["file"] in g["old"])
+        head = sorted(({"file": f, "line": r["line"], "reason": r["mark"]} for f in g["now"]
+                       for r in head_findings.get(f, []) if r["status"] == "marked"), key=lambda m: (m["file"], m["line"]))
+        for m in head:
             if was[m["reason"]] > 0:
                 was[m["reason"]] -= 1
             else:
@@ -1042,7 +1115,7 @@ def self_test(verbose: bool = False) -> list[str]:
             failures.append(f"{case.name}: findings {json.dumps(got, sort_keys=True)}, expected "
                             f"{json.dumps(want, sort_keys=True)}")
         for key in ("unparsable", "recovered"):
-            have = sorted({f for f, _ in res[key]})
+            have = sorted({row[0] for row in res[key]})
             if have != sorted(spec.get(key, [])):
                 failures.append(f"{case.name}: {key} {have}, expected {sorted(spec.get(key, []))}")
         if verbose:
@@ -1056,6 +1129,54 @@ def self_test(verbose: bool = False) -> list[str]:
 
 
 # --- the run -----------------------------------------------------------------------------------------------------
+
+BASE_EVENTS = {"pull_request": ("pull_request", "base", "sha"), "pull_request_target": ("pull_request", "base", "sha"),
+               "merge_group": ("merge_group", "base_sha")}
+
+
+def resolve_base(arg: str, event: str, env: dict, head: str) -> str | None:
+    """The base commit a run is judged against (root's #60 R4 B3).
+
+    On pull_request and merge_group it is the EVENT's base, read from $GITHUB_EVENT_PATH, which the runner writes and
+    a workflow cannot override. The workflow's `base` input must name that same commit: an empty input, a different
+    one, or the head itself is refused, so an edit to the candidate workflow cannot switch off the touched-file,
+    raise and narrowing checks. Only push, workflow_dispatch and local runs take the input as given (empty or zeros:
+    no base)."""
+    given = (arg or "").strip()
+    if event in BASE_EVENTS:
+        path = env.get("GITHUB_EVENT_PATH", "")
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            want = payload
+            for key in BASE_EVENTS[event]:
+                want = want[key]
+        except (OSError, ValueError, KeyError, TypeError):
+            raise Refusal(f"a {event} run must read its base from GITHUB_EVENT_PATH, which is missing or malformed")
+        if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{40}", want)):
+            raise Refusal(f"the {event} event carries no base commit")
+        if given != want:
+            raise Refusal(f"the base input {given or '(empty)'} is not the {event} event's base {want}: on this event "
+                          "the base is the event's, so the touched-file, raise and narrowing checks cannot be switched "
+                          "off")
+        if want == head:
+            raise Refusal(f"the {event} event's base is the head itself")
+        return want
+    if not given or re.fullmatch(r"0+", given):
+        return None
+    if given == head:
+        raise Refusal("the base input is the head itself, which judges nothing")
+    return given
+
+
+def ensure_commit(root: Path, sha: str, in_actions: bool) -> None:
+    """Fetch the base alone (the check reads only the two trees) when a depth-1 checkout lacks it."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return
+    have = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=root, capture_output=True)
+    if have.returncode and in_actions:
+        subprocess.run(["git", "fetch", "--no-tags", "--quiet", "--depth=1", "origin", sha], cwd=root,
+                       capture_output=True, timeout=300)
+
 
 def repo_root(arg: str | None) -> Path:
     if arg:
@@ -1081,12 +1202,15 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     res = census(Tree(root, files), scanned, cfg["launchers"])
     found = counts_of(res["findings"])
     problems, notices = [], []
-    problems += [f"{f}:{ln}: unparsable (an ERROR node that could hide a bound): the check cannot judge it"
-                 for f, ln in res["unparsable"]]
+    problems += [f"{f}{':' + str(ln) if ln else ''}: unparsable ({why}): the check cannot judge it"
+                 for f, ln, why in res["unparsable"]]
     problems += tree_floors(cfg, scanned)
     change = pr_change(root, base, cfg, tmp) if base else None
     if change and change["base_cfg"] is not None:
         problems += narrowing(change["base_cfg"], cfg, files)
+    if change:
+        problems += [f"{frm} is renamed to {to}, outside the scanned trees: a test file that leaves the trees is a "
+                     "narrowing (move it back, or widen the trees in the same change)" for frm, to in change["renamed_out"]]
     allow = {}
     for rule in sorted({r for c in list(found.values()) + list(cfg["counts"].values()) for r in c} | {RULE}):
         sub = None
@@ -1101,10 +1225,11 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     if change and change["skipped"]:
         notices.append("git skipped inexact rename detection on this diff, so a rename or split may read as new files")
     marks = res["marks"]
-    added = new_marks(marks, change)
+    added = new_marks(res["findings"], change)
     return {"schema": SCHEMA, "check": CHECK_ID, "base": base, "event": event, "scanned_files": len(scanned),
             "counts": found, "findings": res["findings"], "marks": marks, "new_marks": added,
-            "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "problems": problems,
+            "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "covered": COVERED,
+            "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
 
 
@@ -1112,7 +1237,9 @@ def summary_md(out: dict) -> str:
     total = Counter(r["status"] for recs in out["findings"].values() for r in recs)
     lines = ["### test-bounds (K2)", "",
              f"{out['scanned_files']} file(s) scanned; {total['finding']} finding(s), {total['cleared']} cleared by "
-             f"value, {total['marked']} marked. Base: {out['base'] or 'none'}; event: {out['event'] or 'none'}.", ""]
+             f"value, {total['marked']} marked. Base: {out['base'] or 'none'}; event: {out['event'] or 'none'}.", "",
+             "**Covered positions** (a bound anywhere else is not judged, so its absence here is not a pass):", ""]
+    lines += [f"- {k}: {v}" for k, v in out["covered"].items()] + [""]
     if out["problems"]:
         lines += [f"**{len(out['problems'])} problem(s)**", ""] + [f"- {p}" for p in out["problems"][:60]] + [""]
     lines += [f"**New `timeout under test:` marks: {len(out['new_marks'])}**", ""]
@@ -1138,6 +1265,11 @@ def emit(out: dict, findings_path: str | None) -> None:
         print(f"notice: {n}")
     for m in out["new_marks"]:
         print(f"NEW MARK: {m['file']}:{m['line']} timeout under test: {m['reason'] or '(no reason)'}")
+    for k, v in out["covered"].items():
+        print(f"covered ({k}): {v}")
+    u = out["unscanned"]
+    print(f"UNSCANNED: {len(u['language'])} tree file(s) in a language this check does not read, "
+          f"{len(u['outside_trees'])} test-like file(s) outside every tree; RECOVERED parses: {len(out['recovered'])}")
     total = sum(sum(c.values()) for c in out["counts"].values())
     print(f"test-bounds: {out['scanned_files']} file(s) scanned, {total} finding(s) counted, "
           f"{len(out['marks'])} mark(s) ({len(out['new_marks'])} new), {len(out['problems'])} problem(s)")
@@ -1167,7 +1299,7 @@ def main(argv: list[str]) -> int:
         p = sub.add_parser(name)
         p.add_argument("--root")
         p.add_argument("--base", default=os.environ.get("TEST_BOUNDS_BASE", ""))
-        p.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", ""))
+        p.add_argument("--event", default="")
         if name == "check":
             p.add_argument("--findings")
         else:
@@ -1182,11 +1314,17 @@ def main(argv: list[str]) -> int:
             print(f"self-test: {'ok' if not failures else str(len(failures)) + ' failure(s)'}")
             return 1 if failures else 0
         root = repo_root(args.root)
-        base = args.base.strip() or None
-        if base and re.fullmatch(r"0+", base):
-            base = None
+        in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+        # In Actions the event is the runner's, never a flag a workflow passes.
+        event = os.environ.get("GITHUB_EVENT_NAME", "") if in_actions else args.event.strip()
+        if in_actions and args.event.strip() and args.event.strip() != event:
+            raise Refusal(f"--event {args.event.strip()} is not this run's event {event}")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        base = resolve_base(args.base, event, dict(os.environ), head)
+        if base:
+            ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:
-            out = run(root, base, args.event.strip(), Path(tmp))
+            out = run(root, base, event, Path(tmp))
         out["problems"] = [f"the check's own self-test failed: {f}" for f in failures] + out["problems"]
         if args.cmd == "check":
             emit(out, args.findings)

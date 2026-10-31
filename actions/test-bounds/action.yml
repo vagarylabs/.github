@@ -5,11 +5,14 @@
 #   test-bounds:
 #     timeout-minutes: 8   # >= the 6-minute completion floor; vagaris's census takes about a minute
 #     steps:
-#       - uses: actions/checkout@<sha>
-#         with: { fetch-depth: 0, persist-credentials: false }   # the base commit must be readable
+#       - uses: actions/checkout@<sha>        # depth 1 is enough: the check fetches the base commit alone
 #       - uses: vagarylabs/.github/actions/test-bounds@<sha>       # pin a SHA, never @main
 #         with:
 #           base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+#
+# On pull_request and merge_group the base IS the event's (read from GITHUB_EVENT_PATH); an input that is empty,
+# names another commit or the head is refused, so a workflow edit cannot switch off the base-judged checks. The event
+# is the runner's GITHUB_EVENT_NAME, never an input. ast-grep runs isolated from the consumer's sgconfig.yml.
 #
 # The ast-grep binary is the one release-assets.lock pins (per runner arch), fetched through fetch-release-asset's
 # script and its tool cache. Every run starts with the self-test over fixtures/, so a gutted rule fails the step.
@@ -18,14 +21,11 @@ description: Refuse short wall-clock bounds in test code; a shrink-only baseline
 inputs:
   base:
     description: >-
-      Commit the change is judged against (the merge base). Empty, or all zeros: every file is judged against the
-      committed counts only, and the touched-file, raise and narrowing checks do not run.
+      The commit the change is judged against. On pull_request and merge_group it must equal the event's base
+      (refused otherwise). On push and workflow_dispatch: the commit before (github.event.before); empty or all
+      zeros judges every file against the committed counts only.
     required: false
     default: ""
-  event:
-    description: The event; on pull_request a gain in a touched file must be locked in by write-baseline.
-    required: false
-    default: ${{ github.event_name }}
   findings:
     description: Where to write the findings JSON (every bound, its status and reason; marks; UNSCANNED).
     required: false
@@ -74,6 +74,5 @@ runs:
       env:
         TEST_BOUNDS_SG: ${{ steps.tool.outputs.sg }}
         TB_BASE: ${{ inputs.base }}
-        TB_EVENT: ${{ inputs.event }}
         TB_FINDINGS: ${{ inputs.findings }}
-      run: python3 -I "$GITHUB_ACTION_PATH/check.py" check --base "$TB_BASE" --event "$TB_EVENT" --findings "$TB_FINDINGS"
+      run: python3 -I "$GITHUB_ACTION_PATH/check.py" check --base "$TB_BASE" --findings "$TB_FINDINGS"

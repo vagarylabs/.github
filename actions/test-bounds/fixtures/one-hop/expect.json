@@ -1,1 +1,18 @@
-{"config": {"trees": [{"glob": "**/*", "min_files": 7}]}, "files": {"red.test.ts": {"finding": 6}}}
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 9
+   }
+  ]
+ },
+ "files": {
+  "red.test.ts": {
+   "finding": 6
+  },
+  "test_abs.py": {
+   "finding": 1
+  }
+ }
+}

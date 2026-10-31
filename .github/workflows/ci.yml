@@ -120,6 +120,68 @@ jobs:
           persist-credentials: false
       - name: sibling-repo-read tests (a localhost API stub and local bare remotes; no network, no real token)
         run: python3 -m unittest discover -s actions/sibling-repo-read -p 'test_*.py' -v
+      # An App-key-free run on a real runner (root's ruling 2026-10-29, core sibling-read path (a)): no app-id, no
+      # private-key, no secret; a token directory shaped exactly as broker-source-read writes it, holding a fake
+      # credential. bulk is public, so git reads it without asking the credential helper. What this proves is the
+      # composition on the runner: the source check, no mint, no readiness wait, the read step in its reset shell.
+      - name: Write a broker-shaped token directory (a fake credential, never a real one)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/broker-tokens"
+          install -d -m 700 "$d"
+          umask 077
+          printf '%s' 'fake-public-read-not-a-credential' > "$d/vagarylabs__bulk"
+      - name: sibling-repo-read in token-dir mode, App-key-free
+        uses: ./actions/sibling-repo-read
+        with:
+          token-dir: ${{ runner.temp }}/broker-tokens
+          repositories: bulk
+          checkouts: bulk:${{ runner.temp }}/siblings/bulk
+      - name: The App-key-free checkout is main's commit, and the token file is left for broker-source-read's revoke
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/siblings/bulk/README.md"
+          test "$(git -C "$RUNNER_TEMP/siblings/bulk" rev-parse HEAD)" = "$(git ls-remote https://github.com/vagarylabs/bulk refs/heads/main | cut -f1)"
+          test -f "$RUNNER_TEMP/broker-tokens/vagarylabs__bulk"
+      # The two-phase sparse read against GitHub's own server (it must honour --filter=blob:none, or the tree phase
+      # refuses): the tree phase, a pattern set (here written by hand; vagary-core derives it), the sparse phase.
+      - name: sibling-repo-read sparse, phase 1 (commits and trees only)
+        id: bulk_tree
+        uses: ./actions/sibling-repo-read
+        with:
+          token-dir: ${{ runner.temp }}/broker-tokens
+          repositories: bulk
+          trees: bulk:${{ runner.temp }}/siblings/bulk-sparse
+      - name: Derive a pattern set from the tree listing (the consumer's step)
+        env:
+          TREES: ${{ steps.bulk_tree.outputs.trees }}
+        run: |
+          set -euo pipefail
+          tree=$(python3 -c 'import json, os; print(json.loads(os.environ["TREES"])["bulk"]["tree"])')
+          tr '\0' '\n' < "$tree" | grep -qx README.md
+          tr '\0' '\n' < "$tree" | grep -qx Dockerfile
+          printf '/README.md\n' > "$RUNNER_TEMP/bulk-patterns.txt"
+      - name: sibling-repo-read sparse, phase 2 (exactly the set)
+        id: bulk_sparse
+        uses: ./actions/sibling-repo-read
+        with:
+          token-dir: ${{ runner.temp }}/broker-tokens
+          repositories: bulk
+          sparse: bulk:${{ runner.temp }}/siblings/bulk-sparse:${{ runner.temp }}/bulk-patterns.txt
+      - name: Only the set is materialized, nothing outside it is fetched, and sparse-ok names bulk
+        env:
+          SPARSE_OK: ${{ steps.bulk_sparse.outputs.sparse-ok }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/siblings/bulk-sparse"
+          test "$SPARSE_OK" = bulk
+          test -s "$d/README.md"
+          test ! -e "$d/Dockerfile"
+          dockerfile=$(git -C "$d" rev-parse HEAD:Dockerfile)
+          if git -C "$d" cat-file --batch-all-objects --batch-check='%(objectname)' | grep -qx "$dockerfile"; then
+            echo "::error::a blob outside the sparse set (Dockerfile) was fetched"; exit 1
+          fi
+          test -z "$(git -C "$d" remote)"
 
   broker-source-read-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

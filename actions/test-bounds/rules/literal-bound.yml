@@ -1,0 +1,225 @@
+# literal-bound, for typescript (.ts .mts .cts), tsx (.tsx) and javascript (.js .mjs .cjs .jsx). check.py emits each
+# rule once per language, with its `language:` line set; a line tagged `#[lang,...]` is kept only for those
+# languages, since the grammars differ (tsx has no `<T>x` assertion, javascript no type wrappers and no
+# required_parameter). The first document holds the utils every rule carries. The positions are vagaris's ratchet's
+# (scripts/check-test-bounds-are-hang-guards.mjs, root R4'd on #849), each split by the floor kind it is judged
+# against:
+#   case: it/test/bench/describe* bounds, testTimeout;  hook: hook bounds, hookTimeout, teardownTimeout;
+#   condition: every other call's `timeout` option, vi.waitFor/waitUntil, and timeout/deadline/budget defaults.
+# A rule only MATCHES a bound position and captures its value as $V. check.py decides whether $V is a finding: only
+# a value proven at or above the kind's floor is cleared (README.md: the resolver).
+# Every rule id is `literal-bound.<position>.<kind>`; check.py reads the kind from the id.
+utils:
+  nc: { not: { kind: comment } }
+  # it/test/bench/describe*, then .each/.only/... modifiers, then calls: the ratchet's registrarName order (calls
+  # are unwrapped first, so `describe.each(t)(...)` is a registrar and `it.each(t).only(...)` is not).
+  case-mods:
+    any:
+      - { kind: identifier, regex: "^(?:it|test|bench|describe\\w*)$" }
+      - kind: member_expression
+        all:
+          - has: { field: property, regex: "^(?:each|only|skip|concurrent|sequential|todo|fails|skipIf|runIf|for)$" }
+          - has: { field: object, matches: case-mods }
+  case-callee:
+    any:
+      - matches: case-mods
+      - kind: call_expression
+        has: { field: function, matches: case-callee }
+  hook-mods:
+    any:
+      - { kind: identifier, regex: "^(?:beforeAll|beforeEach|afterAll|afterEach)$" }
+      - kind: member_expression
+        all:
+          - has: { field: property, regex: "^(?:each|only|skip|concurrent|sequential|todo|fails|skipIf|runIf|for)$" }
+          - has: { field: object, matches: hook-mods }
+  hook-callee:
+    any:
+      - matches: hook-mods
+      - kind: call_expression
+        has: { field: function, matches: hook-callee }
+  # A value that cannot be a time bound: the body, an options object, a string. Everything else in a bound position
+  # (a literal, a name, a member, a call, arithmetic) is captured.
+  bound-value:
+    not:
+      any:
+        - { kind: arrow_function }
+        - { kind: function_expression }
+        - { kind: generator_function }
+        - { kind: class }
+        - { kind: object }
+        - { kind: array }
+        - { kind: string }
+        - { kind: template_string }
+        - { kind: regex }
+        - { kind: spread_element }
+        - { kind: "true" }
+        - { kind: "false" }
+        - { kind: "null" }
+        - { kind: undefined }
+        - { kind: comment }
+  # The ratchet's isLiteral: a numeric literal, or + - * / and unary +/- built only of them, through type wrappers.
+  literal-value:
+    any:
+      - { kind: number }
+      - kind: unary_expression
+        all:
+          - has: { field: operator, regex: "^[-+]$" }
+          - has: { field: argument, matches: literal-value }
+      - kind: binary_expression
+        all:
+          - has: { field: operator, regex: "^[-+*/]$" }
+          - has: { field: left, matches: literal-value }
+          - has: { field: right, matches: literal-value }
+      - kind: parenthesized_expression
+        has: { matches: literal-value }
+      - { kind: as_expression, has: { nthChild: 1, matches: literal-value } }  #[typescript,tsx]
+      - { kind: satisfies_expression, has: { nthChild: 1, matches: literal-value } }  #[typescript,tsx]
+      - { kind: non_null_expression, has: { nthChild: 1, matches: literal-value } }  #[typescript,tsx]
+      - { kind: type_assertion, has: { nthChild: { position: 1, reverse: true }, matches: literal-value } }  #[typescript]
+  # An object that is an argument of a CALL (not `new`), directly or through wrappers.
+  call-arg:
+    any:
+      - inside: { kind: arguments, inside: { kind: call_expression } }
+      - inside:
+          any:
+            - { kind: parenthesized_expression }
+            - { kind: as_expression }  #[typescript,tsx]
+            - { kind: satisfies_expression }  #[typescript,tsx]
+            - { kind: non_null_expression }  #[typescript,tsx]
+            - { kind: type_assertion }  #[typescript]
+          matches: call-arg
+  timeout-key: { regex: "^(?:timeout|\"timeout\"|'timeout')$" }
+  bound-name: { kind: identifier, regex: "(?i)timeout|deadline|budget" }
+---
+# { timeout: V } in a call's arguments; the call decides the kind.
+id: literal-bound.option.case
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, matches: timeout-key }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^timeout$", pattern: $V }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      has: { field: function, matches: case-callee }
+---
+id: literal-bound.option.hook
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, matches: timeout-key }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^timeout$", pattern: $V }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      has: { field: function, matches: hook-callee }
+---
+id: literal-bound.option.condition
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, matches: timeout-key }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^timeout$", pattern: $V }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      not:
+        has:
+          field: function
+          any: [{ matches: case-callee }, { matches: hook-callee }]
+---
+# The LAST argument of it/test/bench/describe*: any bound value with 3+ arguments (name, fn, timeout), only a literal
+# with 2 (the ratchet's rule; a 2-argument call's last argument is otherwise its body).
+id: literal-bound.registrar.case
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, matches: case-callee }
+    - has:
+        field: arguments
+        has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has:
+        field: arguments
+        any:
+          - has: { nthChild: { position: 3, ofRule: { matches: nc } } }
+          - all:
+              - has: { nthChild: { position: 2, ofRule: { matches: nc } } }
+              - has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, matches: literal-value }
+---
+# The LAST argument of a hook (fn, timeout), including the optional call `beforeAll?.(fn, N)` (#855 L1).
+id: literal-bound.registrar.hook
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, matches: hook-callee }
+    - has:
+        field: arguments
+        has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has:
+        field: arguments
+        has: { nthChild: { position: 2, ofRule: { matches: nc } } }
+---
+# vi.waitFor(fn, N) / vi.waitUntil(fn, N): the second argument (an options object is literal-bound.option.condition).
+id: literal-bound.wait.condition
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: member_expression
+        all:
+          - has: { field: object, kind: identifier, regex: "^vi$" }
+          - has: { field: property, regex: "^(?:waitFor|waitUntil)$" }
+    - has:
+        field: arguments
+        has: { nthChild: { position: 2, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+---
+# A parameter default named like a bound: (timeoutMs = 15000).
+id: literal-bound.default.condition
+language: typescript
+rule:
+  any:
+    - { kind: required_parameter, all: [{ has: { field: pattern, matches: bound-name } }, { has: { field: value, pattern: $V, matches: bound-value } }] }  #[typescript,tsx]
+    - { kind: optional_parameter, all: [{ has: { field: pattern, matches: bound-name } }, { has: { field: value, pattern: $V, matches: bound-value } }] }  #[typescript,tsx]
+    - { kind: assignment_pattern, inside: { kind: formal_parameters }, all: [{ has: { field: left, matches: bound-name } }, { has: { field: right, pattern: $V, matches: bound-value } }] }  #[javascript]
+---
+id: literal-bound.config.case
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, regex: "^(?:testTimeout|\"testTimeout\"|'testTimeout')$" }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^testTimeout$", pattern: $V }
+---
+id: literal-bound.config.hook
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, regex: "^(?:hookTimeout|teardownTimeout|\"hookTimeout\"|\"teardownTimeout\"|'hookTimeout'|'teardownTimeout')$" }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^(?:hookTimeout|teardownTimeout)$", pattern: $V }

@@ -1,0 +1,3 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 4}]},
+ "files": {"red.test.ts": {"finding": 1}, "red-param.test.ts": {"finding": 1}, "green.test.ts": {"cleared": 1},
+           "test_shadow.py": {"finding": 1}}}

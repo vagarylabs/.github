@@ -1,0 +1,3 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 3}],
+            "launchers": [{"name": "startEmbeddedPostgresTestDatabase", "module": "helpers/embedded-postgres.ts", "hook_floor_ms": 210000}]},
+ "files": {"pg.test.ts": {"cleared": 1, "finding": 2}, "local.test.ts": {"finding": 1}}}

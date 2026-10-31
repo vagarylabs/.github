@@ -1,0 +1,2 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 4}]},
+ "files": {"a.test.js": {"finding": 9}, "b.test.mjs": {"finding": 1}, "b.test.cjs": {"finding": 1}, "b.test.jsx": {"finding": 1}}}

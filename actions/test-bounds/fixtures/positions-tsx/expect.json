@@ -1,0 +1,1 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 1}]}, "files": {"a.test.tsx": {"finding": 9}}}

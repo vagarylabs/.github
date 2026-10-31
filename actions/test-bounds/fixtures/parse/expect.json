@@ -1,0 +1,3 @@
+{"config": {"trees": [{"glob": "**/*", "min_files": 2}]},
+ "files": {"recovered.test.ts": {"finding": 1}},
+ "unparsable": ["broken.test.ts"], "recovered": ["recovered.test.ts"]}

@@ -2190,9 +2190,9 @@ jobs:
           _NODE_EXACT = re.compile(r"^v?\d+\.\d+\.\d+$")
 
 
-          def image_findings(text):
-              """[(line, class, image, None)] for every `FROM` whose image is not named by digest. `scratch` and an earlier
-              stage's name pass; an image built from an ARG cannot be judged here (image_arg)."""
+          def from_images(text):
+              """[(line, image)] for every `FROM` that names an image: `scratch` and an earlier stage's name are not images. The
+              one FROM reader, shared by image_findings and the pin audit (trusted/pin_audit.py)."""
               out, stages = [], set()
               for i, line in enumerate(text.splitlines(), 1):
                   m = _FROM.match(line)
@@ -2206,6 +2206,15 @@ jobs:
                       stages.add(words[2].lower())
                   if image.lower() == "scratch" or image.lower() in stages and not _DIGEST.search(image):
                       continue
+                  out.append((i, image))
+              return out
+
+
+          def image_findings(text):
+              """[(line, class, image, None)] for every `FROM` whose image is not named by digest. `scratch` and an earlier
+              stage's name pass; an image built from an ARG cannot be judged here (image_arg)."""
+              out = []
+              for i, image in from_images(text):
                   if "$" in image:
                       out.append((i, "image_arg", image, None))
                   elif not _DIGEST.search(image):
@@ -2230,10 +2239,11 @@ jobs:
               return items
 
 
-          def node_version_findings(text, head=None, path=""):
-              """[(line, class, value, None)] for every `node-version` that is not an exact X.Y.Z, and every `node-version-file`
-              whose file (read at head) does not hold one. A list (a matrix, flow or block style) is exact only when every item
-              is; an empty value with no list under it is loose."""
+          def node_versions(text, head=None):
+              """[(line, kind, value, items)] for every setup-node version input: kind `file` (a node-version-file; items holds
+              the file's first line, read at head, when it has one), `expr` (an expression; no items) or `value` (items: the
+              versions it names, see _node_items). The one node-version reader, shared by node_version_findings and the pin
+              audit (trusted/pin_audit.py)."""
               out = []
               lines = text.splitlines()
               for i, line in enumerate(lines, 1):
@@ -2244,14 +2254,27 @@ jobs:
                   if m.group("file"):
                       body = (blob(head, value) or "") if head else ""
                       first = body.strip().splitlines()[0].strip() if body.strip() else ""
-                      if not _NODE_EXACT.match(first):
-                          out.append((i, "node_version_loose", "node-version-file " + value, None))
+                      out.append((i, "file", value, [first] if first else []))
                   elif _EXPR in value:
-                      out.append((i, "node_version_expr", value, None))
+                      out.append((i, "expr", value, []))
                   else:
-                      items = _node_items(lines, i - 1, value)
-                      if not items or not all(_NODE_EXACT.match(x) for x in items):
-                          out.append((i, "node_version_loose", value or ", ".join(items), None))
+                      out.append((i, "value", value, _node_items(lines, i - 1, value)))
+              return out
+
+
+          def node_version_findings(text, head=None, path=""):
+              """[(line, class, value, None)] for every `node-version` that is not an exact X.Y.Z, and every `node-version-file`
+              whose file (read at head) does not hold one. A list (a matrix, flow or block style) is exact only when every item
+              is; an empty value with no list under it is loose."""
+              out = []
+              for i, kind, value, items in node_versions(text, head):
+                  if kind == "file":
+                      if not (items and _NODE_EXACT.match(items[0])):
+                          out.append((i, "node_version_loose", "node-version-file " + value, None))
+                  elif kind == "expr":
+                      out.append((i, "node_version_expr", value, None))
+                  elif not items or not all(_NODE_EXACT.match(x) for x in items):
+                      out.append((i, "node_version_loose", value or ", ".join(items), None))
               return out
 
 
@@ -2613,6 +2636,9 @@ jobs:
             },
             "workflow_lint": {
               "mode": "report"
+            },
+            "pin_audit": {
+              "exemptions": []
             }
           }
           TRUSTED_MANIFEST_JSON

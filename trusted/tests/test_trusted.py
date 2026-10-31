@@ -357,9 +357,12 @@ class WorkflowTests(unittest.TestCase):
                           "must be shellchecked")
             self.skipTest("shellcheck is not on PATH")
         sizes = []
-        for name in ("trusted-workflow-integrity", "trusted-protected-paths"):
-            scripts = inline_scripts.run_scripts(WORKFLOWS[name].read_text())
-            self.assertGreaterEqual(len(scripts), 3, name)
+        # The reusable pin audit inlines the same classifier (ci.yml's `inline` list holds all three).
+        for name, path, least in (("trusted-workflow-integrity", WORKFLOWS["trusted-workflow-integrity"], 3),
+                                  ("trusted-protected-paths", WORKFLOWS["trusted-protected-paths"], 3),
+                                  ("pin-audit", ROOT / ".github" / "workflows" / "pin-audit.yml", 2)):
+            scripts = inline_scripts.run_scripts(path.read_text())
+            self.assertGreaterEqual(len(scripts), least, name)
             for i, script in enumerate(scripts):
                 self.assertNotIn("$" + "{{", script)
                 sizes.append(len(script.encode()))

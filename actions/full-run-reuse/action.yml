@@ -6,13 +6,16 @@
 # pass a reuse only by citing the run, and should read this job's result itself:
 #   merge-group-reuse:
 #     if: ${{ github.event_name == 'push' }}
+#     timeout-minutes: 16   # >= wait-minutes (10) + the 6-minute completion floor
 #     permissions: { actions: read, contents: read }
-#     outputs: { reused_run: ${{ steps.reuse.outputs.reused_run }} }
+#     outputs:
+#       reused_run: ${{ steps.reuse.outputs.reused_run }}
 #     steps:
 #       - id: reuse
 #         uses: vagarylabs/.github/actions/full-run-reuse@<sha>
 #         with:
 #           verdict-job: build
+#           event-conditional-steps: '[]'
 #
 # Fail-closed: no evidence, an API error or any mismatch gives reused_run='' and the full suite runs. A missing or
 # malformed configuration fails the step (red), never reuses.
@@ -26,6 +29,21 @@ inputs:
     description: JSON list of step names that run only when a job verified nothing; any executed one voids the run.
     required: false
     default: "[]"
+  ignore-jobs:
+    description: >-
+      JSON list of advisory job names whose result does not decide reuse (reviewed with the workflow). A required check
+      is never accepted here; naming one fails the step.
+    required: false
+    default: "[]"
+  event-conditional-steps:
+    description: >-
+      JSON list of steps whose `if:` depends on the event, so they run differently under merge_group and push; "[]"
+      for none. Required, so every consumer declares it (root's #59 R4, L5). Printed in the summary.
+    required: true
+  wait-minutes:
+    description: How long to wait for the merge group's run to complete before running the full suite (0 to 30).
+    required: false
+    default: "10"
   token:
     description: Token with actions:read on this repository.
     required: false
@@ -49,5 +67,8 @@ runs:
         WORKFLOW_REF: ${{ github.workflow_ref }}
         VERDICT_JOB: ${{ inputs.verdict-job }}
         VOID_STEPS: ${{ inputs.void-steps }}
+        IGNORE_JOBS: ${{ inputs.ignore-jobs }}
+        EVENT_CONDITIONAL_STEPS: ${{ inputs.event-conditional-steps }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
         API_URL: ${{ github.api_url }}
       run: python3 -I "$GITHUB_ACTION_PATH/reuse.py" lookup

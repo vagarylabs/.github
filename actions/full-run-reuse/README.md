@@ -12,13 +12,29 @@ the run is proven FULL and green for that exact commit.
 ## What is accepted
 
 Everything below is read from the API at lookup time; `reuse.py`'s docstring is the contract.
-- A `merge_group` run of this workflow file in this repository, whose `head_sha` is the pushed commit.
-- In that run's latest attempt, the declared verdict job is `completed`/`success`, exactly once. The run itself may
-  still be in progress, because non-required jobs can outlive the merge.
-- No job of that attempt executed a declared void step.
+- The NEWEST `merge_group` run of this workflow file in this repository whose `head_sha` is the pushed commit. If it
+  is refused or unreadable, the full suite runs. An older run of the same commit is never considered.
+- That run is `completed`/`success`. A run still in progress is polled for up to `wait-minutes` (default 10), then
+  refused.
+- In its latest attempt, every job is `completed` with `success`, `skipped` or `neutral`, except the reviewed
+  advisory jobs named in `ignore-jobs`.
+- Every job that reports a REQUIRED check of the default branch (read from its ruleset) is `success`. A required
+  check can never be ignored: naming one in `ignore-jobs` fails the step.
+- The verdict job is `success` exactly once.
+- No job executed a declared void step, whatever that step's conclusion.
 - Exactly one unexpired receipt for that attempt, with every field matching.
 
 Pull-request runs are not evidence: they tested the PR merged onto an older main.
+
+## Consumer obligations
+
+- **Event-conditional steps** (`event-conditional-steps`, required). A step whose `if:` depends on the event runs
+  differently under `merge_group` and `push`. Declare them, or `'[]'` for none. The declaration is reviewed with the
+  workflow and printed in the summary; the reader cannot verify it.
+- **Timeout.** The reuse job waits up to `wait-minutes`, so its `timeout-minutes` must be at least `wait-minutes` + 6
+  (the org completion floor).
+- **`workflow_call`.** `github.workflow_ref` names the CALLING workflow, so a reusable workflow binds to its caller's
+  file and runs. The receipt must be written by the caller's verdict job.
 
 ## Fail-closed
 
@@ -33,14 +49,17 @@ Pull-request runs are not evidence: they tested the PR merged onto an older main
 merge-group-reuse:
   if: ${{ github.event_name == 'push' }}
   runs-on: <light class>
-  timeout-minutes: 6
+  timeout-minutes: 16              # >= wait-minutes (10) + the 6-minute completion floor
   permissions: { actions: read, contents: read }
-  outputs: { reused_run: ${{ steps.reuse.outputs.reused_run }} }
+  outputs:
+    reused_run: ${{ steps.reuse.outputs.reused_run }}
   steps:
     - id: reuse
       uses: vagarylabs/.github/actions/full-run-reuse@<sha>
       with:
         verdict-job: build                          # the required aggregate's display name
+        event-conditional-steps: '[]'               # required: list them, or [] for none
+        ignore-jobs: '["slow-cases upload"]'        # reviewed advisory jobs only; never a required check
         void-steps: '["Obsolete merge-group candidate (nothing verified)"]'   # if the workflow has one
 heavy-job:
   needs: [merge-group-reuse]

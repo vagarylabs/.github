@@ -67,8 +67,8 @@ class ReaderAcceptsWhatTheWriterWrites(unittest.TestCase):
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("receipt.json", json.dumps(receipt, sort_keys=True))
         run = {"id": 777, "run_attempt": 3, "event": "merge_group", "head_sha": SHA, "path": ".github/workflows/pr.yml",
-               "repository": {"full_name": REPO}}
-        jobs = {"total_count": 1, "jobs": [{"name": "verify", "status": "completed", "conclusion": "success", "steps": []}]}
+               "repository": {"full_name": REPO}, "status": "completed", "conclusion": "success"}
+        jobs = {"total_count": 1, "jobs": [{"id": 9, "name": "verify", "status": "completed", "conclusion": "success", "steps": []}]}
 
         def get(path, raw=False):
             if "/jobs?" in path:
@@ -80,7 +80,7 @@ class ReaderAcceptsWhatTheWriterWrites(unittest.TestCase):
             raise AssertionError(path)
 
         self.assertIsNone(reader.evaluate(get, run, repo=REPO, sha=SHA, path=".github/workflows/pr.yml",
-                                          verdict_job="verify", void_steps=[]))
+                                          verdict_job="verify", void_steps=[], ignore_jobs=[], required={"verify"}))
 
 
 if __name__ == "__main__":

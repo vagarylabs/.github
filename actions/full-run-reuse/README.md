@@ -33,13 +33,18 @@ Pull-request runs are not evidence: they tested the PR merged onto an older main
   workflow and printed in the summary; the reader cannot verify it.
 - **Timeout.** The reuse job waits up to `wait-minutes`, so its `timeout-minutes` must be at least `wait-minutes` + 6
   (the org completion floor).
+- **Required checks from elsewhere.** The reader verifies the required checks that THIS run's jobs report. A
+  required context produced by another workflow, or posted through the Checks or Statuses API by an app, is not a
+  job of this run. Each such workflow decides its own reuse, and an app-posted check is the consumer's to keep
+  green on the push. A default branch with no required_status_checks rule never reuses.
 - **`workflow_call`.** `github.workflow_ref` names the CALLING workflow, so a reusable workflow binds to its caller's
   file and runs. The receipt must be written by the caller's verdict job.
 
 ## Fail-closed
 
-- No evidence, an API error, a listing that pages past what was read, an expired or duplicate receipt, or any
-  mismatch gives `reused_run=''`, and the full suite runs.
+- No evidence, an API error, a malformed response or receipt, a job listing whose `total_count` exceeds the jobs
+  read, an expired or duplicate receipt, no required_status_checks rule, or any mismatch gives `reused_run=''`, and
+  the full suite runs.
 - A missing or malformed configuration fails the step.
 - Errors are reported by type only.
 

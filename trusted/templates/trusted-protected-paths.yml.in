@@ -13,7 +13,8 @@
 # WHAT IS JUDGED (B1, R4 of .github #69): the change the merge LANDS. classify.py diffs BASE against the tree that
 # `git merge-tree --write-tree BASE HEAD` writes (merge-ort, the same merge for a merge commit and a squash), never
 # merge-base..head: with two or more merge bases (a criss-cross) that diff can miss a change the merge makes. Needs git
-# >= 2.38 (the hosted ubuntu-24.04 image had 2.56.0 and the bridge 2.43.0 on 2026-11-01). An older git, a conflict, or
+# >= 2.43: `--attr-source` is new in 2.41.0 and merge-tree crashed with it until 2.43.0 (git's RelNotes). On
+# 2026-11-01 the hosted ubuntu-24.04 image had 2.56.0 and vl-bridge-runner-1 2.43.0. An older git, a conflict, or
 # any other merge-tree failure fails the job closed (exit 2), with no merge-base fallback. A rebase merge replays
 # commits and is not modelled, so where this job BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase
 # merges.
@@ -26,6 +27,9 @@
 #   checkout, not the event's base.sha (seen 47 minutes stale); it fails closed if base.sha is not that tip's ancestor.
 # - STRICT up-to-date on the ruleset: the base can still move between this run and the merge; strict makes GitHub
 #   demand a new run when it does.
+# - ATTRIBUTE INDEPENDENCE (N1): the job's working tree is the PR head, whose .gitattributes could pick the merge
+#   driver. The merge is computed three times, attributes from an empty tree, the live base and the head (`git
+#   --attr-source`), and the judge fails closed unless all three are clean and write the same tree.
 # - No rebase merges (above).
 #
 # BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py)

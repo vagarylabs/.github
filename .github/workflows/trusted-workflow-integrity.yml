@@ -376,12 +376,21 @@ jobs:
           # merge-base..head. `git merge-base` names ONE common ancestor; when base and head have two or more (a criss-cross,
           # e.g. a head that merges two PR heads main already merged), the diff from that one can miss what the merge does. On
           # real .github commits a head that merged #60's and #62's heads, deleted sign-image.yml and added a README line passed,
-          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort, git >= 2.38) writes the tree the merge
-          # of head into base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
+          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort) writes the tree the merge of head into
+          # base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
           # An older git, a conflict, or any other merge-tree failure FAILS CLOSED (exit 2). There is no fallback to a merge-base
           # diff. This models a merge commit and a squash (the same tree); a rebase merge replays commits and can land something
           # else, so where this judge BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase merges (root's setting).
-          MERGE_TREE_MIN_GIT = (2, 38)
+          # ATTRIBUTES (N1, delta R4 of .github #69): git reads .gitattributes from the working tree, which in the job is the PR
+          # head, so a PR could pick the merge driver (`merge=binary`, the `binary` macro, `-merge`, a nested .gitattributes):
+          # with two merge bases `binary` resolves the inner merge to the common ancestor, and a head that reset the signer to
+          # that ancestor's bytes looked unchanged while every attribute-free merge lands them. No single source is safe (main's
+          # own attributes can be removed by the PR, and which ones GitHub's merge honours is not known), so the merge is computed
+          # three times, with attributes from an empty tree, from the base and from the head (`git --attr-source=<tree>`, which
+          # replaces the working tree's files), and the judge fails closed unless all three are clean and write the SAME tree.
+          # GIT FLOOR 2.43: `git --attr-source` is new in 2.41.0, and "git merge-tree used to segfault when the --attr-source
+          # option is used" is fixed in 2.43.0 (git's RelNotes 2.41.0 and 2.43.0; 2.42.1 and 2.42.2 do not list the fix).
+          MERGE_TREE_MIN_GIT = (2, 43)
 
 
           def git_version():
@@ -389,35 +398,57 @@ jobs:
               m = re.match(r"git version (\d+)\.(\d+)", out)
               if not m:
                   raise IntegrityError("cannot read the git version from %r: the protected-paths judge needs git >= %d.%d "
-                                       "(`git merge-tree --write-tree`) and has no merge-base fallback"
+                                       "(`git --attr-source=<tree> merge-tree --write-tree`) and has no merge-base fallback"
                                        % ((out,) + MERGE_TREE_MIN_GIT))
               return int(m.group(1)), int(m.group(2))
 
 
-          def landing_tree(base, head):
-              """The tree that merging head into base produces, from `git merge-tree --write-tree`; IntegrityError otherwise."""
-              have = git_version()
-              if have < MERGE_TREE_MIN_GIT:
-                  raise IntegrityError("git %d.%d has no `git merge-tree --write-tree` (needs >= %d.%d): the protected-paths "
-                                       "judge cannot compute what the merge lands, and has no merge-base fallback"
-                                       % (have + MERGE_TREE_MIN_GIT))
-              r = subprocess.run(["git", "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", base, head],
-                                 capture_output=True, text=True)
+          def empty_tree():
+              r = subprocess.run(["git", "mktree"], input="", capture_output=True, text=True)
+              tree = r.stdout.strip()
+              if r.returncode != 0 or not SHA_RE.match(tree):
+                  raise IntegrityError("git mktree (the empty tree) failed (exit %d): %s" % (r.returncode, r.stderr.strip()))
+              return tree
+
+
+          def merge_tree(base, head, attr_source, label):
+              """The tree `git merge-tree --write-tree` writes for head into base, with .gitattributes read from attr_source."""
+              r = subprocess.run(["git", "--attr-source=" + attr_source, "merge-tree", "--write-tree", "-z", "--name-only",
+                                  "--no-messages", base, head], capture_output=True, text=True)
               fields = r.stdout.split("\0")
               tree = fields[0]
               # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
               if r.returncode == 1 and SHA_RE.match(tree):
                   conflicted = ", ".join(sorted({f for f in fields[1:] if f})) or "no path named"
-                  raise IntegrityError("merge CONFLICT: head %s does not merge cleanly into base %s (%s). The judge classifies "
-                                       "what the merge lands, and a conflicted merge lands nothing it can classify, so it fails "
-                                       "closed: bring the PR up to date with its base and resolve the conflict"
-                                       % (head, base, conflicted))
+                  raise IntegrityError("merge CONFLICT (attributes from %s): head %s does not merge cleanly into base %s (%s). "
+                                       "The judge classifies what the merge lands, and a conflicted merge lands nothing it can "
+                                       "classify, so it fails closed: bring the PR up to date with its base and resolve the "
+                                       "conflict" % (label, head, base, conflicted))
               if r.returncode != 0 or not SHA_RE.match(tree):
-                  raise IntegrityError("git merge-tree --write-tree %s %s failed (exit %d): %s; the judge fails closed and has "
-                                       "no merge-base fallback" % (base, head, r.returncode, r.stderr.strip() or "no message"))
+                  raise IntegrityError("git merge-tree --write-tree %s %s (attributes from %s) failed (exit %d): %s; the judge "
+                                       "fails closed and has no merge-base fallback"
+                                       % (base, head, label, r.returncode, r.stderr.strip() or "no message"))
               if git("cat-file", "-t", tree).strip() != "tree":
                   raise IntegrityError("git merge-tree --write-tree returned %s, which is not a tree" % tree)
               return tree
+
+
+          def landing_tree(base, head):
+              """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+              have = git_version()
+              if have < MERGE_TREE_MIN_GIT:
+                  raise IntegrityError("git %d.%d cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= "
+                                       "%d.%d): the protected-paths judge cannot compute what the merge lands, and has no "
+                                       "merge-base fallback" % (have + MERGE_TREE_MIN_GIT))
+              trees = [(label, merge_tree(base, head, source, label))
+                       for label, source in (("an empty tree", empty_tree()), ("the base", base), ("the head", head))]
+              if len({tree for _, tree in trees}) != 1:
+                  raise IntegrityError("the merge of head %s into base %s depends on .gitattributes: it writes %s. The judge "
+                                       "cannot tell which GitHub lands, so it fails closed: drop the merge attributes (a merge "
+                                       "driver such as merge=binary or union, the binary macro, -merge) that change this merge, "
+                                       "or resolve the merge in the PR"
+                                       % (head, base, "; ".join("%s with attributes from %s" % (t, l) for l, t in trees)))
+              return trees[0][1]
 
 
           # THE BASE IT JUDGES AGAINST (N2, delta R4 of .github #69): on pull_request, the base branch's LIVE tip, never the
@@ -3179,12 +3210,21 @@ jobs:
           # merge-base..head. `git merge-base` names ONE common ancestor; when base and head have two or more (a criss-cross,
           # e.g. a head that merges two PR heads main already merged), the diff from that one can miss what the merge does. On
           # real .github commits a head that merged #60's and #62's heads, deleted sign-image.yml and added a README line passed,
-          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort, git >= 2.38) writes the tree the merge
-          # of head into base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
+          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort) writes the tree the merge of head into
+          # base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
           # An older git, a conflict, or any other merge-tree failure FAILS CLOSED (exit 2). There is no fallback to a merge-base
           # diff. This models a merge commit and a squash (the same tree); a rebase merge replays commits and can land something
           # else, so where this judge BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase merges (root's setting).
-          MERGE_TREE_MIN_GIT = (2, 38)
+          # ATTRIBUTES (N1, delta R4 of .github #69): git reads .gitattributes from the working tree, which in the job is the PR
+          # head, so a PR could pick the merge driver (`merge=binary`, the `binary` macro, `-merge`, a nested .gitattributes):
+          # with two merge bases `binary` resolves the inner merge to the common ancestor, and a head that reset the signer to
+          # that ancestor's bytes looked unchanged while every attribute-free merge lands them. No single source is safe (main's
+          # own attributes can be removed by the PR, and which ones GitHub's merge honours is not known), so the merge is computed
+          # three times, with attributes from an empty tree, from the base and from the head (`git --attr-source=<tree>`, which
+          # replaces the working tree's files), and the judge fails closed unless all three are clean and write the SAME tree.
+          # GIT FLOOR 2.43: `git --attr-source` is new in 2.41.0, and "git merge-tree used to segfault when the --attr-source
+          # option is used" is fixed in 2.43.0 (git's RelNotes 2.41.0 and 2.43.0; 2.42.1 and 2.42.2 do not list the fix).
+          MERGE_TREE_MIN_GIT = (2, 43)
 
 
           def git_version():
@@ -3192,35 +3232,57 @@ jobs:
               m = re.match(r"git version (\d+)\.(\d+)", out)
               if not m:
                   raise IntegrityError("cannot read the git version from %r: the protected-paths judge needs git >= %d.%d "
-                                       "(`git merge-tree --write-tree`) and has no merge-base fallback"
+                                       "(`git --attr-source=<tree> merge-tree --write-tree`) and has no merge-base fallback"
                                        % ((out,) + MERGE_TREE_MIN_GIT))
               return int(m.group(1)), int(m.group(2))
 
 
-          def landing_tree(base, head):
-              """The tree that merging head into base produces, from `git merge-tree --write-tree`; IntegrityError otherwise."""
-              have = git_version()
-              if have < MERGE_TREE_MIN_GIT:
-                  raise IntegrityError("git %d.%d has no `git merge-tree --write-tree` (needs >= %d.%d): the protected-paths "
-                                       "judge cannot compute what the merge lands, and has no merge-base fallback"
-                                       % (have + MERGE_TREE_MIN_GIT))
-              r = subprocess.run(["git", "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", base, head],
-                                 capture_output=True, text=True)
+          def empty_tree():
+              r = subprocess.run(["git", "mktree"], input="", capture_output=True, text=True)
+              tree = r.stdout.strip()
+              if r.returncode != 0 or not SHA_RE.match(tree):
+                  raise IntegrityError("git mktree (the empty tree) failed (exit %d): %s" % (r.returncode, r.stderr.strip()))
+              return tree
+
+
+          def merge_tree(base, head, attr_source, label):
+              """The tree `git merge-tree --write-tree` writes for head into base, with .gitattributes read from attr_source."""
+              r = subprocess.run(["git", "--attr-source=" + attr_source, "merge-tree", "--write-tree", "-z", "--name-only",
+                                  "--no-messages", base, head], capture_output=True, text=True)
               fields = r.stdout.split("\0")
               tree = fields[0]
               # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
               if r.returncode == 1 and SHA_RE.match(tree):
                   conflicted = ", ".join(sorted({f for f in fields[1:] if f})) or "no path named"
-                  raise IntegrityError("merge CONFLICT: head %s does not merge cleanly into base %s (%s). The judge classifies "
-                                       "what the merge lands, and a conflicted merge lands nothing it can classify, so it fails "
-                                       "closed: bring the PR up to date with its base and resolve the conflict"
-                                       % (head, base, conflicted))
+                  raise IntegrityError("merge CONFLICT (attributes from %s): head %s does not merge cleanly into base %s (%s). "
+                                       "The judge classifies what the merge lands, and a conflicted merge lands nothing it can "
+                                       "classify, so it fails closed: bring the PR up to date with its base and resolve the "
+                                       "conflict" % (label, head, base, conflicted))
               if r.returncode != 0 or not SHA_RE.match(tree):
-                  raise IntegrityError("git merge-tree --write-tree %s %s failed (exit %d): %s; the judge fails closed and has "
-                                       "no merge-base fallback" % (base, head, r.returncode, r.stderr.strip() or "no message"))
+                  raise IntegrityError("git merge-tree --write-tree %s %s (attributes from %s) failed (exit %d): %s; the judge "
+                                       "fails closed and has no merge-base fallback"
+                                       % (base, head, label, r.returncode, r.stderr.strip() or "no message"))
               if git("cat-file", "-t", tree).strip() != "tree":
                   raise IntegrityError("git merge-tree --write-tree returned %s, which is not a tree" % tree)
               return tree
+
+
+          def landing_tree(base, head):
+              """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+              have = git_version()
+              if have < MERGE_TREE_MIN_GIT:
+                  raise IntegrityError("git %d.%d cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= "
+                                       "%d.%d): the protected-paths judge cannot compute what the merge lands, and has no "
+                                       "merge-base fallback" % (have + MERGE_TREE_MIN_GIT))
+              trees = [(label, merge_tree(base, head, source, label))
+                       for label, source in (("an empty tree", empty_tree()), ("the base", base), ("the head", head))]
+              if len({tree for _, tree in trees}) != 1:
+                  raise IntegrityError("the merge of head %s into base %s depends on .gitattributes: it writes %s. The judge "
+                                       "cannot tell which GitHub lands, so it fails closed: drop the merge attributes (a merge "
+                                       "driver such as merge=binary or union, the binary macro, -merge) that change this merge, "
+                                       "or resolve the merge in the PR"
+                                       % (head, base, "; ".join("%s with attributes from %s" % (t, l) for l, t in trees)))
+              return trees[0][1]
 
 
           # THE BASE IT JUDGES AGAINST (N2, delta R4 of .github #69): on pull_request, the base branch's LIVE tip, never the
@@ -6037,12 +6099,21 @@ jobs:
           # merge-base..head. `git merge-base` names ONE common ancestor; when base and head have two or more (a criss-cross,
           # e.g. a head that merges two PR heads main already merged), the diff from that one can miss what the merge does. On
           # real .github commits a head that merged #60's and #62's heads, deleted sign-image.yml and added a README line passed,
-          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort, git >= 2.38) writes the tree the merge
-          # of head into base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
+          # and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort) writes the tree the merge of head into
+          # base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
           # An older git, a conflict, or any other merge-tree failure FAILS CLOSED (exit 2). There is no fallback to a merge-base
           # diff. This models a merge commit and a squash (the same tree); a rebase merge replays commits and can land something
           # else, so where this judge BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase merges (root's setting).
-          MERGE_TREE_MIN_GIT = (2, 38)
+          # ATTRIBUTES (N1, delta R4 of .github #69): git reads .gitattributes from the working tree, which in the job is the PR
+          # head, so a PR could pick the merge driver (`merge=binary`, the `binary` macro, `-merge`, a nested .gitattributes):
+          # with two merge bases `binary` resolves the inner merge to the common ancestor, and a head that reset the signer to
+          # that ancestor's bytes looked unchanged while every attribute-free merge lands them. No single source is safe (main's
+          # own attributes can be removed by the PR, and which ones GitHub's merge honours is not known), so the merge is computed
+          # three times, with attributes from an empty tree, from the base and from the head (`git --attr-source=<tree>`, which
+          # replaces the working tree's files), and the judge fails closed unless all three are clean and write the SAME tree.
+          # GIT FLOOR 2.43: `git --attr-source` is new in 2.41.0, and "git merge-tree used to segfault when the --attr-source
+          # option is used" is fixed in 2.43.0 (git's RelNotes 2.41.0 and 2.43.0; 2.42.1 and 2.42.2 do not list the fix).
+          MERGE_TREE_MIN_GIT = (2, 43)
 
 
           def git_version():
@@ -6050,35 +6121,57 @@ jobs:
               m = re.match(r"git version (\d+)\.(\d+)", out)
               if not m:
                   raise IntegrityError("cannot read the git version from %r: the protected-paths judge needs git >= %d.%d "
-                                       "(`git merge-tree --write-tree`) and has no merge-base fallback"
+                                       "(`git --attr-source=<tree> merge-tree --write-tree`) and has no merge-base fallback"
                                        % ((out,) + MERGE_TREE_MIN_GIT))
               return int(m.group(1)), int(m.group(2))
 
 
-          def landing_tree(base, head):
-              """The tree that merging head into base produces, from `git merge-tree --write-tree`; IntegrityError otherwise."""
-              have = git_version()
-              if have < MERGE_TREE_MIN_GIT:
-                  raise IntegrityError("git %d.%d has no `git merge-tree --write-tree` (needs >= %d.%d): the protected-paths "
-                                       "judge cannot compute what the merge lands, and has no merge-base fallback"
-                                       % (have + MERGE_TREE_MIN_GIT))
-              r = subprocess.run(["git", "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", base, head],
-                                 capture_output=True, text=True)
+          def empty_tree():
+              r = subprocess.run(["git", "mktree"], input="", capture_output=True, text=True)
+              tree = r.stdout.strip()
+              if r.returncode != 0 or not SHA_RE.match(tree):
+                  raise IntegrityError("git mktree (the empty tree) failed (exit %d): %s" % (r.returncode, r.stderr.strip()))
+              return tree
+
+
+          def merge_tree(base, head, attr_source, label):
+              """The tree `git merge-tree --write-tree` writes for head into base, with .gitattributes read from attr_source."""
+              r = subprocess.run(["git", "--attr-source=" + attr_source, "merge-tree", "--write-tree", "-z", "--name-only",
+                                  "--no-messages", base, head], capture_output=True, text=True)
               fields = r.stdout.split("\0")
               tree = fields[0]
               # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
               if r.returncode == 1 and SHA_RE.match(tree):
                   conflicted = ", ".join(sorted({f for f in fields[1:] if f})) or "no path named"
-                  raise IntegrityError("merge CONFLICT: head %s does not merge cleanly into base %s (%s). The judge classifies "
-                                       "what the merge lands, and a conflicted merge lands nothing it can classify, so it fails "
-                                       "closed: bring the PR up to date with its base and resolve the conflict"
-                                       % (head, base, conflicted))
+                  raise IntegrityError("merge CONFLICT (attributes from %s): head %s does not merge cleanly into base %s (%s). "
+                                       "The judge classifies what the merge lands, and a conflicted merge lands nothing it can "
+                                       "classify, so it fails closed: bring the PR up to date with its base and resolve the "
+                                       "conflict" % (label, head, base, conflicted))
               if r.returncode != 0 or not SHA_RE.match(tree):
-                  raise IntegrityError("git merge-tree --write-tree %s %s failed (exit %d): %s; the judge fails closed and has "
-                                       "no merge-base fallback" % (base, head, r.returncode, r.stderr.strip() or "no message"))
+                  raise IntegrityError("git merge-tree --write-tree %s %s (attributes from %s) failed (exit %d): %s; the judge "
+                                       "fails closed and has no merge-base fallback"
+                                       % (base, head, label, r.returncode, r.stderr.strip() or "no message"))
               if git("cat-file", "-t", tree).strip() != "tree":
                   raise IntegrityError("git merge-tree --write-tree returned %s, which is not a tree" % tree)
               return tree
+
+
+          def landing_tree(base, head):
+              """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+              have = git_version()
+              if have < MERGE_TREE_MIN_GIT:
+                  raise IntegrityError("git %d.%d cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= "
+                                       "%d.%d): the protected-paths judge cannot compute what the merge lands, and has no "
+                                       "merge-base fallback" % (have + MERGE_TREE_MIN_GIT))
+              trees = [(label, merge_tree(base, head, source, label))
+                       for label, source in (("an empty tree", empty_tree()), ("the base", base), ("the head", head))]
+              if len({tree for _, tree in trees}) != 1:
+                  raise IntegrityError("the merge of head %s into base %s depends on .gitattributes: it writes %s. The judge "
+                                       "cannot tell which GitHub lands, so it fails closed: drop the merge attributes (a merge "
+                                       "driver such as merge=binary or union, the binary macro, -merge) that change this merge, "
+                                       "or resolve the merge in the PR"
+                                       % (head, base, "; ".join("%s with attributes from %s" % (t, l) for l, t in trees)))
+              return trees[0][1]
 
 
           # THE BASE IT JUDGES AGAINST (N2, delta R4 of .github #69): on pull_request, the base branch's LIVE tip, never the

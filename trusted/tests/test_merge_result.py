@@ -55,7 +55,8 @@ class Repo:
         if self.fixed_dates:
             date = "2026-01-01T00:%02d:%02dZ" % divmod(self.tick, 60)
             env.update(GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
-        r = subprocess.run(("git",) + args, cwd=self.d, env=env, capture_output=True, text=True)
+        r = subprocess.run(("git",) + args, cwd=self.d, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True)
         if r.returncode != 0:
             raise AssertionError("git %s: %s" % (" ".join(args), r.stderr))
         return r.stdout.strip()
@@ -140,6 +141,15 @@ def old_judge(d, base, head):
         return real_changed(mb, head)
     with mock.patch.object(classify, "landing_tree", landing_as_before), \
             mock.patch.object(classify, "changed_paths", changed_as_before):
+        return judge(d, base, head)
+
+
+def old_judge_worktree(d, base, head):
+    """The pre-N1 judge, run in-suite: ONE merge, with .gitattributes read from the working tree."""
+    def landing_from_worktree(b, h):
+        out = classify.git("merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", b, h)
+        return out.split("\0")[0]
+    with mock.patch.object(classify, "landing_tree", landing_from_worktree):
         return judge(d, base, head)
 
 
@@ -413,7 +423,8 @@ class FailClosedTests(Fixture):
     def test_an_old_git_fails_closed_with_a_named_error(self):
         base = self.r.commit("C0", {SIGNER: "s\n"})
         head = self.r.commit("x", {SIGNER: "s2\n"})
-        for version in ("git version 2.37.3", "git version 1.9.0"):
+        # 2.41 and 2.42 have --attr-source, but merge-tree segfaulted with it until 2.43.0 (git RelNotes 2.43.0)
+        for version in ("git version 2.37.3", "git version 1.9.0", "git version 2.41.0", "git version 2.42.2"):
             real = classify.git
 
             def fake(*args, _v=version):
@@ -421,7 +432,7 @@ class FailClosedTests(Fixture):
             with self.subTest(version=version), mock.patch.object(classify, "git", fake):
                 code, out = self.judge(base, head)
                 self.assertEqual(code, 2, out)
-                self.assertIn("has no `git merge-tree --write-tree` (needs >= 2.38)", out)
+                self.assertIn("cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= 2.43)", out)
                 self.assertIn("no merge-base fallback", out)
 
     def test_the_git_version_is_parsed_or_refused(self):
@@ -432,7 +443,7 @@ class FailClosedTests(Fixture):
         with mock.patch.object(classify, "git", lambda *a: "hub version 9\n"), \
                 self.assertRaises(classify.IntegrityError) as cm:
             classify.git_version()
-        self.assertIn("needs git >= 2.38", str(cm.exception))
+        self.assertIn("needs git >= 2.43", str(cm.exception))
         self.assertGreaterEqual(classify.git_version(), classify.MERGE_TREE_MIN_GIT)  # the git these tests run
 
 
@@ -504,6 +515,117 @@ class LiveBaseTests(Fixture):
         code, out = judge(self.r.d, base, head, event=None)
         self.assertEqual(code, 2, out)
         self.assertIn("protected-paths needs --event pull_request or merge_group", out)
+
+
+class AttributeTests(Fixture):
+    """N1 (delta R4 of .github #69): the job's working tree is the PR head, so its .gitattributes could pick the merge
+    driver. The judge merges three times, attributes from an empty tree, the base and the head, and fails closed (exit
+    2) unless all three are clean and agree. The worktree is detached at the head, as actions/checkout leaves it, so the
+    pre-N1 judge (attributes from the working tree) would read the head's attributes."""
+    DEPENDS = "depends on .gitattributes"
+
+    def at_head(self, head):
+        self.r.git("checkout", "-q", "--detach", head)
+
+    def signer_in(self, tree):
+        return self.r.git("show", "%s:%s" % (tree, SIGNER)) + "\n"
+
+    def worktree_merge(self, base, head, *opts):
+        out = self.r.git(*(opts + ("merge-tree", "--write-tree", "--no-messages", base, head)))
+        return out.split("\n")[0]
+
+    def assert_fails_closed(self, base, head):
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 2, out)
+        want = "::error title=trusted protected-paths::the merge of head %s into base %s %s" % (head, base, self.DEPENDS)
+        self.assertIn(want, out)
+        return out
+
+    def test_p8_a_head_side_merge_driver_cannot_hide_new_signer_bytes(self):
+        variants = {"merge=binary": {".gitattributes": "%s merge=binary\n" % SIGNER},
+                    "the binary macro": {".gitattributes": "%s binary\n" % SIGNER},
+                    "-merge": {".gitattributes": "%s -merge\n" % SIGNER},
+                    "a nested .gitattributes": {".github/workflows/.gitattributes": "*.yml merge=binary\n"}}
+        for name, attrs in variants.items():
+            with self.subTest(variant=name):
+                self.tearDown()
+                self.setUp()
+                base, head = build_p8(self.r, attrs)
+                self.at_head(head)
+                self.assertEqual(len(self.r.git("merge-base", "--all", base, head).split()), 2)
+                # precondition: the working-tree merge (what the judge computed before N1) keeps main's signer, while
+                # an attribute-free merge lands EVIL
+                self.assertEqual(self.signer_in(self.worktree_merge(base, head)), CUR)
+                empty = self.r.git("mktree")
+                self.assertEqual(self.signer_in(self.worktree_merge(base, head, "--attr-source=" + empty)), EVIL)
+                self.assertEqual(old_judge_worktree(self.r.d, base, head)[0], 0)  # the pre-N1 judge was green
+                self.assert_fails_closed(base, head)
+
+    def build_main_attribute(self, drop_it):
+        """P9 / P12: main already carries `sign-image.yml merge=binary` (an unprotected path); PR-3 keeps it (P9) or
+        deletes it (P12)."""
+        r = self.r
+        r.commit("C0", {SIGNER: CUR, "README.md": "r0\n"})
+        a1 = r.commit("main: .gitattributes", {".gitattributes": "%s merge=binary\n" % SIGNER})
+        r.branch("q1", a1)
+        q1 = r.commit("q1", {SIGNER: CUR.replace("L1 current", "L1 EVIL")})
+        p1 = r.commit("pr1 head", {SIGNER: CUR})
+        r.branch("q2", a1)
+        q2 = r.commit("q2", {SIGNER: CUR.replace("L5 current", "L5 EVIL")})
+        p2 = r.commit("pr2 head", {SIGNER: CUR})
+        r.branch("main", "main")
+        r.merge(p1, "merge PR-1")
+        base = r.merge(p2, "merge PR-2")
+        r.branch("attack", q1)
+        try:
+            r.merge(q2, "sync")
+        except AssertionError:  # main's binary driver makes the sync conflict: resolve it to EVIL
+            r.commit("sync", {SIGNER: EVIL})
+        files = {SIGNER: EVIL, "README3": "x\n"}
+        if drop_it:
+            files[".gitattributes"] = None
+        head = r.commit("pr3 head", files)
+        self.at_head(head)
+        self.assertEqual(len(r.git("merge-base", "--all", base, head).split()), 2)
+        return base, head
+
+    def test_p9_main_carrying_the_driver_fails_closed(self):
+        base, head = self.build_main_attribute(drop_it=False)
+        self.assert_fails_closed(base, head)
+
+    def test_p12_a_pr_deleting_mains_driver_fails_closed(self):
+        base, head = self.build_main_attribute(drop_it=True)
+        self.assertEqual(old_judge_worktree(self.r.d, base, head)[0], 0)  # the pre-N1 judge was green here
+        self.assert_fails_closed(base, head)
+
+    def test_a_head_side_union_cannot_turn_a_conflict_clean(self):
+        r = self.r
+        root = r.commit("C0", {"README.md": "r0\n"})
+        r.branch("pr", root)
+        head = r.commit("pr", {"README.md": "head\n", ".gitattributes": "README.md merge=union\n"})
+        r.branch("main", "main")
+        base = r.commit("main", {"README.md": "base\n"})
+        self.at_head(head)
+        self.assertEqual(old_judge_worktree(r.d, base, head)[0], 0)  # union made it clean and green before N1
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 2, out)
+        self.assertIn("merge CONFLICT (attributes from an empty tree)", out)
+
+    def test_innocuous_attributes_keep_the_normal_verdict(self):
+        r = self.r
+        r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n", ".gitattributes": "*.png binary\n"})
+        r.branch("pr", "main")
+        readme = r.commit("pr: README", {"README.md": "r1\n"})
+        self.at_head(readme)
+        code, out = self.judge(r.rev("main"), readme)
+        self.assertEqual(code, 0, out)
+        self.assertIn("no protected class touched", out)
+        r.branch("pr2", "main")
+        signer = r.commit("pr: signer", {SIGNER: "changed\n"})
+        self.at_head(signer)
+        code, out = self.judge(r.rev("main"), signer)
+        self.assertEqual(code, 1, out)
+        self.assertIn("BLOCKING", out)
 
 
 class MergeGroupTests(Fixture):

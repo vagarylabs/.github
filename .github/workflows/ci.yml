@@ -2,6 +2,9 @@
 name: ci
 on:
   pull_request:
+  # Root's D2 direction: the binding protected-paths judge runs in a merge queue on this repository, and a queue
+  # waits for every required check on its group commit. Inert until root enables the queue.
+  merge_group:
   push:
     branches: [main]
 permissions:

@@ -934,11 +934,14 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         if parsed[f] != 1 and (tree.root / f).read_bytes().strip():
             unparsable.setdefault((f, 0), f"ast-grep parsed it {parsed[f]} time(s), not once: the scan cannot vouch "
                                           "for it (non-UTF-8 bytes, a file over ast-grep's size limit, or a configuration that hides the file)")
+    # (file, span) -> EVERY declared launcher whose rule matched that hook. Two launchers may share a name in different
+    # modules (vagaris: server's and packages/db's startEmbeddedPostgresTestDatabase); the hook's own import binding
+    # picks between them below, never the order the rules happened to match in.
     launcher_hits = {}
     for m in matches:
         if m["ruleId"].startswith("launcher."):
             v = m["metaVariables"]["single"]["V"]
-            launcher_hits[(m["file"], _span(v["range"]))] = launchers[int(m["ruleId"].split(".")[1])]
+            launcher_hits.setdefault((m["file"], _span(v["range"])), []).append(launchers[int(m["ruleId"].split(".")[1])])
     bounds = [m for m in matches if m["ruleId"].startswith(RULE + ".")]
     # Names to resolve, and the files that read them.
     need = {}
@@ -946,8 +949,8 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         text = m["metaVariables"]["single"]["V"]["text"].strip()
         if NAME.match(text):
             need.setdefault(m["file"], set()).add(text)
-    for (f, _), la in launcher_hits.items():
-        need.setdefault(f, set()).add(la["name"])
+    for (f, _), las in launcher_hits.items():
+        need.setdefault(f, set()).update(la["name"] for la in las)
     resolved = _resolve_all(tree, need)
     # A condition-kind `timeout` option whose callee is an identifier may be an aliased child process (#60 delta L1).
     alias_files = sorted({m["file"] for m in bounds if m["ruleId"] == RULE + ".option.condition"
@@ -969,14 +972,16 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         floor = FLOORS_S[kind] * UNIT[lang]
         rec = {"line": _line(v["range"]), "rule": RULE, "position": position, "kind": kind,
                "value": re.sub(r"\s+", " ", text)[:120], "floor": floor, "status": "finding", "reason": "", "mark": None}
-        la = launcher_hits.get((f, _span(v["range"]))) if kind == "hook" else None
-        if la is not None:
-            ok, why = resolved.get((f, la["name"]), (None, "not resolved"))
-            if isinstance(ok, tuple) and ok == ("module", la["module"], la["name"]):
+        las = launcher_hits.get((f, _span(v["range"]))) if kind == "hook" else None
+        if las:
+            proven = [la for la in las if resolved.get((f, la["name"]), (None, ""))[0] == ("module", la["module"], la["name"])]
+            if proven:  # a hook calling two launchers must outlive the slower: the highest floor
+                la = max(proven, key=lambda x: x["hook_floor_ms"])
                 floor = la["hook_floor_ms"]
                 rec["floor"], rec["reason"] = floor, f"launcher {la['name']} ({la['module']}): floor {floor}"
             else:
-                rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
+                la = las[0]
+                rec["reason"] = f"launcher {la['name']} not proven by binding: {resolved.get((f, la['name']), (None, 'not resolved'))[1]}"
         value, why = _value_of(text, lang, f, resolved)
         if value is not None and value >= floor:
             rec["status"], rec["reason"] = "cleared", (rec["reason"] + "; " if rec["reason"] else "") + why

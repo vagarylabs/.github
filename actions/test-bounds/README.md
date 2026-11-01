@@ -28,7 +28,8 @@ base-judged checks:
   `pull_request_review_comment`) takes `pull_request.base.sha`, and `merge_group` takes `merge_group.base_sha`. An
   input naming another commit, or the head, is refused;
 - `push` takes the payload's `before` and ignores the input. All zeros (a branch's first push) means no base: the run
-  says so and judges the committed counts only;
+  says so and judges the committed counts only. A push outside the repository's default branch is refused (exit 2),
+  because a feature branch's first push would pass unjudged; its pull request's run is what gates it;
 - `workflow_dispatch` alone takes the input;
 - every other event is refused.
 
@@ -62,7 +63,7 @@ value. The rules are in `rules/`.
 
 | rule id | languages | position | floor |
 |---|---|---|---|
-| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
+| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess, also through an alias resolved by binding: a named or default+named import, a `const`/`let`/`var` destructured require, a member of a child_process module object (`const run = cp.spawnSync`), and `promisify()` of any of these) | 120 / 240 / 120 / 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |

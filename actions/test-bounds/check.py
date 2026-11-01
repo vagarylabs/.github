@@ -586,11 +586,38 @@ rule:
   any:
     - pattern: const $N = promisify($X)
     - pattern: const $N = util.promisify($X)
+    - pattern: let $N = promisify($X)
+    - pattern: let $N = util.promisify($X)
+    - pattern: var $N = promisify($X)
+    - pattern: var $N = util.promisify($X)
 ---
 id: a.require
 language: LANG
-rule: { pattern: "const { $$$P } = require($S)" }
+rule:
+  any:
+    - pattern: "const { $$$P } = require($S)"
+    - pattern: "let { $$$P } = require($S)"
+    - pattern: "var { $$$P } = require($S)"
+---
+id: a.module
+language: LANG
+rule:
+  any:
+    - pattern: const $N = require($S)
+    - pattern: let $N = require($S)
+    - pattern: var $N = require($S)
+---
+id: a.member
+language: LANG
+rule:
+  any:
+    - pattern: const $N = $M.$P
+    - pattern: let $N = $M.$P
+    - pattern: var $N = $M.$P
 """
+# The forms of an import of a child-process module: a default or namespace binding (the module object) and named
+# specifiers, in any combination (`import cp, { execFile as ef } from "node:child_process"`).
+_IMPORT_FORMS = re.compile(r"\Aimport\s+(?!type\b)(?P<clause>[^'\"]+?)\s+from\s*(?P<q>['\"])(?P<src>[^'\"\n]+)(?P=q)\s*;?\s*\Z", re.S)
 
 
 def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
@@ -598,20 +625,38 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
     destructured require (`const { exec: x } = require("child_process")`), or a promisify() of either. Treating a
     name as a child process RAISES its floor (60 s -> 120 s), so this resolution can only add findings."""
     out = {f: set() for f in files}
+    mods = {f: set() for f in files}  # local names bound to a child-process MODULE object
     by_lang = {}
     for f in files:
         by_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
-    promised = []
+    promised, members = [], []
     for lang, group in by_lang.items():
         for m in sg_scan(tree.root, _ALIAS_RULES.replace("LANG", lang), group):
             f, mv = m["file"], m.get("metaVariables", {})
             if m["ruleId"] == "a.import":
-                src = re.search(r"(['\"])([^'\"\n]+)\1\s*;?\s*$", m["text"])
-                parsed = _parse_import(m["text"])
-                names = CHILD_PROCESS.get(src.group(2) if src else "", set())
-                for local, imported in (parsed or {}).items():
-                    if imported in names:
-                        out[f].add(local)
+                im = _IMPORT_FORMS.match(m["text"].strip())
+                names = CHILD_PROCESS.get(im.group("src") if im else "", set())
+                if not names:
+                    continue
+                clause = im.group("clause")
+                named = re.search(r"\{(?P<specs>[^{}]*)\}", clause)
+                for spec in (named.group("specs").split(",") if named else []):
+                    s2 = _SPEC.match(spec.strip())
+                    if s2 and s2.group("imp") in names:
+                        out[f].add(s2.group("local") or s2.group("imp"))
+                head = re.sub(r"\{[^{}]*\}", "", clause)
+                for part in head.split(","):
+                    part = part.strip()
+                    ns = re.fullmatch(r"\*\s+as\s+([A-Za-z_$][\w$]*)", part)
+                    if ns:
+                        mods[f].add(ns.group(1))
+                    elif NAME.match(part):
+                        mods[f].add(part)
+            elif m["ruleId"] == "a.module":
+                if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
+                    mods[f].add(mv["single"]["N"]["text"])
+            elif m["ruleId"] == "a.member":
+                members.append((f, mv["single"]["M"]["text"], mv["single"]["P"]["text"], mv["single"]["N"]["text"]))
             elif m["ruleId"] == "a.require":
                 if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
                     for entry in mv.get("multi", {}).get("P", []):
@@ -620,9 +665,13 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
                             out[f].add(parts[-1])
             elif m["ruleId"] == "a.promisify":
                 promised.append((f, mv["single"]["X"]["text"], mv["single"]["N"]["text"]))
-    for _ in range(2):  # promisify of an alias
+    for f, mod, prop, n in members:  # const run = cp.spawnSync
+        if mod in mods[f] and prop in SUBPROCESS_NAMES:
+            out[f].add(n)
+    for _ in range(2):  # promisify of an alias, or of a module member (promisify(cp.execFile))
         for f, x, n in promised:
-            if x in SUBPROCESS_NAMES or x in out[f]:
+            mm = re.fullmatch(r"([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)", x)
+            if x in SUBPROCESS_NAMES or x in out[f] or (mm and mm.group(1) in mods[f] and mm.group(2) in SUBPROCESS_NAMES):
                 out[f].add(n)
     return out
 
@@ -1285,7 +1334,7 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
         merge_group.base_sha; a `base` input that names any other commit is refused, and so is a base equal to the
         head;
       - push takes the payload's `before` and ignores the input; all zeros (a branch's first push) is no base, and
-        the run says so;
+        the run says so; a push outside the default branch is refused (#60 delta2 LOW);
       - workflow_dispatch alone takes the input as given;
       - every other event is refused.
     Outside Actions (a local or tool run) the input is taken as given, except that a PR or merge-group --event needs
@@ -1308,7 +1357,15 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
                 raise Refusal(f"the {event} event's base is the head itself")
             return want
         if event == "push":
-            before = _payload(env, event).get("before", "")
+            payload = _payload(env, event)
+            ref, default = payload.get("ref"), (payload.get("repository") or {}).get("default_branch")
+            if not (isinstance(ref, str) and isinstance(default, str) and default):
+                raise Refusal("the push event carries no ref or default branch")
+            if ref != f"refs/heads/{default}":
+                raise Refusal(f"a push to {ref} is not a push to the default branch {default}: this check's verdicts "
+                              "come from pull_request, merge_group, default-branch push and workflow_dispatch runs "
+                              "(a feature branch's first push has no base, so it would pass unjudged)")
+            before = payload.get("before", "")
             if not (isinstance(before, str) and re.fullmatch(r"[0-9a-f]{40}", before)):
                 raise Refusal("the push event carries no `before` commit")
             return None if ZERO.fullmatch(before) else before

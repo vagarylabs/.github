@@ -462,11 +462,21 @@ class EventBase(unittest.TestCase):
                     self.ci("c" * 40, event, pr)
         self.assertIn("pull_request_target", C.PR_PAYLOAD_EVENTS)
 
+    MAIN = {"ref": "refs/heads/main", "repository": {"default_branch": "main"}}
+
     def test_push_in_ci_takes_before_and_ignores_the_input(self):
-        self.assertEqual(self.ci("c" * 40, "push", {"before": self.BASE}), self.BASE)
-        self.assertIsNone(self.ci(self.BASE, "push", {"before": "0" * 40}), "a branch's first push: no base")
+        self.assertEqual(self.ci("c" * 40, "push", {**self.MAIN, "before": self.BASE}), self.BASE)
+        self.assertIsNone(self.ci(self.BASE, "push", {**self.MAIN, "before": "0" * 40}), "a branch's first push: no base")
         with self.assertRaises(C.Refusal):
-            self.ci("", "push", {})
+            self.ci("", "push", {**self.MAIN})
+
+    def test_a_push_outside_the_default_branch_is_refused_in_ci(self):
+        """#60 delta2 LOW: a feature branch's first push (zeros before) would pass unjudged, so it is refused."""
+        for payload in ({"ref": "refs/heads/feature", "repository": {"default_branch": "main"}, "before": "0" * 40},
+                        {"ref": "refs/tags/v1", "repository": {"default_branch": "main"}, "before": self.BASE},
+                        {"before": self.BASE}):
+            with self.subTest(payload=payload), self.assertRaises(C.Refusal):
+                self.ci("", "push", payload)
 
     def test_only_workflow_dispatch_takes_the_input_and_others_are_refused_in_ci(self):
         self.assertEqual(self.ci(self.BASE, "workflow_dispatch", {}), self.BASE)
@@ -624,6 +634,43 @@ class TreesAndMarks(unittest.TestCase):
 class Cli(unittest.TestCase):
     def cli_env(self):
         return {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+
+    def test_the_unscanned_config_list(self):
+        """#60 delta2 test gap: pytest's config files are UNSCANNED (in a tree, an unread language; outside every tree,
+        test-like), never silently clean."""
+        repo = Repo()
+        try:
+            trees = [{"glob": "s/**", "min_files": 1}]
+            repo.commit({"s/a.test.ts": file("a", 0, 1), "s/pyproject.toml": "[tool.pytest.ini_options]\n",
+                         "s/setup.cfg": "[tool:pytest]\n", "tox.ini": "[pytest]\n", "pytest.ini": "[pytest]\n",
+                         BL: baseline({"s/a.test.ts": 1}, trees=trees)})
+            v = repo.verdict(None)
+            self.assertEqual(sorted(v["unscanned"]["language"]), ["s/pyproject.toml", "s/setup.cfg"])
+            self.assertEqual(sorted(v["unscanned"]["outside_trees"]), ["pytest.ini", "tox.ini"])
+            self.assertIn("UNSCANNED: 2 tree file(s)", C.summary_md(v))
+        finally:
+            repo.done()
+
+    def test_a_first_push_to_the_default_branch_says_it_has_no_base(self):
+        """#60 delta2 test gap: the zeros-`before` notice, under a real Actions environment."""
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+            event = repo.dir / "event.json"
+            for ref, rc in (("refs/heads/main", 0), ("refs/heads/feature", 2)):
+                with self.subTest(ref=ref):
+                    event.write_text(json.dumps({"before": "0" * 40, "ref": ref, "repository": {"default_branch": "main"}}))
+                    env = {**self.cli_env(), "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(event)}
+                    r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--root", str(repo.dir)],
+                                       capture_output=True, text=True, env=env)
+                    self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
+                    if rc == 0:
+                        self.assertIn("notice: a push with no `before` commit (a branch's first push)", r.stdout)
+                    else:
+                        self.assertIn("is not a push to the default branch main", r.stdout + r.stderr)
+        finally:
+            repo.done()
 
     def test_write_baseline_records_this_checks_version(self):
         repo = Repo()

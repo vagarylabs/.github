@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import ast
 import configparser
+import hashlib
 import json
 import os
 import posixpath
@@ -109,7 +110,7 @@ REASON = re.compile(r"[A-Za-z]{3,}")
 SIMILARITY = "30%"
 # Test-like paths, for the UNSCANNED list only (never for scope: the trees decide that).
 TEST_LIKE = re.compile(r"(?:^|/)(?:[^/]+\.(?:test|spec)\.[^/]+|test_[^/]+\.py|[^/]+_test\.(?:py|go)|[^/]+\.bats"
-                       r"|conftest\.py|(?:vite|vitest|jest|playwright)\.config\.[^/]+|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini)$"
+                       r"|conftest\.py|(?:vite|vitest|jest|playwright)\.config\.[^/]+|\.?pytest\.ini|\.?pytest\.toml|pyproject\.toml|setup\.cfg|tox\.ini)$"
                        r"|(?:^|/)(?:__tests__|tests?)/[^/]+$")
 # What each language's rules read, printed with every run so a consumer never reads absence as clean (root's #60 R4).
 COVERED = {
@@ -123,21 +124,47 @@ COVERED = {
                  "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
                  "bound name, scaled, or returned by a same-file helper (one hop)",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
-          "communicate(input, N), a `timeout` parameter default); asyncio.wait_for and asyncio.timeout; thread and "
-          "process join(timeout); PostgreSQL client timeouts; HTTP client timeout= (urlopen, requests, httpx); "
-          "pytest.mark.timeout; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), assertGreater[Equal]"
-          "(V, A), `A < V` and chained `LO < A < V` in assert/assertTrue) on a time, monotonic, perf_counter (and "
-          "_ns), loop.time() or datetime difference, direct, through a bound name, scaled, or returned by a same-file "
-          "helper (one hop)",
-    "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
-                     "pyproject.toml (when a tree covers the file)",
+          "communicate(input, N), a `timeout` parameter default); thread and process join (a positional name or "
+          "arithmetic only when it resolves to a number, since str.join takes one). Read by binding, with Python's "
+          "scoping (the nearest enclosing scope that binds a name decides): `import x as y`, `from x import y` (in any "
+          "scope), a star import of a covered module, a re-export from a local module (one hop), a submodule or "
+          "vendored spelling (`requests.api.get`, `asyncio.tasks.wait_for`), and a client instance (an assignment, "
+          "an annotated assignment, a walrus, `with ... as c`, a class body or `self.s = ...`, "
+          "`requests.Session().get`, one a local module builds): asyncio.wait_for, asyncio.wait and asyncio.timeout, "
+          "async_timeout.timeout (condition); urllib.request.urlopen and the requests/httpx functions, Session and "
+          "Client methods and constructors, each element of a `timeout=(connect, read)` tuple (condition); "
+          "asyncpg, psycopg, psycopg2 and psycopg_pool timeout/connect_timeout/command_timeout (fixture); "
+          "pytest.mark.timeout (case). A literal 0 is \"no limit\" only for pytest-timeout and libpq's "
+          "connect_timeout (psycopg, psycopg2); asyncpg's and psycopg_pool's 0 is an instant timeout, a finding. "
+          "NOT COVERED, listed per call: a bound that may come through a `*` or `**` splat; a name an import and "
+          "another binding share in one scope, or a declared global/nonlocal; a covered name imported from a local "
+          "module one hop cannot read, or possibly bound by another module's star import; a call into a covered "
+          "library this check does not read, or one reached through getattr, importlib.import_module or "
+          "functools.partial; any aiohttp call with a bound keyword (aiohttp is not read yet). NOT READ, and not "
+          "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
+          "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name"
+          "; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), "
+          "assertGreater[Equal](V, A), `A < V` and chained `LO < A < V` in assert/assertTrue) on a time, "
+          "monotonic, perf_counter (and _ns), loop.time() or datetime difference, direct, through a bound name, "
+          "scaled, or returned by a same-file helper (one hop)",
+    "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
+                     "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
+                     "pytest.toml and .pytest.toml (when a tree covers the file)",
     "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 # pytest's own config files, read in Python (ast-grep does not parse INI or TOML): pytest-timeout's `timeout` default,
 # and `--timeout` in `addopts`, are case bounds. The section each file keeps pytest's options in (pyproject: TOML).
-PYTEST_CONFIGS = {"pytest.ini": "pytest", "tox.ini": "pytest", "setup.cfg": "tool:pytest", "pyproject.toml": None}
+# pytest 9 also reads `pytest.toml` / `.pytest.toml` (a `[pytest]` TOML table), `.pytest.ini`, and a native
+# `[tool.pytest]` table in pyproject.toml beside the legacy `[tool.pytest.ini_options]` (root's #65 RC B1).
+PYTEST_CONFIGS = {"pytest.ini": "pytest", ".pytest.ini": "pytest", "tox.ini": "pytest", "setup.cfg": "tool:pytest",
+                  "pyproject.toml": None, "pytest.toml": None, ".pytest.toml": None}
+# JS/TS positions where a literal 0 means "no limit" (node-postgres' connectionTimeoutMillis, statement_timeout and
+# query_timeout): compliant, not a bound (root's #65 RC L1). Python marks each such value in the binding pass
+# (pytest.mark.timeout, libpq's connect_timeout: LIBPQ_CONNECT), and the pytest config reader skips its own. A NAME
+# resolving to 0 is still judged.
+ZERO_IS_NONE = {"client"}
 JS_TWIN = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 NAME = re.compile(r"^[A-Za-z_$][\w$]*$")
 # Child-process launchers, by module, for resolving an aliased callee (rules/literal-bound.yml names them directly).
@@ -146,6 +173,142 @@ CHILD_PROCESS = {"child_process": {"spawn", "spawnSync", "exec", "execSync", "ex
 CHILD_PROCESS["node:child_process"] = CHILD_PROCESS["child_process"]
 SUBPROCESS_NAMES = set().union(*CHILD_PROCESS.values())
 SG_BATCH = 400
+
+
+def check_digest() -> str:
+    """The digest of what this check DETECTS: check.py, its rules, and the glob semantics it scopes by. A baseline
+    records the digest it was written under (K2 D8, guard 1): a raise is only ever allowed in a change whose check
+    detects differently from the one the base's baseline was written by."""
+    h = hashlib.sha256()
+    for path in [HERE / "check.py", *sorted((HERE / "rules").glob("*.yml")), HERE.parent / "change-impact-plan" / "plan.py"]:
+        h.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    lock = HERE.parent.parent / "release-assets.lock"  # the ast-grep binary the action runs is part of the detection
+    if lock.exists():
+        pins = [line for line in lock.read_text(encoding="utf-8").splitlines() if line.startswith("ast-grep ")]
+        h.update(b"ast-grep\0" + "\n".join(pins).encode() + b"\0")
+    return h.hexdigest()
+
+
+ACTION_PIN = re.compile(r"^vagarylabs/\.github/actions/test-bounds@([0-9a-f]{40})$")
+
+
+def job_action_pins(text: str, job: str | None) -> list[str]:
+    """The refs this check is pinned at by the step `uses:` of one job (or of every job, when `job` is None) in a
+    workflow's text: only a step's own `uses:` key counts, never a comment, a `run:` body or a block scalar (D8 guard
+    1, root's #68 delta B2'). A form this reader does not parse yields no pin, so the guard fails SAFE: no lock-in,
+    and the pin bump is red until its findings are fixed."""
+    pins, in_jobs, job_indent, cur_job, steps_indent, step_prop, block = [], False, None, None, None, None, None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if indent > block:
+                continue  # block scalar content
+            block = None
+        if indent == 0:
+            in_jobs, cur_job, steps_indent, step_prop = stripped == "jobs:", None, None, None
+            continue
+        if not in_jobs:
+            continue
+        if job_indent is None and re.fullmatch(r"[A-Za-z_][\w-]*:\s*", stripped):
+            job_indent = indent
+        if indent == job_indent and re.match(r"[A-Za-z_][\w-]*:", stripped):
+            cur_job, steps_indent, step_prop = stripped.split(":", 1)[0], None, None
+            continue
+        if cur_job is None or (job is not None and cur_job != job):
+            continue
+        if stripped == "steps:":
+            steps_indent, step_prop = indent, None
+            continue
+        if steps_indent is None or indent <= steps_indent:
+            continue
+        key_text = stripped
+        if stripped.startswith("- "):
+            step_prop = indent + 2
+            key_text = stripped[2:].lstrip()
+        elif indent != step_prop:
+            m = re.match(r"([A-Za-z_][\w-]*):\s*[|>][-+0-9]*\s*$", stripped)
+            if m:
+                block = indent
+            continue
+        m = re.match(r"([A-Za-z_][\w-]*):\s*(.*)$", key_text)
+        if not m:
+            continue
+        value = re.sub(r"\s+#.*$", "", m.group(2)).strip().strip("'\"")
+        if re.match(r"[|>][-+0-9]*$", value):
+            block = step_prop
+            continue
+        if m.group(1) == "uses":
+            pm = ACTION_PIN.match(value)
+            if pm:
+                pins.append(pm.group(1))
+    return pins
+
+
+def running_context(env: dict, here: Path = HERE) -> tuple[str, str, str] | None:
+    """(workflow path, job id, this action's ref) of the Actions run executing this check, or None. The ref is read
+    from where the runner put this action (`_actions/vagarylabs/.github/<ref>/...`), and the workflow and job from
+    GITHUB_WORKFLOW_REF and GITHUB_JOB, which GitHub documents a step cannot overwrite through $GITHUB_ENV. They must
+    equal TB_CTX_WORKFLOW_REF and TB_CTX_JOB, which action.yml sets from the `github` context (an expression no step
+    can write): a write to either source makes the context unreadable, so no debt is locked in (#68 delta 2 LOW)."""
+    parts = here.parts
+    if "_actions" not in parts:
+        return None
+    i = parts.index("_actions")
+    if parts[i + 1:i + 3] != ("vagarylabs", ".github") or not re.fullmatch(r"[0-9a-f]{40}", parts[i + 3] if len(parts) > i + 3 else ""):
+        return None
+    wref, job = env.get("GITHUB_WORKFLOW_REF", ""), env.get("GITHUB_JOB", "")
+    if (wref, job) != (env.get("TB_CTX_WORKFLOW_REF", ""), env.get("TB_CTX_JOB", "")):
+        return None
+    m = re.fullmatch(r"[^/]+/[^/]+/(\.github/workflows/[^@]+)@.+", wref)
+    if not (m and job):
+        return None
+    return m.group(1), job, parts[i + 3]
+
+
+PIN_NOT_MOVED = "this change does not move the check's pin, so there is no new debt to lock in"
+
+
+def lock_in_refusal(root: Path, change: dict | None, running: tuple[str, str, str] | None, in_actions: bool,
+                    digest: str) -> str | None:
+    """D8 guard 1 (root's #68 rulings): None when this change is a DETECTION change, which may lock debt in; else why
+    it is not. Both must hold (root's tightening, delta 2): (a) the running job's pin moved, and (b) the base
+    baseline's recorded check_digest is not the running check's. A base baseline with no digest was written by a check
+    from before digests, so it differs. In Actions an unreadable running context locks nothing in (B1'')."""
+    if not change or change["base_cfg"] is None:
+        return PIN_NOT_MOVED
+    if in_actions and running is None:
+        return ("the running check's context is unreadable (an action run from a workspace checkout or pinned by a "
+                "tag, a reusable workflow, or GITHUB_WORKFLOW_REF / GITHUB_JOB missing or not the github context's), "
+                "so no pin move is proven and no debt is locked in")
+    if not pin_moved(root, change["sha"], running):
+        return PIN_NOT_MOVED
+    if change["base_cfg"].get("check_digest") == digest:
+        return ("this change moves the pin to a check that detects identically (the base baseline's check_digest is "
+                "the running check's), so there is no new debt to lock in")
+    return None
+
+
+def pin_moved(root: Path, base: str, running: tuple[str, str, str] | None) -> bool:
+    """D8 guard 1: this change moves the check's pin. In Actions: the running job's one test-bounds step pins the
+    running action's ref at the head, and pinned another ref at the base. Outside Actions (write-baseline, a local
+    check): the pins of every job differ between base and head; CI then judges the strict form."""
+    def at_base(path: str) -> str:
+        r = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root, capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+    if running is not None:
+        wf, job, ref = running
+        head_text = (root / wf).read_text(encoding="utf-8") if (root / wf).is_file() else ""
+        head_pins, base_pins = job_action_pins(head_text, job), job_action_pins(at_base(wf), job)
+        return head_pins == [ref] and len(base_pins) == 1 and base_pins[0] != ref
+    head, before = set(), set()
+    for f in tracked_files(root):
+        if f.startswith(".github/workflows/") and f.endswith((".yml", ".yaml")):
+            head |= set(job_action_pins((root / f).read_text(encoding="utf-8"), None))
+            before |= set(job_action_pins(at_base(f), None))
+    return bool(head) and head != before
 
 
 class Refusal(Exception):
@@ -479,10 +642,13 @@ def load_config(text: str, where: str) -> dict:
                                              and all(isinstance(r, str) and isinstance(n, int) and n >= 1
                                                      for r, n in v.items()) for f, v in counts.items())):
         raise Refusal(f"{where}: `counts` must map path -> {{rule: count >= 1}}")
-    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts"}
+    digest = cfg.get("check_digest")
+    if digest is not None and not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise Refusal(f"{where}: `check_digest` must be the 64-hex digest write-baseline records")
+    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts", "check_digest"}
     if unknown:
         raise Refusal(f"{where}: unknown keys {sorted(unknown)}")
-    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts}
+    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts, "check_digest": digest}
 
 
 class Scope:
@@ -629,11 +795,38 @@ rule:
   any:
     - pattern: const $N = promisify($X)
     - pattern: const $N = util.promisify($X)
+    - pattern: let $N = promisify($X)
+    - pattern: let $N = util.promisify($X)
+    - pattern: var $N = promisify($X)
+    - pattern: var $N = util.promisify($X)
 ---
 id: a.require
 language: LANG
-rule: { pattern: "const { $$$P } = require($S)" }
+rule:
+  any:
+    - pattern: "const { $$$P } = require($S)"
+    - pattern: "let { $$$P } = require($S)"
+    - pattern: "var { $$$P } = require($S)"
+---
+id: a.module
+language: LANG
+rule:
+  any:
+    - pattern: const $N = require($S)
+    - pattern: let $N = require($S)
+    - pattern: var $N = require($S)
+---
+id: a.member
+language: LANG
+rule:
+  any:
+    - pattern: const $N = $M.$P
+    - pattern: let $N = $M.$P
+    - pattern: var $N = $M.$P
 """
+# The forms of an import of a child-process module: a default or namespace binding (the module object) and named
+# specifiers, in any combination (`import cp, { execFile as ef } from "node:child_process"`).
+_IMPORT_FORMS = re.compile(r"\Aimport\s+(?!type\b)(?P<clause>[^'\"]+?)\s+from\s*(?P<q>['\"])(?P<src>[^'\"\n]+)(?P=q)\s*;?\s*\Z", re.S)
 
 
 def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
@@ -641,20 +834,38 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
     destructured require (`const { exec: x } = require("child_process")`), or a promisify() of either. Treating a
     name as a child process RAISES its floor (60 s -> 120 s), so this resolution can only add findings."""
     out = {f: set() for f in files}
+    mods = {f: set() for f in files}  # local names bound to a child-process MODULE object
     by_lang = {}
     for f in files:
         by_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
-    promised = []
+    promised, members = [], []
     for lang, group in by_lang.items():
         for m in sg_scan(tree.root, _ALIAS_RULES.replace("LANG", lang), group):
             f, mv = m["file"], m.get("metaVariables", {})
             if m["ruleId"] == "a.import":
-                src = re.search(r"(['\"])([^'\"\n]+)\1\s*;?\s*$", m["text"])
-                parsed = _parse_import(m["text"])
-                names = CHILD_PROCESS.get(src.group(2) if src else "", set())
-                for local, imported in (parsed or {}).items():
-                    if imported in names:
-                        out[f].add(local)
+                im = _IMPORT_FORMS.match(m["text"].strip())
+                names = CHILD_PROCESS.get(im.group("src") if im else "", set())
+                if not names:
+                    continue
+                clause = im.group("clause")
+                named = re.search(r"\{(?P<specs>[^{}]*)\}", clause)
+                for spec in (named.group("specs").split(",") if named else []):
+                    s2 = _SPEC.match(spec.strip())
+                    if s2 and s2.group("imp") in names:
+                        out[f].add(s2.group("local") or s2.group("imp"))
+                head = re.sub(r"\{[^{}]*\}", "", clause)
+                for part in head.split(","):
+                    part = part.strip()
+                    ns = re.fullmatch(r"\*\s+as\s+([A-Za-z_$][\w$]*)", part)
+                    if ns:
+                        mods[f].add(ns.group(1))
+                    elif NAME.match(part):
+                        mods[f].add(part)
+            elif m["ruleId"] == "a.module":
+                if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
+                    mods[f].add(mv["single"]["N"]["text"])
+            elif m["ruleId"] == "a.member":
+                members.append((f, mv["single"]["M"]["text"], mv["single"]["P"]["text"], mv["single"]["N"]["text"]))
             elif m["ruleId"] == "a.require":
                 if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
                     for entry in mv.get("multi", {}).get("P", []):
@@ -663,9 +874,13 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
                             out[f].add(parts[-1])
             elif m["ruleId"] == "a.promisify":
                 promised.append((f, mv["single"]["X"]["text"], mv["single"]["N"]["text"]))
-    for _ in range(2):  # promisify of an alias
+    for f, mod, prop, n in members:  # const run = cp.spawnSync
+        if mod in mods[f] and prop in SUBPROCESS_NAMES:
+            out[f].add(n)
+    for _ in range(2):  # promisify of an alias, or of a module member (promisify(cp.execFile))
         for f, x, n in promised:
-            if x in SUBPROCESS_NAMES or x in out[f]:
+            mm = re.fullmatch(r"([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)", x)
+            if x in SUBPROCESS_NAMES or x in out[f] or (mm and mm.group(1) in mods[f] and mm.group(2) in SUBPROCESS_NAMES):
                 out[f].add(n)
     return out
 
@@ -810,6 +1025,12 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             v = m["metaVariables"]["single"]["V"]
             launcher_hits[(m["file"], _span(v["range"]))] = launchers[int(m["ruleId"].split(".")[1])]
     bounds = [m for m in matches if m["ruleId"].startswith(RULE + ".")]
+    py_files = [f for f in files if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python"]
+    bound_py, not_covered, direct = py_binding_matches(tree, py_files) if py_files else ([], [], set())
+    # The binding pass knows what an ast-grep spelling only guesses (bare `wait` may be asyncio's), so it wins at any
+    # span it read and at every direct argument of a call it resolved.
+    owned = direct | {(m["file"], _span(m["metaVariables"]["single"]["V"]["range"])) for m in bound_py}
+    bounds = [m for m in bounds if (m["file"], _span(m["metaVariables"]["single"]["V"]["range"])) not in owned] + bound_py
     elapsed = [m for m in matches if m["ruleId"].startswith(ELAPSED + ".")]
     faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
              if m["ruleId"].startswith("fake-clock.")}
@@ -852,6 +1073,11 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        if (m.get("zero_is_none") or (lang != "python" and position in ZERO_IS_NONE)) and value == 0 \
+                and not NAME.match(text):
+            continue  # a literal 0 is "no limit" here
+        if position == "join" and value is None and not re.match(r"\s*timeout\s*=", m.get("text", "")):
+            continue  # a positional name or expression that is not a number is str.join's argument, not a bound
         if value is not None and value >= floor:
             rec["status"], rec["reason"] = "cleared", (rec["reason"] + "; " if rec["reason"] else "") + why
         else:
@@ -894,27 +1120,36 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         if recs:
             findings.setdefault(f, []).extend(recs)
     bad = {f for f, _ in unparsable}
-    return {"findings": findings, "marks": marks,
+    return {"findings": findings, "marks": marks, "not_covered": sorted(not_covered),
             "unparsable": sorted((f, ln, why) for (f, ln), why in unparsable.items()),
             "recovered": sorted((f, ln) for f, ln in errors if f not in bad)}
 
 
 def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
     """(records, unparsable reason) for one pytest config file: its `timeout` option and any `--timeout` in addopts,
-    judged as case bounds in seconds. A file that does not parse is unparsable, never clean."""
+    judged as case bounds in seconds. A file that does not parse is unparsable, never clean. `timeout = 0` disables
+    pytest-timeout, so it is no bound."""
     floor = FLOORS_S["case"]
-    if name == "pyproject.toml":
+    sections = []  # (section header, {key: value text})
+    if name in ("pyproject.toml", "pytest.toml", ".pytest.toml"):
         try:
             import tomllib
         except ImportError:
-            return [], "tomllib is unavailable (Python < 3.11), so the check cannot read pyproject.toml"
+            return [], f"tomllib is unavailable (Python < 3.11), so the check cannot read {name}"
         try:
             data = tomllib.loads(text)
         except (tomllib.TOMLDecodeError, ValueError):
             return [], "not valid TOML"
-        opts = ((data.get("tool") or {}).get("pytest") or {}).get("ini_options") or {}
-        section = "tool.pytest.ini_options"
-        items = {k: v if isinstance(v, str) else (" ".join(v) if isinstance(v, list) else str(v)) for k, v in opts.items()}
+
+        def flat(opts: dict) -> dict:
+            return {k: v if isinstance(v, str) else (" ".join(map(str, v)) if isinstance(v, list) else str(v))
+                    for k, v in opts.items() if not isinstance(v, dict)}
+        if name == "pyproject.toml":
+            native = (data.get("tool") or {}).get("pytest") or {}
+            sections.append(("tool.pytest.ini_options", flat(native.get("ini_options") or {})))
+            sections.append(("tool.pytest", flat(native)))
+        else:
+            sections.append(("pytest", flat(data.get("pytest") or {})))
     else:
         cp = configparser.ConfigParser(interpolation=None)
         try:
@@ -922,29 +1157,37 @@ def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
         except configparser.Error as e:
             return [], f"not a valid INI file ({type(e).__name__})"
         section = PYTEST_CONFIGS[name]
-        items = dict(cp.items(section)) if cp.has_section(section) else {}
+        sections.append((section, dict(cp.items(section)) if cp.has_section(section) else {}))
     lines = text.splitlines()
 
-    def line_of(key: str) -> int:
-        current = None
+    def line_of(section: str, key: str) -> int:
+        """The key's line under its section header, quoted or not; else (TOML's inline table `pytest = { timeout = 7
+        }` or dotted key `tool.pytest.timeout = 8`) the first line that assigns it in any form (#65 delta L4)."""
+        current, k = None, re.escape(key)
         for i, line in enumerate(lines, 1):
             head = re.match(r"\s*\[([^\]]+)\]\s*$", line)
             if head:
                 current = head.group(1).strip().strip('"')
-            elif current == section and re.match(rf"\s*{re.escape(key)}\s*[=:]", line):
+            elif current == section and re.match(rf"\s*[\"']?{k}[\"']?\s*[=:]", line):
+                return i
+        for i, line in enumerate(lines, 1):
+            if re.search(rf"(?:^|[\s{{,.])[\"']?{k}[\"']?\s*=", line):
                 return i
         return 0
 
     values = []
-    if "timeout" in items:
-        values.append((line_of("timeout"), items["timeout"]))
-    for m in re.finditer(r"--timeout(?:=|\s+)(\S+)", items.get("addopts", "")):
-        values.append((line_of("addopts"), m.group(1)))
+    for section, items in sections:
+        if "timeout" in items:
+            values.append((line_of(section, "timeout"), items["timeout"]))
+        for m in re.finditer(r"--timeout(?:=|\s+)(\S+)", items.get("addopts", "")):
+            values.append((line_of(section, "addopts"), m.group(1)))
     out = []
     for ln, raw in values:
         source_line = lines[ln - 1] if 0 < ln <= len(lines) else ""
         value_text = re.split(r"\s[#;]", raw, 1)[0].strip().strip('"\'')
         v = evaluate_py(value_text)
+        if v == 0:
+            continue  # pytest-timeout's timeout = 0 is "no limit"
         rec = {"line": ln, "rule": RULE, "position": "ini", "kind": "case", "value": value_text[:120], "floor": floor,
                "status": "finding", "reason": "", "mark": None}
         if v is not None and v >= floor:
@@ -959,6 +1202,441 @@ def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
                     rec["status"] = "marked"
         out.append(rec)
     return out, None
+
+
+# --- Python calls read by binding (root's #65 RC B3) --------------------------------------------------------------
+
+# canonical callable -> (rule position, kind, positional index of the bound or None, the keywords that carry it)
+_HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "request", "stream", "send")
+PY_CALLS = {
+    "asyncio.wait_for": ("wait", "condition", 1, ("timeout",)),
+    "asyncio.wait": ("wait", "condition", None, ("timeout",)),
+    "asyncio.timeout": ("timeout-ctx", "condition", 0, ("delay",)),
+    "async_timeout.timeout": ("timeout-ctx", "condition", 0, ("timeout",)),
+    "urllib.request.urlopen": ("http", "condition", 2, ("timeout",)),
+    "httpx.Client": ("http", "condition", None, ("timeout",)),
+    "httpx.AsyncClient": ("http", "condition", None, ("timeout",)),
+    **{f"{lib}.{m}": ("http", "condition", None, ("timeout",)) for lib in ("requests", "httpx") for m in _HTTP_METHODS
+       if m != "send"},
+    **{f"{c}.{m}": ("http", "condition", None, ("timeout",))
+       for c in ("requests.Session", "httpx.Client", "httpx.AsyncClient") for m in _HTTP_METHODS},
+    **{c: ("client", "fixture", None, ("timeout", "connect_timeout", "command_timeout"))
+       for c in ("asyncpg.connect", "asyncpg.create_pool", "asyncpg.pool.create_pool", "psycopg.connect",
+                 "psycopg2.connect", "psycopg.Connection.connect", "psycopg.AsyncConnection.connect",
+                 "psycopg_pool.ConnectionPool", "psycopg_pool.AsyncConnectionPool")},
+    "pytest.mark.timeout": ("mark", "case", 0, ("timeout",)),
+}
+# The rule ids the binding pass emits. Declared, not derived from PY_CALLS, so a gutted position is caught: the self-test
+# plants each one RED and requires PY_CALLS (plus the HTTP tuple) to read exactly these.
+PY_BOUND_RULES = (f"{RULE}.wait.condition", f"{RULE}.timeout-ctx.condition", f"{RULE}.http.condition",
+                  f"{RULE}.http-tuple.condition", f"{RULE}.client.fixture", f"{RULE}.mark.case")
+CLIENT_CTORS = {"requests.Session": "requests.Session", "requests.session": "requests.Session",
+                "httpx.Client": "httpx.Client", "httpx.AsyncClient": "httpx.AsyncClient",
+                # seen, not read yet: its calls with a bound keyword are listed NOT COVERED (#65 delta INFO-1)
+                "aiohttp.ClientSession": "aiohttp.ClientSession"}
+
+
+# The libraries this check reads calls of, and aiohttp, which it sees but does not read yet (its bound is a
+# ClientTimeout): a call into one with a bound keyword that the binding pass cannot read is listed, never dropped.
+PY_LIBRARIES = {k.split(".")[0] for k in [*PY_CALLS, *CLIENT_CTORS]} | {"aiohttp"}
+PY_BOUND_KEYWORDS = {kw for *_, kws in PY_CALLS.values() for kw in kws}
+PY_LEAVES = {k.rsplit(".", 1)[1] for k in [*PY_CALLS, *CLIENT_CTORS]}
+# libpq waits forever on connect_timeout = 0, so a literal 0 there is no bound. asyncpg's and psycopg_pool's `timeout`
+# of 0 is an INSTANT timeout, and asyncpg's command_timeout=0 is refused, so those stay findings (#65 delta L1).
+LIBPQ_CONNECT = {"psycopg.connect", "psycopg2.connect", "psycopg.Connection.connect", "psycopg.AsyncConnection.connect"}
+# A submodule or vendored spelling of a covered callable (`requests.api.get`, `asyncio.tasks.wait_for`).
+PY_SPELLINGS = (("pip._vendor.requests", "requests"), ("requests.api", "requests"), ("requests.sessions", "requests"),
+                ("asyncio.tasks", "asyncio"), ("asyncio.timeouts", "asyncio"), ("httpx._api", "httpx"),
+                ("httpx._client", "httpx"))
+
+
+def _py_canonical(dotted: str) -> str:
+    for old, new in PY_SPELLINGS:
+        if dotted == old or dotted.startswith(old + "."):
+            return new + dotted[len(old):]
+    return dotted
+
+
+def _py_star_leaves(module_name: str) -> dict[str, str]:
+    """leaf -> canonical name, for each covered callable or client class a star import of `module_name` binds."""
+    out = {}
+    for k in [*PY_CALLS, *CLIENT_CTORS]:
+        head, _, leaf = k.rpartition(".")
+        if head == _py_canonical(module_name):
+            out[leaf] = k
+    return out
+
+
+def _py_local_module(tree: "Tree", importer: str, module: str) -> tuple[str | None, int]:
+    """The one file an absolute import of a LOCAL module names, from the repository root or the importer's directory
+    (a test's own helpers); (None, 0) when it is not local, (None, n) when n files match."""
+    stems = {posixpath.join(*module.split(".")), posixpath.join(posixpath.dirname(importer), *module.split("."))}
+    hits = sorted({c for st in stems for c in (st + ".py", st + "/__init__.py") if c in tree.fileset})
+    return (hits[0] if len(hits) == 1 else None), len(hits)
+
+
+def _py_reexport(tree: "Tree", target: str, name: str) -> tuple[str | None, str]:
+    """What a local module binds `name` to, one hop (the resolver's rule): ("import", canonical) when its one binding
+    is a direct import from a covered library, ("client", class) when it is one client construction; else why not."""
+    tree.ensure([target])  # a base tree is materialized lazily: only the blobs a scan reads
+    mod = _parse_py(tree.read(target))
+    if mod is None:
+        return None, f"{target} does not parse"
+    sites = [x for x in py_bindings(mod, name) if not (isinstance(x, ast.alias) and x.name == "*")]
+    if len(sites) != 1:
+        return None, f"{target} binds it {len(sites)} times, not once"
+    site = sites[0]
+    if isinstance(site, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return "other", f"{target} defines it"
+    for node in ast.walk(mod):
+        if isinstance(node, ast.ImportFrom) and site in node.names and node.level == 0 and node.module:
+            canon = _py_canonical(f"{node.module}.{site.name}")
+            if canon.split(".")[0] in PY_LIBRARIES:
+                return "import", canon
+        if isinstance(node, ast.Import) and site in node.names and site.asname:
+            return "import", _py_canonical(site.name)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call) and (
+                site in (node.targets if isinstance(node, ast.Assign) else [node.target])):
+            ctor = CLIENT_CTORS.get(_py_canonical(_dotted(node.value.func, PyNames(tree, target, mod).at(node.value.func)[0], {}) or ""))
+            if ctor:
+                return "client", ctor
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and (
+                site in (node.targets if isinstance(node, ast.Assign) else [node.target])):
+            return "other", f"{target} assigns it a value that is not a client"
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and site in node.names and not node.level:
+            return "other", f"{target} imports it from a library this check does not cover"
+    return None, f"{target} does not bind it by a direct import from a covered library or a client construction"
+
+
+_PY_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp,
+              ast.DictComp, ast.GeneratorExp)
+
+
+class PyNames:
+    """What a name means where it is used, by Python's scoping (root's #65 delta B2): the nearest enclosing scope that
+    binds it decides (a class body never encloses its methods). In that scope the name resolves to a covered library
+    only when every binding there is an import of it: an import inside a function binds that function's name, and
+    `wait = proc.wait` in another function is that function's own subprocess wait. A scope that binds it by an
+    import AND another way (an assignment, a def, a parameter, a for/with/except target, a walrus), or declares it
+    global or nonlocal, makes a call through it NOT COVERED. Star imports of a covered module bind its covered names
+    (B1); a local module is followed one hop (B1); a star import of any other module is recorded in `stars`."""
+
+    def __init__(self, tree: "Tree", f: str, module: ast.Module):
+        self.tree, self.f, self.module = tree, f, module
+        self.parent, self.scope_of = {}, {}
+        self.sites = {}  # (scope id, name) -> [("import", canonical) | ("unread", why) | ("client", class) | ("other", line)]
+        self.stars = []
+        self._walk(module, module)
+
+    def _add(self, scope: ast.AST, name: str, what: tuple) -> None:
+        self.sites.setdefault((id(scope), name), []).append(what)
+
+    def _walk(self, node: ast.AST, scope: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            self.scope_of[id(child)] = scope
+            inner = scope
+            if isinstance(child, _PY_SCOPES):
+                inner = child
+                self.parent[id(child)] = scope
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    self._add(scope, child.name, ("other", child.lineno))
+                    for d in child.decorator_list:  # decorators and defaults run in the enclosing scope
+                        self.scope_of[id(d)] = scope
+                if not isinstance(child, ast.ClassDef):
+                    args = child.args if hasattr(child, "args") and isinstance(child.args, ast.arguments) else None
+                    for a in (args.posonlyargs + args.args + args.kwonlyargs + [x for x in (args.vararg, args.kwarg) if x]) if args else []:
+                        self._add(child, a.arg, ("other", child.lineno))
+            self._bind(child, scope)
+            self._walk(child, inner)
+
+    def _bind(self, node: ast.AST, scope: ast.AST) -> None:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._add(scope, node.id, ("other", node.lineno))
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            self._add(scope, node.name, ("other", node.lineno))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for n in node.names:  # the name is the module's (global) or an enclosing function's (nonlocal)
+                self._add(scope, n, (type(node).__name__.lower(), node.lineno))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            self._add(scope, node.name, ("other", node.lineno))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                local = a.asname or a.name.split(".")[0]
+                self._add(scope, local, ("import", _py_canonical(a.name) if a.asname else a.name.split(".")[0]))
+        elif isinstance(node, ast.ImportFrom):
+            self._bind_from(node, scope)
+
+    def _bind_from(self, node: ast.ImportFrom, scope: ast.AST) -> None:
+        mod = node.module or ""
+        library = not node.level and mod.split(".")[0] in PY_LIBRARIES
+        target, n = None, 0
+        if node.level and mod:
+            target, n = resolve_py_module(self.tree, self.f, node.level, mod)[0], 1
+        elif mod and not library:
+            target, n = _py_local_module(self.tree, self.f, mod)
+        where = "." * node.level + mod
+        for a in node.names:
+            local = a.asname or a.name
+            if library:
+                if a.name == "*":  # B1: a covered module's star import binds each covered name it exports
+                    for leaf, canon in _py_star_leaves(mod).items():
+                        self._add(scope, leaf, ("import", canon))
+                else:
+                    self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))
+            elif a.name == "*":
+                self.stars.append(where)
+            elif not node.level and _py_canonical(f"{mod}.{a.name}").split(".")[0] in PY_LIBRARIES:
+                self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))  # `from pip._vendor import requests`
+            elif node.level or n:  # B1: a local module, followed one hop
+                what, val = _py_reexport(self.tree, target, a.name) if target else (None, f"it resolves to {n} files")
+                if what in ("import", "client"):
+                    self._add(scope, local, (what, val))
+                elif what == "other":  # the local module's own function, class or value: not a covered library
+                    self._add(scope, local, ("other", node.lineno))
+                else:
+                    self._add(scope, local, ("unread", f"`{local}` is imported from the local module `{where}`, which "
+                                                       f"one hop cannot read ({val})"))
+            else:
+                self._add(scope, local, ("other", node.lineno))  # a third-party name
+
+    def lookup(self, name: str, node: ast.AST) -> tuple[str, object]:
+        """("import", [canonical, ...]) | ("client", class) | ("unread", why) | ("other", None) | ("unbound", None)."""
+        scope, first = self.scope_of.get(id(node), self.module), True
+        while scope is not None:
+            if first or not isinstance(scope, ast.ClassDef):
+                sites = self.sites.get((id(scope), name))
+                if sites and any(k == "global" for k, _ in sites):
+                    scope, first = self.module, False
+                    continue
+                if sites and any(k == "nonlocal" for k, _ in sites):
+                    first = False
+                    scope = self.parent.get(id(scope))
+                    continue
+                if sites:
+                    kinds = {k for k, _ in sites}
+                    unread = [v for k, v in sites if k == "unread"]
+                    if unread:
+                        return "unread", unread[0]
+                    if kinds == {"import"}:
+                        return "import", sorted({v for _, v in sites})
+                    if kinds == {"client"}:
+                        return "client", sites[0][1]
+                    if "import" in kinds or "client" in kinds:
+                        line = next(v for k, v in sites if k == "other")
+                        return "unread", (f"`{name}` is imported and also bound another way in the same scope (line "
+                                          f"{line}), so a call through it is not read")
+                    return "other", None
+            first = False
+            scope = self.parent.get(id(scope)) if scope is not self.module else None
+        return "unbound", None
+
+    def at(self, expr: ast.AST) -> tuple[dict, dict, dict, dict]:
+        """(aliases, several, unread, clients) for the names a callee expression uses, resolved where it is used."""
+        aliases, several, unread, clients = {}, {}, {}, {}
+        for n in ast.walk(expr):
+            if isinstance(n, ast.Name) and n.id not in aliases and n.id not in unread:
+                kind, val = self.lookup(n.id, expr)
+                if kind == "import" and len(val) == 1:
+                    aliases[n.id] = val[0]
+                elif kind == "import":
+                    several[n.id] = val
+                elif kind == "unread":
+                    unread[n.id] = val
+                elif kind == "client":
+                    clients[n.id] = val
+        return aliases, several, unread, clients
+
+
+def _root_name(node: ast.AST) -> str | None:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _dotted(node: ast.AST, aliases: dict, clients: dict) -> str | None:
+    """The canonical dotted name a callee expression names, through imports and client instances; else None."""
+    if isinstance(node, ast.Name):
+        return clients.get(node.id) or _py_canonical(aliases.get(node.id, node.id))
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name) and node.value.value.id == "self":
+            inst = clients.get(f"self.{node.value.attr}")
+            if inst:
+                return f"{inst}.{node.attr}"
+        base = _dotted(node.value, aliases, clients)
+        return None if base is None else _py_canonical(f"{base}.{node.attr}")
+    if isinstance(node, ast.Call):  # requests.Session().get: an instance made in place
+        ctor = _dotted(node.func, aliases, clients)
+        return CLIENT_CTORS.get(_py_canonical(ctor or ""))
+    return None
+
+
+def _py_clients(module: ast.Module, names: "PyNames") -> dict:
+    """name (or `self.attr`) -> the client class an assignment, an annotated assignment, a walrus, a `with ... as` or a
+    class body binds it to, when unambiguous (its constructor's names resolved where it is called)."""
+    seen = {}
+
+    def bind(target: ast.AST, value: ast.AST) -> None:
+        if not isinstance(value, ast.Call):
+            return
+        ctor = CLIENT_CTORS.get(_py_canonical(_dotted(value.func, names.at(value.func)[0], {}) or ""))
+        if not ctor:
+            return
+        if isinstance(target, ast.Name):
+            seen.setdefault(target.id, set()).add(ctor)
+        elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+            seen.setdefault(f"self.{target.attr}", set()).add(ctor)
+    for node in ast.walk(module):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                bind(t, node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            bind(node.target, node.value)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind(item.optional_vars, item.context_expr)
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, node.value)
+        elif isinstance(node, ast.ClassDef):  # `class T: s = requests.Session()`, read as `self.s` in its methods
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    for t in stmt.targets:
+                        if isinstance(t, ast.Name):
+                            bind(ast.Attribute(value=ast.Name(id="self"), attr=t.id), stmt.value)
+    return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
+
+
+def py_binding_matches(tree: "Tree", files: list[str]) -> tuple[list[dict], list[tuple[str, int, str]], set]:
+    """(matches, not covered) for the Python calls PY_CALLS names, read by binding: import aliases, bare imported names
+    and client instances, as well as the exact spellings. Each match has an ast-grep match's shape (ruleId, file,
+    range, metaVariables V), so it is judged by the same record loop; census() drops an ast-grep match at the same
+    span. A covered call whose bound may come through a `**` splat is NOT COVERED: listed with every run beside
+    UNSCANNED, so its absence from the findings is never read as clean. The third
+    result is the span of every DIRECT argument of a call it resolved: census() drops an ast-grep match there too, so
+    the binding pass decides what that argument is (asyncio.wait's first argument is its awaitables, not a bound)."""
+    out, not_covered, direct = [], [], set()
+    for f in files:
+        text = tree.read(f)
+        module = _parse_py(text)
+        if module is None:
+            continue  # census() lists it as unparsable (K6), never clean
+        raw = text.encode("utf-8")
+        starts = [0]
+        for line in raw.split(b"\n"):
+            starts.append(starts[-1] + len(line) + 1)
+
+        def span(node: ast.AST) -> dict:
+            b0 = starts[node.lineno - 1] + node.col_offset
+            b1 = starts[node.end_lineno - 1] + node.end_col_offset
+            return {"start": {"line": node.lineno - 1}, "end": {"line": node.end_lineno - 1},
+                    "byteOffset": {"start": b0, "end": b1}}
+
+        names = PyNames(tree, f, module)
+        file_clients = _py_clients(module, names)
+        pending = []
+        for call in ast.walk(module):
+            if not isinstance(call, ast.Call):
+                continue
+            root = _root_name(call.func)
+            leaf = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", "")
+            bound_kw = any(kw.arg in PY_BOUND_KEYWORDS for kw in call.keywords)
+            aliases, several, unread, imported = names.at(call.func)
+            clients = {**file_clients, **imported}
+            if unread:
+                # A name bound by an import and another way in one scope, or imported from a local module one hop
+                # cannot read (B1, B2): no ownership, and the call is listed when it may be a covered call.
+                if leaf in PY_LEAVES or bound_kw:
+                    not_covered.append((f, call.lineno, next(iter(unread.values()))))
+                continue
+            canon = _dotted(call.func, aliases, clients)
+            spec = PY_CALLS.get(canon or "")
+            if spec is None and root in several:
+                # Imports that bind a name more than one way (`import requests as r` here, `import httpx as r`
+                # there). When every binding is a covered call of the same position, kind and index (a try/except
+                # fallback: asyncio.timeout or async_timeout.timeout), it is read with their keywords; when only some
+                # are, it is listed, never read as clean (L3).
+                each = [_dotted(call.func, {**aliases, root: b}, clients) for b in several[root]]
+                specs = [PY_CALLS.get(c or "") for c in each]
+                if all(specs) and len({sp[:3] for sp in specs}) == 1:
+                    spec = (*specs[0][:3], tuple(sorted({k for sp in specs for k in sp[3]})))
+                    canon = " / ".join(sorted(set(each)))
+                elif any(specs):
+                    not_covered.append((f, call.lineno, f"`{root}` is bound by more than one import "
+                                                        f"({', '.join(several[root])}), so this call is not read"))
+                    continue
+            if spec is None:
+                if isinstance(call.func, ast.Name) and names.stars and leaf in PY_LEAVES and \
+                        names.lookup(leaf, call.func)[0] == "unbound":
+                    not_covered.append((f, call.lineno, f"`{leaf}` may be bound by `from {names.stars[0]} import *`, "
+                                                        "which this check does not follow, so this call is not read"))
+                else:
+                    pending.append((call, canon, bound_kw))
+                continue
+            position, kind, index, keywords = spec
+            for a in [*call.args, *(kw.value for kw in call.keywords)]:
+                direct.add((f, _span(span(a))))
+            kw_values = [kw for kw in call.keywords if kw.arg in keywords]
+            values = [kw.value for kw in kw_values]
+            star_before = index is not None and any(isinstance(a, ast.Starred) for a in call.args[:index + 1])
+            if index is not None and len(call.args) > index and not star_before:
+                values.append(call.args[index])
+            if not values and any(kw.arg is None for kw in call.keywords):
+                not_covered.append((f, call.lineno, f"{canon}: its bound may come through a ** splat, which is not read"))
+            elif not values and star_before:
+                not_covered.append((f, call.lineno, f"{canon}: its bound may come through a * splat, which is not read"))
+            # A literal 0 is "no limit" for pytest-timeout and libpq's connect_timeout only (#65 delta L1).
+            unlimited = {id(v) for v in values if position == "mark"} | {
+                id(kw.value) for kw in kw_values if kw.arg == "connect_timeout" and any(
+                    c in LIBPQ_CONNECT for c in canon.split(" / "))}
+            def no_bound(v: ast.AST) -> bool:
+                """A value that cannot be a time bound (the rules' bound-value): None, a string, a bool, a collection,
+                a lambda. A tuple is one only as an HTTP (connect, read) pair, read element by element."""
+                if isinstance(v, ast.Constant):
+                    return v.value is None or isinstance(v.value, (str, bytes, bool))
+                return isinstance(v, (ast.JoinedStr, ast.List, ast.Dict, ast.Set, ast.Lambda, ast.Starred)) or (
+                    isinstance(v, ast.Tuple) and position != "http")
+
+            for v in values:
+                if no_bound(v):
+                    continue
+                if isinstance(v, ast.Tuple) and position == "http":
+                    elems = [(e, "http-tuple") for e in v.elts if not no_bound(e)]  # (connect, read): each is a bound
+                else:
+                    elems = [(v, position)]
+                for e, pos in elems:
+                    seg = ast.get_source_segment(text, e) or ""
+                    out.append({"ruleId": f"{RULE}.{pos}.{kind}", "file": f, "range": span(e), "text": seg,
+                                "zero_is_none": id(v) in unlimited,
+                                "metaVariables": {"single": {"V": {"text": seg, "range": span(e)}}}})
+        # B3: a call into a covered library (or aiohttp) that passes a bound keyword this pass cannot read (a
+        # submodule spelling it does not know, a class it does not cover) is listed, never dropped. A call that is
+        # itself an argument of a covered call (`timeout=httpx.Timeout(5)`) is judged there.
+        for call, canon, bound_kw in pending:
+            if not bound_kw or (f, _span(span(call))) in direct:
+                continue
+            lib, why = (canon or "").split(".")[0], None
+            if lib == "aiohttp":
+                why = "aiohttp is not read yet (its bound is a ClientTimeout)"
+            elif lib in PY_LIBRARIES:
+                why = f"`{canon}` is a call into {lib} that this check does not read"
+            else:
+                # The callee reaches a covered library some other way (getattr(requests, "get"),
+                # importlib.import_module("requests").get), or an argument is a covered callable
+                # (functools.partial(requests.get, timeout=1)): seen, not read, so listed.
+                aliases, _, _, imported = names.at(call.func)
+                via = next((v for v in aliases.values() if v.split(".")[0] in PY_LIBRARIES), None) or next(
+                    (n.value for n in ast.walk(call.func) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                     and n.value.split(".")[0] in PY_LIBRARIES), None)
+                for a in [*call.args, *(kw.value for kw in call.keywords)]:
+                    if via is None and isinstance(a, (ast.Name, ast.Attribute)):
+                        al, _, _, imp = names.at(a)
+                        c = _dotted(a, al, {**file_clients, **imp})
+                        via = c if c in PY_CALLS else None
+                if via:
+                    why = f"a call that reaches `{via}` in a way this check does not read (getattr, importlib, partial)"
+            if why:
+                not_covered.append((f, call.lineno, why))
+    return out, not_covered, direct
 
 
 def timedelta_seconds(text: str) -> Fraction | None:
@@ -1204,26 +1882,75 @@ def judge(found: dict, allowed: dict) -> tuple[list[str], list[str]]:
     return problems, notices
 
 
-def base_raises(committed: dict, base: dict) -> list[str]:
-    return [f"{f}: the committed baseline allows {n}, the base allowed {base.get(f, 0)}: a raise of the baseline itself"
-            for f, n in sorted(committed.items()) if n > base.get(f, 0)]
+def base_raises(committed: dict, base: dict, found: dict, detection_changed: bool, identical: set,
+                base_tree_found: dict, same_debt: set | None = None,
+                refusal: str = PIN_NOT_MOVED) -> tuple[list[str], list[str], list[tuple[str, int, int]]]:
+    """(problems, notices, locked) for the committed counts of UNTOUCHED files against the base's (K2 D8). A raise is
+    refused unless all of root's guards hold (11-01, and the #68 RC):
+      1. the change is a detection change (`detection_changed`, lock_in_refusal): the running job's PIN of this check
+         moved, read from its workflows at the base and at the head, never from a field the baseline declares, and
+         the base baseline was written by a check that detects differently (`refusal` says why not);
+      2. the file is byte-identical at the base (`identical`), and the BASE TREE, censused under the running check,
+         already holds the same findings (`base_tree_found`, and by identity `same_debt`: the same line, position,
+         kind and value, so a swap of which bound is short cannot keep the count), censused under the BASE's own
+         configuration (its launchers): so a change elsewhere, such as a lowered constant an untouched file imports
+         or a removed launcher, can never pass its new findings off as old debt;
+      3. the raise goes to EXACTLY that count: committed = base tree = head;
+      4. every raised file is returned in `locked`, for the summary."""
+    problems, notices, locked = [], [], []
+    for f, n in sorted(committed.items()):
+        b, held, was = base.get(f, 0), found.get(f, 0), base_tree_found.get(f, 0)
+        if n <= b:
+            continue
+        why = None
+        if not detection_changed:
+            why = refusal
+        elif f not in identical:
+            why = "the file is not byte-identical at the base"
+        elif was != held:
+            why = (f"the base tree holds {was} finding(s) in it under this check, the head {held}: a change elsewhere "
+                   "(an imported constant, a launcher) added them, so they are new, not old debt")
+        elif same_debt is not None and f not in same_debt:
+            why = ("the base tree holds the same count but not the same findings (line, position, value): a change "
+                   "elsewhere swapped which bound is short")
+        elif n != held:
+            why = f"a detection change may lock in exactly the {held} finding(s) the file holds, not {n}"
+        if why:
+            problems.append(f"{f}: the committed baseline allows {n}, the base allowed {b}: a raise of the baseline "
+                            f"itself ({why})")
+        else:
+            locked.append((f, b, n))
+            notices.append(f"{f}: debt locked in by a detection change: {b} -> {n} (byte-identical at the base, and the "
+                           "base tree holds the same findings under this check)")
+    return problems, notices, locked
 
 
-def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tuple[list[str], list[str], set]:
-    """One rule's judgement: (problems, notices, allow_raise). `found`/`committed` map file -> count; `change` is
-    pr_change()'s result for this rule, or None without a base."""
+def analyze(found: dict, committed: dict, change: dict | None, event: str, detection_changed: bool = False,
+            identical: frozenset = frozenset(), base_tree_found: dict | None = None,
+            same_debt: set | None = None, refusal: str = PIN_NOT_MOVED) -> tuple[list[str], list[str], set, list]:
+    """One rule's judgement: (problems, notices, allow_raise, locked). `found`/`committed` map file -> count; `change`
+    is pr_change()'s result for this rule, or None without a base. `locked` lists the untouched files whose debt a
+    detection change locks in (base_raises)."""
     if change is None:
         problems, notices = judge(found, committed)
         return problems, notices + ["no base commit given: every file is judged against the committed baseline; the "
-                                    "touched-file, raise and narrowing checks need --base"], set()
+                                    "touched-file, raise and narrowing checks need --base"], set(), []
     touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
     keep = lambda d: {f: n for f, n in d.items() if f not in touched}  # noqa: E731
     problems, notices = judge(keep(found), keep(committed))
+    locked = []
     if change["base_counts"] is not None:
-        problems += base_raises(keep(committed), change["base_counts"])
+        p, n, locked = base_raises(keep(committed), change["base_counts"], keep(found), detection_changed, identical,
+                                   base_tree_found or {}, same_debt, refusal)
+        problems += p
+        notices += n
     else:
         notices.append(f"the base {change['sha'][:12]} has no baseline: this change introduces it")
-    allow = set()
+    # Under a detection change, write-baseline --base may lock in an untouched, byte-identical file's findings (the
+    # debt the base tree held); otherwise nothing untouched may rise.
+    allow = ({f for f, n in keep(found).items() if n > keep(committed).get(f, 0) and f in identical
+              and (base_tree_found or {}).get(f, 0) == n and (same_debt is None or f in same_debt)}
+             if detection_changed else set())
     for g in change["groups"]:
         head = sum(found.get(f, 0) for f in g["now"])
         was = sum(change["base_found"].get(f, 0) for f in g["old"])
@@ -1252,7 +1979,7 @@ def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tu
                 else:
                     notices.append(f"{f}: {n} finding(s), the baseline lists {listed}: a gain; write-baseline locks "
                                    "it in")
-    return problems, notices, allow
+    return problems, notices, allow, locked
 
 
 def baseline_write(found: dict, old: dict, seed: bool, allow: set) -> tuple[dict | None, str]:
@@ -1354,7 +2081,7 @@ def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
     res = census(base_tree, old_paths, head_cfg["launchers"])
     renamed_out = [(frm, to) for status, frm, to in changes
                    if status[:1] == "R" and scope.scanned(frm) and not scope.scanned(to)]
-    return {"sha": sha, "groups": groups, "base_cfg": base_cfg,
+    return {"sha": sha, "groups": groups, "base_cfg": base_cfg, "base_tree": base_tree,
             "base_counts_all": base_cfg["counts"] if base_cfg else None, "base_found_all": counts_of(res["findings"]),
             "base_marked": [{"file": f, "line": r["line"], "reason": r["mark"]} for f, recs in res["findings"].items()
                             for r in recs if r["status"] == "marked"],
@@ -1408,15 +2135,21 @@ def self_test(verbose: bool = False) -> list[str]:
         if got != want:
             failures.append(f"{case.name}: findings {json.dumps(got, sort_keys=True)}, expected "
                             f"{json.dumps(want, sort_keys=True)}")
-        for key in ("unparsable", "recovered"):
-            have = sorted({row[0] for row in res[key]})
+        for key in ("unparsable", "recovered", "not_covered"):
+            # NOT COVERED is one entry per row (a dropped listing in a file with others still fails); the others per file.
+            have = sorted(row[0] for row in res[key]) if key == "not_covered" else sorted({row[0] for row in res[key]})
             if have != sorted(spec.get(key, [])):
                 failures.append(f"{case.name}: {key} {have}, expected {sorted(spec.get(key, []))}")
         if verbose:
             print(f"self-test {case.name}: {'ok' if not any(x.startswith(case.name + ':') for x in failures) else 'FAILED'}")
-    # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed.
+    # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed: for python
+    # that includes every position the binding pass reads (PY_BOUND_RULES), which PY_CALLS must read exactly.
+    reads = {f"{RULE}.{pos}.{kind}" for pos, kind, *_ in PY_CALLS.values()} | {f"{RULE}.http-tuple.condition"}
+    if reads != set(PY_BOUND_RULES):
+        failures.append(f"the binding pass reads {sorted(reads)}, PY_BOUND_RULES declares {sorted(PY_BOUND_RULES)}")
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)):
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)) + (
+                list(PY_BOUND_RULES) if lang == "python" else []):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
     return failures
@@ -1453,7 +2186,7 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
         merge_group.base_sha; a `base` input that names any other commit is refused, and so is a base equal to the
         head;
       - push takes the payload's `before` and ignores the input; all zeros (a branch's first push) is no base, and
-        the run says so;
+        the run says so; a push outside the default branch is refused (#60 delta2 LOW);
       - workflow_dispatch alone takes the input as given;
       - every other event is refused.
     Outside Actions (a local or tool run) the input is taken as given, except that a PR or merge-group --event needs
@@ -1476,7 +2209,15 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
                 raise Refusal(f"the {event} event's base is the head itself")
             return want
         if event == "push":
-            before = _payload(env, event).get("before", "")
+            payload = _payload(env, event)
+            ref, default = payload.get("ref"), (payload.get("repository") or {}).get("default_branch")
+            if not (isinstance(ref, str) and isinstance(default, str) and default):
+                raise Refusal("the push event carries no ref or default branch")
+            if ref != f"refs/heads/{default}":
+                raise Refusal(f"a push to {ref} is not a push to the default branch {default}: this check's verdicts "
+                              "come from pull_request, merge_group, default-branch push and workflow_dispatch runs "
+                              "(a feature branch's first push has no base, so it would pass unjudged)")
+            before = payload.get("before", "")
             if not (isinstance(before, str) and re.fullmatch(r"[0-9a-f]{40}", before)):
                 raise Refusal("the push event carries no `before` commit")
             return None if ZERO.fullmatch(before) else before
@@ -1516,7 +2257,8 @@ def load_head_config(root: Path) -> dict:
     return load_config(path.read_text(encoding="utf-8"), BASELINE_PATH)
 
 
-def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
+def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str, str, str] | None = None,
+        in_actions: bool = False) -> dict:
     cfg = load_head_config(root)
     files = tracked_files(root)
     scope = Scope(cfg)
@@ -1536,26 +2278,94 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     if change:
         problems += [f"{frm} is renamed to {to}, outside the scanned trees: a test file that leaves the trees is a "
                      "narrowing (move it back, or widen the trees in the same change)" for frm, to in change["renamed_out"]]
-    allow = {}
+    digest = check_digest()
+    if cfg.get("check_digest") is None:
+        problems.append("[check_digest] the baseline does not record the check version that wrote it: run "
+                        "write-baseline with this check")
+    elif cfg["check_digest"] != digest:
+        problems.append(f"[check_digest] the baseline names check {cfg['check_digest'][:12]}, not this check ({digest[:12]}): "
+                        "a baseline names the check that wrote it, so run write-baseline with this check")
+    refusal = lock_in_refusal(root, change, running, in_actions, digest)
+    detection_changed = refusal is None
+    identical, base_tree_found_all, base_ids = frozenset(), {}, {}
+    if change:
+        touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
+        identical = frozenset(f for f in byte_identical(root, change["sha"], sorted(set(found) | set(cfg["counts"])))
+                              if f not in touched)
+        base_counts_all = change["base_counts_all"] or {}
+        candidates = sorted(f for f in identical
+                            if any(max(found.get(f, {}).get(r, 0), cfg["counts"].get(f, {}).get(r, 0))
+                                   > base_counts_all.get(f, {}).get(r, 0)
+                                   for r in set(found.get(f, {})) | set(cfg["counts"].get(f, {}))))
+        if detection_changed and candidates:
+            # The base tree, under the BASE's own configuration (its launchers and their floors), with this check.
+            base_res = census(change["base_tree"], candidates, change["base_cfg"]["launchers"])["findings"]
+            base_tree_found_all = counts_of(base_res)
+            base_ids = finding_ids(base_res)
+    allow, locked_in = {}, []
     for rule in sorted({r for c in list(found.values()) + list(cfg["counts"].values()) for r in c} | {RULE}):
         sub = None
         if change:
             sub = {"sha": change["sha"], "groups": change["groups"],
                    "base_counts": per_rule(change["base_counts_all"], rule) if change["base_counts_all"] is not None
                    else None, "base_found": per_rule(change["base_found_all"], rule)}
-        p, n, a = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event)
+        head_ids = finding_ids({f: res["findings"].get(f, []) for f in base_ids})
+        same = {f for f in base_ids if base_ids[f].get(rule) == head_ids.get(f, {}).get(rule)}
+        p, n, a, lk = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event, detection_changed,
+                              identical, per_rule(base_tree_found_all, rule), same, refusal or PIN_NOT_MOVED)
         problems += [f"[{rule}] {x}" for x in p]
         notices += [f"[{rule}] {x}" for x in n]
         allow[rule] = sorted(a)
+        locked_in += [{"rule": rule, "file": f, "base": b, "now": now} for f, b, now in lk]
+
     if change and change["skipped"]:
         notices.append("git skipped inexact rename detection on this diff, so a rename or split may read as new files")
     marks = res["marks"]
     added = new_marks(res["findings"], change)
     return {"schema": SCHEMA, "check": CHECK_ID, "base": base, "event": event, "scanned_files": len(scanned),
             "counts": found, "findings": res["findings"], "marks": marks, "new_marks": added,
-            "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "covered": COVERED,
-            "problems": problems,
+            "recovered": res["recovered"], "not_covered": res["not_covered"], "unscanned": unscanned(cfg, files),
+            "covered": COVERED, "locked_in": locked_in, "check_digest": digest, "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
+
+
+def finding_ids(findings: dict) -> dict:
+    """file -> rule -> the multiset of its findings' identities (line, position, kind, value), so a lock-in compares
+    WHICH bounds are short, not only how many."""
+    out = {}
+    for f, recs in findings.items():
+        for r in recs:
+            if r["status"] == "finding":
+                out.setdefault(f, {}).setdefault(r["rule"], Counter())[(r["line"], r["position"], r["kind"], r["value"])] += 1
+    return out
+
+
+def byte_identical(root: Path, base: str, paths: list[str]) -> set[str]:
+    """The paths whose blob at `base` is the blob the census read (D8 guard 2: judged from the base TREE). The head
+    side is the working tree, hashed with git, because that is what the census scanned (one source)."""
+    if not paths:
+        return set()
+
+    def blobs(rev: str) -> dict:
+        r = subprocess.run(["git", "ls-tree", "-r", "-z", rev, "--", *paths], cwd=root, capture_output=True)
+        if r.returncode:
+            raise Refusal(f"git ls-tree {rev} exited {r.returncode}: the byte-identity check cannot run")
+        out = {}
+        for entry in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
+            if "\t" in entry:
+                meta, path = entry.split("\t", 1)
+                out[path] = meta.split()[2]
+        return out
+
+    at_base = blobs(base)
+    present = [f for f in paths if f in at_base and (root / f).is_file()]
+    if not present:
+        return set()
+    r = subprocess.run(["git", "hash-object", "--stdin-paths"], cwd=root, input="\n".join(present) + "\n",
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise Refusal(f"git hash-object exited {r.returncode}: the byte-identity check cannot run")
+    return {f for f, h in zip(present, r.stdout.split()) if at_base[f] == h}
 
 
 def summary_md(out: dict) -> str:
@@ -1567,6 +2377,12 @@ def summary_md(out: dict) -> str:
     lines += [f"- {k}: {v}" for k, v in out["covered"].items()] + [""]
     if out["problems"]:
         lines += [f"**{len(out['problems'])} problem(s)**", ""] + [f"- {p}" for p in out["problems"][:60]] + [""]
+    lk = out.get("locked_in", [])
+    lines += [f"**Debt locked in by a detection change: {len(lk)} (file, rule) raise(s)**", ""]
+    lines += [f"- [{x['rule']}] {x['file']}: {x['base']} -> {x['now']}" for x in lk[:60]]
+    if len(lk) > 60:
+        lines.append(f"- ... and {len(lk) - 60} more: every one is in the log (DEBT LOCKED IN) and the findings JSON")
+    lines.append("")
     lines += [f"**New `timeout under test:` marks: {len(out['new_marks'])}**", ""]
     lines += [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}" for m in out["new_marks"][:50]] + [""]
     lines += [f"All marks: {len(out['marks'])}", ""] + [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}"
@@ -1577,6 +2393,9 @@ def summary_md(out: dict) -> str:
     lines += [f"- language: {f}" for f in u["language"][:30]] + [f"- outside: {f}" for f in u["outside_trees"][:30]]
     lines += ["", f"RECOVERED parses (listed, not red): {len(out['recovered'])}", ""]
     lines += [f"- {f}:{ln}" for f, ln in out["recovered"][:30]]
+    lines += ["", f"NOT COVERED calls (a covered call this check cannot read the bound of; listed, not red): "
+                  f"{len(out['not_covered'])}", ""]
+    lines += [f"- {f}:{ln} {why}" for f, ln, why in out["not_covered"][:30]]
     return "\n".join(lines) + "\n"
 
 
@@ -1590,11 +2409,15 @@ def emit(out: dict, findings_path: str | None) -> None:
         print(f"notice: {n}")
     for m in out["new_marks"]:
         print(f"NEW MARK: {m['file']}:{m['line']} timeout under test: {m['reason'] or '(no reason)'}")
+    for x in out.get("locked_in", []):
+        print(f"DEBT LOCKED IN: [{x['rule']}] {x['file']}: {x['base']} -> {x['now']} (a detection change)")
     for k, v in out["covered"].items():
         print(f"covered ({k}): {v}")
     u = out["unscanned"]
     print(f"UNSCANNED: {len(u['language'])} tree file(s) in a language this check does not read, "
           f"{len(u['outside_trees'])} test-like file(s) outside every tree; RECOVERED parses: {len(out['recovered'])}")
+    for f, ln, why in out["not_covered"]:
+        print(f"NOT COVERED: {f}:{ln} {why}")
     total = sum(sum(c.values()) for c in out["counts"].values())
     print(f"test-bounds: {out['scanned_files']} file(s) scanned, {total} finding(s) counted, "
           f"{len(out['marks'])} mark(s) ({len(out['new_marks'])} new), {len(out['problems'])} problem(s)")
@@ -1614,6 +2437,7 @@ def write_baseline_file(root: Path, cfg: dict, counts: dict) -> None:
     raw = json.loads(text)
     raw["counts"] = {f: counts[f] for f in sorted(counts)}
     raw.setdefault("check", CHECK_ID)
+    raw["check_digest"] = check_digest()
     (root / BASELINE_PATH).write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1652,7 +2476,7 @@ def main(argv: list[str]) -> int:
         if base:
             ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:
-            out = run(root, base, event, Path(tmp))
+            out = run(root, base, event, Path(tmp), running_context(os.environ) if in_actions else None, in_actions)
         out["problems"] = [f"the check's own self-test failed: {f}" for f in failures] + out["problems"]
         if args.cmd == "check":
             emit(out, args.findings)

@@ -3,6 +3,8 @@ guards.test.mjs, root R4'd on #849), run in throwaway git repositories through t
 required: $TEST_BOUNDS_SG or `ast-grep` on PATH (ci.yml fetches the pinned binary); a missing binary fails, never skips."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -46,22 +48,43 @@ class Repo:
         self.git("commit", "-q", "--allow-empty", "-m", "fixture")
         return self.git("rev-parse", "HEAD")
 
-    def verdict(self, base: str | None, event: str = "pull_request") -> dict:
+    def verdict(self, base: str | None, event: str = "pull_request", running=None, in_actions=None) -> dict:
+        """`running` set means an Actions run with that context; `in_actions=True` with no `running` is an Actions run
+        whose context is unreadable."""
         with tempfile.TemporaryDirectory() as tmp:
-            return C.run(self.dir, base, event, Path(tmp))
+            return C.run(self.dir, base, event, Path(tmp), running,
+                         running is not None if in_actions is None else in_actions)
 
     def done(self):
         self._tmp.cleanup()
 
 
-def baseline(counts: dict, trees=None, launchers=None, exclude=None) -> str:
+def baseline(counts: dict, trees=None, launchers=None, exclude=None, digest=True) -> str:
+    """digest: True records this check's digest (what write-baseline writes); a string records that one; False none."""
     cfg = {"schema": 1, "check": C.CHECK_ID, "trees": trees or TREES, "counts":
            {f: {C.RULE: n} for f, n in counts.items() if n}}
+    if digest:
+        cfg["check_digest"] = C.check_digest() if digest is True else digest
     if launchers is not None:
         cfg["launchers"] = launchers
     if exclude is not None:
         cfg["exclude"] = exclude
     return json.dumps(cfg, indent=2) + "\n"
+
+
+PIN_A, PIN_B = "a" * 40, "b" * 40
+OLD = "0" * 64  # the digest an older check recorded: a pin bump's base baseline
+WF = ".github/workflows/pr.yml"
+
+
+def workflow(pin: str, extra: str = "") -> str:
+    """A consumer workflow pinning this check in job `t` (D8 guard 1 reads that job's step `uses:`)."""
+    return f"jobs:\n  t:\n    steps:\n      - uses: vagarylabs/.github/actions/test-bounds@{pin}\n{extra}"
+
+
+def running(pin: str):
+    """The Actions run that executes the check: job `t` of WF, with the action at `pin`."""
+    return (WF, "t", pin)
 
 
 def file(tag: str, frm: int, to: int, bound=lambda i: f"{15_000 + i}") -> str:
@@ -135,6 +158,95 @@ class SelfTest(unittest.TestCase):
         finally:
             C.compose_rules = original
         self.assertTrue(has(failures, "rule elapsed-assert.hrtime.condition (typescript) has no planted RED"), failures)
+
+
+    def test_a_gutted_binding_position_fails_the_self_test_by_name(self):
+        """The binding pass's positions are declared (PY_BOUND_RULES): emptying one from PY_CALLS is named, and so is
+        dropping one callable a fixture plants RED."""
+        original = dict(C.PY_CALLS)
+        try:
+            for k in [k for k, v in original.items() if v[0] == "mark"]:
+                del C.PY_CALLS[k]
+            failures = C.self_test()
+            self.assertTrue(has(failures, "PY_BOUND_RULES declares"), failures)
+            self.assertTrue(has(failures, "rule literal-bound.mark.case (python) has no planted RED"), failures)
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update({k: v for k, v in original.items() if k != "urllib.request.urlopen"})
+            self.assertTrue(has(C.self_test(), "py-binding: findings"), "urlopen is planted RED in py-binding")
+        finally:
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update(original)
+
+
+class PythonBinding(unittest.TestCase):
+    """Root's #65 RC B3: what the binding pass cannot read is listed as NOT COVERED with every run."""
+
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def verdict(self, body: str) -> dict:
+        self.repo.commit({"s/tests/test_a.py": body, BL: baseline({}, trees=[{"glob": "s/tests/**", "min_files": 1}])})
+        return self.repo.verdict(None)
+
+    def test_a_splat_is_listed_in_every_output(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", **opts)\n')
+        why = "requests.get: its bound may come through a ** splat, which is not read"
+        self.assertEqual(v["not_covered"], [("s/tests/test_a.py", 5, why)])
+        self.assertIn(f"- s/tests/test_a.py:5 {why}", C.summary_md(v))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            C.emit(v, None)
+        self.assertIn(f"NOT COVERED: s/tests/test_a.py:5 {why}", out.getvalue())
+
+    def test_an_explicit_keyword_beside_a_splat_is_read(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", timeout=5, **opts)\n')
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_name_two_imports_bind_differently_is_listed(self):
+        """Only some bindings make it a covered call: listed, never read as clean."""
+        v = self.verdict("try:\n    import asyncio as a\nexcept ImportError:\n    import trio as a\n\n\n"
+                         "async def test_x(c):\n    await a.wait_for(c, 5)\n")
+        self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [("s/tests/test_a.py", 8)])
+        self.assertIn("bound by more than one import (asyncio, trio)", v["not_covered"][0][2])
+
+    def test_a_fallback_import_that_agrees_is_read(self):
+        """#65 delta L3: every binding is a covered call of the same position, kind and index, so it is read."""
+        v = self.verdict("try:\n    import requests as r\nexcept ImportError:\n    import httpx as r\n\n\n"
+                         'def test_x():\n    r.get("u", timeout=5)\n')
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_local_reexport_is_read_in_the_base_tree_too(self):
+        """The one-hop read of a local module works on a base tree, which is materialized lazily (a consumer census
+        crashed reading the module before it was fetched)."""
+        t = "s/tests/test_a.py"
+        files = {"s/tests/__init__.py": "", "s/tests/helpers.py": "from asyncio import wait_for\n",
+                 t: "from .helpers import wait_for\n\n\nasync def test_x(c):\n    await wait_for(c, 1)\n",
+                 BL: baseline({t: 1}, trees=[{"glob": "s/tests/**", "min_files": 1}])}
+        base = self.repo.commit(files)
+        self.repo.commit({t: files[t] + "\n# touched\n"})
+        v = self.repo.verdict(base)
+        self.assertEqual((v["problems"], v["counts"]), ([], {t: {C.RULE: 1}}))
+
+    def test_a_toml_key_in_any_form_reports_its_line(self):
+        """#65 delta L4: an inline table, a dotted key and a quoted key are red at their own line, so a mark reaches."""
+        for text, line in (('[project]\nname = "x"\n\n[tool]\npytest = { timeout = 7 }\n', 5),
+                           ("tool.pytest.timeout = 8\n", 1), ('[tool.pytest]\n"timeout" = 9\n', 2)):
+            recs, why = C.pytest_config_bounds(text, "pyproject.toml")
+            self.assertEqual(([r["line"] for r in recs], [r["status"] for r in recs], why), ([line], ["finding"], None))
+
+    def test_the_pytest_dotfiles_are_test_like(self):
+        """A .pytest.ini or .pytest.toml outside every tree is UNSCANNED, never silently ignored (#65 delta L2)."""
+        for name in (".pytest.ini", ".pytest.toml", "pytest.toml"):
+            self.assertTrue(C.TEST_LIKE.search(f"svc/{name}"), name)
+        self.assertFalse(C.TEST_LIKE.search("svc/notpytest.ini"))
+
+    def test_a_shadowing_local_is_not_a_library_call(self):
+        """A bare name with no import is not asyncio's: `wait_for` defined here is the test's own helper."""
+        v = self.verdict("def wait_for(c, n):\n    return c\n\n\ndef test_x(c):\n    wait_for(c, 5)\n")
+        self.assertEqual(v["counts"], {})
 
 
 class DiffEntries(unittest.TestCase):
@@ -255,15 +367,240 @@ class Baseline(unittest.TestCase):
         self.repo.commit({BL: baseline({x: 2, y: 4})})
         self.assertEqual(self.repo.verdict(base)["problems"], [])
 
+    LAUNCHER = [{"name": "startPg", "module": "s/__tests__/pg.ts", "hook_floor_ms": 210_000}]
+    PG_TEST = ('import { beforeAll } from "vitest";\nimport { startPg } from "./pg";\n\n'
+               'beforeAll(async () => { await startPg(); }, 210_000);\n')
+
+    def lock_in_refused(self, base, head_files, why, run=None):
+        self.repo.commit(head_files)
+        v = self.repo.verdict(base, running=run or running(PIN_B))
+        self.assertTrue(has(v["problems"], why), v["problems"])
+        self.assertEqual(v["locked_in"], [])
+
+    def test_a_removed_launcher_is_new_debt_not_old(self):
+        """B1' (#68 delta): the base tree is censused under the BASE's launchers, so removing one cannot turn an
+        untouched 210 s hook into lockable debt."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: self.PG_TEST, "s/__tests__/pg.ts": "export async function startPg() {}\n",
+                                 WF: workflow(PIN_A), BL: baseline({}, launchers=self.LAUNCHER, digest=OLD)})
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 1}, launchers=[])},
+                             "the base tree holds 0 finding(s) in it under this check, the head 1")
+
+    def test_a_raised_launcher_floor_is_new_debt_not_old(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: self.PG_TEST, "s/__tests__/pg.ts": "export async function startPg() {}\n",
+                                 WF: workflow(PIN_A), BL: baseline({}, launchers=self.LAUNCHER, digest=OLD)})
+        raised = [{**self.LAUNCHER[0], "hook_floor_ms": 300_000}]
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 1}, launchers=raised)},
+                             "the base tree holds 0 finding(s) in it under this check, the head 1")
+
+    def test_a_pin_in_a_comment_moves_nothing(self):
+        """B2' (#68 delta): only the running job's step `uses:` is the pin; a comment, an `echo`, or another job is not."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        self.lock_in_refused(base, {WF: workflow(PIN_A, f"      # vagarylabs/.github/actions/test-bounds@{PIN_B}\n"),
+                                    BL: baseline({x: 3})}, "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_pin_in_an_echo_moves_nothing(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        echo = f'      - run: echo "uses: vagarylabs/.github/actions/test-bounds@{PIN_B}"\n'
+        self.lock_in_refused(base, {WF: workflow(PIN_A, echo), BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_pin_in_another_workflow_moves_nothing(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        other = f"jobs:\n  off:\n    if: false\n    steps:\n      - uses: vagarylabs/.github/actions/test-bounds@{PIN_B}\n"
+        self.lock_in_refused(base, {".github/workflows/other.yml": other, BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_the_running_action_must_be_the_head_pin(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_swapped_short_bound_is_not_the_same_debt(self):
+        """LOW (#68 delta): the lock-in compares WHICH bounds are short, so a helper change that makes one bound short
+        and another long keeps the count but is refused."""
+        x, h = "s/__tests__/x.test.ts", "s/__tests__/helpers.ts"
+        body = ('import { it } from "vitest";\nimport { P, Q } from "./helpers";\n\n'
+                'it("p settles", async () => { await p(); }, P);\nit("q settles", async () => { await q(); }, Q);\n')
+        base = self.repo.commit({x: body, h: "export const P = 5_000;\nexport const Q = 120_000;\n",
+                                 WF: workflow(PIN_A), BL: baseline({x: 0}, digest=OLD)})
+        self.lock_in_refused(base, {h: "export const P = 120_000;\nexport const Q = 5_000;\n", WF: workflow(PIN_B),
+                                    BL: baseline({x: 1})}, "")
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["locked_in"], [])
+
+    def test_the_running_context_is_read_from_the_runner(self):
+        A = PIN_A
+        here = Path(f"/home/r/_work/_actions/vagarylabs/.github/{A}/actions/test-bounds")
+        wref = "vagarylabs/vagaris/.github/workflows/pr.yml@refs/pull/1/merge"
+        env = {"GITHUB_WORKFLOW_REF": wref, "GITHUB_JOB": "t", "TB_CTX_WORKFLOW_REF": wref, "TB_CTX_JOB": "t"}
+        self.assertEqual(C.running_context(env, here), (".github/workflows/pr.yml", "t", A))
+        self.assertIsNone(C.running_context(env, Path("/src/actions/test-bounds")), "a checkout is not a pinned action")
+        self.assertIsNone(C.running_context(env, Path("/home/r/_work/_actions/vagarylabs/.github/v1/actions/test-bounds")),
+                          "a tag pin is not a commit: no context, so no lock-in (a fail-safe red)")
+        self.assertIsNone(C.running_context({}, here), "no workflow or job, no context: the guard fails safe")
+        for key, other in (("GITHUB_WORKFLOW_REF", wref.replace("pr.yml", "decoy.yml")), ("GITHUB_JOB", "u"),
+                           ("TB_CTX_JOB", "u"), ("TB_CTX_WORKFLOW_REF", "")):
+            self.assertIsNone(C.running_context({**env, key: other}, here),
+                              f"{key} disagreeing with the other source (a $GITHUB_ENV write) is no context")
+
+    def test_an_unreadable_context_in_actions_locks_nothing_in(self):
+        """B1'' (#68 delta 2): in Actions, a context that cannot be read (a workspace-checkout or tag-pinned action,
+        no GITHUB_WORKFLOW_REF) never falls back to every job's pins: a red base plus a never-run decoy is refused."""
+        x, at = "s/__tests__/x.test.ts", "vagarylabs/.github/actions/test-bounds@"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        decoy = f"jobs:\n  off:\n    if: false\n    steps:\n      - uses: {at}{PIN_B}\n"
+        self.repo.commit({".github/workflows/decoy.yml": decoy, BL: baseline({x: 3})})
+        v = self.repo.verdict(base, in_actions=True)
+        self.assertTrue(has(v["problems"], "the running check's context is unreadable"), v["problems"])
+        self.assertEqual((v["locked_in"], v["_allow"][C.RULE]), ([], []))
+        self.assertEqual(self.repo.verdict(base)["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}],
+                         "outside Actions every job's pins are read, so a local run passes it; the CI run refuses it")
+
+    def test_a_pin_move_to_an_identical_check_locks_nothing_in(self):
+        """Root's D8 tightening (#68 delta 2): a lock-in needs a DETECTION change, so a pin move whose check has the
+        digest the base baseline records is refused."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 3})},
+                             "this change moves the pin to a check that detects identically")
+
+    def test_a_base_baseline_from_before_digests_is_a_detection_change(self):
+        """A base baseline that records no digest was written by a check from before digests, so a pin bump to this
+        check (which records one) is a detection change: the vagaris adoption's first bump."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=False)})
+        self.repo.commit({WF: workflow(PIN_B), BL: baseline({x: 3})})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual((v["problems"], v["locked_in"]), ([], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}]))
+
+    def test_the_pin_reader_reads_only_a_steps_own_uses(self):
+        """B2' (#68 delta): a comment, a `run:` body and a block scalar's lines (even one that reads `- uses:`) are not
+        a step's `uses:`; with no job named, every job's step pins are read."""
+        other, at = "c" * 40, "vagarylabs/.github/actions/test-bounds@"
+        text = (f"jobs:\n  t:\n    steps:\n"
+                f"      # - uses: {at}{PIN_B}\n"
+                f'      - run: echo "uses: {at}{PIN_B}"\n'
+                f"      - name: block\n        run: |\n          - uses: {at}{PIN_B}\n"
+                f"      - uses: {at}{PIN_A}\n        with:\n          note: >\n            - uses: {at}{PIN_B}\n"
+                f"  u:\n    steps:\n      - uses: {at}{other}\n")
+        self.assertEqual(C.job_action_pins(text, "t"), [PIN_A])
+        self.assertEqual(C.job_action_pins(text, "u"), [other])
+        self.assertEqual(C.job_action_pins(text, None), [PIN_A, other])
+
+    def test_outside_actions_a_commented_pin_moves_nothing(self):
+        """write-baseline reads every job's pins, through the same reader: a comment cannot make it lock debt in."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        self.repo.commit({WF: workflow(PIN_A, f"      # - uses: vagarylabs/.github/actions/test-bounds@{PIN_B}\n")})
+        self.assertEqual(self.repo.verdict(base)["_allow"][C.RULE], [])
+
+    def test_only_the_running_jobs_pin_is_compared(self):
+        """In Actions the guard reads the RUNNING job: another job of the same workflow still at the old pin does not
+        stop the running job's bump from locking its debt in."""
+        x, at = "s/__tests__/x.test.ts", "vagarylabs/.github/actions/test-bounds@"
+        second = lambda pin: f"  u:\n    steps:\n      - uses: {at}{pin}\n"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A, second(PIN_A)), BL: baseline({x: 1}, digest=OLD)})
+        self.repo.commit({WF: workflow(PIN_B, second(PIN_A)), BL: baseline({x: 3})})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["problems"], [])
+        self.assertEqual(v["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}])
+
     def test_the_committed_counts_may_not_raise_a_file(self):
         x, y = "s/__tests__/x.test.ts", "s/__tests__/y.test.ts"
         base = self.repo.commit({x: file("x", 0, 3), y: file("y", 0, 1), BL: baseline({x: 3, y: 1})})
         self.repo.commit({x: file("x", 0, 3) + "\n// touched\n", BL: baseline({x: 7, y: 4})})
         v = self.repo.verdict(base, "merge_group")
         self.assertEqual(v["problems"], [
-            f"[{C.RULE}] {y}: the committed baseline allows 4, the base allowed 1: a raise of the baseline itself",
+            f"[{C.RULE}] {y}: the committed baseline allows 4, the base allowed 1: a raise of the baseline itself (this "
+            "change does not move the check's pin, so there is no new debt to lock in)",
             f"[{C.RULE}] {x}: the committed baseline allows 7, the file has 3 and the base allowed 3: a raise of the "
             "baseline itself"])
+
+    def test_a_pin_bump_locks_in_an_untouched_files_debt(self):
+        """K2 D8: a pin bump to a check that detects more finds debt in an untouched file. The raise to EXACTLY the
+        count the base tree holds under the running check lands, and is listed."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})  # an older check counted 1
+        self.repo.commit({WF: workflow(PIN_B)})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: 3 finding(s), the baseline allows 1: a new one"), v["problems"])
+        self.assertEqual(v["_allow"][C.RULE], [x], "write-baseline --base may lock it in")
+        self.assertEqual(self.repo.verdict(base)["_allow"][C.RULE], [x], "outside Actions, every job's pin is read")
+        self.repo.commit({BL: baseline({x: 3})})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["problems"], [])
+        self.assertEqual(v["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}])
+        self.assertTrue(has(v["notices"], f"[{C.RULE}] {x}: debt locked in by a detection change: 1 -> 3"), v["notices"])
+        self.assertIn("Debt locked in by a detection change: 1", C.summary_md(v))
+
+    def test_no_raise_without_a_pin_change(self):
+        """Guard 1 is the consumer's PIN, read at the base and the head, never a field the baseline declares."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest="0" * 64)})
+        self.repo.commit({BL: baseline({x: 3})})
+        v = self.repo.verdict(base, running=running(PIN_A))
+        self.assertTrue(has(v["problems"], "this change does not move the check's pin"), v["problems"])
+        self.assertEqual((v["locked_in"], v["_allow"][C.RULE]), ([], []))
+
+    def test_a_lowered_import_is_new_debt_not_old(self):
+        """B1 (#68 RC): lowering a constant an UNTOUCHED test imports adds findings to that byte-identical file. The base
+        tree, censused under the running check, holds none of them, so they cannot be locked in."""
+        x, h = "s/__tests__/x.test.ts", "s/__tests__/helpers.ts"
+        body = ('import { it } from "vitest";\nimport { T } from "./helpers";\n\n'
+                'it("x settles its fixture write", async () => {\n  await write();\n}, T);\n')
+        base = self.repo.commit({x: body, h: "export const T = 120_000;\n", WF: workflow(PIN_A), BL: baseline({}, digest=OLD)})
+        self.repo.commit({h: "export const T = 5_000;\n", WF: workflow(PIN_B)})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["_allow"][C.RULE], [], "write-baseline may not lock in the import's new finding")
+        self.repo.commit({BL: baseline({x: 1})})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: the committed baseline allows 1, the base allowed 0: a raise of "
+                                           "the baseline itself (the base tree holds 0 finding(s) in it under this check, "
+                                           "the head 1"), v["problems"])
+        self.assertEqual(v["locked_in"], [])
+
+    def test_the_baseline_names_the_check_that_wrote_it(self):
+        """B2 (#68 RC): a missing check_digest is refused, and one that is not the running check's is red."""
+        a = "s/__tests__/a.test.ts"
+        for digest, why in ((False, "does not record the check version that wrote it"), ("0" * 64, "names check 000000000000")):
+            with self.subTest(digest=digest):
+                self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1}, digest=digest)})
+                v = self.repo.verdict(None)
+                self.assertTrue(has(v["problems"], f"[check_digest] the baseline {why}"), v["problems"])
+
+    def test_a_lock_in_goes_to_exactly_the_found_count(self):
+        """Guard 3: above the findings is slack, below them is a partial lock-in; both are refused."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+        for n in (4, 2):
+            with self.subTest(n=n):
+                self.repo.commit({WF: workflow(PIN_B), BL: baseline({x: n})})
+                v = self.repo.verdict(base, running=running(PIN_B))
+                self.assertTrue(has(v["problems"], f"a detection change may lock in exactly the 3 finding(s) the file holds, "
+                                                   f"not {n}"), v["problems"])
+                self.assertEqual(v["locked_in"], [])
+
+    def test_base_raises_refuses_a_file_not_byte_identical_at_the_base(self):
+        """Guard 2 as base_raises' own contract (run() passes only byte-identical files)."""
+        p, n, locked = C.base_raises({"x": 3}, {"x": 1}, {"x": 3}, True, set(), {"x": 3})
+        self.assertEqual(locked, [])
+        self.assertTrue(has(p, "the file is not byte-identical at the base"), p)
+        p, n, locked = C.base_raises({"x": 3}, {"x": 1}, {"x": 3}, True, {"x"}, {"x": 3})
+        self.assertEqual((p, locked), ([], [("x", 1, 3)]))
+
+    def test_byte_identity_is_read_from_the_base_tree_and_the_scanned_file(self):
+        """Guard 2, one source: the head side is the file the census read (the working tree), hashed with git."""
+        x, y, z = "s/__tests__/x.test.ts", "s/__tests__/y.test.ts", "s/__tests__/z.test.ts"
+        base = self.repo.commit({x: file("x", 0, 2), y: file("y", 0, 2), z: file("z", 0, 2), BL: baseline({})})
+        self.repo.commit({y: file("y", 0, 2) + "\n// edited\n"})
+        (self.repo.dir / z).write_text(file("z", 0, 2) + "\n// uncommitted\n", encoding="utf-8")
+        self.assertEqual(C.byte_identical(self.repo.dir, base, [x, y, z, "s/__tests__/absent.test.ts"]), {x})
 
     def test_a_base_without_a_baseline_still_judges_touched_files(self):
         x = "s/__tests__/x.test.ts"
@@ -421,11 +758,21 @@ class EventBase(unittest.TestCase):
                     self.ci("c" * 40, event, pr)
         self.assertIn("pull_request_target", C.PR_PAYLOAD_EVENTS)
 
+    MAIN = {"ref": "refs/heads/main", "repository": {"default_branch": "main"}}
+
     def test_push_in_ci_takes_before_and_ignores_the_input(self):
-        self.assertEqual(self.ci("c" * 40, "push", {"before": self.BASE}), self.BASE)
-        self.assertIsNone(self.ci(self.BASE, "push", {"before": "0" * 40}), "a branch's first push: no base")
+        self.assertEqual(self.ci("c" * 40, "push", {**self.MAIN, "before": self.BASE}), self.BASE)
+        self.assertIsNone(self.ci(self.BASE, "push", {**self.MAIN, "before": "0" * 40}), "a branch's first push: no base")
         with self.assertRaises(C.Refusal):
-            self.ci("", "push", {})
+            self.ci("", "push", {**self.MAIN})
+
+    def test_a_push_outside_the_default_branch_is_refused_in_ci(self):
+        """#60 delta2 LOW: a feature branch's first push (zeros before) would pass unjudged, so it is refused."""
+        for payload in ({"ref": "refs/heads/feature", "repository": {"default_branch": "main"}, "before": "0" * 40},
+                        {"ref": "refs/tags/v1", "repository": {"default_branch": "main"}, "before": self.BASE},
+                        {"before": self.BASE}):
+            with self.subTest(payload=payload), self.assertRaises(C.Refusal):
+                self.ci("", "push", payload)
 
     def test_only_workflow_dispatch_takes_the_input_and_others_are_refused_in_ci(self):
         self.assertEqual(self.ci(self.BASE, "workflow_dispatch", {}), self.BASE)
@@ -581,6 +928,60 @@ class TreesAndMarks(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def cli_env(self):
+        return {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+
+    def test_the_unscanned_config_list(self):
+        """#60 delta2 test gap, under K2 step 2A: a pytest config file in a tree is READ (its pytest-timeout keys), and
+        one outside every tree is UNSCANNED (test-like), never silently clean."""
+        repo = Repo()
+        try:
+            trees = [{"glob": "s/**", "min_files": 1}]
+            repo.commit({"s/a.test.ts": file("a", 0, 1), "s/pyproject.toml": "[tool.pytest.ini_options]\n",
+                         "s/setup.cfg": "[tool:pytest]\n", "tox.ini": "[pytest]\n", "pytest.ini": "[pytest]\n",
+                         BL: baseline({"s/a.test.ts": 1}, trees=trees)})
+            v = repo.verdict(None)
+            self.assertEqual(sorted(v["unscanned"]["language"]), [])
+            self.assertEqual(sorted(v["unscanned"]["outside_trees"]), ["pytest.ini", "tox.ini"])
+            self.assertIn("UNSCANNED: 0 tree file(s)", C.summary_md(v))
+            self.assertEqual(v["scanned_files"], 3, "a.test.ts and the two configs in the tree are read")
+        finally:
+            repo.done()
+
+    def test_a_first_push_to_the_default_branch_says_it_has_no_base(self):
+        """#60 delta2 test gap: the zeros-`before` notice, under a real Actions environment."""
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+            event = repo.dir / "event.json"
+            for ref, rc in (("refs/heads/main", 0), ("refs/heads/feature", 2)):
+                with self.subTest(ref=ref):
+                    event.write_text(json.dumps({"before": "0" * 40, "ref": ref, "repository": {"default_branch": "main"}}))
+                    env = {**self.cli_env(), "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(event)}
+                    r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--root", str(repo.dir)],
+                                       capture_output=True, text=True, env=env)
+                    self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
+                    if rc == 0:
+                        self.assertIn("notice: a push with no `before` commit (a branch's first push)", r.stdout)
+                    else:
+                        self.assertIn("is not a push to the default branch main", r.stdout + r.stderr)
+        finally:
+            repo.done()
+
+    def test_write_baseline_records_this_checks_version(self):
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
+            repo.commit({a: file("a", 0, 1)})
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "write-baseline", "--root", str(repo.dir)],
+                               capture_output=True, text=True, env=self.cli_env())
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.loads((repo.dir / BL).read_text())["check_digest"], C.check_digest())
+        finally:
+            repo.done()
+
     def test_a_seed_writes_both_families_and_the_next_run_is_clean(self):
         """write-baseline --seed counts elapsed-assert under its own rule beside literal-bound (K2 step 2B)."""
         repo = Repo()
@@ -655,6 +1056,35 @@ class Cli(unittest.TestCase):
             self.assertIn("is not one this check judges in CI", r.stdout)
         finally:
             repo.done()
+
+    def test_in_ci_an_unreadable_context_locks_nothing_in(self):
+        """B1'' end to end: check.py run in CI from a checkout (no `_actions/` path, so no running context) refuses a
+        decoy pin's lock-in; the same run outside CI passes it."""
+        repo = Repo()
+        try:
+            x, at = "s/__tests__/x.test.ts", "vagarylabs/.github/actions/test-bounds@"
+            base = repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest=OLD)})
+            repo.commit({".github/workflows/decoy.yml": f"jobs:\n  off:\n    steps:\n      - uses: {at}{PIN_B}\n",
+                         BL: baseline({x: 3})})
+            event = repo.dir / "event.json"
+            event.write_text(json.dumps({"pull_request": {"base": {"sha": base}}}))
+            clean = self.cli_env()
+            ci = {**clean, "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event)}
+            run = lambda env: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--base", base,  # noqa: E731
+                                              "--root", str(repo.dir)], capture_output=True, text=True, env=env)
+            r = run(ci)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("the running check's context is unreadable", r.stdout)
+            self.assertEqual(run(clean).returncode, 0, "outside CI every job's pins are read")
+        finally:
+            repo.done()
+
+    def test_the_action_passes_the_github_context(self):
+        """The second source of the running context is the github context, set in action.yml's check step."""
+        text = (HERE / "action.yml").read_text(encoding="utf-8")
+        step = text[text.index("    - id: check"):]
+        self.assertIn("TB_CTX_WORKFLOW_REF: ${{ github.workflow_ref }}", step)
+        self.assertIn("TB_CTX_JOB: ${{ github.job }}", step)
 
 
 if __name__ == "__main__":

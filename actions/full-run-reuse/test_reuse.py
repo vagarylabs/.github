@@ -1,5 +1,6 @@
 """full-run-reuse: a push reuses only the NEWEST merge-group run of the SAME commit, and only when that run, every
 non-ignored job and every required check passed with a FULL receipt; everything else runs the suite."""
+import http.client
 import io
 import json
 import unittest
@@ -46,7 +47,7 @@ class FakeApi:
     """The reads the lookup makes, each overridable; any other URL is a test bug."""
 
     def __init__(self, runs=None, jobs=None, total=None, artifacts=None, receipt=None, fail=None, rules=None,
-                 polls=None, pages=None, jobs_by_run=None):
+                 polls=None, pages=None, jobs_by_run=None, error=None):
         self.runs = [RUN] if runs is None else runs
         self.jobs = jobs_ok() if jobs is None else jobs
         self.jobs_by_run = jobs_by_run or {}  # {run id: [jobs]}; anything else gets self.jobs
@@ -55,6 +56,7 @@ class FakeApi:
         self.artifacts = artifacts  # None: one receipt artifact per run, named for that run
         # None: each run's receipt names that run (so an OLDER run is acceptable on its own, root's #59 delta R4).
         self.receipt, self.fail, self.calls = receipt, fail, []
+        self.error = error or OSError("connection reset")  # what a read at `fail` raises
         self.rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [
             {"context": c} for c in REQUIRED]}}, {"type": "merge_queue", "parameters": {}}] if rules is None else rules
         self.polls = list(polls or [])  # successive GET /actions/runs/<id> bodies
@@ -62,7 +64,7 @@ class FakeApi:
     def __call__(self, path, raw=False):
         self.calls.append(path)
         if self.fail and self.fail in path:
-            raise OSError("connection reset")
+            raise self.error
         if path == f"/repos/{REPO}/rules/branches/main":
             return self.rules
         if path.startswith(f"/repos/{REPO}/actions/workflows/services.yml/runs?event=merge_group&head_sha={SHA}"):
@@ -291,6 +293,18 @@ class Refuses(unittest.TestCase):
     def test_unreadable_required_checks_are_full(self):
         self.assertEqual(self.refused(FakeApi(fail="/rules/branches/")), ["required checks unreadable: OSError"])
         self.assertEqual(self.refused(FakeApi(rules={"not": "a list"})), ["required checks unreadable: ValueError"])
+
+    def test_a_torn_http_transfer_is_full_never_a_crash(self):
+        # http.client's transfer errors are not OSError subclasses (root's #858 R4 LOW).
+        for error in (http.client.IncompleteRead(b"partial"), http.client.BadStatusLine("garbage"),
+                      http.client.LineTooLong("header line")):
+            for where in ("/attempts/", "blob.example", "/workflows/"):
+                with self.subTest(error=type(error).__name__, where=where):
+                    self.assertEqual(self.refused(FakeApi(fail=where, error=error)),
+                                     ["lookup unresolvable: " + type(error).__name__])
+            with self.subTest(error=type(error).__name__, where="rules"):
+                self.assertEqual(self.refused(FakeApi(fail="/rules/branches/", error=error)),
+                                 ["required checks unreadable: " + type(error).__name__])
 
     def test_api_errors_are_reported_by_type_only(self):
         for where in ("/attempts/", "/artifacts", "blob.example", "/workflows/"):

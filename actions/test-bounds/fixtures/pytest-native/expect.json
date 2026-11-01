@@ -1,0 +1,24 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 5
+   }
+  ]
+ },
+ "files": {
+  "pyproject.toml": {
+   "finding": 2
+  },
+  "pytest.toml": {
+   "cleared": 1
+  },
+  ".pytest.ini": {
+   "finding": 1
+  }
+ },
+ "unparsable": [
+  "bad/pyproject.toml"
+ ]
+}

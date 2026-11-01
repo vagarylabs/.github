@@ -363,3 +363,22 @@ rule:
         - all:
             - any: [{ kind: while_statement }, { kind: do_statement }, { kind: for_statement }]
             - has: { field: condition, any: [{ matches: deadline-test }, { has: { stopBy: end, matches: deadline-test } }] }
+---
+# A deadline option passed INTO the code under test (the vagaris hardening branch, 4862e5050, from #835's drain red):
+# a property of an options object in a call's arguments whose key matches /(?:timeout|deadline|budget)\w*Ms$/i
+# (drainTimeoutMs, deadlineMs, budgetMs), outside the equality matchers. A literal zero is "none" (check.py), and a
+# shorthand `{ deadlineMs }` is not read, as in the ratchet.
+id: literal-bound.deadline-option.condition
+language: typescript
+rule:
+  kind: pair
+  all:
+    - has: { field: key, regex: "(?i)^[\"']?\\w*(?:timeout|deadline|budget)\\w*ms[\"']?$" }
+    - has: { field: value, pattern: $V, matches: bound-value }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      not: { has: { field: function, kind: member_expression, has: { field: property, matches: equality-matcher } } }

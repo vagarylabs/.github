@@ -104,10 +104,10 @@ RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": J
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 # A poll loop's mark may sit on the loop's own first line, as well as on its budget's line.
-SMALL_MATCH |= {"poll"}
+SMALL_MATCH |= {"poll", "deadline-option"}
 # Option positions whose LITERAL zero means a count or "none" (the vagaris hardening branch, f2961a44f). A named zero is
 # still judged: a name that resolves to 0 is a bound someone chose.
-ZERO_IS_NONE = {"option"}
+ZERO_IS_NONE = {"option", "deadline-option"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
 # A mark clears only with a reason: at least one word of three letters ("..." or "x" is not a reason).
 REASON = re.compile(r"[A-Za-z]{3,}")
@@ -123,7 +123,8 @@ COVERED = {
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
-                 "statement_timeout, query_timeout); never a literal-zero option, an object passed to an "
+                 "statement_timeout, query_timeout); deadline options passed into the code under test "
+                 "(/(?:timeout|deadline|budget)\\w*Ms$/i keys); never a literal-zero option, an object passed to an "
                  "equality matcher, or a registrar-named call without a body; elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
                  ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
                  "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "

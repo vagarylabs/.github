@@ -63,6 +63,7 @@ value. The rules are in `rules/`.
 | rule id | languages | position | floor |
 |---|---|---|---|
 | `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
+| `literal-bound.deadline-option.condition` | ts tsx js | a deadline option passed INTO the code under test: a property of an options object in a call's arguments whose key matches /(?:timeout\|deadline\|budget)\w*Ms$/i (drainTimeoutMs, deadlineMs, budgetMs), outside the equality matchers. A shorthand `{ deadlineMs }` is not read (vagaris hardening branch 4862e5050, #835's drain red) | 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
@@ -85,7 +86,7 @@ Elapsed-time asserts are the `elapsed-assert` rules, below. Only these positions
 sleep-as-wait, poll budgets, and read and absence windows.
 
 Not bounds, so not captured (the vagaris hardening branch, f2961a44f, 14 false findings on vagaris):
-- an option whose value is a LITERAL zero (`timeout: 0`, `end({ timeout: 0 })`), which is a count
+- an option whose value is a LITERAL zero (`timeout: 0`, `end({ timeout: 0 })`, `drainTimeoutMs: 0`), which is a count
   or "none". A NAME resolving to 0 is still judged, because someone chose that bound;
 - an object passed to an equality matcher (toEqual, toStrictEqual, toMatchObject, toContainEqual,
   toHaveBeenCalledWith and its Last/Nth forms, toHaveProperty, toBe), which is an expected VALUE. Playwright's

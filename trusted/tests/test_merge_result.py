@@ -665,6 +665,27 @@ class EscapeTests(Fixture):
         self.assert_no_injected_command(out2.getvalue())
         self.assertIn(self.SHOWN, out2.getvalue())
 
+    def test_a_hostile_workflow_name_cannot_inject_from_sibling_read(self):
+        # The same class in sibling-read mode (trusted-workflow-integrity), which reads the head's workflow files.
+        r = self.r
+        base = r.commit("C0", {"README.md": "r0\n"})
+        head = r.commit("pr", {self.HOSTILE: "name: x\non: push\njobs:\n  a:\n    runs-on: x\n    steps:\n"
+                                             "      - uses: actions/create-github-app-token@v1\n"
+                                             "      - run: git clone https://github.com/vagarylabs/other\n"})
+        out = io.StringIO()
+        cwd = os.getcwd()
+        try:
+            os.chdir(r.d)
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(classify.main(["sibling-read", "--manifest", str(MANIFEST), "--repo", REPO,
+                                                "--base", base, "--head", head]), 0)
+        finally:
+            os.chdir(cwd)
+        text = out.getvalue()
+        self.assert_no_injected_command(text)
+        self.assertIn("::warning file=.github/workflows/x%0A%3A%3Astop-commands%3A%3Atok.yml,line=8,", text)
+        self.assertIn("- `%s` job `a` line 8" % self.SHOWN, text)
+
     def test_a_hostile_conflicted_path_stays_on_the_error_line(self):
         r = self.r
         root = r.commit("C0", {self.HOSTILE: "r0\n"})

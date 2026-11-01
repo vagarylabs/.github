@@ -2124,8 +2124,9 @@ def run_sibling_read(m, repo, base, head):
              "%d workflow/action files read at head `%s` (manifest `sibling_read`, mode `%s`)." % (len(files), head, mode)]
     for path, job, line, what in rows:
         lines.append("- `%s` job `%s` line %d: %s. Use vagarylabs/.github/actions/sibling-repo-read, which waits until "
-                     "the token can see the repository." % (path, job, line, what))
-        print("::%s file=%s,line=%d,title=sibling read without readiness::%s" % (level, path, line, what))
+                     "the token can see the repository." % (_shown(path), job, line, what))
+        print("::%s file=%s,line=%d,title=sibling read without readiness::%s"
+              % (level, _cmd_prop(path), line, _cmd_data(what)))
     if not rows:
         lines.append("No raw create-github-app-token is followed by a sibling read.")
     elif mode == "report":

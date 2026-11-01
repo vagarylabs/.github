@@ -41,8 +41,12 @@ jobs:
     # No repository guard: this job also judges vagarylabs/.github itself (D2). It runs from the ruleset's PINNED copy
     # of this file, never the PR's: only that pin makes the check a control, because a PR that edits this file or
     # trusted/classify.py to pass would otherwise judge itself.
-    # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
-    runs-on: [self-hosted, Linux, X64, vl-light]
+    # RUNNER. vagarylabs/.github is PUBLIC: public repos stay GitHub-hosted and public code never runs on the bridge
+    # (ratified 2026-10-21; every org runner group has allows_public_repositories=false, so a bridge label would queue
+    # forever there). So hosted ubuntu-latest ONLY in that repository, and the bridge label in every other (private)
+    # target. This is the ONE hosted exception, named in scripts/no_hosted_runners.py (repo, workflow and job). No
+    # variable, no other fallback.
+    runs-on: ${{ fromJSON(github.repository == 'vagarylabs/.github' && '"ubuntu-latest"' || '["self-hosted","Linux","X64","vl-light"]') }}
     timeout-minutes: 10
     steps:
       # The PR is DATA: exact SHAs come from the event payload, never from the PR's files.

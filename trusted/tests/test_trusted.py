@@ -417,13 +417,19 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertNotIn("pull_request_target", text)
                 self.assertNotIn("secrets.", text)
-                self.assertNotIn("ubuntu-latest", text)
                 self.assertNotIn("vars.", text)
                 self.assertIn("\non:\n  pull_request:\n  merge_group:\n", text)
                 self.assertIn("\npermissions:\n  contents: read\n  pull-requests: read\n\njobs:", text)
                 jobs = re.findall(r"\n    runs-on: (.*)\n", text)
                 self.assertTrue(jobs)
-                self.assertEqual(set(jobs), {"[self-hosted, Linux, X64, vl-light]"})
+                bridge = "[self-hosted, Linux, X64, vl-light]"
+                if name == "trusted-protected-paths":
+                    # the ONE hosted exception: only in the public vagarylabs/.github, the bridge everywhere else
+                    self.assertEqual(jobs, ['${{ fromJSON(github.repository == \'vagarylabs/.github\' && \'"ubuntu-latest"\' || \'["self-hosted","Linux","X64","vl-light"]\') }}'])
+                    self.assertEqual(text.count("ubuntu-latest"), 2)  # the runs-on line, and its comment
+                else:
+                    self.assertNotIn("ubuntu-latest", text)
+                    self.assertEqual(set(jobs), {bridge})
                 # D2: trusted-protected-paths judges vagarylabs/.github too (no guard); the others still skip it.
                 guards = 0 if name == "trusted-protected-paths" else len(jobs)
                 self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), guards)

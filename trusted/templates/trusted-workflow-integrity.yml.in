@@ -20,17 +20,23 @@
 # never a silent pass. A quarantine or approval reference is listed and never honoured until a verifier for
 # those records exists.
 #
-# timeout-floor (a SEPARATE job, same trust posture: same repository guard, bridge runner, read-only permissions,
-# exact SHAs from the event payload, the PR head checked out as data, the same inline classifier and manifest) reads
-# every .github/workflows/*.yml and *.yaml of the HEAD tree as data and checks each job's timeout-minutes against the
-# manifest's completion floor (timeout_floor.minutes, 6): a runner's CompleteJob call can stall 100 s and retry, and a
-# job whose timeout runs out meanwhile is cancelled after it succeeded. It reads the head tree only, and every PR of
-# every repo pays for it, so it checks out the head commit alone (fetch-depth 1, no merge-base); the base is
-# validated as a SHA, never resolved. Under the floor or an expression is a violation unless an exemption in the
-# manifest names it exactly; a job-level `uses:` is skipped; what the stdlib reader cannot judge is INCOMPLETE, never
-# a pass. The job summary lists every finding and carries a TSV block (one row per job) for diffing against the
-# timeout census. Mode `report` (today) fails only on integrity errors, as the job above does; mode `enforce` also
-# fails on an unexempted violation or anything INCOMPLETE. The integrity job's contract above is unchanged.
+# ONE JOB, ONE COPY (root's ruling A, 2026-11-02): every judge below is a step of the single job, so the classifier and
+# manifest are inlined ONCE. GitHub starts no run for a workflow file over 500 KB, and three copies took #69's render
+# to 514,380 bytes (run 41343868440 started no job); trusted/tests holds every workflow file to 500,000. Each judge
+# keeps its own step, summary section and exit code, and every step after the write runs unless the run is cancelled,
+# so a red names the judge that failed. The fetched third-party tools (zizmor, actionlint) run in the LAST step, after
+# every other judge has read the trusted bytes.
+#
+# timeout-floor (its own step, same trust posture: the PR head checked out as data, the same inline classifier and
+# manifest) reads every .github/workflows/*.yml and *.yaml of the HEAD tree as data and checks each job's
+# timeout-minutes against the manifest's completion floor (timeout_floor.minutes, 6): a runner's CompleteJob call can
+# stall 100 s and retry, and a job whose timeout runs out meanwhile is cancelled after it succeeded. It reads the head
+# tree only, from the checkout the integrity step already has; the base is validated as a SHA, never resolved. Under
+# the floor or an expression is a violation unless an exemption in the manifest names it exactly; a job-level `uses:`
+# is skipped; what the stdlib reader cannot judge is INCOMPLETE, never a pass. The job summary lists every finding and
+# carries a TSV block (one row per job) for diffing against the timeout census. Mode `report` (today) fails only on
+# integrity errors, as the integrity step does; mode `enforce` also fails on an unexempted violation or anything
+# INCOMPLETE. The integrity contract above is unchanged.
 name: trusted-workflow-integrity
 
 on:
@@ -48,8 +54,26 @@ jobs:
     if: github.repository != 'vagarylabs/.github'
     # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
     runs-on: [self-hosted, Linux, X64, vl-light]
-    timeout-minutes: 10
+    # Covers every judge: the integrity and timeout-floor scans (120 s budgets each), sibling-read and pins, two tool
+    # fetches at 5 minutes and the lint step at 6, with the completion floor on top.
+    timeout-minutes: 30
     steps:
+      # The pinned bytes, written ONCE for every judge below, and FIRST: it reads nothing from the run, so no
+      # earlier step's failure can skip it and leave the judges below without their classifier.
+      - name: Write the trusted classifier, manifest and actionlint config
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          cat > "$d/actionlint.yaml" <<'TRUSTED_ACTIONLINT_YAML'
+          {{INLINE:trusted/actionlint.yaml}}
+          TRUSTED_ACTIONLINT_YAML
 {{INCLUDE:_shas.yml.in}}
       - name: Classify against BASE (integrity)
         env:
@@ -59,33 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/trusted"
-          mkdir -p "$d"
-          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
-          {{INLINE:trusted/classify.py}}
-          TRUSTED_CLASSIFY_PY
-          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
-          {{INLINE:trusted/manifest.json}}
-          TRUSTED_MANIFEST_JSON
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" integrity --manifest "$d/manifest.json" \
             --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
-
-  timeout-floor:
-    name: timeout-floor
-    # Same guard, runner and timeout as the job above; it inherits the workflow's read-only permissions.
-    if: github.repository != 'vagarylabs/.github'
-    runs-on: [self-hosted, Linux, X64, vl-light]
-    timeout-minutes: 10
-    steps:
-{{INCLUDE:_resolve_shas.yml.in}}
-      - name: Check out the PR head alone as data (depth 1, no credentials kept, nothing executed)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ steps.shas.outputs.head }}
-          fetch-depth: 1
-          persist-credentials: false
       # classify.py checks the head commit is in the object store; the base is validated as a SHA, never resolved.
       - name: Check every job's timeout-minutes against the completion floor (HEAD tree)
+        if: ${{ !cancelled() }}
         env:
           REPO: ${{ github.repository }}
           BASE: ${{ steps.shas.outputs.base }}
@@ -93,18 +96,10 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/trusted"
-          mkdir -p "$d"
-          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
-          {{INLINE:trusted/classify.py}}
-          TRUSTED_CLASSIFY_PY
-          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
-          {{INLINE:trusted/manifest.json}}
-          TRUSTED_MANIFEST_JSON
-          # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" timeout-floor --manifest "$d/manifest.json" \
             --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
-      # The same trusted bytes the step above wrote: a fresh App token reads a sibling repository only through
-      # vagarylabs/.github/actions/sibling-repo-read, which waits until the token can see it (root, 2026-10-27).
+      # A fresh App token reads a sibling repository only through vagarylabs/.github/actions/sibling-repo-read, which
+      # waits until the token can see it (root, 2026-10-27).
       - name: Check that a fresh App token reads a sibling only through sibling-repo-read (HEAD tree)
         if: ${{ !cancelled() }}
         env:
@@ -124,29 +119,14 @@ jobs:
           set -euo pipefail
           d="$RUNNER_TEMP/trusted"
           python3 -I "$d/classify.py" pins --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA"
-
-  workflow-lint:
-    name: workflow-lint
-    # C1 admission (root, 2026-10-29): zizmor and actionlint over the PR head, as data. Same guard and runner as the jobs
-    # above; it inherits the workflow's read-only permissions. The verdict and mode are classify.py's: in mode `report`
-    # a fetch or tool failure ends INCOMPLETE with a green job (root's R4 of #41, B2), so every step is bounded and the
-    # job's timeout covers them all (two fetches at 5 minutes, two runs at 2).
-    if: github.repository != 'vagarylabs/.github'
-    runs-on: [self-hosted, Linux, X64, vl-light]
-    timeout-minutes: 20
-    steps:
-{{INCLUDE:_resolve_shas.yml.in}}
-      - name: Check out the PR head alone as data (depth 1, no credentials kept, nothing executed)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ steps.shas.outputs.head }}
-          fetch-depth: 1
-          persist-credentials: false
-          path: head
-      # Both tools through fetch-release-asset (the shared tool cache, a resumable download, the sha256 pin), with the
-      # values of their release-assets.lock lines; trusted/tests holds these two steps equal to the lock.
+      # C1 admission (root, 2026-10-29): zizmor and actionlint over the PR head, as data. The verdict and mode are
+      # classify.py's: in mode `report` a fetch or tool failure ends INCOMPLETE with a green step (root's R4 of #41, B2),
+      # so every step is bounded. Both tools through fetch-release-asset (the shared tool cache, a resumable download,
+      # the sha256 pin), with the values of their release-assets.lock lines; trusted/tests holds these two steps equal
+      # to the lock.
       - name: Fetch zizmor 1.31.1 (release-assets.lock)
         id: fetch_zizmor
+        if: ${{ !cancelled() }}
         # Its outcome reaches classify.py, which reports a failed fetch INCOMPLETE (red only in mode `enforce`).
         continue-on-error: true
         timeout-minutes: 5
@@ -160,6 +140,7 @@ jobs:
           max-time: "90"
       - name: Fetch actionlint 1.7.7 (release-assets.lock)
         id: fetch_actionlint
+        if: ${{ !cancelled() }}
         continue-on-error: true
         timeout-minutes: 5
         uses: vagarylabs/.github/actions/fetch-release-asset@85ac97443b6e2fb23570ccda190934f150973aef # .github #40 merge
@@ -170,6 +151,7 @@ jobs:
           sha256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
           dest: ${{ runner.temp }}/workflow-lint/actionlint.tar.gz
           max-time: "90"
+      # LAST: the first step that executes a fetched binary, so every judge above has already read the trusted bytes.
       - name: Run zizmor and actionlint over the head tree, and report (manifest workflow_lint)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
@@ -182,22 +164,13 @@ jobs:
           set -euo pipefail
           t="$RUNNER_TEMP/workflow-lint"
           d="$RUNNER_TEMP/trusted"
-          mkdir -p "$d"
-          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
-          {{INLINE:trusted/classify.py}}
-          TRUSTED_CLASSIFY_PY
-          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
-          {{INLINE:trusted/manifest.json}}
-          TRUSTED_MANIFEST_JSON
-          cat > "$d/actionlint.yaml" <<'TRUSTED_ACTIONLINT_YAML'
-          {{INLINE:trusted/actionlint.yaml}}
-          TRUSTED_ACTIONLINT_YAML
           # A missing binary (its fetch failed) exits 127 and a stalled one 124: classify.py reports both INCOMPLETE.
           # When both fetches failed nothing created $t, so it is made here: a cd into a missing directory would end
           # the step red in mode report (root's delta R4 of #41, B2).
           mkdir -p "$t"
           ( cd "$t" && { tar -xzf zizmor.tar.gz zizmor || true; tar -xzf actionlint.tar.gz actionlint || true; } ) 2>/dev/null
-          cd head
+          # The PR head, as the checkout above left it (nothing in this job writes to the working tree).
+          cd "$GITHUB_WORKSPACE"
           # Nothing in the PR configures the judge (root's R4 of #41, B1): zizmor reads no config (--no-config), no
           # ignore comment or rule (--no-ignores), no .gitignore (--collect=all), and fails an input it cannot parse
           # (--strict-collection); actionlint reads only the trusted config above, never .github/actionlint.yaml.

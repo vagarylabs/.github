@@ -1211,6 +1211,7 @@ def _py_local_module(tree: "Tree", importer: str, module: str) -> tuple[str | No
 def _py_reexport(tree: "Tree", target: str, name: str) -> tuple[str | None, str]:
     """What a local module binds `name` to, one hop (the resolver's rule): ("import", canonical) when its one binding
     is a direct import from a covered library, ("client", class) when it is one client construction; else why not."""
+    tree.ensure([target])  # a base tree is materialized lazily: only the blobs a scan reads
     mod = _parse_py(tree.read(target))
     if mod is None:
         return None, f"{target} does not parse"

@@ -207,6 +207,18 @@ class PythonBinding(unittest.TestCase):
                          'def test_x():\n    r.get("u", timeout=5)\n')
         self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
 
+    def test_a_local_reexport_is_read_in_the_base_tree_too(self):
+        """The one-hop read of a local module works on a base tree, which is materialized lazily (a consumer census
+        crashed reading the module before it was fetched)."""
+        t = "s/tests/test_a.py"
+        files = {"s/tests/__init__.py": "", "s/tests/helpers.py": "from asyncio import wait_for\n",
+                 t: "from .helpers import wait_for\n\n\nasync def test_x(c):\n    await wait_for(c, 1)\n",
+                 BL: baseline({t: 1}, trees=[{"glob": "s/tests/**", "min_files": 1}])}
+        base = self.repo.commit(files)
+        self.repo.commit({t: files[t] + "\n# touched\n"})
+        v = self.repo.verdict(base)
+        self.assertEqual((v["problems"], v["counts"]), ([], {t: {C.RULE: 1}}))
+
     def test_a_toml_key_in_any_form_reports_its_line(self):
         """#65 delta L4: an inline table, a dotted key and a quoted key are red at their own line, so a mark reaches."""
         for text, line in (('[project]\nname = "x"\n\n[tool]\npytest = { timeout = 7 }\n', 5),

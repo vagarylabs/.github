@@ -10,9 +10,11 @@
 #         with:
 #           base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 #
-# On pull_request and merge_group the base IS the event's (read from GITHUB_EVENT_PATH); an input that is empty,
-# names another commit or the head is refused, so a workflow edit cannot switch off the base-judged checks. The event
-# is the runner's GITHUB_EVENT_NAME, never an input. ast-grep runs isolated from the consumer's sgconfig.yml.
+# In CI the base IS the event's (GITHUB_EVENT_PATH): pull_request and its review events, pull_request_target and
+# merge_group take the payload's base (an input naming another commit, or the head, is refused); push takes `before`;
+# workflow_dispatch alone takes the input; any other event is refused. So a workflow edit cannot switch off the
+# base-judged checks. The base fetch needs the checkout's persisted credentials (the default). The event is the
+# runner's GITHUB_EVENT_NAME, never an input. ast-grep runs isolated from the consumer's sgconfig.yml.
 #
 # The ast-grep binary is the one release-assets.lock pins (per runner arch), fetched through fetch-release-asset's
 # script and its tool cache. Every run starts with the self-test over fixtures/, so a gutted rule fails the step.

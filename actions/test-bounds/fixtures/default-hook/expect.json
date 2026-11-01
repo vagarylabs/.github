@@ -1,0 +1,38 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 10
+   }
+  ],
+  "launchers": [
+   {
+    "name": "startDb",
+    "module": "unconf/helpers/pg.ts",
+    "hook_floor_ms": 210000
+   }
+  ]
+ },
+ "files": {
+  "unconf/a.test.ts": {
+   "finding": 2,
+   "cleared": 2
+  },
+  "conf/vitest.config.ts": {
+   "cleared": 1
+  },
+  "conf/b.test.ts": {
+   "cleared": 1
+  },
+  "setconf/c.test.ts": {
+   "cleared": 2
+  },
+  "unconf/local.test.ts": {
+   "cleared": 1
+  },
+  "loose/d.test.ts": {
+   "cleared": 1
+  }
+ }
+}

@@ -203,6 +203,46 @@ class ElapsedNotCovered(unittest.TestCase):
             repo.done()
 
 
+class DefaultHook(unittest.TestCase):
+    """K2 default.hook: the hook bound nothing in the tree states (vitest's 10 s default) in a launcher file."""
+
+    def test_the_nearest_vitest_config_decides(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            files = {"pkg/vitest.config.ts": "export default { test: { hookTimeout: 240_000 } };\n",
+                     "pkg/sub/vitest.config.mts": "export default { test: {} }; // hookTimeout: 1 in a comment\n",
+                     "pkg/sub/a.test.ts": "x\n", "pkg/b.test.ts": "x\n", "loose/c.test.ts": "x\n",
+                     "pkg/sub/d.test.ts": "vi.setConfig({ hookTimeout: 300_000 });\n"}
+            for f, text in files.items():
+                (root / f).parent.mkdir(parents=True, exist_ok=True)
+                (root / f).write_text(text)
+            tree = C.Tree(root, sorted(files))
+            self.assertEqual(C.vitest_hook_config(tree, "pkg/sub/a.test.ts"), ("pkg/sub/vitest.config.mts", False),
+                             "the NEAREST config, and a commented hookTimeout sets nothing")
+            self.assertEqual(C.vitest_hook_config(tree, "pkg/b.test.ts"), ("pkg/vitest.config.ts", True))
+            self.assertEqual(C.vitest_hook_config(tree, "pkg/sub/d.test.ts"), ("pkg/sub/vitest.config.mts", True),
+                             "the file's own vi.setConfig counts")
+            self.assertEqual(C.vitest_hook_config(tree, "loose/c.test.ts"), (None, False), "no vitest config: not judged")
+
+    def test_a_default_hook_in_a_launcher_file_is_counted_and_marked_like_any_bound(self):
+        repo = Repo()
+        try:
+            la = [{"name": "startDb", "module": "s/pg.ts", "hook_floor_ms": 210_000}]
+            t = "s/__tests__/a.test.ts"
+            body = ('import { startDb } from "../pg";\nbeforeAll(async () => { await startDb(); }, 210_000);\n'
+                    "afterEach(async () => { await stop(); });\n"
+                    "afterAll(async () => { await stop(); }); // timeout under test: the stop's own 10 s contract\n")
+            repo.commit({"s/vitest.config.ts": "export default { test: {} };\n", "s/pg.ts": "export async function startDb() {}\n",
+                         t: body, BL: baseline({t: 1}, launchers=la)})
+            v = repo.verdict(None)
+            recs = [r for r in v["findings"][t] if r["position"] == "default-hook"]
+            self.assertEqual([(r["line"], r["status"]) for r in recs], [(3, "finding"), (4, "marked")])
+            self.assertEqual(v["counts"], {t: {C.RULE: 1}})
+            self.assertEqual(v["problems"], [])
+        finally:
+            repo.done()
+
+
 class PythonBinding(unittest.TestCase):
     """Root's #65 RC B3: what the binding pass cannot read is listed as NOT COVERED with every run."""
 

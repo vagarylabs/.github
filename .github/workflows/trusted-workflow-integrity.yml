@@ -403,13 +403,54 @@ jobs:
               return tree
 
 
-          def landing_tree(base, head):
-              """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+          def require_attr_source_git():
+              """The version gate (major.minor; 2.43.0 is the floor, so no patch level matters) for `git --attr-source`."""
               have = git_version()
               if have < MERGE_TREE_MIN_GIT:
                   raise IntegrityError("git %d.%d cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= "
                                        "%d.%d): the protected-paths judge cannot compute what the merge lands, and has no "
                                        "merge-base fallback" % (have + MERGE_TREE_MIN_GIT))
+
+
+          # NO MERGE DRIVER ON A BLOCKING PATH (LOW-1, delta2 R4 of .github #69): agreement across the three attribute sources is
+          # the guard above; on top, a `merge` attribute that is SET in any form (merge=<driver>, merge=union, the `binary` macro,
+          # -merge, a bare `merge`) on a blocking path, read from the base's or the head's .gitattributes (any directory level,
+          # plus the runner's own attribute files), FAILS CLOSED by name. How a protected path merges must not be chosen in an
+          # unprotected file. Only paths the repository's profile makes blocking are checked, so other repositories are
+          # unaffected.
+          def blocking_merge_attributes(entry, sources):
+              """[(source label, path, value)] for each blocking path whose `merge` attribute is not unspecified."""
+              paths = sorted(p for p in BLOCKING_PATHS if BLOCKING_CLASS in classes_for(entry, p))
+              if not paths:
+                  return []
+              require_attr_source_git()
+              found = []
+              for label, source in sources:
+                  r = subprocess.run(["git", "--attr-source=" + source, "check-attr", "-z", "merge", "--"] + paths,
+                                     capture_output=True, text=True)
+                  if r.returncode != 0:
+                      raise IntegrityError("git check-attr merge (attributes from %s) failed (exit %d): %s; the judge fails "
+                                           "closed" % (label, r.returncode, r.stderr.strip() or "no message"))
+                  fields = r.stdout.split("\0")
+                  for i in range(0, len(fields) - 2, 3):
+                      path, attr, value = fields[i:i + 3]
+                      if attr == "merge" and value != "unspecified":
+                          found.append((label, path, value))
+              return found
+
+
+          def refuse_blocking_merge_attributes(entry, sources):
+              found = blocking_merge_attributes(entry, sources)
+              if found:
+                  raise IntegrityError("a merge attribute is set on a blocking path (%s). How the signer and the judge's own "
+                                       "files merge must not be chosen in .gitattributes, so the judge fails closed: remove the "
+                                       "attribute (through the door, if the base carries it)"
+                                       % "; ".join("`%s` merge=%s in %s" % (_shown(p), _shown(v), l) for l, p, v in found))
+
+
+          def landing_tree(base, head):
+              """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+              require_attr_source_git()
               trees = [(label, merge_tree(base, head, source, label))
                        for label, source in (("an empty tree", empty_tree()), ("the base", base), ("the head", head))]
               if len({tree for _, tree in trees}) != 1:
@@ -2246,6 +2287,7 @@ jobs:
               if event == "pull_request":
                   judged = live_base(base, base_ref)
                   tree = landing_tree(judged, head)
+                  refuse_blocking_merge_attributes(entry, (("the base", judged), ("the head", head)))
                   bases = len(git("merge-base", "--all", judged, head).split())
                   what = ("Judged: the live tip `%s` of `%s` (the event's base `%s` is its ancestor) against tree `%s`, what "
                           "merging head `%s` into it lands (git merge-tree --write-tree; %d merge base%s)."
@@ -2255,6 +2297,7 @@ jobs:
                       raise IntegrityError("merge group: the base %s is not an ancestor of the group commit %s; the queue lands "
                                            "that commit, so the judge fails closed" % (base, head))
                   judged, tree = base, head
+                  refuse_blocking_merge_attributes(entry, (("the base", base), ("the group commit", head)))
                   what = ("Judged: the merge-group base `%s` against the group commit `%s`'s own tree, what the queue lands (no "
                           "merge computed)." % (base, head))
               else:

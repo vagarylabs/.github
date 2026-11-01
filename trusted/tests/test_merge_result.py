@@ -145,11 +145,13 @@ def old_judge(d, base, head):
 
 
 def old_judge_worktree(d, base, head):
-    """The pre-N1 judge, run in-suite: ONE merge, with .gitattributes read from the working tree."""
+    """The pre-N1 judge, run in-suite: ONE merge, with .gitattributes read from the working tree (and no LOW-1
+    refusal of a merge attribute on a blocking path, which came later)."""
     def landing_from_worktree(b, h):
         out = classify.git("merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", b, h)
         return out.split("\0")[0]
-    with mock.patch.object(classify, "landing_tree", landing_from_worktree):
+    with mock.patch.object(classify, "landing_tree", landing_from_worktree), \
+            mock.patch.object(classify, "blocking_merge_attributes", lambda entry, sources: []):
         return judge(d, base, head)
 
 
@@ -701,6 +703,79 @@ class EscapeTests(Fixture):
         self.assertIn(self.SHOWN, errors[0])
 
 
+class BlockingMergeAttributeTests(Fixture):
+    """LOW-1 (delta2 R4 of .github #69): a `merge` attribute set in any form on a blocking path, in the base's or the
+    head's .gitattributes, fails closed by name, even when the three attribute sources agree (nothing merges there)."""
+    FORMS = ("merge=binary", "binary", "-merge", "merge=union", "merge", "merge=custom-driver")
+    JUDGE_FILE = "trusted/classify.py"
+    REFUSED = "a merge attribute is set on a blocking path"
+
+    def base_with(self, files):
+        return self.r.commit("C0", dict({SIGNER: "signer\n", self.JUDGE_FILE: "X = 1\n", "README.md": "r0\n"},
+                                        **files))
+
+    def test_each_form_on_the_signer_or_a_judge_file_in_the_head_is_red(self):
+        for path in (SIGNER, self.JUDGE_FILE):
+            for form in self.FORMS:
+                with self.subTest(path=path, form=form):
+                    self.tearDown()
+                    self.setUp()
+                    base = self.base_with({})
+                    head = self.r.commit("pr: README and an attribute", {"README.md": "r1\n",
+                                                                         ".gitattributes": "%s %s\n" % (path, form)})
+                    self.r.git("checkout", "-q", "--detach", head)
+                    code, out = self.judge(base, head)
+                    self.assertEqual(code, 2, out)
+                    self.assertIn(self.REFUSED, out)
+                    self.assertIn("`%s` merge=" % path, out)
+                    self.assertIn("in the head", out)
+
+    def test_an_attribute_the_base_carries_or_a_nested_one_is_red(self):
+        cases = {"the base": ({".gitattributes": "%s binary\n" % SIGNER}, {}),
+                 "a nested workflows/.gitattributes": ({}, {".github/workflows/.gitattributes":
+                                                            "*.yml merge=binary\n"}),
+                 "a nested trusted/.gitattributes": ({}, {"trusted/.gitattributes": "classify.py -merge\n"})}
+        for name, (in_base, in_head) in cases.items():
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                base = self.base_with(in_base)
+                head = self.r.commit("pr", dict({"README.md": "r1\n"}, **in_head))
+                code, out = self.judge(base, head)
+                self.assertEqual(code, 2, out)
+                self.assertIn(self.REFUSED, out)
+                self.assertIn("in the base" if in_base else "in the head", out)
+
+    def test_an_attribute_on_an_unrelated_path_or_an_unspecified_one_stays_green(self):
+        for attrs in ("README.md merge=union\n", "*.png binary\n", "%s !merge\n" % SIGNER):
+            with self.subTest(attrs=attrs):
+                self.tearDown()
+                self.setUp()
+                base = self.base_with({})
+                head = self.r.commit("pr", {"README.md": "r1\n", ".gitattributes": attrs})
+                code, out = self.judge(base, head)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn(self.REFUSED, out)
+
+    def test_a_repository_without_blocking_paths_is_not_checked(self):
+        base = self.base_with({})
+        head = self.r.commit("pr", {"README.md": "r1\n", ".gitattributes": "%s merge=binary\n" % SIGNER})
+        code, out = judge(self.r.d, base, head, repo="vagarylabs/vps-ansible")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn(self.REFUSED, out)
+
+    def test_a_group_commit_carrying_the_attribute_is_red(self):
+        base = self.base_with({})
+        self.r.branch("pr", base)
+        head = self.r.commit("pr", {"README.md": "r1\n", ".gitattributes": "%s merge=binary\n" % SIGNER})
+        self.r.branch("gh-readonly-queue/main/pr-1", base)
+        group = self.r.merge(head, "Merge pull request #1")
+        code, out = judge(self.r.d, base, group, event="merge_group", base_ref=None, live=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn(self.REFUSED, out)
+        self.assertIn("in the group commit", out)
+
+
 class MergeGroupTests(Fixture):
     """Root's D2 direction: the binding judge runs in a merge queue. On merge_group the group commit IS what lands, so
     its own tree is classified against the queue base and no merge is computed."""
@@ -742,7 +817,12 @@ class MergeGroupTests(Fixture):
         base, head = build_p8(self.r, {".gitattributes": "%s merge=binary\n" % SIGNER})
         group = self.group_commit(base, head)
         self.assertEqual(self.r.git("show", "%s:%s" % (group, SIGNER)) + "\n", EVIL)  # what the queue lands
+        # LOW-1 refuses the attribute itself by name; without that refusal the group tree is still classified RED
         code, out = self.judge_group(base, group)
+        self.assertEqual(code, 2, out)
+        self.assertIn("a merge attribute is set on a blocking path", out)
+        with mock.patch.object(classify, "blocking_merge_attributes", lambda entry, sources: []):
+            code, out = self.judge_group(base, group)
         self.assertEqual(code, 1, out)
         self.assertIn("- `%s` M (authority-binding, ci-judge)" % SIGNER, out)
 

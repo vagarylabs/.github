@@ -120,12 +120,18 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - An untouched file is judged against the committed counts, which may not rise against the base's, with ONE
   exception (K2 D8, root 11-01 and the #68 review): a pin bump may lock in debt that more detection found, when all
   of these hold:
-  1. the change moves the consumer's pin of this check. In Actions, the running job's one step `uses:` of
-     `vagarylabs/.github/actions/test-bounds@<sha>` must be the running action's own ref (read from where the
-     runner put it) and must differ from that job's pin at the base. Comments, `run:` bodies and other jobs or
-     workflows are not read. A pin form this reader misses fails SAFE: no lock-in, so the pin bump stays red until
-     its findings are fixed. Outside Actions (`write-baseline`), every job's pins at the base and head are compared,
-     and CI then judges the strict form;
+  1. the change is a DETECTION change: BOTH
+     - (a) the change moves the consumer's pin of this check. In Actions, the running job's one step `uses:` of
+       `vagarylabs/.github/actions/test-bounds@<sha>` must be the running action's own ref (read from where the
+       runner put it) and must differ from that job's pin at the base. Comments, `run:` bodies and other jobs or
+       workflows are not read. The running workflow and job are the runner's `GITHUB_WORKFLOW_REF` and
+       `GITHUB_JOB` (GitHub documents that a step cannot overwrite `GITHUB_*` through `$GITHUB_ENV`), and they must
+       equal the `github` context the action passes in (`TB_CTX_*`, an expression no step can write). In Actions, a
+       context that cannot be read locks nothing in. Outside Actions (`write-baseline`), every job's pins at the
+       base and head are compared, and CI then judges the strict form;
+     - (b) the base baseline's recorded `check_digest` is not the running check's. A pin move to a commit whose
+       check detects identically locks nothing in. A base baseline with no digest was written by a check from
+       before digests, so it differs;
   2. the file is byte-identical at the base (its base blob against the file the scan read), and the BASE TREE,
      scanned with the running check under the BASE's own configuration (its launchers and their floors), holds the
      same findings: the same count and the same identities (line, position, kind, value). So a change elsewhere
@@ -134,6 +140,13 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
   3. the raise goes to EXACTLY that count (committed = base tree = head);
   4. every raised (file, rule) is listed ("Debt locked in by a detection change" in the summary, `DEBT LOCKED IN` in
      the log, `locked_in` in the findings JSON).
+
+  Fail-safe false reds, for adopters: a form guard 1 cannot prove locks nothing in, so the pin bump stays red until
+  its findings are fixed (or fixed and then locked by a bump guard 1 can read). These are:
+  - a tag pin (`@v1`): the runner's path names the tag, not a commit;
+  - a pin bump inside a reusable workflow: `GITHUB_WORKFLOW_REF` names the caller, whose jobs do not hold the step;
+  - the action run from a workspace checkout (`uses: ./...`);
+  - renaming the running job in the same change.
 
   `write-baseline --base` writes such a raise. Any other raise is red.
 - A baseline names the check that wrote it: `check_digest`, the digest of check.py, rules/, the scope globs and the

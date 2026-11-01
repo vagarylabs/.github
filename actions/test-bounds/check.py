@@ -103,6 +103,8 @@ RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": J
               "python": ("literal-bound.py.yml", "elapsed-assert.py.yml")}
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
+# A poll loop's mark may sit on the loop's own first line, as well as on its budget's line.
+SMALL_MATCH |= {"poll"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
 # A mark clears only with a reason: at least one word of three letters ("..." or "x" is not a reason).
 REASON = re.compile(r"[A-Za-z]{3,}")
@@ -131,7 +133,11 @@ COVERED = {
           "helper (one hop)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
-    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
+    "poll loops": "a counted loop (`for (let i = 0; i < N; i++)`, py `for _ in range(N)`) that sleeps a fixed interval "
+                  "and can exit early, judged by N x interval; a deadline loop (`now - start < D`, or `now < deadline` "
+                  "with `deadline = now + D`), judged by D. A budget that is a parameter of the enclosing function is "
+                  "not judged here",
+    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, kill-timer caps and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -817,9 +823,10 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     # Names to resolve, and the files that read them.
     need = {}
     for m in bounds + elapsed:
-        text = m["metaVariables"]["single"]["V"]["text"].strip()
-        if NAME.match(text):
-            need.setdefault(m["file"], set()).add(text)
+        for var in ("V", "N"):
+            text = m["metaVariables"]["single"].get(var, {}).get("text", "").strip()
+            if NAME.match(text):
+                need.setdefault(m["file"], set()).add(text)
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
     resolved = _resolve_all(tree, need)
@@ -852,6 +859,15 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        count = m["metaVariables"]["single"].get("N")
+        if count is not None:  # a counted poll loop: its budget is iterations x interval
+            n_text = count["text"].strip()
+            n, n_why = _value_of(n_text, lang, f, resolved)
+            rec["value"] = re.sub(r"\s+", " ", f"{n_text} x {text}")[:120]
+            if n is None or value is None:
+                value, why = None, f"budget {n_text} x {text}: " + (n_why if n is None else why)
+            else:
+                value, why = n * value, f"budget {n_text} x {text} = {_fmt(n * value)} ({n_why}; {why})"
         if value is not None and value >= floor:
             rec["status"], rec["reason"] = "cleared", (rec["reason"] + "; " if rec["reason"] else "") + why
         else:

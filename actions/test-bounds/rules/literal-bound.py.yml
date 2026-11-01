@@ -39,6 +39,52 @@ utils:
         - { kind: list_splat }
         - { kind: dictionary_splat }
         - { kind: comment }
+  # Poll loops (K2 step 2C, B; see literal-bound.yml): `for _ in range(N)` whose body sleeps a fixed V seconds
+  # (time.sleep / asyncio.sleep) and can exit early (break or return) has the budget N x V. A deadline loop's budget is
+  # D, from `now - t0 < D`, or from `now < deadline` with `deadline = now + D` in a preceding statement. A budget that
+  # is a parameter of the enclosing function is judged where it is declared.
+  poll-boundary: { any: [{ kind: function_definition }, { kind: lambda }, { kind: class_definition }] }
+  poll-def: { any: [{ kind: function_definition }, { kind: class_definition }, { kind: decorated_definition }] }
+  py-sleep:
+    any:
+      - all: [{ kind: call }, { has: { field: function, regex: "^(?:time\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } } }]
+      - all: [{ kind: await }, { has: { kind: call, all: [{ has: { field: function, regex: "^(?:asyncio\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } } }] } }]
+  py-exit: { any: [{ kind: break_statement }, { kind: return_statement }] }
+  py-now:
+    any:
+      - pattern: time.monotonic()
+      - pattern: time.time()
+      - pattern: time.perf_counter()
+      - pattern: monotonic()
+      - pattern: perf_counter()
+      - pattern: loop.time()
+  py-now-plus:
+    kind: binary_operator
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: py-now } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }]
+          - all: [{ has: { field: left, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }, { has: { field: right, matches: py-now } }]
+  py-deadline-binding: { kind: assignment, all: [{ has: { field: left, pattern: $D } }, { has: { field: right, matches: py-now-plus } }] }
+  py-deadline-test:
+    kind: comparison_operator
+    all:
+      - not: { has: { nthChild: 3 } }
+      - has: { field: operators, regex: "^<=?$" }
+      - any:
+          - all: [{ has: { nthChild: 1, kind: binary_operator, all: [{ has: { field: operator, regex: "^-$" } }, { has: { field: left, matches: py-now } }] } }, { has: { nthChild: 2, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }]
+          - all:
+              - has: { nthChild: 1, matches: py-now }
+              - has: { nthChild: 2, kind: identifier, pattern: $D }
+              - inside: { stopBy: end, follows: { stopBy: end, not: { matches: poll-def }, has: { stopBy: { matches: poll-boundary }, matches: py-deadline-binding } } }
+  py-param-budget:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, pattern: $V } } }
+  py-param-count:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, pattern: $N } } }
 ---
 id: literal-bound.keyword.subprocess
 language: python
@@ -164,3 +210,18 @@ rule:
         - has: { field: name, regex: "^timeout$" }
         - has: { field: value, pattern: $V, matches: bound-value }
       inside: { kind: argument_list, inside: { kind: call, has: { field: function, regex: "^pytest\\.mark\\.timeout$" } } }
+---
+# A poll loop's budget (K2 step 2C, B): N x V for `for _ in range(N)`, V for a deadline loop.
+id: literal-bound.poll.condition
+language: python
+rule:
+  all:
+    - any:
+        - kind: for_statement
+          all:
+            - has: { field: right, kind: call, all: [{ has: { field: function, regex: "^range$" } }, { has: { field: arguments, all: [{ has: { nthChild: 1, all: [{ pattern: $N }, { not: { matches: py-param-count } }] } }, { not: { has: { nthChild: 2 } } }] } }] }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: py-sleep } }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: py-exit } }
+        - all:
+            - kind: while_statement
+            - has: { field: condition, any: [{ matches: py-deadline-test }, { has: { stopBy: end, matches: py-deadline-test } }] }

@@ -97,6 +97,70 @@ utils:
       - { kind: identifier, matches: subprocess-name }
       - { kind: member_expression, has: { field: property, matches: subprocess-name } }
   bound-name: { kind: identifier, regex: "(?i)timeout|deadline|budget" }
+  # Poll loops (K2 step 2C, B): a loop that re-checks a condition between fixed sleeps is judged by its BUDGET, never
+  # by its step. A counted loop (`for (let i = 0; i < N; i++)`) whose body awaits one fixed sleep ($V ms) and can exit
+  # early (break or return) has the budget N x V. A deadline loop's budget is D, from `now - start < D`, or from
+  # `now < deadline` with `deadline = now + D` in a preceding statement. A budget that is a parameter of the
+  # enclosing function is judged where it is declared (its default is literal-bound.default.condition), not here.
+  poll-boundary:
+    any:
+      - kind: arrow_function
+      - kind: function_expression
+      - kind: function_declaration
+      - kind: generator_function
+      - kind: generator_function_declaration
+      - kind: method_definition
+      - kind: class_declaration
+      - kind: class
+  poll-def: { any: [{ kind: function_declaration }, { kind: generator_function_declaration }, { kind: class_declaration }] }
+  timer-call:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:(?:window|globalThis)\\.)?setTimeout$" }
+      - has: { field: arguments, has: { nthChild: 2, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }
+  fixed-sleep:
+    kind: await_expression
+    has:
+      any:
+        - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:sleep|delay|wait|pause)$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: param-budget } }] } } }]
+        - all:
+            - kind: new_expression
+            - has: { field: constructor, regex: "^Promise$" }
+            - has: { field: arguments, has: { nthChild: 1, kind: arrow_function, has: { field: body, any: [{ matches: timer-call }, { has: { stopBy: end, matches: timer-call } }] } } }
+  early-exit: { any: [{ kind: break_statement }, { kind: return_statement }] }
+  poll-now: { any: [{ pattern: Date.now() }, { pattern: performance.now() }] }
+  counter-test:
+    kind: binary_expression
+    all: [{ has: { field: left, pattern: $I } }, { has: { field: operator, regex: "^<$" } }, { has: { field: right, all: [{ pattern: $N }, { not: { matches: param-count } }] } }]
+  now-plus:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: poll-now } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }]
+          - all: [{ has: { field: left, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }, { has: { field: right, matches: poll-now } }]
+  deadline-binding:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $D } }, { has: { field: value, matches: now-plus } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $D } }, { has: { field: right, matches: now-plus } }]
+  deadline-test:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^<=?$" }
+      - any:
+          - all: [{ has: { field: left, kind: binary_expression, all: [{ has: { field: operator, regex: "^-$" } }, { has: { field: left, matches: poll-now } }] } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }]
+          - all:
+              - has: { field: left, matches: poll-now }
+              - has: { field: right, kind: identifier, pattern: $D }
+              - inside: { stopBy: end, follows: { stopBy: end, not: { matches: poll-def }, has: { stopBy: { matches: poll-boundary }, matches: deadline-binding } } }
+  param-budget:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, matches: poll-boundary, any: [{ has: { field: parameters, has: { stopBy: end, pattern: $V } } }, { has: { field: parameter, pattern: $V } }] }
+  param-count:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, matches: poll-boundary, any: [{ has: { field: parameters, has: { stopBy: end, pattern: $N } } }, { has: { field: parameter, pattern: $N } }] }
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
 id: literal-bound.option.case
@@ -262,3 +326,22 @@ rule:
         - has: { field: key, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout|\"(?:connectionTimeoutMillis|statement_timeout|query_timeout)\"|'(?:connectionTimeoutMillis|statement_timeout|query_timeout)')$" }
         - has: { field: value, pattern: $V, matches: bound-value }
     - { kind: shorthand_property_identifier, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout)$", pattern: $V }
+---
+# A poll loop's budget (K2 step 2C, B): N x V for a counted loop, V for a deadline loop (see the poll utils).
+id: literal-bound.poll.condition
+language: typescript
+rule:
+  all:
+    - any:
+        - kind: for_statement
+          all:
+            - has: { field: initializer, any: [{ kind: lexical_declaration }, { kind: variable_declaration }], has: { kind: variable_declarator, all: [{ has: { field: name, pattern: $I } }, { has: { field: value, regex: "^0$" } }] } }
+            - has: { field: condition, any: [{ matches: counter-test }, { has: { stopBy: end, matches: counter-test } }] }
+            - has: { field: increment, any: [{ pattern: $I++ }, { pattern: ++$I }, { pattern: $I += 1 }] }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: fixed-sleep } }
+            - any:
+                - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: early-exit } }
+                - has: { field: condition, kind: binary_expression, has: { field: operator, regex: "^&&$" } }
+        - all:
+            - any: [{ kind: while_statement }, { kind: do_statement }, { kind: for_statement }]
+            - has: { field: condition, any: [{ matches: deadline-test }, { has: { stopBy: end, matches: deadline-test } }] }

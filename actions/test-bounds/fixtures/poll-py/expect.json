@@ -1,0 +1,18 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 2
+   }
+  ]
+ },
+ "files": {
+  "test_red.py": {
+   "finding": 5
+  },
+  "test_green.py": {
+   "cleared": 2
+  }
+ }
+}

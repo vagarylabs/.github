@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import configparser
 import json
 import os
 import posixpath
@@ -86,7 +87,8 @@ CHECK_ID = "vagarylabs/.github/actions/test-bounds"
 BASELINE_PATH = ".github/test-bounds.baseline.json"
 RULE = "literal-bound"
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
-FLOORS_S = {"case": 120, "hook": 240, "condition": 60, "subprocess": 120}
+# fixture: a test fixture's client timeout (PostgreSQL connect/pool), at vagary-core #949's 120 s readiness floor.
+FLOORS_S = {"case": 120, "hook": 240, "condition": 60, "subprocess": 120, "fixture": 120}
 LANGUAGE_OF = {".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "tsx",
                ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript", ".py": "python"}
 UNIT = {"typescript": 1000, "tsx": 1000, "javascript": 1000, "python": 1}
@@ -109,14 +111,22 @@ COVERED = {
                  "processes by name or through an aliased import, destructured require or promisify, any other call); "
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
-                 "hookTimeout and teardownTimeout properties",
-    "py": "subprocess timeouts only: `timeout=` of run/check_output/check_call/call/Popen/communicate/wait, "
-          "wait(N), communicate(input, N), and a `timeout` parameter default",
-    "not yet (K2 step 2)": "asyncio.wait_for and pool/connect timeouts, pytest-timeout and ini defaults, fixed "
-                           "flushes, sleep-as-wait, elapsed-time asserts",
+                 "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
+                 "statement_timeout, query_timeout)",
+    "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
+          "communicate(input, N), a `timeout` parameter default); asyncio.wait_for and asyncio.timeout; thread and "
+          "process join(timeout); PostgreSQL client timeouts; HTTP client timeout= (urlopen, requests, httpx); "
+          "pytest.mark.timeout",
+    "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
+                     "pyproject.toml (when a tree covers the file)",
+    "not yet (K2 step 2)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows, elapsed-time "
+                           "asserts",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+# pytest's own config files, read in Python (ast-grep does not parse INI or TOML): pytest-timeout's `timeout` default,
+# and `--timeout` in `addopts`, are case bounds. The section each file keeps pytest's options in (pyproject: TOML).
+PYTEST_CONFIGS = {"pytest.ini": "pytest", "tox.ini": "pytest", "setup.cfg": "tool:pytest", "pyproject.toml": None}
 JS_TWIN = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 NAME = re.compile(r"^[A-Za-z_$][\w$]*$")
 # Child-process launchers, by module, for resolving an aliased callee (rules/literal-bound.yml names them directly).
@@ -438,7 +448,8 @@ class Scope:
         return any(rx.match(path) for _, rx, _ in self.trees) and not any(rx.match(path) for rx in self.exclude)
 
     def scanned(self, path: str) -> bool:
-        return self.covers(path) and posixpath.splitext(path)[1] in LANGUAGE_OF
+        return self.covers(path) and (posixpath.splitext(path)[1] in LANGUAGE_OF
+                                      or posixpath.basename(path) in PYTEST_CONFIGS)
 
 
 # --- JS/TS resolution (one hop, four guards) ---------------------------------------------------------------------
@@ -705,6 +716,8 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     A record: {line, rule, position, kind, value, status, reason, mark}. status "finding" counts against the
     baseline; "cleared" carries the proof in reason; "marked" carries the mark's reason."""
     tree.ensure(files)
+    configs = [f for f in files if posixpath.basename(f) in PYTEST_CONFIGS]
+    files = [f for f in files if posixpath.splitext(f)[1] in LANGUAGE_OF]
     by_lang = {}
     for f in files:
         by_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
@@ -808,10 +821,78 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
             unparsable.setdefault((f, 0), "CPython cannot parse it")
+    for f in configs:
+        recs, why = pytest_config_bounds(tree.read(f), posixpath.basename(f))
+        if why:
+            unparsable.setdefault((f, 0), why)
+        if recs:
+            findings.setdefault(f, []).extend(recs)
     bad = {f for f, _ in unparsable}
     return {"findings": findings, "marks": marks,
             "unparsable": sorted((f, ln, why) for (f, ln), why in unparsable.items()),
             "recovered": sorted((f, ln) for f, ln in errors if f not in bad)}
+
+
+def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
+    """(records, unparsable reason) for one pytest config file: its `timeout` option and any `--timeout` in addopts,
+    judged as case bounds in seconds. A file that does not parse is unparsable, never clean."""
+    floor = FLOORS_S["case"]
+    if name == "pyproject.toml":
+        try:
+            import tomllib
+        except ImportError:
+            return [], "tomllib is unavailable (Python < 3.11), so the check cannot read pyproject.toml"
+        try:
+            data = tomllib.loads(text)
+        except (tomllib.TOMLDecodeError, ValueError):
+            return [], "not valid TOML"
+        opts = ((data.get("tool") or {}).get("pytest") or {}).get("ini_options") or {}
+        section = "tool.pytest.ini_options"
+        items = {k: v if isinstance(v, str) else (" ".join(v) if isinstance(v, list) else str(v)) for k, v in opts.items()}
+    else:
+        cp = configparser.ConfigParser(interpolation=None)
+        try:
+            cp.read_string(text)
+        except configparser.Error as e:
+            return [], f"not a valid INI file ({type(e).__name__})"
+        section = PYTEST_CONFIGS[name]
+        items = dict(cp.items(section)) if cp.has_section(section) else {}
+    lines = text.splitlines()
+
+    def line_of(key: str) -> int:
+        current = None
+        for i, line in enumerate(lines, 1):
+            head = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+            if head:
+                current = head.group(1).strip().strip('"')
+            elif current == section and re.match(rf"\s*{re.escape(key)}\s*[=:]", line):
+                return i
+        return 0
+
+    values = []
+    if "timeout" in items:
+        values.append((line_of("timeout"), items["timeout"]))
+    for m in re.finditer(r"--timeout(?:=|\s+)(\S+)", items.get("addopts", "")):
+        values.append((line_of("addopts"), m.group(1)))
+    out = []
+    for ln, raw in values:
+        source_line = lines[ln - 1] if 0 < ln <= len(lines) else ""
+        value_text = re.split(r"\s[#;]", raw, 1)[0].strip().strip('"\'')
+        v = evaluate_py(value_text)
+        rec = {"line": ln, "rule": RULE, "position": "ini", "kind": "case", "value": value_text[:120], "floor": floor,
+               "status": "finding", "reason": "", "mark": None}
+        if v is not None and v >= floor:
+            rec["status"], rec["reason"] = "cleared", f"pytest-timeout default {value_text} = {_fmt(v)}"
+        else:
+            rec["reason"] = (f"pytest-timeout default {value_text} = {_fmt(v)}, below the floor {floor}" if v is not None
+                             else f"pytest-timeout default `{value_text}` is not an exact number")
+            mk = MARK.search(source_line)
+            if mk:
+                rec["mark"] = mk.group("why").strip()
+                if REASON.search(rec["mark"]):
+                    rec["status"] = "marked"
+        out.append(rec)
+    return out, None
 
 
 def _value_of(text: str, lang: str, file: str, resolved: dict) -> tuple[Fraction | None, str]:
@@ -1186,7 +1267,7 @@ def self_test(verbose: bool = False) -> list[str]:
         for f, recs in res["findings"].items():
             c = Counter(r["status"] for r in recs)
             got[f] = {k: c[k] for k in ("finding", "cleared", "marked") if c[k]}
-            covered.update((LANGUAGE_OF[posixpath.splitext(f)[1]], f"{r['rule']}.{r['position']}.{r['kind']}")
+            covered.update((LANGUAGE_OF.get(posixpath.splitext(f)[1], "config"), f"{r['rule']}.{r['position']}.{r['kind']}")
                            for r in recs if r["status"] == "finding")
         want = {f: {k: v for k, v in c.items() if v} for f, c in spec.get("files", {}).items()}
         if got != want:

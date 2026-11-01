@@ -565,7 +565,7 @@ class Cli(unittest.TestCase):
             ok = run("check")
             self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
             self.assertIn("2 finding(s) counted", ok.stdout)
-            self.assertIn("covered (py): subprocess timeouts only", ok.stdout, "coverage is printed, never implied")
+            self.assertIn("covered (py): subprocess timeouts", ok.stdout, "coverage is printed, never implied")
             self.assertIn("UNSCANNED:", ok.stdout)
             bad = run("check", "--base", "not-a-sha")
             self.assertEqual(bad.returncode, 2, bad.stdout)

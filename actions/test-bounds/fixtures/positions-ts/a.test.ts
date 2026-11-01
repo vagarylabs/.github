@@ -10,3 +10,4 @@ const config = { testTimeout: 3_000, hookTimeout: 4_000 };
 child_process.spawnSync("x", [], { timeout: 7_000 });
 it.concurrent("y2", async () => {}, 4_500);
 vi.waitFor(() => true, { "timeout": 3_500 });
+const pool = new Pool({ connectionTimeoutMillis: 5_000 });

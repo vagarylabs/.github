@@ -250,3 +250,15 @@ rule:
         - has: { field: key, regex: "^(?:hookTimeout|teardownTimeout|\"hookTimeout\"|\"teardownTimeout\"|'hookTimeout'|'teardownTimeout')$" }
         - has: { field: value, pattern: $V, matches: bound-value }
     - { kind: shorthand_property_identifier, regex: "^(?:hookTimeout|teardownTimeout)$", pattern: $V }
+---
+# A PostgreSQL client's connection/statement/query timeout option (node-postgres; vagary-core #949's JS_MS_KEYS),
+# in any object (new Pool({...}), a config literal): the fixture floor.
+id: literal-bound.client.fixture
+language: typescript
+rule:
+  any:
+    - kind: pair
+      all:
+        - has: { field: key, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout|\"(?:connectionTimeoutMillis|statement_timeout|query_timeout)\"|'(?:connectionTimeoutMillis|statement_timeout|query_timeout)')$" }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - { kind: shorthand_property_identifier, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout)$", pattern: $V }

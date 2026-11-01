@@ -71,6 +71,13 @@ value. The rules are in `rules/`.
 | `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait | 120 s |
 | `literal-bound.positional.subprocess` | py | `wait(N)`, `communicate(input, N)` | 120 s |
 | `literal-bound.default.subprocess` | py | a `timeout` parameter default | 120 s |
+| `literal-bound.client.fixture` | ts tsx js py | a PostgreSQL client's timeout: node-postgres `connectionTimeoutMillis` / `statement_timeout` / `query_timeout`; asyncpg / psycopg / psycopg_pool connect and pool `timeout` / `connect_timeout` / `command_timeout` | 120 s (`fixture`) |
+| `literal-bound.wait.condition` | py | `asyncio.wait_for(aw, N)` / `wait_for(aw, timeout=N)` | 60 s |
+| `literal-bound.timeout-ctx.condition` | py | `asyncio.timeout(N)`, `async_timeout.timeout(N)` | 60 s |
+| `literal-bound.join.subprocess` | py | a thread or process `.join(N)` (a positional numeric literal; `str.join` takes names) or `.join(timeout=N)` | 120 s |
+| `literal-bound.http.condition` | py | `timeout=` of urlopen, requests.*, httpx.* (and httpx clients) | 60 s |
+| `literal-bound.mark.case` | py | `@pytest.mark.timeout(N)` | 120 s |
+| `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`) and pyproject.toml (`[tool.pytest.ini_options]`), read in Python; a file that does not parse is unparsable | 120 s |
 
 Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not
 yet covered, and due in K2 step 2: Python `asyncio.wait_for` and pool/connect timeouts, pytest-timeout and ini

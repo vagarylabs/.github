@@ -9,7 +9,7 @@
  },
  "files": {
   "a.test.ts": {
-   "finding": 12
+   "finding": 13
   },
   "b.test.mts": {
    "finding": 1

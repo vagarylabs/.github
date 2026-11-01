@@ -115,15 +115,24 @@ COVERED = {
                  "statement_timeout, query_timeout)",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
           "communicate(input, N), a `timeout` parameter default); thread and process join (a positional name or "
-          "arithmetic only when it resolves to a number, since str.join takes one). Read by binding, so through "
-          "`import x as y`, `from x import y` and a client instance (`s = requests.Session()`, `with httpx.Client() "
-          "as c`, `self.s = ...`, `requests.Session().get`): asyncio.wait_for, asyncio.wait and asyncio.timeout, "
+          "arithmetic only when it resolves to a number, since str.join takes one). Read by binding, with Python's "
+          "scoping (the nearest enclosing scope that binds a name decides): `import x as y`, `from x import y` (in any "
+          "scope), a star import of a covered module, a re-export from a local module (one hop), a submodule or "
+          "vendored spelling (`requests.api.get`, `asyncio.tasks.wait_for`), and a client instance (an assignment, "
+          "an annotated assignment, a walrus, `with ... as c`, a class body or `self.s = ...`, "
+          "`requests.Session().get`, one a local module builds): asyncio.wait_for, asyncio.wait and asyncio.timeout, "
           "async_timeout.timeout (condition); urllib.request.urlopen and the requests/httpx functions, Session and "
           "Client methods and constructors, each element of a `timeout=(connect, read)` tuple (condition); "
           "asyncpg, psycopg, psycopg2 and psycopg_pool timeout/connect_timeout/command_timeout (fixture); "
-          "pytest.mark.timeout (case). A literal 0 is \"no limit\" for pytest-timeout and the PostgreSQL clients. "
-          "A covered call whose bound may come through a `**` splat, or whose name two imports bind differently, "
-          "is listed as NOT COVERED",
+          "pytest.mark.timeout (case). A literal 0 is \"no limit\" only for pytest-timeout and libpq's "
+          "connect_timeout (psycopg, psycopg2); asyncpg's and psycopg_pool's 0 is an instant timeout, a finding. "
+          "NOT COVERED, listed per call: a bound that may come through a `*` or `**` splat; a name an import and "
+          "another binding share in one scope, or a declared global/nonlocal; a covered name imported from a local "
+          "module one hop cannot read, or possibly bound by another module's star import; a call into a covered "
+          "library this check does not read, or one reached through getattr, importlib.import_module or "
+          "functools.partial; any aiohttp call with a bound keyword (aiohttp is not read yet). NOT READ, and not "
+          "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
+          "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",
@@ -138,9 +147,11 @@ JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 # `[tool.pytest]` table in pyproject.toml beside the legacy `[tool.pytest.ini_options]` (root's #65 RC B1).
 PYTEST_CONFIGS = {"pytest.ini": "pytest", ".pytest.ini": "pytest", "tox.ini": "pytest", "setup.cfg": "tool:pytest",
                   "pyproject.toml": None, "pytest.toml": None, ".pytest.toml": None}
-# Positions where a literal 0 means "no limit" (pytest-timeout, libpq/psycopg, node-postgres): compliant, not a bound
-# (root's #65 RC L1). A NAME resolving to 0 is still judged.
-ZERO_IS_NONE = {"mark", "client", "ini"}
+# JS/TS positions where a literal 0 means "no limit" (node-postgres' connectionTimeoutMillis, statement_timeout and
+# query_timeout): compliant, not a bound (root's #65 RC L1). Python marks each such value in the binding pass
+# (pytest.mark.timeout, libpq's connect_timeout: LIBPQ_CONNECT), and the pytest config reader skips its own. A NAME
+# resolving to 0 is still judged.
+ZERO_IS_NONE = {"client"}
 JS_TWIN = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 NAME = re.compile(r"^[A-Za-z_$][\w$]*$")
 # Child-process launchers, by module, for resolving an aliased callee (rules/literal-bound.yml names them directly).
@@ -822,7 +833,8 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
-        if position in ZERO_IS_NONE and value == 0 and not NAME.match(text):
+        if (m.get("zero_is_none") or (lang != "python" and position in ZERO_IS_NONE)) and value == 0 \
+                and not NAME.match(text):
             continue  # a literal 0 is "no limit" here
         if position == "join" and value is None and not re.match(r"\s*timeout\s*=", m.get("text", "")):
             continue  # a positional name or expression that is not a number is str.join's argument, not a bound
@@ -893,12 +905,17 @@ def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
     lines = text.splitlines()
 
     def line_of(section: str, key: str) -> int:
-        current = None
+        """The key's line under its section header, quoted or not; else (TOML's inline table `pytest = { timeout = 7
+        }` or dotted key `tool.pytest.timeout = 8`) the first line that assigns it in any form (#65 delta L4)."""
+        current, k = None, re.escape(key)
         for i, line in enumerate(lines, 1):
             head = re.match(r"\s*\[([^\]]+)\]\s*$", line)
             if head:
                 current = head.group(1).strip().strip('"')
-            elif current == section and re.match(rf"\s*{re.escape(key)}\s*[=:]", line):
+            elif current == section and re.match(rf"\s*[\"']?{k}[\"']?\s*[=:]", line):
+                return i
+        for i, line in enumerate(lines, 1):
+            if re.search(rf"(?:^|[\s{{,.])[\"']?{k}[\"']?\s*=", line):
                 return i
         return 0
 
@@ -958,22 +975,203 @@ PY_CALLS = {
 PY_BOUND_RULES = (f"{RULE}.wait.condition", f"{RULE}.timeout-ctx.condition", f"{RULE}.http.condition",
                   f"{RULE}.http-tuple.condition", f"{RULE}.client.fixture", f"{RULE}.mark.case")
 CLIENT_CTORS = {"requests.Session": "requests.Session", "requests.session": "requests.Session",
-                "httpx.Client": "httpx.Client", "httpx.AsyncClient": "httpx.AsyncClient"}
+                "httpx.Client": "httpx.Client", "httpx.AsyncClient": "httpx.AsyncClient",
+                # seen, not read yet: its calls with a bound keyword are listed NOT COVERED (#65 delta INFO-1)
+                "aiohttp.ClientSession": "aiohttp.ClientSession"}
 
 
-def _py_imports(module: ast.Module) -> dict[str, set[str]]:
-    """local name -> every dotted name an import binds it to."""
-    seen = {}
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import):
+# The libraries this check reads calls of, and aiohttp, which it sees but does not read yet (its bound is a
+# ClientTimeout): a call into one with a bound keyword that the binding pass cannot read is listed, never dropped.
+PY_LIBRARIES = {k.split(".")[0] for k in [*PY_CALLS, *CLIENT_CTORS]} | {"aiohttp"}
+PY_BOUND_KEYWORDS = {kw for *_, kws in PY_CALLS.values() for kw in kws}
+PY_LEAVES = {k.rsplit(".", 1)[1] for k in [*PY_CALLS, *CLIENT_CTORS]}
+# libpq waits forever on connect_timeout = 0, so a literal 0 there is no bound. asyncpg's and psycopg_pool's `timeout`
+# of 0 is an INSTANT timeout, and asyncpg's command_timeout=0 is refused, so those stay findings (#65 delta L1).
+LIBPQ_CONNECT = {"psycopg.connect", "psycopg2.connect", "psycopg.Connection.connect", "psycopg.AsyncConnection.connect"}
+# A submodule or vendored spelling of a covered callable (`requests.api.get`, `asyncio.tasks.wait_for`).
+PY_SPELLINGS = (("pip._vendor.requests", "requests"), ("requests.api", "requests"), ("requests.sessions", "requests"),
+                ("asyncio.tasks", "asyncio"), ("asyncio.timeouts", "asyncio"), ("httpx._api", "httpx"),
+                ("httpx._client", "httpx"))
+
+
+def _py_canonical(dotted: str) -> str:
+    for old, new in PY_SPELLINGS:
+        if dotted == old or dotted.startswith(old + "."):
+            return new + dotted[len(old):]
+    return dotted
+
+
+def _py_star_leaves(module_name: str) -> dict[str, str]:
+    """leaf -> canonical name, for each covered callable or client class a star import of `module_name` binds."""
+    out = {}
+    for k in [*PY_CALLS, *CLIENT_CTORS]:
+        head, _, leaf = k.rpartition(".")
+        if head == _py_canonical(module_name):
+            out[leaf] = k
+    return out
+
+
+def _py_local_module(tree: "Tree", importer: str, module: str) -> tuple[str | None, int]:
+    """The one file an absolute import of a LOCAL module names, from the repository root or the importer's directory
+    (a test's own helpers); (None, 0) when it is not local, (None, n) when n files match."""
+    stems = {posixpath.join(*module.split(".")), posixpath.join(posixpath.dirname(importer), *module.split("."))}
+    hits = sorted({c for st in stems for c in (st + ".py", st + "/__init__.py") if c in tree.fileset})
+    return (hits[0] if len(hits) == 1 else None), len(hits)
+
+
+def _py_reexport(tree: "Tree", target: str, name: str) -> tuple[str | None, str]:
+    """What a local module binds `name` to, one hop (the resolver's rule): ("import", canonical) when its one binding
+    is a direct import from a covered library, ("client", class) when it is one client construction; else why not."""
+    mod = _parse_py(tree.read(target))
+    if mod is None:
+        return None, f"{target} does not parse"
+    sites = [x for x in py_bindings(mod, name) if not (isinstance(x, ast.alias) and x.name == "*")]
+    if len(sites) != 1:
+        return None, f"{target} binds it {len(sites)} times, not once"
+    site = sites[0]
+    for node in ast.walk(mod):
+        if isinstance(node, ast.ImportFrom) and site in node.names and node.level == 0 and node.module:
+            canon = _py_canonical(f"{node.module}.{site.name}")
+            if canon.split(".")[0] in PY_LIBRARIES:
+                return "import", canon
+        if isinstance(node, ast.Import) and site in node.names and site.asname:
+            return "import", _py_canonical(site.name)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call) and (
+                site in (node.targets if isinstance(node, ast.Assign) else [node.target])):
+            ctor = CLIENT_CTORS.get(_py_canonical(_dotted(node.value.func, PyNames(tree, target, mod).at(node.value.func)[0], {}) or ""))
+            if ctor:
+                return "client", ctor
+    return None, f"{target} does not bind it by a direct import from a covered library or a client construction"
+
+
+_PY_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp,
+              ast.DictComp, ast.GeneratorExp)
+
+
+class PyNames:
+    """What a name means where it is used, by Python's scoping (root's #65 delta B2): the nearest enclosing scope that
+    binds it decides (a class body never encloses its methods). In that scope the name resolves to a covered library
+    only when every binding there is an import of it: an import inside a function binds that function's name, and
+    `wait = proc.wait` in another function is that function's own subprocess wait. A scope that binds it by an
+    import AND another way (an assignment, a def, a parameter, a for/with/except target, a walrus), or declares it
+    global or nonlocal, makes a call through it NOT COVERED. Star imports of a covered module bind its covered names
+    (B1); a local module is followed one hop (B1); a star import of any other module is recorded in `stars`."""
+
+    def __init__(self, tree: "Tree", f: str, module: ast.Module):
+        self.tree, self.f, self.module = tree, f, module
+        self.parent, self.scope_of = {}, {}
+        self.sites = {}  # (scope id, name) -> [("import", canonical) | ("unread", why) | ("client", class) | ("other", line)]
+        self.stars = []
+        self._walk(module, module)
+
+    def _add(self, scope: ast.AST, name: str, what: tuple) -> None:
+        self.sites.setdefault((id(scope), name), []).append(what)
+
+    def _walk(self, node: ast.AST, scope: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            self.scope_of[id(child)] = scope
+            inner = scope
+            if isinstance(child, _PY_SCOPES):
+                inner = child
+                self.parent[id(child)] = scope
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    self._add(scope, child.name, ("other", child.lineno))
+                    for d in child.decorator_list:  # decorators and defaults run in the enclosing scope
+                        self.scope_of[id(d)] = scope
+                if not isinstance(child, ast.ClassDef):
+                    args = child.args if hasattr(child, "args") and isinstance(child.args, ast.arguments) else None
+                    for a in (args.posonlyargs + args.args + args.kwonlyargs + [x for x in (args.vararg, args.kwarg) if x]) if args else []:
+                        self._add(child, a.arg, ("other", child.lineno))
+            self._bind(child, scope)
+            self._walk(child, inner)
+
+    def _bind(self, node: ast.AST, scope: ast.AST) -> None:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._add(scope, node.id, ("other", node.lineno))
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            self._add(scope, node.name, ("other", node.lineno))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for n in node.names:
+                self._add(scope, n, ("unread", f"`{n}` is declared {type(node).__name__.lower()} at line {node.lineno}"))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            self._add(scope, node.name, ("other", node.lineno))
+        elif isinstance(node, ast.Import):
             for a in node.names:
                 local = a.asname or a.name.split(".")[0]
-                seen.setdefault(local, set()).add(a.name if a.asname else a.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            for a in node.names:
-                if a.name != "*":
-                    seen.setdefault(a.asname or a.name, set()).add(f"{node.module}.{a.name}")
-    return seen
+                self._add(scope, local, ("import", _py_canonical(a.name) if a.asname else a.name.split(".")[0]))
+        elif isinstance(node, ast.ImportFrom):
+            self._bind_from(node, scope)
+
+    def _bind_from(self, node: ast.ImportFrom, scope: ast.AST) -> None:
+        mod = node.module or ""
+        library = not node.level and mod.split(".")[0] in PY_LIBRARIES
+        target, n = None, 0
+        if node.level and mod:
+            target, n = resolve_py_module(self.tree, self.f, node.level, mod)[0], 1
+        elif mod and not library:
+            target, n = _py_local_module(self.tree, self.f, mod)
+        where = "." * node.level + mod
+        for a in node.names:
+            local = a.asname or a.name
+            if library:
+                if a.name == "*":  # B1: a covered module's star import binds each covered name it exports
+                    for leaf, canon in _py_star_leaves(mod).items():
+                        self._add(scope, leaf, ("import", canon))
+                else:
+                    self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))
+            elif a.name == "*":
+                self.stars.append(where)
+            elif not node.level and _py_canonical(f"{mod}.{a.name}").split(".")[0] in PY_LIBRARIES:
+                self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))  # `from pip._vendor import requests`
+            elif node.level or n:  # B1: a local module, followed one hop
+                what, val = _py_reexport(self.tree, target, a.name) if target else (None, f"it resolves to {n} files")
+                if what in ("import", "client"):
+                    self._add(scope, local, (what, val))
+                else:
+                    self._add(scope, local, ("unread", f"`{local}` is imported from the local module `{where}`, which "
+                                                       f"one hop cannot read ({val})"))
+            else:
+                self._add(scope, local, ("other", node.lineno))  # a third-party name
+
+    def lookup(self, name: str, node: ast.AST) -> tuple[str, object]:
+        """("import", [canonical, ...]) | ("client", class) | ("unread", why) | ("other", None) | ("unbound", None)."""
+        scope, first = self.scope_of.get(id(node), self.module), True
+        while scope is not None:
+            if first or not isinstance(scope, ast.ClassDef):
+                sites = self.sites.get((id(scope), name))
+                if sites:
+                    kinds = {k for k, _ in sites}
+                    unread = [v for k, v in sites if k == "unread"]
+                    if unread:
+                        return "unread", unread[0]
+                    if kinds == {"import"}:
+                        return "import", sorted({v for _, v in sites})
+                    if kinds == {"client"}:
+                        return "client", sites[0][1]
+                    if "import" in kinds or "client" in kinds:
+                        line = next(v for k, v in sites if k == "other")
+                        return "unread", (f"`{name}` is imported and also bound another way in the same scope (line "
+                                          f"{line}), so a call through it is not read")
+                    return "other", None
+            first = False
+            scope = self.parent.get(id(scope)) if scope is not self.module else None
+        return "unbound", None
+
+    def at(self, expr: ast.AST) -> tuple[dict, dict, dict, dict]:
+        """(aliases, several, unread, clients) for the names a callee expression uses, resolved where it is used."""
+        aliases, several, unread, clients = {}, {}, {}, {}
+        for n in ast.walk(expr):
+            if isinstance(n, ast.Name) and n.id not in aliases and n.id not in unread:
+                kind, val = self.lookup(n.id, expr)
+                if kind == "import" and len(val) == 1:
+                    aliases[n.id] = val[0]
+                elif kind == "import":
+                    several[n.id] = val
+                elif kind == "unread":
+                    unread[n.id] = val
+                elif kind == "client":
+                    clients[n.id] = val
+        return aliases, several, unread, clients
 
 
 def _root_name(node: ast.AST) -> str | None:
@@ -985,28 +1183,29 @@ def _root_name(node: ast.AST) -> str | None:
 def _dotted(node: ast.AST, aliases: dict, clients: dict) -> str | None:
     """The canonical dotted name a callee expression names, through imports and client instances; else None."""
     if isinstance(node, ast.Name):
-        return clients.get(node.id) or aliases.get(node.id, node.id)
+        return clients.get(node.id) or _py_canonical(aliases.get(node.id, node.id))
     if isinstance(node, ast.Attribute):
         if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name) and node.value.value.id == "self":
             inst = clients.get(f"self.{node.value.attr}")
             if inst:
                 return f"{inst}.{node.attr}"
         base = _dotted(node.value, aliases, clients)
-        return None if base is None else f"{base}.{node.attr}"
+        return None if base is None else _py_canonical(f"{base}.{node.attr}")
     if isinstance(node, ast.Call):  # requests.Session().get: an instance made in place
         ctor = _dotted(node.func, aliases, clients)
-        return CLIENT_CTORS.get(ctor or "")
+        return CLIENT_CTORS.get(_py_canonical(ctor or ""))
     return None
 
 
-def _py_clients(module: ast.Module, aliases: dict) -> dict:
-    """name (or `self.attr`) -> the client class an assignment or `with ... as` binds it to, when unambiguous."""
+def _py_clients(module: ast.Module, names: "PyNames") -> dict:
+    """name (or `self.attr`) -> the client class an assignment, an annotated assignment, a walrus, a `with ... as` or a
+    class body binds it to, when unambiguous (its constructor's names resolved where it is called)."""
     seen = {}
 
     def bind(target: ast.AST, value: ast.AST) -> None:
         if not isinstance(value, ast.Call):
             return
-        ctor = CLIENT_CTORS.get(_dotted(value.func, aliases, {}) or "")
+        ctor = CLIENT_CTORS.get(_py_canonical(_dotted(value.func, names.at(value.func)[0], {}) or ""))
         if not ctor:
             return
         if isinstance(target, ast.Name):
@@ -1023,6 +1222,14 @@ def _py_clients(module: ast.Module, aliases: dict) -> dict:
             for item in node.items:
                 if item.optional_vars is not None:
                     bind(item.optional_vars, item.context_expr)
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, node.value)
+        elif isinstance(node, ast.ClassDef):  # `class T: s = requests.Session()`, read as `self.s` in its methods
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    for t in stmt.targets:
+                        if isinstance(t, ast.Name):
+                            bind(ast.Attribute(value=ast.Name(id="self"), attr=t.id), stmt.value)
     return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
 
 
@@ -1051,31 +1258,63 @@ def py_binding_matches(tree: "Tree", files: list[str]) -> tuple[list[dict], list
             return {"start": {"line": node.lineno - 1}, "end": {"line": node.end_lineno - 1},
                     "byteOffset": {"start": b0, "end": b1}}
 
-        imports = _py_imports(module)
-        aliases = {k: next(iter(v)) for k, v in imports.items() if len(v) == 1}  # where every import agrees
-        clients = _py_clients(module, aliases)
+        names = PyNames(tree, f, module)
+        file_clients = _py_clients(module, names)
+        pending = []
         for call in ast.walk(module):
             if not isinstance(call, ast.Call):
                 continue
+            root = _root_name(call.func)
+            leaf = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", "")
+            bound_kw = any(kw.arg in PY_BOUND_KEYWORDS for kw in call.keywords)
+            aliases, several, unread, imported = names.at(call.func)
+            clients = {**file_clients, **imported}
+            if unread:
+                # A name bound by an import and another way in one scope, or imported from a local module one hop
+                # cannot read (B1, B2): no ownership, and the call is listed when it may be a covered call.
+                if leaf in PY_LEAVES or bound_kw:
+                    not_covered.append((f, call.lineno, next(iter(unread.values()))))
+                continue
             canon = _dotted(call.func, aliases, clients)
             spec = PY_CALLS.get(canon or "")
-            if spec is None:
-                # A name two imports bind differently (`import requests as r` here, `import httpx as r` there): when
-                # any of its bindings makes this a covered call, the call is listed, never read as clean.
-                root = _root_name(call.func)
-                if len(imports.get(root, ())) > 1 and any(
-                        _dotted(call.func, {**aliases, root: b}, clients) in PY_CALLS for b in imports[root]):
+            if spec is None and root in several:
+                # Imports that bind a name more than one way (`import requests as r` here, `import httpx as r`
+                # there). When every binding is a covered call of the same position, kind and index (a try/except
+                # fallback: asyncio.timeout or async_timeout.timeout), it is read with their keywords; when only some
+                # are, it is listed, never read as clean (L3).
+                each = [_dotted(call.func, {**aliases, root: b}, clients) for b in several[root]]
+                specs = [PY_CALLS.get(c or "") for c in each]
+                if all(specs) and len({sp[:3] for sp in specs}) == 1:
+                    spec = (*specs[0][:3], tuple(sorted({k for sp in specs for k in sp[3]})))
+                    canon = " / ".join(sorted(set(each)))
+                elif any(specs):
                     not_covered.append((f, call.lineno, f"`{root}` is bound by more than one import "
-                                                        f"({', '.join(sorted(imports[root]))}), so this call is not read"))
+                                                        f"({', '.join(several[root])}), so this call is not read"))
+                    continue
+            if spec is None:
+                if isinstance(call.func, ast.Name) and names.stars and leaf in PY_LEAVES and \
+                        names.lookup(leaf, call.func)[0] == "unbound":
+                    not_covered.append((f, call.lineno, f"`{leaf}` may be bound by `from {names.stars[0]} import *`, "
+                                                        "which this check does not follow, so this call is not read"))
+                else:
+                    pending.append((call, canon, bound_kw))
                 continue
             position, kind, index, keywords = spec
             for a in [*call.args, *(kw.value for kw in call.keywords)]:
                 direct.add((f, _span(span(a))))
-            values = [kw.value for kw in call.keywords if kw.arg in keywords]
-            if index is not None and len(call.args) > index and not any(isinstance(a, ast.Starred) for a in call.args[:index + 1]):
+            kw_values = [kw for kw in call.keywords if kw.arg in keywords]
+            values = [kw.value for kw in kw_values]
+            star_before = index is not None and any(isinstance(a, ast.Starred) for a in call.args[:index + 1])
+            if index is not None and len(call.args) > index and not star_before:
                 values.append(call.args[index])
             if not values and any(kw.arg is None for kw in call.keywords):
                 not_covered.append((f, call.lineno, f"{canon}: its bound may come through a ** splat, which is not read"))
+            elif not values and star_before:
+                not_covered.append((f, call.lineno, f"{canon}: its bound may come through a * splat, which is not read"))
+            # A literal 0 is "no limit" for pytest-timeout and libpq's connect_timeout only (#65 delta L1).
+            unlimited = {id(v) for v in values if position == "mark"} | {
+                id(kw.value) for kw in kw_values if kw.arg == "connect_timeout" and any(
+                    c in LIBPQ_CONNECT for c in canon.split(" / "))}
             def no_bound(v: ast.AST) -> bool:
                 """A value that cannot be a time bound (the rules' bound-value): None, a string, a bool, a collection,
                 a lambda. A tuple is one only as an HTTP (connect, read) pair, read element by element."""
@@ -1094,7 +1333,36 @@ def py_binding_matches(tree: "Tree", files: list[str]) -> tuple[list[dict], list
                 for e, pos in elems:
                     seg = ast.get_source_segment(text, e) or ""
                     out.append({"ruleId": f"{RULE}.{pos}.{kind}", "file": f, "range": span(e), "text": seg,
+                                "zero_is_none": id(v) in unlimited,
                                 "metaVariables": {"single": {"V": {"text": seg, "range": span(e)}}}})
+        # B3: a call into a covered library (or aiohttp) that passes a bound keyword this pass cannot read (a
+        # submodule spelling it does not know, a class it does not cover) is listed, never dropped. A call that is
+        # itself an argument of a covered call (`timeout=httpx.Timeout(5)`) is judged there.
+        for call, canon, bound_kw in pending:
+            if not bound_kw or (f, _span(span(call))) in direct:
+                continue
+            lib, why = (canon or "").split(".")[0], None
+            if lib == "aiohttp":
+                why = "aiohttp is not read yet (its bound is a ClientTimeout)"
+            elif lib in PY_LIBRARIES:
+                why = f"`{canon}` is a call into {lib} that this check does not read"
+            else:
+                # The callee reaches a covered library some other way (getattr(requests, "get"),
+                # importlib.import_module("requests").get), or an argument is a covered callable
+                # (functools.partial(requests.get, timeout=1)): seen, not read, so listed.
+                aliases, _, _, imported = names.at(call.func)
+                via = next((v for v in aliases.values() if v.split(".")[0] in PY_LIBRARIES), None) or next(
+                    (n.value for n in ast.walk(call.func) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                     and n.value.split(".")[0] in PY_LIBRARIES), None)
+                for a in [*call.args, *(kw.value for kw in call.keywords)]:
+                    if via is None and isinstance(a, (ast.Name, ast.Attribute)):
+                        al, _, _, imp = names.at(a)
+                        c = _dotted(a, al, {**file_clients, **imp})
+                        via = c if c in PY_CALLS else None
+                if via:
+                    why = f"a call that reaches `{via}` in a way this check does not read (getattr, importlib, partial)"
+            if why:
+                not_covered.append((f, call.lineno, why))
     return out, not_covered, direct
 
 
@@ -1477,7 +1745,8 @@ def self_test(verbose: bool = False) -> list[str]:
             failures.append(f"{case.name}: findings {json.dumps(got, sort_keys=True)}, expected "
                             f"{json.dumps(want, sort_keys=True)}")
         for key in ("unparsable", "recovered", "not_covered"):
-            have = sorted({row[0] for row in res[key]})
+            # NOT COVERED is one entry per row (a dropped listing in a file with others still fails); the others per file.
+            have = sorted(row[0] for row in res[key]) if key == "not_covered" else sorted({row[0] for row in res[key]})
             if have != sorted(spec.get(key, [])):
                 failures.append(f"{case.name}: {key} {have}, expected {sorted(spec.get(key, []))}")
         if verbose:

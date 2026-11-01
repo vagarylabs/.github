@@ -173,11 +173,31 @@ class PythonBinding(unittest.TestCase):
         v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", timeout=5, **opts)\n')
         self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
 
-    def test_a_name_two_imports_bind_is_listed(self):
+    def test_a_name_two_imports_bind_differently_is_listed(self):
+        """Only some bindings make it a covered call: listed, never read as clean."""
+        v = self.verdict("try:\n    import asyncio as a\nexcept ImportError:\n    import trio as a\n\n\n"
+                         "async def test_x(c):\n    await a.wait_for(c, 5)\n")
+        self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [("s/tests/test_a.py", 8)])
+        self.assertIn("bound by more than one import (asyncio, trio)", v["not_covered"][0][2])
+
+    def test_a_fallback_import_that_agrees_is_read(self):
+        """#65 delta L3: every binding is a covered call of the same position, kind and index, so it is read."""
         v = self.verdict("try:\n    import requests as r\nexcept ImportError:\n    import httpx as r\n\n\n"
                          'def test_x():\n    r.get("u", timeout=5)\n')
-        self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [("s/tests/test_a.py", 8)])
-        self.assertIn("bound by more than one import (httpx, requests)", v["not_covered"][0][2])
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_toml_key_in_any_form_reports_its_line(self):
+        """#65 delta L4: an inline table, a dotted key and a quoted key are red at their own line, so a mark reaches."""
+        for text, line in (('[project]\nname = "x"\n\n[tool]\npytest = { timeout = 7 }\n', 5),
+                           ("tool.pytest.timeout = 8\n", 1), ('[tool.pytest]\n"timeout" = 9\n', 2)):
+            recs, why = C.pytest_config_bounds(text, "pyproject.toml")
+            self.assertEqual(([r["line"] for r in recs], [r["status"] for r in recs], why), ([line], ["finding"], None))
+
+    def test_the_pytest_dotfiles_are_test_like(self):
+        """A .pytest.ini or .pytest.toml outside every tree is UNSCANNED, never silently ignored (#65 delta L2)."""
+        for name in (".pytest.ini", ".pytest.toml", "pytest.toml"):
+            self.assertTrue(C.TEST_LIKE.search(f"svc/{name}"), name)
+        self.assertFalse(C.TEST_LIKE.search("svc/notpytest.ini"))
 
     def test_a_shadowing_local_is_not_a_library_call(self):
         """A bare name with no import is not asyncio's: `wait_for` defined here is the test's own helper."""

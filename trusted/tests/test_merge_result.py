@@ -753,8 +753,11 @@ class RealCommitTests(unittest.TestCase):
                    if r.returncode != 0 or subprocess.run(["git", "cat-file", "-e", s + "^{commit}"], cwd=ROOT,
                                                           capture_output=True).returncode != 0]
         if missing:
-            self.skipTest("the .github commits %s are not in this checkout's object store (a shallow clone)"
-                          % ", ".join(s[:8] for s in missing))
+            why = ("the .github commits %s are not in this checkout's object store (a shallow clone?)"
+                   % ", ".join(s[:8] for s in missing))
+            if os.environ.get("TRUSTED_REQUIRE_REAL_COMMITS") == "1":
+                self.fail(why + "; TRUSTED_REQUIRE_REAL_COMMITS=1, and ci.yml's trusted-tests checks out full history")
+            self.skipTest(why + "; set TRUSTED_REQUIRE_REAL_COMMITS=1 to make this a failure, as CI does")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.r = Repo(self.tmp.name, fixed_dates=False)
@@ -777,6 +780,27 @@ class RealCommitTests(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("- `%s` D (authority-binding, ci-judge)" % SIGNER, out)
         self.assertIn("- `%s` D (authority-binding)" % SIGNER_TESTS, out)
+
+
+class CiRunsTheRealCommitCaseTests(unittest.TestCase):
+    """LOW (a), delta R4 of .github #69: at checkout depth 1 RealCommitTests always skipped in CI."""
+
+    def test_trusted_tests_checks_out_full_history_and_requires_the_commits(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        job = ci.split("\n  trusted-tests:\n", 1)[1].split("\n  no-hosted-runners-guard:\n", 1)[0]
+        self.assertIn("\n          fetch-depth: 0\n", job)
+        self.assertIn('\n          TRUSTED_REQUIRE_REAL_COMMITS: "1"\n', job)
+        self.assertIn("python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v", job)
+
+    def test_a_missing_commit_fails_only_when_required(self):
+        for env, failed, skipped in (({"TRUSTED_REQUIRE_REAL_COMMITS": "1"}, 1, 0), ({}, 0, 1)):
+            with self.subTest(env=env), mock.patch.object(RealCommitTests, "PR62", "0" * 40), \
+                    mock.patch.dict(os.environ, env, clear=False):
+                if not env:
+                    os.environ.pop("TRUSTED_REQUIRE_REAL_COMMITS", None)
+                result = unittest.TestResult()
+                RealCommitTests("test_the_real_commit_case_is_red").run(result)
+                self.assertEqual((len(result.failures), len(result.skipped), result.testsRun), (failed, skipped, 1))
 
 
 if __name__ == "__main__":

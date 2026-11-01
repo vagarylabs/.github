@@ -209,8 +209,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Full history: test_merge_result.RealCommitTests replays the B1 case on this repository's own commits
+          # (fa7d4abc, bb329839, 56828234), and TRUSTED_REQUIRE_REAL_COMMITS below makes their absence a failure.
+          fetch-depth: 0
           persist-credentials: false
       - name: trusted ruleset workflows (manifest, classifier, render drift, invariants)
+        env:
+          TRUSTED_REQUIRE_REAL_COMMITS: "1"
         run: python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v
 
   no-hosted-runners-guard:

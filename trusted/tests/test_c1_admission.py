@@ -344,33 +344,41 @@ class WorkflowWiring(unittest.TestCase):
         self.assertEqual("\n".join(l[10:] for l in body.split("\n")), src)
         self.assertIn("vl-light", src)
 
-    def rendered_run_step(self, mode):
-        """The workflow-lint run step's script exactly as rendered, with the inlined manifest's workflow_lint mode set."""
-        wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
-        step = wf.split("- name: Run zizmor and actionlint over the head tree", 1)[1].split("        run: |\n", 1)[1]
+    @staticmethod
+    def run_script(wf, name):
+        """The run script of the step called `name`, exactly as rendered."""
+        step = wf.split("- name: " + name, 1)[1].split("        run: |\n", 1)[1]
         body = []
         for line in step.split("\n"):
             if line.strip() and not line.startswith("          "):
                 break
             body.append(line[10:])
-        script = "\n".join(body)
-        head, rest = script.split("<<'TRUSTED_MANIFEST_JSON'\n", 1)
+        return "\n".join(body)
+
+    def rendered_run_step(self, mode):
+        """The one job's write step, with the inlined manifest's workflow_lint mode set, then its workflow-lint run step,
+        exactly as rendered: the two steps that put the trusted bytes down and run the tools over them."""
+        wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
+        write = self.run_script(wf, "Write the trusted classifier, manifest and actionlint config")
+        head, rest = write.split("<<'TRUSTED_MANIFEST_JSON'\n", 1)
         doc, tail = rest.split("\nTRUSTED_MANIFEST_JSON\n", 1)
         m = json.loads(doc)
         m["workflow_lint"]["mode"] = mode
-        return head + "<<'TRUSTED_MANIFEST_JSON'\n" + json.dumps(m).replace("$", "\\u0024") + "\nTRUSTED_MANIFEST_JSON\n" + tail
+        write = head + "<<'TRUSTED_MANIFEST_JSON'\n" + json.dumps(m).replace("$", "\\u0024") + "\nTRUSTED_MANIFEST_JSON\n" + tail
+        return write + "\n" + self.run_script(wf, "Run zizmor and actionlint over the head tree")
 
     def test_the_rendered_step_ends_incomplete_not_red_when_both_fetches_fail(self):
         # Root's delta R4 of #41, B2: the cold-cache case, both fetches failed, so no tool and no $RUNNER_TEMP/workflow-lint.
         # The rendered step itself, run as the runner runs it: green with INCOMPLETE x2 in report, refused in enforce.
         for mode, want in (("report", 0), ("enforce", 1)):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:
+                # The one job's checkout is the PR head at the workspace root.
                 ws, temp = pathlib.Path(td, "ws"), pathlib.Path(td, "temp")
-                (ws / "head" / ".github" / "workflows").mkdir(parents=True)
+                (ws / ".github" / "workflows").mkdir(parents=True)
                 temp.mkdir()
-                (ws / "head" / ".github" / "workflows" / "w.yml").write_text("on: push\njobs: {}\n")
-                env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-                g = lambda *a: subprocess.run(["git", "-C", str(ws / "head"), *a], check=True, capture_output=True,
+                (ws / ".github" / "workflows" / "w.yml").write_text("on: push\njobs: {}\n")
+                env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GITHUB_WORKSPACE=str(ws))
+                g = lambda *a: subprocess.run(["git", "-C", str(ws), *a], check=True, capture_output=True,
                                               text=True, env=env).stdout.strip()
                 g("init", "-q")
                 g("add", "-A")
@@ -391,8 +399,9 @@ class WorkflowWiring(unittest.TestCase):
         # Root's R4 of #41, B2: each fetch is bounded and continue-on-error (its outcome goes to classify.py), each
         # tool run is under `timeout`, and the job's timeout covers the sum.
         wf = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
-        job = wf.split("\n  workflow-lint:\n", 1)[1]
-        self.assertIn("timeout-minutes: 20", job.split("steps:", 1)[0])
+        # Root's ruling A: the lint steps are the last steps of the one job, whose timeout covers every judge.
+        job = wf.split("\n  trusted-workflow-integrity:\n", 1)[1]
+        self.assertIn("timeout-minutes: 30", job.split("steps:", 1)[0])
         for step in ("fetch_zizmor", "fetch_actionlint"):
             block = job.split("id: %s\n" % step, 1)[1].split("\n      - ", 1)[0]
             with self.subTest(step):

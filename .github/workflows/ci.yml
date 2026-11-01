@@ -185,11 +185,11 @@ jobs:
         run: bash actions/secret-scan-scope/test_scope.sh
 
   timeout-floor-self-scan:
-    # The floor's own repo. The org ruleset's trusted timeout-floor job skips vagarylabs/.github (this public repo has
-    # no bridge runner), so without this job the rule would never see the one repo that defines it. Same classify.py
-    # mode and manifest, on this repo's HEAD tree, in the manifest's mode (report today: fails only on an integrity
-    # error, exactly as in every other repo). Like the ruleset job it reads the head tree only: the head commit alone
-    # (fetch-depth 1; the PR head, not the default merge commit), and no base.
+    # The floor's own repo. The org ruleset's trusted-workflow-integrity job, whose timeout-floor step this mirrors, skips
+    # vagarylabs/.github (this public repo has no bridge runner), so without this job the rule would never see the one
+    # repo that defines it. Same classify.py mode and manifest, on this repo's HEAD tree, in the manifest's mode (report
+    # today: fails only on an integrity error, exactly as in every other repo). Like the ruleset step it reads the head
+    # tree only, here the head commit alone (fetch-depth 1; the PR head, not the default merge commit), and no base.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:

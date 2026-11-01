@@ -473,7 +473,7 @@ class ParserTests(unittest.TestCase):
                 total += len(jobs)
         integrity = classify.parse_workflow((ROOT / ".github/workflows/trusted-workflow-integrity.yml").read_text())[0]
         self.assertEqual([(j["id"], classify._floor_declared(j["timeout"])[0]) for j in integrity],
-                         [("trusted-workflow-integrity", "10"), ("timeout-floor", "10"), ("workflow-lint", "20")])
+                         [("trusted-workflow-integrity", "30")])
 
     def test_source_is_ascii(self):
         # Inlined into a YAML run block: a literal BOM or other invisible character there is a hazard, so escapes only.
@@ -542,27 +542,29 @@ class ManifestTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_timeout_floor_job_mirrors_the_integrity_job(self):
+    def test_the_timeout_floor_is_its_own_step_of_the_one_integrity_job(self):
+        # Root's ruling A (2026-11-02): one job, one inline copy. The floor reads the head tree from the checkout the
+        # integrity step already has, runs whatever the integrity step concluded, and keeps its own exit code.
         text = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
-        integrity = text[text.index("\n  trusted-workflow-integrity:\n"):text.index("\n  timeout-floor:\n")]
-        floor = text[text.index("\n  timeout-floor:\n"):]
-        for job in (integrity, floor):
-            self.assertIn("\n    if: github.repository != 'vagarylabs/.github'\n", job)
-            self.assertIn("\n    runs-on: [self-hosted, Linux, X64, vl-light]\n    timeout-minutes: 10\n", job)
-            self.assertIn("persist-credentials: false", job)
-            self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", job)
-            self.assertNotIn("\n    permissions:", job)
-        # The integrity job keeps the full history and the merge-base; the floor job reads the head tree only, so it
-        # checks out the head commit alone and never binds a merge-base.
-        self.assertIn("fetch-depth: 0", integrity)
-        self.assertIn("merge_base=", integrity)
-        self.assertIn("ref: ${{ steps.shas.outputs.head }}\n          fetch-depth: 1\n          persist-credentials: false",
-                      floor)
-        self.assertNotIn("fetch-depth: 0", floor)
-        self.assertNotIn("merge-base", floor.split("TRUSTED_CLASSIFY_PY", 1)[0])
+        jobs = re.findall(r"^  ([A-Za-z0-9_-]+):\n", text.split("\njobs:\n", 1)[1], re.M)
+        self.assertEqual(jobs, ["trusted-workflow-integrity"])
+        job = text.split("\n  trusted-workflow-integrity:\n", 1)[1]
+        self.assertIn("\n    if: github.repository != 'vagarylabs/.github'\n", job)
+        self.assertIn("\n    runs-on: [self-hosted, Linux, X64, vl-light]\n", job)
+        self.assertIn("persist-credentials: false", job)
+        self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", job)
+        self.assertNotIn("\n    permissions:", job)
+        self.assertIn("fetch-depth: 0", job)
+        self.assertIn("merge_base=", job)
+        self.assertEqual(len(re.findall(r"^\s+uses: actions/checkout@", job, re.M)), 1)  # one checkout serves every judge
+        integrity = job.split("- name: Classify against BASE (integrity)", 1)[1].split("\n      - name: ", 1)[0]
+        floor = job.split("- name: Check every job's timeout-minutes against the completion floor (HEAD tree)", 1)[1]
+        floor = floor.split("\n      - name: ", 1)[0]
         self.assertIn('python3 -I "$d/classify.py" integrity --manifest', integrity)
         self.assertNotIn("timeout-floor --manifest", integrity)
+        self.assertIn("if: ${{ !cancelled() }}", floor.split("run: |", 1)[0])
         self.assertIn('python3 -I "$d/classify.py" timeout-floor --manifest "$d/manifest.json"', floor)
+        self.assertNotIn("TRUSTED_CLASSIFY_PY", floor)
 
 
 class WeakeningFloorTests(unittest.TestCase):

@@ -454,10 +454,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(render.main(["--check"]), 0)
 
     def test_inline_copies_are_byte_identical(self):
-        # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        # trusted-workflow-integrity: integrity, timeout-floor and workflow-lint (C1) each write the trusted bytes.
-        for name, copies in (("trusted-workflow-integrity", 3), ("trusted-protected-paths", 1)):
+        # ONE copy each (root's ruling A, 2026-11-02): trusted-workflow-integrity's judges are steps of one job, which
+        # writes the trusted bytes once; three copies took it past GitHub's 500 KB run limit.
+        for name, copies in (("trusted-workflow-integrity", 1), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
             found = list(re.finditer(
                 r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))

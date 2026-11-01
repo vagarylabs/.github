@@ -253,6 +253,26 @@ class WorkflowTests(unittest.TestCase):
         # The inline classifier/manifest are byte-identical copies of the trusted/ sources.
         self.assertEqual(render.main(["--check"]), 0)
 
+    # GitHub starts no run for a workflow file over 500 KB: "Each workflow file in the .github/workflows directory must
+    # be 500 KB or smaller to trigger a run" (https://docs.github.com/en/actions/reference/limits). This repository's CI
+    # never runs the trusted jobs (they are guarded off here), so an oversized render shows only as a jobless failed
+    # push run: .github #69's head 16acf403 rendered trusted-workflow-integrity.yml at 514,380 bytes, and run
+    # 41343868440 started no job ("Workflow file exceeds the maximum allowed size of 500 KB"). Pinned by a ruleset, such
+    # a required workflow would never report in any consumer. The docs do not say whether KB is 1,000 or 1,024 bytes, so
+    # the bound is the smaller. main's largest render, at 389813b5, is 487,890 bytes.
+    WORKFLOW_FILE_LIMIT = 500_000
+
+    def test_every_workflow_file_is_under_githubs_run_limit(self):
+        files = sorted(p for p in (ROOT / ".github" / "workflows").iterdir() if p.suffix in (".yml", ".yaml"))
+        # positive control: the trusted renders are among the files measured
+        self.assertLessEqual(set(WORKFLOWS.values()), set(files))
+        for path in files:
+            with self.subTest(workflow=path.name):
+                size = path.stat().st_size
+                self.assertLessEqual(size, self.WORKFLOW_FILE_LIMIT, "%s is %d bytes, %d over the %d-byte limit; GitHub "
+                                     "would start no run of it" % (path.name, size, size - self.WORKFLOW_FILE_LIMIT,
+                                                                   self.WORKFLOW_FILE_LIMIT))
+
     def test_inline_copies_are_byte_identical(self):
         # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()

@@ -9,7 +9,7 @@
  },
  "files": {
   "test_scope.py": {
-   "finding": 5
+   "finding": 7
   },
   "test_star.py": {
    "finding": 4

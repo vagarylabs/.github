@@ -1219,6 +1219,8 @@ def _py_reexport(tree: "Tree", target: str, name: str) -> tuple[str | None, str]
     if len(sites) != 1:
         return None, f"{target} binds it {len(sites)} times, not once"
     site = sites[0]
+    if isinstance(site, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return "other", f"{target} defines it"
     for node in ast.walk(mod):
         if isinstance(node, ast.ImportFrom) and site in node.names and node.level == 0 and node.module:
             canon = _py_canonical(f"{node.module}.{site.name}")
@@ -1231,6 +1233,11 @@ def _py_reexport(tree: "Tree", target: str, name: str) -> tuple[str | None, str]
             ctor = CLIENT_CTORS.get(_py_canonical(_dotted(node.value.func, PyNames(tree, target, mod).at(node.value.func)[0], {}) or ""))
             if ctor:
                 return "client", ctor
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and (
+                site in (node.targets if isinstance(node, ast.Assign) else [node.target])):
+            return "other", f"{target} assigns it a value that is not a client"
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and site in node.names and not node.level:
+            return "other", f"{target} imports it from a library this check does not cover"
     return None, f"{target} does not bind it by a direct import from a covered library or a client construction"
 
 
@@ -1281,8 +1288,8 @@ class PyNames:
         elif isinstance(node, ast.ExceptHandler) and node.name:
             self._add(scope, node.name, ("other", node.lineno))
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            for n in node.names:
-                self._add(scope, n, ("unread", f"`{n}` is declared {type(node).__name__.lower()} at line {node.lineno}"))
+            for n in node.names:  # the name is the module's (global) or an enclosing function's (nonlocal)
+                self._add(scope, n, (type(node).__name__.lower(), node.lineno))
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
             self._add(scope, node.name, ("other", node.lineno))
         elif isinstance(node, ast.Import):
@@ -1317,6 +1324,8 @@ class PyNames:
                 what, val = _py_reexport(self.tree, target, a.name) if target else (None, f"it resolves to {n} files")
                 if what in ("import", "client"):
                     self._add(scope, local, (what, val))
+                elif what == "other":  # the local module's own function, class or value: not a covered library
+                    self._add(scope, local, ("other", node.lineno))
                 else:
                     self._add(scope, local, ("unread", f"`{local}` is imported from the local module `{where}`, which "
                                                        f"one hop cannot read ({val})"))
@@ -1329,6 +1338,13 @@ class PyNames:
         while scope is not None:
             if first or not isinstance(scope, ast.ClassDef):
                 sites = self.sites.get((id(scope), name))
+                if sites and any(k == "global" for k, _ in sites):
+                    scope, first = self.module, False
+                    continue
+                if sites and any(k == "nonlocal" for k, _ in sites):
+                    first = False
+                    scope = self.parent.get(id(scope))
+                    continue
                 if sites:
                     kinds = {k for k, _ in sites}
                     unread = [v for k, v in sites if k == "unread"]

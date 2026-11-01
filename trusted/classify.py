@@ -54,7 +54,9 @@ INTERIM_REPORT_ONLY = True
 # judge. Each RESTORE pins a newer main, so it would adopt, unseen, any change to the judge merged since the last pin.
 # So the workflow whose pinned bytes run, every file render.py builds it from (its template, the fragments that
 # template INCLUDEs, the classifier and manifest it INLINEs), render.py, and the drift tests that hold the inline copies
-# to their sources (test_trusted.py) block like the signer. test_trusted.py fails if a render input is missing here.
+# to their sources (test_trusted.py) block like the signer, as do the merge-result regression tests
+# (test_merge_result.py: B1, N1, N2, merge_group; delta R4 LOW (b)), so a green PR cannot delete them before the next
+# door change. test_trusted.py fails if a render input is missing here.
 # RE-PIN RULE (root ruling B2b, a process rule no check here can see): every re-pin of the ruleset that requires this
 # workflow is preceded by a root R4 of the judge diff between the old and the new pinned sha (`git diff <old-pin>
 # <new-pin> -- .github/workflows/trusted-protected-paths.yml`, the rendered bytes that run, with the sources above),
@@ -62,7 +64,8 @@ INTERIM_REPORT_ONLY = True
 SIGNER_PATHS = (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py")
 JUDGE_PATHS = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
                "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
-               "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py")
+               "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py",
+               "trusted/tests/test_merge_result.py")
 BLOCKING_PATHS = frozenset(SIGNER_PATHS + JUDGE_PATHS)
 BLOCKING_CLASS = "authority-binding"
 

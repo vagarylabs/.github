@@ -206,7 +206,8 @@ class SignerBlockingTests(unittest.TestCase):
     # test_inline_copies_are_byte_identical).
     JUDGE = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
              "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
-             "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py")
+             "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py",
+             "trusted/tests/test_merge_result.py")
 
     @classmethod
     def setUpClass(cls):
@@ -326,8 +327,9 @@ class SignerBlockingTests(unittest.TestCase):
                     todo.append(render.TEMPLATES / m["path"])
                 elif m:
                     inputs.add(m["path"])
+        # plus the regression tests of what the judge classifies (B1, N1, N2, merge_group)
         inputs |= {str(WORKFLOWS["trusted-protected-paths"].relative_to(ROOT)), "trusted/render.py",
-                   str(pathlib.Path(__file__).resolve().relative_to(ROOT))}
+                   str(pathlib.Path(__file__).resolve().relative_to(ROOT)), "trusted/tests/test_merge_result.py"}
         self.assertEqual(inputs, set(self.JUDGE))
         self.assertLessEqual(inputs, classify.BLOCKING_PATHS)
         for path in classify.BLOCKING_PATHS:

@@ -35,7 +35,8 @@
 # BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py)
 # or to this judge itself (this workflow, trusted/templates/trusted-protected-paths.yml.in and the _shas.yml.in and
 # _resolve_shas.yml.in fragments it includes, trusted/classify.py, trusted/manifest.json, trusted/render.py and the
-# drift tests in trusted/tests/test_trusted.py; root ruling B2a), class authority-binding, classify.BLOCKING_PATHS,
+# drift tests in trusted/tests/test_trusted.py; root ruling B2a; and the merge-result regression tests in
+# trusted/tests/test_merge_result.py), class authority-binding, classify.BLOCKING_PATHS,
 # FAILS this job whatever INTERIM_REPORT_ONLY says, unless verify_vagaris_approval() returns "verified" (not available
 # yet). THE DOOR for a legitimate change is OUT-OF-BAND, because one account approves every PR and an in-band record
 # would be no stronger: (1) root LIFTS (sets the D2 ruleset to evaluate, or re-pins it), (2) the change merges with a

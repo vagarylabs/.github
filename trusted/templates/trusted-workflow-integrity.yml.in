@@ -6,6 +6,14 @@
 # job trusted-tests fails on drift), so the pinned workflow bytes are the whole trust root: nothing is read
 # from the PR except as data, through `git show <sha>:<path>`, and nothing from the PR is executed.
 #
+# RE-PIN RULE (root ruling B2b, extended to this workflow by the delta2 R4 of .github #69): ruleset 25117498 pins this
+# workflow and trusted-protected-paths at one sha, and both inline the classifier, so every re-pin of a ruleset that
+# requires either is preceded by a root R4 of the judge diff between the old and the new pinned sha for BOTH, the bytes
+# that run, with the sources they are rendered from, recorded in reviews/:
+#   git diff <old-pin> <new-pin> -- .github/workflows/trusted-protected-paths.yml \
+#     .github/workflows/trusted-workflow-integrity.yml
+# It is a process rule: no check can see a re-pin.
+#
 # Contract: BLOCKS only on integrity errors (a base or head that is not an exact resolvable SHA, an invalid
 # manifest, a ratchet file that does not parse). Every change to a declared protected workflow, protected path
 # or ratchet constant is REPORTED (job summary + notice annotation) as a protected-path change; deciding on it

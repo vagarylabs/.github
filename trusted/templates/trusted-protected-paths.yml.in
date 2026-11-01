@@ -13,23 +13,27 @@
 # WHAT IS JUDGED (B1, R4 of .github #69): the change the merge LANDS. classify.py diffs BASE against the tree that
 # `git merge-tree --write-tree BASE HEAD` writes (merge-ort, the same merge for a merge commit and a squash), never
 # merge-base..head: with two or more merge bases (a criss-cross) that diff can miss a change the merge makes. Needs git
-# >= 2.43: `--attr-source` is new in 2.41.0 and merge-tree crashed with it until 2.43.0 (git's RelNotes). On
-# 2026-11-01 the hosted ubuntu-24.04 image had 2.56.0 and vl-bridge-runner-1 2.43.0. An older git, a conflict, or
-# any other merge-tree failure fails the job closed (exit 2), with no merge-base fallback. A rebase merge replays
+# >= 2.43 (the gate reads major.minor): `--attr-source` is new in 2.41.0 and merge-tree crashed with it until 2.43.0
+# (git's RelNotes). On 2026-11-01 the hosted ubuntu-24.04 image had 2.56.0 and vl-bridge-runner-1 2.43.0. An older
+# git, a conflict, or any other merge-tree failure fails the job closed (exit 2), with no merge-base fallback. A rebase
+# merge replays
 # commits and is not modelled, so where this job BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase
 # merges.
-# THE BINDING INSTANCE (root's D2 direction): on vagarylabs/.github the judge binds in a MERGE QUEUE. On merge_group
-# the event's head_sha is the commit the queue lands, so classify.py diffs the queue base against that commit's OWN
-# tree and computes no merge: neither .gitattributes nor a stale base can steer it (it fails closed unless the base is
-# an ancestor of the group commit). The pull_request run below is the early warning and defence in depth.
-# PRECONDITIONS of "what the merge lands" on pull_request (delta R4 of .github #69), held here or by root's ruleset:
+# THE BINDING INSTANCE (root's D2 direction, NOT YET APPLIED): once root enables a MERGE QUEUE on vagarylabs/.github,
+# the judge binds on merge_group, where the event's head_sha is the commit the queue lands, so classify.py diffs the
+# queue base against that commit's OWN tree and computes no merge: neither .gitattributes nor a stale base can steer it
+# (it fails closed unless the base is an ancestor of the group commit). Until root enables the queue, the pull_request
+# run below binds; after, it is the early warning and defence in depth.
+# PRECONDITIONS of "what the merge lands" on pull_request (delta R4 of .github #69), held by this job, or to be held by
+# root's ruleset at the D2 apply (strict, no rebase; neither is set today):
 # - A LIVE BASE (N2): on pull_request the judge diffs against the base branch's live tip, origin/<base.ref> in the
 #   checkout, not the event's base.sha (seen 47 minutes stale); it fails closed if base.sha is not that tip's ancestor.
 # - STRICT up-to-date on the ruleset: the base can still move between this run and the merge; strict makes GitHub
 #   demand a new run when it does.
 # - ATTRIBUTE INDEPENDENCE (N1): the job's working tree is the PR head, whose .gitattributes could pick the merge
 #   driver. The merge is computed three times, attributes from an empty tree, the live base and the head (`git
-#   --attr-source`), and the judge fails closed unless all three are clean and write the same tree.
+#   --attr-source`), and the judge fails closed unless all three are clean and write the same tree. On top, a `merge`
+#   attribute set in any form on a blocking path, in the base's or the head's .gitattributes, fails closed by name.
 # - No rebase merges (above).
 #
 # BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py)
@@ -40,14 +44,18 @@
 # FAILS this job whatever INTERIM_REPORT_ONLY says, unless verify_vagaris_approval() returns "verified" (not available
 # yet). THE DOOR for a legitimate change is OUT-OF-BAND, because one account approves every PR and an in-band record
 # would be no stronger: (1) root LIFTS (sets the D2 ruleset to evaluate, or re-pins it), (2) the change merges with a
-# root R4, (3) root RESTORES (re-pins the ruleset's workflows rule to the new main sha), each logged in operator-acts
-# with before and after.
-# RE-PIN RULE (root ruling B2b): every re-pin is preceded by a root R4 of the judge diff between the old and the new
-# pinned sha (`git diff <old-pin> <new-pin> -- .github/workflows/trusted-protected-paths.yml`, the bytes that run, with
-# the sources it is rendered from), recorded in reviews/. It is a process rule: no check can see a re-pin.
+# root R4, (3) root RESTORES (re-pins the ruleset's workflows rule to the new main sha, after the re-pin R4 below), each
+# logged in operator-acts with before and after.
+# RE-PIN RULE (root ruling B2b, extended by the delta2 R4 of .github #69): every re-pin of a ruleset that requires this
+# workflow or trusted-workflow-integrity (ruleset 25117498 pins both at one sha, and both inline the classifier) is
+# preceded by a root R4 of the judge diff between the old and the new pinned sha for BOTH workflows, the bytes that
+# run, with the sources they are rendered from, recorded in reviews/:
+#   git diff <old-pin> <new-pin> -- .github/workflows/trusted-protected-paths.yml \
+#     .github/workflows/trusted-workflow-integrity.yml
+# It is a process rule: no check can see a re-pin.
 # TRIGGERS: pull_request and merge_group. vagarylabs/.github main has no merge queue today (rules on main:
-# deletion, non_fast_forward, pull_request, required_status_checks), so merge_group is inert there and kept for the
-# target repos that do use one.
+# deletion, non_fast_forward, pull_request, required_status_checks), so merge_group is inert there until root enables
+# the queue (the binding instance above), and it serves the target repos that do use one.
 #
 # INTERIM EXCEPTION (every other class and path): verify_vagaris_approval() returns "not-yet-available" and
 # INTERIM_REPORT_ONLY is True, so this job REPORTS (job summary + neutral notice) and does NOT block. One org

@@ -49,7 +49,8 @@ INTERIM_REPORT_ONLY = True
 # paths, when classified authority-binding, FAILS the check regardless of INTERIM_REPORT_ONLY, unless
 # verify_vagaris_approval() returns "verified" (the in-band door, not available yet). Every other class and path stays
 # under INTERIM_REPORT_ONLY. The legitimate door today is OUT-OF-BAND: root LIFTS the ruleset (sets it to evaluate or
-# re-pins it), the change merges with a root R4, root RESTORES (re-pins to the new main sha) and logs before and after.
+# re-pins it), the change merges with a root R4, root RESTORES (re-pins to the new main sha, after the re-pin R4 below)
+# and logs before and after.
 # THE JUDGE'S OWN FILES (root ruling B2a, R4 of .github #69): a judge whose bytes change without the door is not a
 # judge. Each RESTORE pins a newer main, so it would adopt, unseen, any change to the judge merged since the last pin.
 # So the workflow whose pinned bytes run, every file render.py builds it from (its template, the fragments that
@@ -57,10 +58,12 @@ INTERIM_REPORT_ONLY = True
 # to their sources (test_trusted.py) block like the signer, as do the merge-result regression tests
 # (test_merge_result.py: B1, N1, N2, merge_group; delta R4 LOW (b)), so a green PR cannot delete them before the next
 # door change. test_trusted.py fails if a render input is missing here.
-# RE-PIN RULE (root ruling B2b, a process rule no check here can see): every re-pin of the ruleset that requires this
-# workflow is preceded by a root R4 of the judge diff between the old and the new pinned sha (`git diff <old-pin>
-# <new-pin> -- .github/workflows/trusted-protected-paths.yml`, the rendered bytes that run, with the sources above),
-# recorded in reviews/.
+# RE-PIN RULE (root ruling B2b, extended by the delta2 R4 of .github #69; a process rule no check here can see): every
+# re-pin of a ruleset that requires trusted-protected-paths or trusted-workflow-integrity (ruleset 25117498 pins both
+# at one sha, and both inline this classifier) is preceded by a root R4 of the judge diff between the old and the new
+# pinned sha for BOTH workflows, the rendered bytes that run, with the sources above, recorded in reviews/:
+#   git diff <old-pin> <new-pin> -- .github/workflows/trusted-protected-paths.yml \
+#     .github/workflows/trusted-workflow-integrity.yml
 SIGNER_PATHS = (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py")
 JUDGE_PATHS = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
                "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
@@ -2208,11 +2211,13 @@ def run_integrity(m, repo, base, head):
     return 0
 
 
-# THE BINDING INSTANCE (root's D2 direction, delta R4 of .github #69): on vagarylabs/.github the judge that binds runs
-# in a merge queue. On merge_group, head_sha IS the commit the queue lands (main fast-forwards to it), so the judge
-# classifies the queue base against that commit's OWN tree and computes no merge: neither .gitattributes nor a stale
-# base can make the judged tree differ from the landed one. The base must be an ancestor of the group commit, or the
-# judge fails closed. The pull_request run computes the merge (above) and is the early warning.
+# THE BINDING INSTANCE (root's D2 direction, delta R4 of .github #69): once root enables a merge queue on
+# vagarylabs/.github (the D2 apply; there is none today, and until then the pull_request run binds), the judge that
+# binds runs on merge_group. There head_sha IS the commit the queue lands (main fast-forwards to it; GitHub behaviour,
+# inferred until root's queue drill), so the judge classifies the queue base against that commit's OWN tree and
+# computes no merge: neither .gitattributes nor a stale base can make the judged tree differ from the landed one. The
+# base must be an ancestor of the group commit, or the judge fails closed. The pull_request run computes the merge
+# (above) and is then the early warning.
 def run_protected(m, repo, base, head, event=None, base_ref=None):
     entry = repo_entry(m, repo)
     check_commits(base, head)

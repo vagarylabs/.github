@@ -14,5 +14,9 @@
   "green.test.ts": {
    "cleared": 9
   }
- }
+ },
+ "not_covered": [
+  "green.test.ts",
+  "green.test.ts"
+ ]
 }

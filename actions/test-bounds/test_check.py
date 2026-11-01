@@ -112,8 +112,15 @@ class Evaluation(unittest.TestCase):
                            ("(120_000)", 120000), ("0.5", Fraction(1, 2)), ("-(-300_000) + 0", 300000)]:
             self.assertEqual(C.evaluate_js(text), want, text)
 
+    def test_bigint_literals(self):
+        """#66 RC L6: a BigInt bound (an hrtime.bigint() difference) is exact, so it can clear at the hrtime floor."""
+        for text, want in [("60_000_000_000n", 60 * 10**9), ("0n", 0), ("5n * 2n", 10)]:
+            self.assertEqual(C.evaluate_js(text), want, text)
+        for text in ("60n0", "1.5n", "0x10n"):
+            self.assertIsNone(C.evaluate_js(text), text)
+
     def test_refused_shapes(self):
-        for text in ["0210000", "08", "0x10", "10n", "600_000 / 2", "2 ** 19", "Number(1)", "+5", "5000 as const",
+        for text in ["0210000", "08", "0x10", "600_000 / 2", "2 ** 19", "Number(1)", "+5", "5000 as const",
                      "`5`", "1_000_", "a * 2", "", "5 5"]:
             self.assertIsNone(C.evaluate_js(text), text)
 
@@ -176,6 +183,24 @@ class SelfTest(unittest.TestCase):
         finally:
             C.PY_CALLS.clear()
             C.PY_CALLS.update(original)
+
+
+class ElapsedNotCovered(unittest.TestCase):
+    """Root's D6: what the elapsed rules see but cannot read is listed with every run, never silently clean."""
+
+    def test_a_two_hop_value_is_listed_in_every_output(self):
+        repo = Repo()
+        try:
+            t = "s/tests/test_a.py"
+            repo.commit({t: "def test_x(b):\n    rc, out, elapsed = b.hook(env={})\n    assert elapsed < 30\n",
+                         BL: baseline({}, trees=[{"glob": "s/tests/**", "min_files": 1}])})
+            v = repo.verdict(None)
+            self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [(t, 3)])
+            self.assertIn("a helper read goes one hop (D6)", v["not_covered"][0][2])
+            self.assertIn(f"- {t}:3 an upper bound on `elapsed`", C.summary_md(v))
+            self.assertEqual(v["counts"], {}, "listed, not counted: the helper is not read")
+        finally:
+            repo.done()
 
 
 class PythonBinding(unittest.TestCase):

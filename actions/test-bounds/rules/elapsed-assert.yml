@@ -63,10 +63,14 @@ utils:
           - has: { field: function, regex: "^assert\\.(?:isBelow|isAtMost)$" }
           - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
           - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
-      - all:
-          - matches: cmp-upper-CLOCK
-          - nthChild: 1
-          - inside: { kind: arguments, inside: { matches: truthy-assert } }
+      - all: [{ matches: cmp-upper-CLOCK }, { matches: asserted }]
+  # The node an assertion requires true: a truthy assert's first argument, an operand of `&&`, or a parenthesis of
+  # one (root's #66 RC B1). An `||` operand and a `!` are not read: neither is required true.
+  asserted:
+    any:
+      - all: [{ nthChild: 1 }, { inside: { kind: arguments, inside: { matches: truthy-assert } } }]
+      - inside: { kind: parenthesized_expression, matches: asserted }
+      - inside: { kind: binary_expression, has: { field: operator, regex: "^&&$" }, matches: asserted }
   cmp-upper-CLOCK:
     kind: binary_expression
     any:
@@ -135,6 +139,7 @@ utils:
     any:
       - matches: diff-CLOCK
       - matches: nonnull-diff-CLOCK #[typescript,tsx]
+      - all: [{ kind: parenthesized_expression }, { has: { matches: elapsed-CLOCK } }]
       - all:
           - kind: binary_expression
           - has: { field: operator, regex: "^[*/]$" }
@@ -157,7 +162,7 @@ utils:
   # requires exactly ONE definition named $FN, or the read is not proven. Two hops are not read.
   helper-call:
     any:
-      - all: [{ kind: call_expression }, { has: { field: function, any: [{ kind: identifier, pattern: $FN }, { kind: member_expression, has: { field: property, pattern: $FN } }] } }]
+      - all: [{ kind: call_expression }, { has: { field: function, any: [{ kind: identifier, pattern: $FN }, { kind: member_expression, all: [{ has: { field: property, pattern: $FN } }, { has: { field: object, pattern: $FO } }] }] } }]
       - all: [{ kind: await_expression }, { has: { matches: helper-call } }]
   returns-CLOCK-0: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
   helper-CLOCK-0:
@@ -268,16 +273,88 @@ utils:
       - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 2, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-2 } } }]
       - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 3, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-3 } } }]
       - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 4, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-4 } } }]
+  # D5 (root 11-01, split by polarity): a LOWER bound on a remaining time is an upper bound on the elapsed one:
+  # `D - now >= X`, `X <= D - now`, expect(D - now).toBeGreaterThan[OrEqual](X), .not.toBeLessThan[OrEqual](X) and
+  # assert.isAbove/isAtLeast(D - now, X), with D a deadline name. When D is bound to `now + B` of the same clock in a
+  # preceding statement ($DB is B), check.py judges B - X against the floor; otherwise the budget is unproven, so it
+  # is a finding. An UPPER bound on a remaining time bounds the elapsed time from BELOW: compliant, never matched.
+  remaining-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has: { field: left, kind: identifier, pattern: $D }
+      - has: { field: right, matches: clock-CLOCK }
+  r-CLOCK: { all: [{ pattern: $A }, { matches: remaining-CLOCK }] }
+  deadline-value-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: clock-CLOCK } }, { has: { field: right, pattern: $DB } }]
+          - all: [{ has: { field: left, pattern: $DB } }, { has: { field: right, matches: clock-CLOCK } }]
+  bind-D-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $D } }, { has: { field: value, matches: deadline-value-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $D } }, { has: { field: right, matches: deadline-value-CLOCK } }]
+  deadline-CLOCK: { inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-D-CLOCK } } } }
+  expect-remaining-CLOCK:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: r-CLOCK } }
+  cmp-lower-remaining-CLOCK:
+    kind: binary_expression
+    any:
+      - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: left, matches: r-CLOCK } }, { has: { field: right, pattern: $V } }]
+      - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, pattern: $V } }, { has: { field: right, matches: r-CLOCK } }]
+  lower-remaining-CLOCK:
+    any:
+      - kind: call_expression
+        all:
+          - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" } }, { has: { field: object, matches: expect-remaining-CLOCK } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" } }, { has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-remaining-CLOCK } }] } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^assert\\.(?:isAbove|isAtLeast)$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: r-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - all: [{ matches: cmp-lower-remaining-CLOCK }, { matches: asserted }]
+  # D6 (root 11-01): helper reads go one hop. A duration-named value that a call or a destructuring (an array or an
+  # object pattern) binds may read a clock two hops away; `elapsed-unread` finds an upper bound on one, and check.py
+  # lists it as NOT COVERED unless an elapsed rule read the same assert.
+  duration-name:
+    kind: identifier
+    regex: "^(?:elapsed|duration|took|latency)|(?:Elapsed|Duration|Took|Latency|Ms|Secs?|Seconds|Millis|_ms|_secs?|_seconds|_millis)$"
+  bind-call-U:
+    kind: variable_declarator
+    all:
+      - has: { field: name, any: [{ pattern: $A }, { all: [{ any: [{ kind: array_pattern }, { kind: object_pattern }] }, { has: { stopBy: end, pattern: $A } }] }] }
+      - has: { field: value, any: [{ kind: call_expression }, { kind: await_expression }] }
+  a-unread:
+    all:
+      - pattern: $A
+      - matches: duration-name
+      - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-call-U } } }
+  expect-unread:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: a-unread } }
   # Fake clocks. Proof is positive: vi/jest/sinon.useFakeTimers() with no argument or an object literal that does not
   # advance with real time (shouldAdvanceTime, advanceTimers, legacyFakeTimers) and does not leave the clock native.
   # Date is faked by default; performance and hrtime only when `toFake` names them (vitest's default list changed
-  # across versions). vi/jest.setSystemTime fakes Date even with real timers (vitest docs). A config-level
-  # `fakeTimers` default is not read.
+  # across versions). vi.setSystemTime fakes Date even with real timers (vitest's mockDate); jest's is a no-op without
+  # jest.useFakeTimers() (jest 30.2.0, root's #66 RC B3), which proves Date itself. An option bag holding a spread is
+  # no proof (B4). A config-level `fakeTimers` default is not read.
   fake-timers-call:
     kind: call_expression
     all:
       - has: { field: function, regex: "^(?:vi|jest|sinon)\\.useFakeTimers$" }
-      - has: { field: arguments, any: [{ regex: "^\\(\\s*\\)$" }, { has: { nthChild: 1, kind: object } }] }
+      - has: { field: arguments, any: [{ regex: "^\\(\\s*\\)$" }, { has: { nthChild: 1, kind: object, not: { has: { stopBy: end, kind: spread_element } } } }] }
       - not: { has: { field: arguments, has: { stopBy: end, kind: pair, all: [{ has: { field: key, regex: "^[\"']?(?:shouldAdvanceTime|advanceTimers|legacyFakeTimers)[\"']?$" } }, { has: { field: value, not: { regex: "^false$" } } }] } } }
   to-fake-names:
     kind: pair
@@ -287,7 +364,7 @@ utils:
     has: { field: key, regex: "^[\"']?(?:toNotFake|doNotFake)[\"']?$" }
   fakes-date:
     any:
-      - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:vi|jest)\\.setSystemTime$" } }]
+      - all: [{ kind: call_expression }, { has: { field: function, regex: "^vi\\.setSystemTime$" } }]
       - all:
           - matches: fake-timers-call
           - not: { has: { field: arguments, has: { stopBy: end, matches: not-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]Date[\"'`]$" } } } } }
@@ -306,17 +383,35 @@ utils:
   # that calls it (afterEach, the usual cleanup, runs after the test and revokes nothing). A sibling test's body
   # never counts.
   fake-stmt-CLOCK:
-    kind: expression_statement
     any:
-      - has: { matches: fakes-CLOCK }
-      - has: { kind: await_expression, has: { matches: fakes-CLOCK } }
-      - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: fakes-CLOCK } } }] }
+      - kind: expression_statement
+        any:
+          - has: { matches: fakes-CLOCK }
+          - has: { kind: await_expression, has: { matches: fakes-CLOCK } }
+          - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: fakes-CLOCK } } }] }
+      # `const clock = sinon.useFakeTimers()` (L5).
+      - all:
+          - any: [{ kind: lexical_declaration }, { kind: variable_declaration }]
+          - has: { kind: variable_declarator, has: { field: value, any: [{ matches: fakes-CLOCK }, { kind: await_expression, has: { matches: fakes-CLOCK } }] } }
+  # A revocation (L1): useRealTimers / clock.uninstall / clock.restore anywhere in a preceding statement's subtree
+  # (a try/finally included, a function body never), or a call to a same-file function whose body makes one; and a
+  # beforeEach/beforeAll hook that makes one. One before the fake revokes it too, which fails toward a finding.
+  revoking-def:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $RH } }, { has: { field: body, has: { stopBy: end, matches: real-timers } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $RH } }, { has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }], has: { stopBy: end, matches: real-timers } } }]
+  revokes:
+    any:
+      - matches: real-timers
+      - all:
+          - kind: call_expression
+          - has: { field: function, kind: identifier, pattern: $RH }
+          - inside: { stopBy: end, kind: program, has: { stopBy: end, matches: revoking-def } }
   real-stmt:
-    kind: expression_statement
     any:
-      - has: { matches: real-timers }
-      - has: { kind: await_expression, has: { matches: real-timers } }
-      - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: real-timers } } }] }
+      - all: [{ not: { matches: def-boundary } }, { has: { stopBy: { matches: fn-boundary }, matches: revokes } }]
+      - kind: expression_statement
+        has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: real-timers } } }] }
   under-fake-CLOCK:
     all:
       - inside: { stopBy: end, follows: { stopBy: end, matches: fake-stmt-CLOCK } }
@@ -326,19 +421,54 @@ id: elapsed-assert.CLOCK.condition
 language: typescript
 rule: { matches: upper-CLOCK }
 ---
-# Every function name defined in the file: check.py counts them for the helper read's one-definition guard.
+# D6: an upper bound on a duration-named value a call or a destructuring binds: listed as NOT COVERED when no elapsed
+# rule read the assert.
+id: elapsed-unread
+language: typescript
+rule:
+  any:
+    - kind: call_expression
+      all:
+        - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" } }, { has: { field: object, matches: expect-unread } }] }
+    - kind: call_expression
+      all:
+        - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" } }, { has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-unread } }] } }] }
+    - kind: call_expression
+      all:
+        - has: { field: function, regex: "^assert\\.(?:isBelow|isAtMost)$" }
+        - has: { field: arguments, has: { nthChild: 1, matches: a-unread } }
+    - all:
+        - kind: binary_expression
+        - matches: asserted
+        - any:
+            - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, matches: a-unread } }]
+            - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: right, matches: a-unread } }]
+---
+# D5's mirror: a lower bound on a remaining time (see remaining-CLOCK), with the deadline's budget when it is read.
+id: elapsed-assert.CLOCK.remaining
+language: typescript
+rule:
+  any:
+    - all: [{ matches: lower-remaining-CLOCK }, { matches: deadline-CLOCK }]
+    - matches: lower-remaining-CLOCK
+---
+# Every function name defined in the file, as a function (helper-def) or a method (helper-method): check.py counts
+# them for the helper read's one-definition guard. A bare call reaches a function, never a method (L4).
 id: helper-def
 language: typescript
 rule:
   any:
     - { kind: identifier, inside: { kind: function_declaration, field: name } }
-    - { kind: property_identifier, inside: { kind: method_definition, field: name } }
     - kind: identifier
       inside: { kind: variable_declarator, field: name, has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }] } }
+---
+id: helper-method
+language: typescript
+rule: { kind: property_identifier, inside: { kind: method_definition, field: name } }
 ---
 id: fake-clock.CLOCK
 language: typescript
 rule:
   all:
-    - matches: upper-CLOCK
+    - any: [{ matches: upper-CLOCK }, { matches: lower-remaining-CLOCK }]
     - matches: under-fake-CLOCK

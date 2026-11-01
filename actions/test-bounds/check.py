@@ -121,8 +121,13 @@ COVERED = {
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
                  "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
                  ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
-                 "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
-                 "bound name, scaled, or returned by a same-file helper (one hop)",
+                 "assert.ok/expect(..).toBe(true), as an `&&` operand or in parentheses too) on a Date, performance or "
+                 "hrtime.bigint difference (BigInt bounds evaluated), direct, parenthesised, through a bound name, "
+                 "scaled, or returned by a same-file helper (one hop); and a LOWER bound on a remaining time "
+                 "`deadline - now` (D5). Not read: Math.round / Number() wrappers, chai `.below()` without `to.be`, "
+                 "node:test `t.assert.ok`, assert.strictEqual(A < V, true), an `||` operand. An upper bound on a "
+                 "duration-named value a call or a destructuring binds (two hops, object destructuring) is listed as "
+                 "NOT COVERED",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
           "communicate(input, N), a `timeout` parameter default); thread and process join (a positional name or "
           "arithmetic only when it resolves to a number, since str.join takes one). Read by binding, with Python's "
@@ -144,9 +149,13 @@ COVERED = {
           "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
           "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name"
           "; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), "
-          "assertGreater[Equal](V, A), `A < V` and chained `LO < A < V` in assert/assertTrue) on a time, "
-          "monotonic, perf_counter (and _ns), loop.time() or datetime difference, direct, through a bound name, "
-          "scaled, or returned by a same-file helper (one hop)",
+          "assertGreater[Equal](V, A), `A < V` and chained `LO < A < V` in assert/assertTrue, as an `and` operand or "
+          "in parentheses too) on a time, monotonic, perf_counter (and _ns), loop.time() or datetime difference, "
+          "direct, parenthesised, through a bound name, scaled, or returned by a same-file helper (one hop); and a "
+          "LOWER bound on a remaining time `deadline - now` (D5). Not read: an alias of time or datetime (`import "
+          "time as t`), `//` scaling, round()/abs() wrappers, `assert not (...)`, assertAlmostEqual, `.seconds`, "
+          "total_seconds() * k, an `or` operand. An upper bound on a duration-named value a call or a destructuring "
+          "binds (two hops) is listed as NOT COVERED",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",
@@ -321,6 +330,9 @@ _NUM = re.compile(r"(?:0|[1-9](?:_?\d)*)(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d(?:
                   r"|\.\d(?:_?\d)*(?:[eE][+-]?\d(?:_?\d)*)?(?![\w$.])")
 
 
+_BIGINT = re.compile(r"(0|[1-9](?:_?\d)*)n(?![\w$.])")
+
+
 def evaluate_js(text: str) -> Fraction | None:
     """The exact value of a JS/TS literal expression: numbers, unary minus, + - * and parentheses; else None."""
     s, i = text, 0
@@ -341,6 +353,10 @@ def evaluate_js(text: str) -> Fraction | None:
                 return None
             i += 1
             return v
+        big = _BIGINT.match(s, i)  # 60_000_000_000n: a BigInt (hrtime.bigint() differences, root's #66 RC L6)
+        if big:
+            i = big.end()
+            return Fraction(int(big.group(1).replace("_", "")))
         m = _NUM.match(s, i)
         if not m:
             return None
@@ -1035,12 +1051,15 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
              if m["ruleId"].startswith("fake-clock.")}
     defined = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-def")
+    methods = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-method")
+    unread = [m for m in matches if m["ruleId"] == "elapsed-unread"]
     # Names to resolve, and the files that read them.
     need = {}
     for m in bounds + elapsed:
-        text = m["metaVariables"]["single"]["V"]["text"].strip()
-        if NAME.match(text):
-            need.setdefault(m["file"], set()).add(text)
+        for key in ("V", "DB"):  # DB: a D5 deadline's budget
+            text = m["metaVariables"]["single"].get(key, {}).get("text", "").strip()
+            if NAME.match(text):
+                need.setdefault(m["file"], set()).add(text)
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
     resolved = _resolve_all(tree, need)
@@ -1094,22 +1113,44 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
                 else:
                     rec["reason"] += "; the `timeout under test:` mark gives no reason, so it clears nothing"
         findings.setdefault(f, []).append(rec)
-    seen = set()
+    groups, dropped = {}, {}
     for m in sorted(elapsed, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"], m["ruleId"])):
-        f, span = m["file"], _span(m["range"])
-        helper = m["metaVariables"]["single"].get("FN", {}).get("text")
-        if helper is not None and defined[(f, helper)] != 1:
-            continue  # a helper read needs exactly one definition of that name in the file, or the call is unproven
-        if (f, span) in seen:
-            continue  # one assert is one record, even when its difference mixes two clock families
-        seen.add((f, span))
-        family = m["ruleId"].split(".")[1]
-        rec = elapsed_record(m, LANGUAGE_OF[posixpath.splitext(f)[1]], resolved, (f, family, span) in faked)
+        f, span, mv = m["file"], _span(m["range"]), m["metaVariables"]["single"]
+        helper = mv.get("FN", {}).get("text")
+        # A bare call reaches a function, a member call a function or a method (L4): exactly one such definition
+        # in the file, or the helper read is unproven.
+        n = None if helper is None else defined[(f, helper)] + (methods[(f, helper)] if "FO" in mv else 0)
+        if n is not None and n != 1:
+            dropped.setdefault((f, span), (_line(m["range"]), helper, n))
+            continue
+        groups.setdefault((f, span), []).append(m)
+    for (f, span), ms in groups.items():
+        # One assert is one record. Every clock family its measured side may read must clear it, each by its own
+        # fake or its own floor (root's #66 RC B2): a name rebound from one clock to another clears on neither alone.
+        lang = LANGUAGE_OF[posixpath.splitext(f)[1]]
+        recs = [elapsed_record(m, lang, resolved, (f, m["ruleId"].split(".")[1], span) in faked) for m in ms]
+        rec = next((r for r in recs if r["status"] != "cleared"), recs[0])
+        families = sorted({r["position"] for r in recs})
+        if len(families) > 1:
+            rec["reason"] += (f"; its measured side may read {len(families)} clock families ({', '.join(families)}), "
+                              "so it clears only when each one is proven")
+        m = ms[0]
         if rec["status"] == "finding" and any((f, ln) in marks_raw
                                               for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)):
             rec["reason"] += ("; a `timeout under test:` mark never exempts an elapsed-time assert (root's R3a): "
                               "use a fake clock, or the code's own logged times")
         findings.setdefault(f, []).append(rec)
+    # What the elapsed rules see but cannot read is listed, never silently clean (D6).
+    for (f, span), (ln, helper, n) in sorted(dropped.items()):
+        if (f, span) not in groups:
+            not_covered.append((f, ln, f"an elapsed value returned by `{helper}`, which the file defines {n} times "
+                                       "(a helper read needs exactly one definition it can reach), so it is not read"))
+    for m in unread:
+        f, span = m["file"], _span(m["range"])
+        if (f, span) not in groups and (f, span) not in dropped:
+            name = m["metaVariables"]["single"]["A"]["text"]
+            not_covered.append((f, _line(m["range"]), f"an upper bound on `{name}`, which a call or a destructuring "
+                                                      "binds: a helper read goes one hop (D6), so this assert is not read"))
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
             unparsable.setdefault((f, 0), "CPython cannot parse it")
@@ -1661,6 +1702,42 @@ def timedelta_seconds(text: str) -> Fraction | None:
     return total
 
 
+def remaining_record(rec: dict, mv: dict, lang: str, file: str, resolved: dict, faked: bool, family: str,
+                     floor: Fraction, shown: str) -> dict:
+    """D5 (root 11-01): a LOWER bound X on a remaining time `D - now` bounds the elapsed time by B - X, where D was
+    bound to `now + B`. It clears only under a proven fake clock, or when B and X are exact and B - X is at or above
+    the floor; an unread budget is unproven, so it is a finding."""
+    what = f"`{shown}`, a remaining time on the {family} clock, is bounded from below (an upper bound on elapsed time)"
+    rec["kind"] = "remaining"  # its rule's id (elapsed-assert.<family>.remaining); the floor is still the condition's
+    if faked:
+        rec["status"], rec["reason"] = "cleared", f"{what} under a proven fake clock (rules/elapsed-assert*.yml)"
+        return rec
+    d, x_text = mv["D"]["text"].strip(), mv["V"]["text"].strip()
+    if "DB" not in mv:
+        rec["reason"] = f"{what}; `{d}` is not bound to `now + budget` in a preceding statement, so the budget is unproven"
+        return rec
+    b_text = mv["DB"]["text"].strip()
+
+    def exact(text: str) -> tuple[Fraction | None, str]:
+        if family == "datetime":
+            v = timedelta_seconds(text)
+            return v, (f"timedelta {text[:40]} = {_fmt(v)} s" if v is not None else f"`{text[:40]}` is not an exact timedelta(...)")
+        return _value_of(text, lang, file, resolved)
+    b, b_why = exact(b_text)
+    x, x_why = exact(x_text)
+    rec["value"] = re.sub(r"\s+", " ", f"{b_text} - {x_text}")[:120]
+    if b is None or x is None:
+        rec["reason"] = f"{what}; budget: {b_why}; margin: {x_why}"
+        return rec
+    left = b - x
+    why = f"the budget {b_text} = {_fmt(b)} minus the margin {x_text} = {_fmt(x)} leaves {_fmt(left)}"
+    if left >= floor:
+        rec["status"], rec["reason"] = "cleared", f"{what}; {why}"
+    else:
+        rec["reason"] = f"{what}; {why}, below the floor {rec['floor']}"
+    return rec
+
+
 def elapsed_record(m: dict, lang: str, resolved: dict, faked: bool) -> dict:
     """One elapsed-time assert (rules/elapsed-assert*.yml): its bound against the 60 s condition floor, in the units
     of the clock its difference reads. Only a bound proven at or above the floor, or a proven fake clock, clears it;
@@ -1689,6 +1766,8 @@ def elapsed_record(m: dict, lang: str, resolved: dict, faked: bool) -> dict:
            "status": "finding", "reason": "", "mark": None}
     shown = re.sub(r"\s+", " ", a)[:60]
     what = f"`{shown}` reads the {family} clock"
+    if m["ruleId"].endswith(".remaining"):
+        return remaining_record(rec, mv, lang, file, resolved, faked, family, floor, shown)
     if faked:
         rec["status"], rec["reason"] = "cleared", f"{what} under a proven fake clock (rules/elapsed-assert*.yml)"
         return rec

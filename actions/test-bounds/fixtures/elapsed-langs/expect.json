@@ -9,10 +9,10 @@
  },
  "files": {
   "a.test.tsx": {
-   "finding": 3
+   "finding": 6
   },
   "a.test.js": {
-   "finding": 3
+   "finding": 6
   }
  }
 }

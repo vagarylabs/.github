@@ -89,5 +89,8 @@
   },
   "workflow_lint": {
     "mode": "report"
+  },
+  "pin_descent": {
+    "mode": "enforce"
   }
 }

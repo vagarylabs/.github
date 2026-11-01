@@ -96,7 +96,8 @@ class Manifest(unittest.TestCase):
     def manifest(self, **sibling):
         m = {"version": 1, "default": {"protected": [{"class": "c", "patterns": ["x"]}], "ratchet_files": []},
              "timeout_floor": {"minutes": 6, "mode": "report", "exemptions": []},
-             "pins": {"mode": "report", "exemptions": []}, "workflow_lint": {"mode": "report"}}
+             "pins": {"mode": "report", "exemptions": []}, "workflow_lint": {"mode": "report"},
+             "pin_descent": {"mode": "enforce"}}
         m.update(sibling)
         return m
 

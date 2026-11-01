@@ -551,6 +551,7 @@ class WorkflowTests(unittest.TestCase):
         "Check out the PR head as data (no credentials kept, nothing executed)",
         "Bind base, head and merge-base in the local object store",
         "Classify against BASE (integrity)",
+        "Check that a new test-bounds pin descends from the base's along .github main (what the merge lands)",
         "Check every job's timeout-minutes against the completion floor (HEAD tree)",
         "Check that a fresh App token reads a sibling only through sibling-repo-read (HEAD tree)",
         "Check every uses is pinned to a commit with its exact release (HEAD tree)",

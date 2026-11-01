@@ -29,6 +29,8 @@ import json
 import os
 import re
 import selectors
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -133,6 +135,9 @@ def validate_manifest(m):
     wl = m.get("workflow_lint")
     if not isinstance(wl, dict) or set(wl) != {"mode"} or wl["mode"] not in ("report", "enforce"):
         raise IntegrityError("manifest: workflow_lint must be {\"mode\": report or enforce}")
+    pd = m.get("pin_descent")
+    if not isinstance(pd, dict) or set(pd) != {"mode"} or pd["mode"] not in ("report", "enforce"):
+        raise IntegrityError("manifest: pin_descent must be {\"mode\": report or enforce}")
     return m
 
 
@@ -2172,8 +2177,10 @@ def run_integrity(m, repo, base, head):
 # classifies the queue base against that commit's OWN tree and computes no merge: neither .gitattributes nor a stale
 # base can make the judged tree differ from the landed one. The base must be an ancestor of the group commit, or the
 # judge fails closed. The pull_request run computes the merge (above) and is the early warning.
-def run_protected(m, repo, base, head, event=None, base_ref=None):
-    entry = repo_entry(m, repo)
+def what_lands(base, head, event, base_ref, mode):
+    """(the base judged against, the tree that lands, the summary line): on pull_request the base branch's live tip and
+    the tree merging head into it lands; on merge_group the group commit's own tree, whose base must be its ancestor.
+    The one model of what a merge lands, for every judge that reads it (protected-paths, pin-descent)."""
     check_commits(base, head)
     if event == "pull_request":
         judged = live_base(base, base_ref)
@@ -2190,7 +2197,13 @@ def run_protected(m, repo, base, head, event=None, base_ref=None):
         what = ("Judged: the merge-group base `%s` against the group commit `%s`'s own tree, what the queue lands (no "
                 "merge computed)." % (base, head))
     else:
-        raise IntegrityError("protected-paths needs --event pull_request or merge_group; got %r" % (event,))
+        raise IntegrityError("%s needs --event pull_request or merge_group; got %r" % (mode, event))
+    return judged, tree, what
+
+
+def run_protected(m, repo, base, head, event=None, base_ref=None):
+    entry = repo_entry(m, repo)
+    judged, tree, what = what_lands(base, head, event, base_ref, "protected-paths")
     rows = classify(entry, changed_paths(judged, tree))
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
@@ -2548,6 +2561,194 @@ def run_pins(m, repo, base, head):
     return 1 if mode == "enforce" and failing else 0
 
 
+# ---------- pin-descent (K2 D8, root 2026-11-02) ----------
+# A consumer runs the shared test-bounds check at the commit it pins (`vagarylabs/.github/actions/test-bounds@<sha>`),
+# and the check's lock-in (D8) holds a PR to the base's rules only while that pin stays put. A PR that moves the pin
+# back to an older check, or to a commit .github main never merged, would judge itself with a check main never ran. So
+# every test-bounds pin the merge LANDS that the base does not already run must be an exact commit on .github main
+# that descends from every test-bounds pin the base runs (there are none at a first adoption). What the merge lands is
+# what_lands()'s, the protected-paths judge's model (the live base on pull_request, the group commit on merge_group),
+# so a line the PR never touched, which main has moved since, is never judged as the PR's. Nothing is fetched unless
+# such a pin exists. Then .github main's commits (no trees, no blobs, no tags) are cloned into a temporary directory,
+# never into the checkout, bounded and retried once. A clone that fails is INCOMPLETE: red in mode `enforce`, for that
+# PR only. A base pin that is not an exact commit on main cannot be descended from, so every new pin is then refused
+# (fail closed) until root lifts the ruleset. A line that names the action but is not a plain `uses:` line (a flow
+# mapping, a YAML anchor, a folded scalar) is a pin this reader cannot read: when the base does not carry the same
+# line, it is refused, never skipped.
+PD_SOURCE = "https://github.com/vagarylabs/.github"
+PD_ACTION = "vagarylabs/.github/actions/test-bounds"
+PD_FETCH_SECONDS = 90
+PD_FETCH_ATTEMPTS = 2
+PD_RETRY_PAUSE_SECONDS = 3
+PD_UNREADABLE = "?"  # the prefix of a pin this reader cannot read; the rest is the line as written
+_PD_MENTION = re.compile(re.escape(PD_ACTION), re.I)
+_PD_HEX40 = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+class PinFetchIncomplete(Exception):
+    pass
+
+
+def _pd_pause(seconds):
+    """The wait between clone attempts (its own name, so a test can replace it without touching time.sleep)."""
+    time.sleep(seconds)
+
+
+def test_bounds_pins(tree):
+    """[(path, line, ref)] for every test-bounds pin in the tree's workflow and action files. The owner and repo match
+    case-insensitively (GitHub resolves VagaryLabs/.github too). A 40-hex ref is lowercased; any other ref (a tag, a
+    branch, a short SHA) is kept as written, so it is judged, never dropped. A non-comment line that names the action
+    without being a `uses:` line is kept as PD_UNREADABLE + the line."""
+    out = []
+    for path in workflow_files(tree):
+        for i, line in enumerate((blob(tree, path) or "").splitlines(), 1):
+            m = _PIN_USES.match(line)
+            if m:
+                name, at, ref = pin_split(m.group("v"))[0].rpartition("@")
+                if at and name.lower() == PD_ACTION:
+                    out.append((path, i, ref.lower() if _PD_HEX40.match(ref) else ref))
+                    continue
+            if _PD_MENTION.search(line) and not line.lstrip().startswith("#"):
+                out.append((path, i, PD_UNREADABLE + line.strip()))
+    return out
+
+
+def clone_dotgithub_main(dest, source=PD_SOURCE, attempts=PD_FETCH_ATTEMPTS, seconds=PD_FETCH_SECONDS,
+                         pause=PD_RETRY_PAUSE_SECONDS):
+    """Clone .github main's commits into dest, or raise PinFetchIncomplete naming every attempt's failure. No
+    credential is offered and no prompt can wait. Each attempt runs in its own process group, killed whole at its
+    deadline, so a stalled transport helper cannot outlive it."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    cmd = ["git", "-c", "credential.helper=", "clone", "--bare", "--quiet", "--no-tags", "--single-branch", "--branch",
+           "main", "--filter=tree:0", source, dest]
+    errors = []
+    for n in range(1, attempts + 1):
+        if n > 1:
+            _pd_pause(pause)
+        shutil.rmtree(dest, ignore_errors=True)
+        with tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, env=env,
+                                    start_new_session=True)
+            try:
+                code = proc.wait(timeout=seconds)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+                errors.append("attempt %d: no clone within %d s" % (n, seconds))
+                continue
+            if code == 0:
+                return
+            err.seek(0)
+            errors.append("attempt %d: git clone exit %d: %s"
+                          % (n, code, err.read(500).decode("utf-8", "replace").strip() or "no message"))
+    raise PinFetchIncomplete("; ".join(errors))
+
+
+def _pd_git(git_dir, *args):
+    """git against the temporary clone, never the checkout. Lazy fetches are off: an object the commits-only clone
+    lacks is absent, never fetched on demand."""
+    return subprocess.run(("git", "--git-dir", git_dir) + args, capture_output=True, text=True, timeout=60,
+                          stdin=subprocess.DEVNULL, env=dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0"))
+
+
+def main_commits(git_dir):
+    """(main's tip, every commit reachable from main) of the clone; PinFetchIncomplete when it lists none."""
+    r = _pd_git(git_dir, "rev-list", "refs/heads/main")
+    shas = set(r.stdout.split()) if r.returncode == 0 else set()
+    tip = _pd_git(git_dir, "rev-parse", "--verify", "refs/heads/main^{commit}").stdout.strip()
+    if not shas or tip not in shas or not all(SHA_RE.match(s) for s in shas):
+        raise PinFetchIncomplete("the clone of .github main lists no commits (rev-list exit %d: %s)"
+                                 % (r.returncode, r.stderr.strip() or "no message"))
+    return tip, shas
+
+
+def descends(git_dir, old, new):
+    """True when old is new or one of its ancestors. Both are commits of the clone (the caller checks); any exit but
+    0 or 1 is INCOMPLETE, never an answer."""
+    if old == new:
+        return True
+    r = _pd_git(git_dir, "merge-base", "--is-ancestor", old, new)
+    if r.returncode not in (0, 1):
+        raise PinFetchIncomplete("git merge-base --is-ancestor %s %s exit %d: %s"
+                                 % (old, new, r.returncode, r.stderr.strip() or "no message"))
+    return r.returncode == 0
+
+
+def _pd_refs(refs):
+    return ", ".join(md_code(r) for r in refs)
+
+
+def run_pin_descent(m, repo, base, head, event=None, base_ref=None, source=PD_SOURCE):
+    mode = m["pin_descent"]["mode"]
+    judged, tree, what = what_lands(base, head, event, base_ref, "pin-descent")
+    base_refs = sorted({ref for _, _, ref in test_bounds_pins(judged)})
+    landing = test_bounds_pins(tree)
+    moved = [p for p in landing if p[2] not in base_refs]
+    lines = ["## test-bounds pin descent: %s" % repo,
+             "%s Manifest `pin_descent`, mode `%s`: the base runs %s; the merge lands %d test-bounds pin%s, %d of them "
+             "new." % (what, mode, _pd_refs(base_refs) or "no test-bounds pin", len(landing),
+                       "" if len(landing) == 1 else "s", len(moved))]
+    if not moved:
+        lines.append("No test-bounds pin moves and none is added: nothing fetched, nothing to judge.")
+        summary(lines)
+        return 0
+    refused, incomplete = [], None
+    for path, line, ref in moved:
+        if ref.startswith(PD_UNREADABLE):
+            refused.append((path, line, ref, "names the test-bounds action but is not a plain `uses:` line, so its "
+                                             "pin cannot be read: name %s@<sha> on a step's own `uses:` line"
+                                             % PD_ACTION))
+        elif not SHA_RE.match(ref):
+            refused.append((path, line, ref, "is not an exact commit, so its descent cannot be judged: pin a 40-hex "
+                                             "sha with `# .github #<PR> merge`"))
+    exact = [p for p in moved if SHA_RE.match(p[2])]
+    if exact:
+        with tempfile.TemporaryDirectory(prefix="pin-descent-") as tmp:
+            git_dir = os.path.join(tmp, "dotgithub.git")
+            try:
+                clone_dotgithub_main(git_dir, source)
+                tip, on_main = main_commits(git_dir)
+                lines.append(".github main is at `%s` (%d commits, cloned commits-only from %s)."
+                             % (tip, len(on_main), source))
+                off_main = [b for b in base_refs if b not in on_main]
+                for path, line, ref in exact:
+                    if ref not in on_main:
+                        refused.append((path, line, ref, "is not on .github main (at `%s`): only a commit main "
+                                                         "merged may be pinned" % tip))
+                    elif off_main:
+                        refused.append((path, line, ref, "cannot be judged against the base pin(s) %s, which are not "
+                                                         "exact commits on .github main" % _pd_refs(off_main)))
+                    else:
+                        behind = [b for b in base_refs if not descends(git_dir, b, ref)]
+                        if behind:
+                            refused.append((path, line, ref, "does not descend from the base pin(s) %s: a pin moves "
+                                                             "only forward along .github main" % _pd_refs(behind)))
+            except (PinFetchIncomplete, subprocess.TimeoutExpired) as exc:
+                incomplete = str(exc)
+    level = "error" if mode == "enforce" else "warning"
+    for path, line, ref, why in refused:
+        lines.append("- REFUSED %s %s" % (md_code("%s:%d @%s" % (path, line, ref)), why))
+        print("::%s file=%s,line=%d,title=test-bounds pin::%s" % (level, _cmd_prop(path), line,
+                                                                  _cmd_data("@%s %s" % (ref, why))))
+    if incomplete:
+        lines.append("INCOMPLETE: .github main could not be read (%s). A new pin is never passed unjudged." % incomplete)
+        print("::%s title=test-bounds pin::%s" % (level, _cmd_data("INCOMPLETE: " + incomplete)))
+    failed = bool(refused) or incomplete is not None
+    if not failed:
+        lines.append("Every new test-bounds pin is a commit on .github main that descends from every pin the base runs.")
+    elif mode == "report":
+        lines.append("Report-only (mode `report`): listed, not enforced.")
+    else:
+        lines.append("Refused (mode `enforce`): pin test-bounds to a merge on .github main at or after every pin the "
+                     "base runs%s." % ("; a read that could not finish is retried by re-running this job" if incomplete
+                                       else ""))
+    summary(lines)
+    return 1 if mode == "enforce" and failed else 0
+
+
 # ---------- workflow-lint (C1 admission, root 2026-10-29) ----------
 # zizmor (MIT; offline audits only, so the verdict depends on the head tree alone) and actionlint (shellcheck off: it
 # is slow and hung on large run blocks) read the head tree as data. This mode turns their JSON into the job summary and
@@ -2674,13 +2875,15 @@ def run_workflow_lint(m, repo, head, zizmor, zizmor_rc, actionlint, actionlint_r
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=("integrity", "protected-paths", "timeout-floor", "sibling-read", "pins",
-                                     "workflow-lint"))
+                                     "workflow-lint", "pin-descent"))
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", help="required, except in timeout-floor mode (which reads the head tree only)")
     ap.add_argument("--head", required=True)
-    ap.add_argument("--event", choices=("pull_request", "merge_group"), help="protected-paths: the triggering event")
-    ap.add_argument("--base-ref", help="protected-paths on pull_request: the base branch name (its live tip is judged)")
+    ap.add_argument("--event", choices=("pull_request", "merge_group"),
+                    help="protected-paths and pin-descent: the triggering event")
+    ap.add_argument("--base-ref", help="protected-paths and pin-descent on pull_request: the base branch name (its live "
+                                       "tip is judged)")
     ap.add_argument("--zizmor", help="workflow-lint: zizmor's JSON output")
     ap.add_argument("--zizmor-rc", type=int, help="workflow-lint: zizmor's exit code")
     ap.add_argument("--actionlint", help="workflow-lint: actionlint's JSON output")
@@ -2700,6 +2903,8 @@ def main(argv=None):
                                      a.zizmor_fetch, a.actionlint_fetch)
         if a.mode == "protected-paths":
             return run_protected(m, a.repo, a.base, a.head, a.event, a.base_ref)
+        if a.mode == "pin-descent":
+            return run_pin_descent(m, a.repo, a.base, a.head, a.event, a.base_ref)
         fn = {"integrity": run_integrity, "timeout-floor": run_timeout_floor,
               "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
         return fn(m, a.repo, a.base, a.head)

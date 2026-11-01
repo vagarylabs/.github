@@ -27,6 +27,15 @@
 # so a red names the judge that failed. The fetched third-party tools (zizmor, actionlint) run in the LAST step, after
 # every other judge has read the trusted bytes.
 #
+# pin-descent (its own step, K2 D8, root 2026-11-02): every vagarylabs/.github/actions/test-bounds pin that the merge
+# LANDS, and that the base does not already run, must be an exact commit on .github main that descends from every
+# test-bounds pin the base runs. It judges what trusted-protected-paths judges: on pull_request the base branch's live
+# tip and the tree merging the head into it lands, on merge_group the group commit's own tree. It is the one ENFORCING
+# step of this job (the manifest's pin_descent.mode): a pin that moves back, or to a commit main never merged, fails
+# it. A merge that lands no new test-bounds pin fetches nothing. One that does clones .github main's commits (public,
+# no credential, bounded, retried once) into a temporary directory, never into the checkout. A clone that fails is
+# INCOMPLETE, red for that PR only.
+#
 # timeout-floor (its own step, same trust posture: the PR head checked out as data, the same inline classifier and
 # manifest) reads every .github/workflows/*.yml and *.yaml of the HEAD tree as data and checks each job's
 # timeout-minutes against the manifest's completion floor (timeout_floor.minutes, 6): a runner's CompleteJob call can
@@ -86,6 +95,23 @@ jobs:
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" integrity --manifest "$d/manifest.json" \
             --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
+      # K2 D8 (root, 2026-11-02): a test-bounds pin the merge lands moves only forward along .github main. It judges
+      # what the protected-paths judge judges (the live base on pull_request, the group commit on merge_group), and
+      # clones .github main's commits only when the merge lands a new pin.
+      - name: Check that a new test-bounds pin descends from the base's along .github main (what the merge lands)
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD_SHA: ${{ steps.shas.outputs.head }}
+          EVENT: ${{ github.event_name }}
+          # pull_request only (empty on merge_group): the judge reads this branch's LIVE tip from the checkout.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          python3 -I "$d/classify.py" pin-descent --manifest "$d/manifest.json" \
+            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA" --event="$EVENT" --base-ref="$BASE_REF"
       # classify.py checks the head commit is in the object store; the base is validated as a SHA, never resolved.
       - name: Check every job's timeout-minutes against the completion floor (HEAD tree)
         if: ${{ !cancelled() }}

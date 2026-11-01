@@ -537,8 +537,8 @@ class AttributeTests(Fixture):
     def assert_fails_closed(self, base, head):
         code, out = self.judge(base, head)
         self.assertEqual(code, 2, out)
-        want = "::error title=trusted protected-paths::the merge of head %s into base %s %s" % (head, base, self.DEPENDS)
-        self.assertIn(want, out)
+        self.assertIn("::error title=trusted protected-paths::the merge of head %s into base %s %s"
+                      % (head, base, self.DEPENDS), out)
         return out
 
     def test_p8_a_head_side_merge_driver_cannot_hide_new_signer_bytes(self):
@@ -626,6 +626,58 @@ class AttributeTests(Fixture):
         code, out = self.judge(r.rev("main"), signer)
         self.assertEqual(code, 1, out)
         self.assertIn("BLOCKING", out)
+
+
+class EscapeTests(Fixture):
+    """LOW (c), delta R4 of .github #69: a PR chooses its path names, and the judge prints them to stdout, where a line
+    starting with `::` is a workflow command (`::stop-commands::<token>` would silence the ::error annotation). Every
+    printed path is escaped; the exit code never depended on it."""
+    HOSTILE = ".github/workflows/x\n::stop-commands::tok.yml"
+    SHOWN = ".github/workflows/x\\x0a::stop-commands::tok.yml"
+
+    def assert_no_injected_command(self, out):
+        for line in out.splitlines():
+            self.assertFalse(line.lstrip().startswith("::stop-commands"), line)
+            self.assertFalse(line.lstrip().startswith("::") and "tok.yml" in line and "%0A" not in line
+                             and "\\x0a" not in line, line)
+
+    def test_a_hostile_path_cannot_inject_a_workflow_command(self):
+        r = self.r
+        base = r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        r.branch("pr", base)
+        head = r.commit("pr", {self.HOSTILE: "x\n", SIGNER: "changed\n"})
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 1, out)
+        self.assert_no_injected_command(out)
+        self.assertIn("- `%s` A (ci-judge)" % self.SHOWN, out)
+        errors = [l for l in out.splitlines() if l.startswith("::error title=protected paths::BLOCKING")]
+        self.assertEqual(len(errors), 1, out)
+        # integrity mode prints the same paths
+        out2 = io.StringIO()
+        cwd = os.getcwd()
+        try:
+            os.chdir(r.d)
+            with contextlib.redirect_stdout(out2):
+                self.assertEqual(classify.main(["integrity", "--manifest", str(MANIFEST), "--repo", REPO,
+                                                "--base", base, "--head", head]), 0)
+        finally:
+            os.chdir(cwd)
+        self.assert_no_injected_command(out2.getvalue())
+        self.assertIn(self.SHOWN, out2.getvalue())
+
+    def test_a_hostile_conflicted_path_stays_on_the_error_line(self):
+        r = self.r
+        root = r.commit("C0", {self.HOSTILE: "r0\n"})
+        r.branch("pr", root)
+        head = r.commit("pr", {self.HOSTILE: "head\n"})
+        r.branch("main", "main")
+        base = r.commit("main", {self.HOSTILE: "base\n"})
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 2, out)
+        self.assert_no_injected_command(out)
+        errors = [l for l in out.splitlines() if l.startswith("::error title=trusted protected-paths::merge CONFLICT")]
+        self.assertEqual(len(errors), 1, out)
+        self.assertIn(self.SHOWN, errors[0])
 
 
 class MergeGroupTests(Fixture):

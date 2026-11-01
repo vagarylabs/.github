@@ -318,7 +318,7 @@ def merge_tree(base, head, attr_source, label):
     tree = fields[0]
     # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
     if r.returncode == 1 and SHA_RE.match(tree):
-        conflicted = ", ".join(sorted({f for f in fields[1:] if f})) or "no path named"
+        conflicted = ", ".join(_shown(f) for f in sorted({f for f in fields[1:] if f})) or "no path named"
         raise IntegrityError("merge CONFLICT (attributes from %s): head %s does not merge cleanly into base %s (%s). "
                              "The judge classifies what the merge lands, and a conflicted merge lands nothing it can "
                              "classify, so it fails closed: bring the PR up to date with its base and resolve the "
@@ -1466,6 +1466,21 @@ def _cmd_data(text):
     return str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+def _shown(path):
+    """A PR-chosen path as the judge prints it: the backslash and every non-printable character (a newline could start
+    a workflow command such as ::stop-commands:: on stdout) escaped, everything else as is."""
+    out = []
+    for c in path:
+        if c == "\\":
+            out.append("\\\\")
+        elif c.isprintable():
+            out.append(c)
+        else:
+            out.append("\\x%02x" % ord(c) if ord(c) < 0x100 else "\\u%04x" % ord(c) if ord(c) < 0x10000
+                       else "\\U%08x" % ord(c))
+    return "".join(out)
+
+
 def _cmd_prop(text):
     return _cmd_data(text).replace(":", "%3A").replace(",", "%2C")
 
@@ -2123,8 +2138,9 @@ def run_integrity(m, repo, base, head):
     lines = ["## Trusted workflow integrity: %s" % repo,
              "Compared against base-side commit `%s` (merge-base of base `%s` and head `%s`)." % (mb, base, head)]
     for status, path, cls in rows:
-        lines.append("- PROTECTED-PATH CHANGE `%s` %s (%s)" % (path, status, ", ".join(cls)))
-        print("::notice title=protected-path change::%s %s (%s)" % (status, path, ", ".join(cls)))
+        lines.append("- PROTECTED-PATH CHANGE `%s` %s (%s)" % (_shown(path), status, ", ".join(cls)))
+        print("::notice title=protected-path change::%s" % _cmd_data("%s %s (%s)" % (status, _shown(path),
+                                                                                    ", ".join(cls))))
     for rf in entry["ratchet_files"]:
         b, h = blob(mb, rf), blob(head, rf)
         if b is None and h is None:
@@ -2181,13 +2197,13 @@ def run_protected(m, repo, base, head, event=None, base_ref=None):
         msg = ("BLOCKING: %s change the shared signer or the protected-paths judge itself (%s) and need a Vagaris "
                "signed approval (verdict: %s); until it exists, root lifts the ruleset, merges with R4 and restores the "
                "pin after an R4 of the judge diff between the pins"
-               % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
+               % (", ".join(_shown(p) for _, p, _ in blocked), BLOCKING_CLASS, verdict))
     lines = ["## Protected paths: %s" % repo, msg, what]
-    lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
+    lines += ["- `%s` %s (%s)" % (_shown(p), s, ", ".join(c)) for s, p, c in rows]
     summary(lines)
     if classes:
         level = "error" if code else "notice"
-        print("::%s title=protected paths::%s" % (level, msg))
+        print("::%s title=protected paths::%s" % (level, _cmd_data(msg)))
     return code
 
 
@@ -2684,7 +2700,7 @@ def main(argv=None):
               "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:
-        print("::error title=trusted %s::%s" % (a.mode, exc))
+        print("::error title=trusted %s::%s" % (a.mode, _cmd_data(exc)))
         return 2
 
 

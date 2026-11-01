@@ -129,6 +129,31 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(classify.classes_for(entry, "docker/docker-compose.yml"), set())
         self.assertEqual(classify.classes_for(entry, "server/src/index.ts"), set())
 
+    def test_the_shared_signer_and_its_tests_are_protected_in_dotgithub(self):
+        # D2 (root, R4 of .github #62): the signing trust root is whoever can merge sign-image.yml to main of this
+        # repository, so the workflow and its tests are a protected path (authority-binding) on top of the default
+        # ci-judge patterns, which this profile carries verbatim. A GitHub required approval cannot be the control:
+        # every agent acts as the one VagaryLabs-Main account. This repository is where the paths live, so they must
+        # exist here, not only in a fixture.
+        m = manifest()
+        entry = classify.repo_entry(m, "vagarylabs/.github")
+        self.assertIsNot(entry, m["default"])
+        default = {pat for p in m["default"]["protected"] for pat in p["patterns"]}
+        ci_judge = {pat for p in entry["protected"] if p["class"] == "ci-judge" for pat in p["patterns"]}
+        self.assertLessEqual(default, ci_judge)
+        for path in (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"):
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file())
+                self.assertIn("authority-binding", classify.classes_for(entry, path))
+        self.assertEqual(sorted(pat for p in entry["protected"] if p["class"] == "authority-binding"
+                                for pat in p["patterns"]),
+                         [".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"])
+        # nothing else this repository holds becomes authority-binding
+        self.assertEqual(classify.classes_for(entry, "trusted/tests/test_trusted.py"), set())
+        # a PR that edits the signer is classified, with the class the protected-paths check reports
+        rows = classify.classify(entry, [("M", ".github/workflows/sign-image.yml"), ("M", "README.md")])
+        self.assertEqual(rows, [("M", ".github/workflows/sign-image.yml", ["authority-binding", "ci-judge"])])
+
     def test_unlisted_repo_gets_default(self):
         entry = classify.repo_entry(manifest(), "vagarylabs/vagaris")
         self.assertEqual(classify.classes_for(entry, ".github/workflows/ci.yml"), {"ci-judge"})

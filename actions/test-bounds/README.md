@@ -63,6 +63,7 @@ value. The rules are in `rules/`.
 | rule id | languages | position | floor |
 |---|---|---|---|
 | `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
+| `literal-bound.kill-timer.subprocess` | ts tsx js | a kill timer on a child process, `setTimeout(() => { child.kill(...); ... }, V)`: a cap on a hung child, judged by value (a cap at or above the floor costs nothing on a pass). A timer that injects an event at time T (emit, end, abort, write) is a stimulus and is not read | 120 s |
 | `literal-bound.deadline-option.condition` | ts tsx js | a deadline option passed INTO the code under test: a property of an options object in a call's arguments whose key matches /(?:timeout\|deadline\|budget)\w*Ms$/i (drainTimeoutMs, deadlineMs, budgetMs), outside the equality matchers. A shorthand `{ deadlineMs }` is not read (vagaris hardening branch 4862e5050, #835's drain red) | 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |

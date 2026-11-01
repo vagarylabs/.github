@@ -109,7 +109,7 @@ RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": J
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 # A poll loop's mark may sit on the loop's own first line, as well as on its budget's line.
-SMALL_MATCH |= {"poll", "deadline-option"}
+SMALL_MATCH |= {"poll", "deadline-option", "kill-timer"}
 # Option positions whose LITERAL zero means a count or "none" (the vagaris hardening branch, f2961a44f). A named zero is
 # still judged: a name that resolves to 0 is a bound someone chose.
 ZERO_IS_NONE = {"option", "deadline-option"}
@@ -143,6 +143,8 @@ COVERED = {
           "helper (one hop)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
+    "kill timers": "ts/tsx/js: `setTimeout(() => { child.kill(...) }, V)`, a cap on a hung child, judged as a subprocess "
+                   "bound; a timer that injects an event (emit, end, abort) is a stimulus and is not read",
     "fixed flushes": "ts/tsx/js: an awaited zero-argument call, directly in a test or hook callback, of a same-file "
                      "helper that makes a zero turn (setTimeout(fn) / setTimeout(fn, 0) / setImmediate) outside an act "
                      "imported from React, directly or through another such helper",
@@ -153,7 +155,7 @@ COVERED = {
                   "and can exit early, judged by N x interval; a deadline loop (`now - start < D`, or `now < deadline` "
                   "with `deadline = now + D`), judged by D. A budget that is a parameter of the enclosing function is "
                   "not judged here",
-    "not yet (K2 step 2C)": "sleep-as-wait, kill-timer caps and absence windows",
+    "not yet (K2 step 2C)": "sleep-as-wait and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")

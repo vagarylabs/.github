@@ -510,3 +510,20 @@ rule:
   all:
     - has: { field: function, kind: identifier, pattern: $V }
     - not: { inside: { stopBy: end, kind: call_expression, has: { field: function, regex: "^after(?:Each|All)(?:\\.\\w+)*$" } } }
+---
+# A kill timer on a child process (K2 step 2C, E): `setTimeout(() => { child.kill(...); ... }, V)` caps a hung child,
+# so V is a subprocess bound, judged by value (a cap at or above the floor costs nothing on a pass). A timer that
+# injects an event at time T (emit, end, abort, write) is a stimulus, not a bound, and is not read.
+id: literal-bound.kill-timer.subprocess
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setTimeout$" }
+    - has:
+        field: arguments
+        has:
+          nthChild: 1
+          any: [{ kind: arrow_function }, { kind: function_expression }]
+          has: { stopBy: { matches: ff-fn }, kind: call_expression, has: { field: function, kind: member_expression, has: { field: property, regex: "^kill$" } } }
+    - has: { field: arguments, has: { nthChild: 2, pattern: $V, matches: bound-value } }

@@ -17,7 +17,11 @@
 # any other merge-tree failure fails the job closed (exit 2), with no merge-base fallback. A rebase merge replays
 # commits and is not modelled, so where this job BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase
 # merges.
-# PRECONDITIONS of "what the merge lands" (delta R4 of .github #69), each held here or by root's ruleset:
+# THE BINDING INSTANCE (root's D2 direction): on vagarylabs/.github the judge binds in a MERGE QUEUE. On merge_group
+# the event's head_sha is the commit the queue lands, so classify.py diffs the queue base against that commit's OWN
+# tree and computes no merge: neither .gitattributes nor a stale base can steer it (it fails closed unless the base is
+# an ancestor of the group commit). The pull_request run below is the early warning and defence in depth.
+# PRECONDITIONS of "what the merge lands" on pull_request (delta R4 of .github #69), held here or by root's ruleset:
 # - A LIVE BASE (N2): on pull_request the judge diffs against the base branch's live tip, origin/<base.ref> in the
 #   checkout, not the event's base.sha (seen 47 minutes stale); it fails closed if base.sha is not that tip's ancestor.
 # - STRICT up-to-date on the ruleset: the base can still move between this run and the merge; strict makes GitHub

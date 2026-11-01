@@ -340,14 +340,18 @@ def live_base(payload_base, base_ref):
     if r.returncode != 0 or not SHA_RE.match(live):
         raise IntegrityError("the base branch's live tip %s is not in this checkout; the judge reads the base it "
                              "judges against there and fails closed without it" % ref)
-    r = subprocess.run(["git", "merge-base", "--is-ancestor", payload_base, live], capture_output=True, text=True)
-    if r.returncode == 1:
+    if not is_ancestor(payload_base, live):
         raise IntegrityError("the event's base %s is not an ancestor of %s's live tip %s: the base branch moved in a "
                              "way the judge cannot reconcile, so it fails closed" % (payload_base, base_ref, live))
-    if r.returncode != 0:
-        raise IntegrityError("git merge-base --is-ancestor %s %s failed (exit %d): %s"
-                             % (payload_base, live, r.returncode, r.stderr.strip() or "no message"))
     return live
+
+
+def is_ancestor(older, newer):
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", older, newer], capture_output=True, text=True)
+    if r.returncode not in (0, 1):
+        raise IntegrityError("git merge-base --is-ancestor %s %s failed (exit %d): %s"
+                             % (older, newer, r.returncode, r.stderr.strip() or "no message"))
+    return r.returncode == 0
 
 
 def changed_paths(mb, head):
@@ -2112,20 +2116,31 @@ def run_integrity(m, repo, base, head):
     return 0
 
 
+# THE BINDING INSTANCE (root's D2 direction, delta R4 of .github #69): on vagarylabs/.github the judge that binds runs
+# in a merge queue. On merge_group, head_sha IS the commit the queue lands (main fast-forwards to it), so the judge
+# classifies the queue base against that commit's OWN tree and computes no merge: neither .gitattributes nor a stale
+# base can make the judged tree differ from the landed one. The base must be an ancestor of the group commit, or the
+# judge fails closed. The pull_request run computes the merge (above) and is the early warning.
 def run_protected(m, repo, base, head, event=None, base_ref=None):
     entry = repo_entry(m, repo)
     check_commits(base, head)
     if event == "pull_request":
         judged = live_base(base, base_ref)
-        how = "the live tip `%s` of `%s` (the event's base `%s` is its ancestor)" % (judged, base_ref, base)
+        tree = landing_tree(judged, head)
+        bases = len(git("merge-base", "--all", judged, head).split())
+        what = ("Judged: the live tip `%s` of `%s` (the event's base `%s` is its ancestor) against tree `%s`, what "
+                "merging head `%s` into it lands (git merge-tree --write-tree; %d merge base%s)."
+                % (judged, base_ref, base, tree, head, bases, "" if bases == 1 else "s"))
     elif event == "merge_group":
-        judged = base
-        how = "the merge-group base `%s`" % base
+        if not is_ancestor(base, head):
+            raise IntegrityError("merge group: the base %s is not an ancestor of the group commit %s; the queue lands "
+                                 "that commit, so the judge fails closed" % (base, head))
+        judged, tree = base, head
+        what = ("Judged: the merge-group base `%s` against the group commit `%s`'s own tree, what the queue lands (no "
+                "merge computed)." % (base, head))
     else:
         raise IntegrityError("protected-paths needs --event pull_request or merge_group; got %r" % (event,))
-    tree = landing_tree(judged, head)
     rows = classify(entry, changed_paths(judged, tree))
-    bases = len(git("merge-base", "--all", judged, head).split())
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
     code, msg = protected_decision(classes, verdict)
@@ -2136,9 +2151,7 @@ def run_protected(m, repo, base, head, event=None, base_ref=None):
                "signed approval (verdict: %s); until it exists, root lifts the ruleset, merges with R4 and restores the "
                "pin after an R4 of the judge diff between the pins"
                % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
-    lines = ["## Protected paths: %s" % repo, msg,
-             "Judged: %s against tree `%s`, what merging head `%s` into it lands (git merge-tree --write-tree; "
-             "%d merge base%s)." % (how, tree, head, bases, "" if bases == 1 else "s")]
+    lines = ["## Protected paths: %s" % repo, msg, what]
     lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
     summary(lines)
     if classes:

@@ -169,6 +169,32 @@ class Fixture(unittest.TestCase):
         return self.r.git("show", "landing:" + SIGNER) if r.returncode == 0 else None
 
 
+CUR = "L1 current\nk2\nk3\nk4\nL5 current\nk6\n"
+EVIL = "L1 EVIL\nk2\nk3\nk4\nL5 EVIL\nk6\n"
+
+
+def build_p8(r, attrs):
+    """Reviewer's P8 (delta R4 of .github #69): PR-1 and PR-2 are each net zero on the signer, each with a sibling
+    commit off an EVIL one; PR-3 merges those siblings, sets the signer to EVIL and adds `attrs` ({path: text}, the
+    .gitattributes that steer a working-tree merge). Returns (main after PR-1 and PR-2, PR-3's head)."""
+    m0 = r.commit("C0", {SIGNER: CUR, "README.md": "r0\n"})
+    r.branch("a1", m0)
+    a1 = r.commit("a1: evil signer (never lands alone)", {SIGNER: EVIL})
+    r.branch("q1", a1)
+    q1 = r.commit("q1: line 5 back", {SIGNER: CUR.replace("L1 current", "L1 EVIL")})
+    p1 = r.commit("pr1 head: signer back to current", {SIGNER: CUR, "README.md": "r0 pr1\n"})
+    r.branch("q2", a1)
+    q2 = r.commit("q2: line 1 back", {SIGNER: CUR.replace("L5 current", "L5 EVIL")})
+    p2 = r.commit("pr2 head: signer back to current", {SIGNER: CUR, "README2": "pr2\n"})
+    r.branch("main", m0)
+    r.merge(p1, "merge PR-1")
+    base = r.merge(p2, "merge PR-2")
+    r.branch("attack", q1)
+    r.merge(q2, "sync q1 q2")
+    head = r.commit("docs: attributes", dict(attrs, **{SIGNER: EVIL}))
+    return base, head
+
+
 class CrissCrossTests(Fixture):
     def build_deletion(self):
         """The real .github shape: #62 adds the signer, #60 touches something else, main merges #60 then #62, and the
@@ -478,6 +504,63 @@ class LiveBaseTests(Fixture):
         code, out = judge(self.r.d, base, head, event=None)
         self.assertEqual(code, 2, out)
         self.assertIn("protected-paths needs --event pull_request or merge_group", out)
+
+
+class MergeGroupTests(Fixture):
+    """Root's D2 direction: the binding judge runs in a merge queue. On merge_group the group commit IS what lands, so
+    its own tree is classified against the queue base and no merge is computed."""
+
+    def judge_group(self, base, group):
+        def no_merge(*args):
+            raise AssertionError("merge_group computed a merge")
+        with mock.patch.object(classify, "landing_tree", no_merge):
+            return judge(self.r.d, base, group, event="merge_group", base_ref=None, live=None)
+
+    def group_commit(self, base, head):
+        """The queue's commit: base with head merged in (a real attribute-free `git merge --no-ff`)."""
+        self.r.branch("gh-readonly-queue/main/pr-1", base)
+        return self.r.merge(head, "Merge pull request #1")
+
+    def test_a_group_whose_tree_changes_the_signer_is_red(self):
+        r = self.r
+        base = r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        r.branch("pr", base)
+        head = r.commit("pr", {SIGNER: "changed\n"})
+        group = self.group_commit(base, head)
+        code, out = self.judge_group(base, group)
+        self.assertEqual(code, 1, out)
+        self.assertIn("::error title=protected paths::BLOCKING", out)
+        self.assertIn("- `%s` M (authority-binding, ci-judge)" % SIGNER, out)
+        self.assertIn("Judged: the merge-group base `%s` against the group commit `%s`'s own tree" % (base, group), out)
+
+    def test_a_group_that_touches_nothing_protected_is_green(self):
+        r = self.r
+        base = r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        r.branch("pr", base)
+        head = r.commit("pr", {"README.md": "r1\n"})
+        code, out = self.judge_group(base, self.group_commit(base, head))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no protected class touched", out)
+
+    def test_the_group_tree_is_judged_whatever_the_attributes_say(self):
+        # P8 as a group commit: the steering .gitattributes cannot change a tree that is already written.
+        base, head = build_p8(self.r, {".gitattributes": "%s merge=binary\n" % SIGNER})
+        group = self.group_commit(base, head)
+        self.assertEqual(self.r.git("show", "%s:%s" % (group, SIGNER)) + "\n", EVIL)  # what the queue lands
+        code, out = self.judge_group(base, group)
+        self.assertEqual(code, 1, out)
+        self.assertIn("- `%s` M (authority-binding, ci-judge)" % SIGNER, out)
+
+    def test_a_base_that_is_not_in_the_group_commit_fails_closed(self):
+        r = self.r
+        base = r.commit("C0", {"README.md": "r0\n"})
+        r.branch("other", base)
+        other = r.commit("other", {"x": "x\n"})
+        r.branch("main", base)
+        group = r.commit("not built on other", {"y": "y\n"})
+        code, out = self.judge_group(other, group)
+        self.assertEqual(code, 2, out)
+        self.assertIn("merge group: the base %s is not an ancestor of the group commit %s" % (other, group), out)
 
 
 class RealCommitTests(unittest.TestCase):

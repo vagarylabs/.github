@@ -136,6 +136,20 @@ is flushed before act returns, which is deterministic.
 - **Parity:** the vagaris adoption tree at 41b03e468 has 313 findings in 33 files, the same sites as the hardening
   branch's own detector.
 
+## Silent settles
+
+The vagaris hardening branch's `silent-settle` kind (45d7d8996), a family of its own judged by SHAPE, like fixed
+flushes. A silent settle is a same-file helper with three properties:
+- it has a defaulted `/timeout|deadline|budget/i` parameter;
+- its OWN body (stopping at nested functions, except Promise executors) has a deadline loop that reads `Date.now()`;
+- it has no `throw` and no `return <value>`.
+
+Such a helper waits up to its deadline and then returns as if the wait succeeded. A call of one outside an
+afterEach/afterAll callback (`silent-settle.call.condition`) is a finding. The remedy is to wait for the condition
+and fail when the deadline passes; a helper that throws, or returns its result for the caller to assert, is
+compliant. The helper's short default is judged separately, as `literal-bound.default.condition`. Parity: the vagaris
+adoption tree at 41b03e468 has 83 calls in 17 files, the hardening branch's own sites.
+
 ## Elapsed-time asserts
 
 Root's R3a (10-31): an UPPER bound, in an assertion, on a real-clock ELAPSED difference (now minus an earlier

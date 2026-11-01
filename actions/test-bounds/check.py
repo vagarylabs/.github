@@ -92,6 +92,8 @@ ELAPSED = "elapsed-assert"
 # Fixed flushes (the vagaris hardening branch, 45d7d8996; root accepted the class 10-30): a fixed count of event-loop
 # turns outside React's own act(). Judged by SHAPE: no value clears one, only a reasoned mark (or a condition wait).
 FLUSH = "fixed-flush"
+# Silent settles (the same branch): a call of a helper that returns as if settled at its deadline. Judged by SHAPE.
+SETTLE = "silent-settle"
 ELAPSED_PER_S = {"date": 1000, "perf": 1000, "hrtime": 10**9, "time": 1, "time-ns": 10**9, "monotonic": 1,
                  "monotonic-ns": 10**9, "perf-counter": 1, "perf-counter-ns": 10**9, "loop": 1, "datetime": 1}
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
@@ -144,11 +146,14 @@ COVERED = {
     "fixed flushes": "ts/tsx/js: an awaited zero-argument call, directly in a test or hook callback, of a same-file "
                      "helper that makes a zero turn (setTimeout(fn) / setTimeout(fn, 0) / setImmediate) outside an act "
                      "imported from React, directly or through another such helper",
+    "silent settles": "ts/tsx/js: a call, outside afterEach/afterAll, of a same-file helper with a defaulted "
+                      "timeout/deadline/budget parameter and a Date.now() deadline loop that neither throws nor returns "
+                      "a value",
     "poll loops": "a counted loop (`for (let i = 0; i < N; i++)`, py `for _ in range(N)`) that sleeps a fixed interval "
                   "and can exit early, judged by N x interval; a deadline loop (`now - start < D`, or `now < deadline` "
                   "with `deadline = now + D`), judged by D. A budget that is a parameter of the enclosing function is "
                   "not judged here",
-    "not yet (K2 step 2C)": "sleep-as-wait, silent settles, kill-timer caps and absence windows",
+    "not yet (K2 step 2C)": "sleep-as-wait, kill-timer caps and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -317,7 +322,7 @@ def _per_clock(utils: str, docs: list[str], name: str) -> tuple[str, list[str]]:
     return "".join(out), expanded
 
 
-SECOND_SCAN = ("ff-call",)  # rule ids that run only over the files a first scan selects (census)
+SECOND_SCAN = ("ff-call", "silent-settle.call.condition")  # rule ids that run only over the files a first scan selects (census)
 
 
 def compose_rules(lang: str, extra: list[str] = (), second: bool = False) -> str:
@@ -842,15 +847,18 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     defined = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-def")
     flushes = [m for m in matches if m["ruleId"].startswith(FLUSH + ".")]
     turns = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "ff-turn-def"}
-    calls = set()
-    turn_files = sorted({f for f, _ in turns})
-    by_turn_lang = {}
-    for f in turn_files:
-        by_turn_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
-    for lang, group in sorted(by_turn_lang.items()):
+    settles = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "ss-def"}
+    calls, settle_calls = set(), []
+    by_second_lang = {}  # the second scan: only files that define a turn helper or a silent settle
+    for f in sorted({f for f, _ in turns | settles}):
+        by_second_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
+    for lang, group in sorted(by_second_lang.items()):
         for m in sg_scan(tree.root, compose_rules(lang, second=True), group):
             mv = m["metaVariables"]["single"]
-            calls.add((m["file"], mv["F"]["text"], mv["C"]["text"]))
+            if m["ruleId"] == "ff-call":
+                calls.add((m["file"], mv["F"]["text"], mv["C"]["text"]))
+            elif (m["file"], mv["V"]["text"]) in settles:
+                settle_calls.append(m)
     grew = True
     while grew:  # the closure: a function that calls a turn helper is one
         new = {(f, fn) for f, fn, callee in calls if (f, callee) in turns} - turns
@@ -938,14 +946,16 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             rec["reason"] += ("; a `timeout under test:` mark never exempts an elapsed-time assert (root's R3a): "
                               "use a fake clock, or the code's own logged times")
         findings.setdefault(f, []).append(rec)
-    for m in sorted(flushes, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"])):
+    shaped = [(m, FLUSH, "turn", f"`await {{}}()` yields a fixed count of event-loop turns outside React's act(): wait for "
+                                 "the condition the next assertion checks")
+              for m in flushes if (m["file"], m["metaVariables"]["single"]["V"]["text"]) in turns]
+    shaped += [(m, SETTLE, "call", "`{}(...)` waits up to its deadline and then returns as if it settled: wait for the "
+                                   "condition, and fail when the deadline passes")
+               for m in settle_calls]
+    for m, family, position, why in sorted(shaped, key=lambda x: (x[0]["file"], x[0]["range"]["byteOffset"]["start"])):
         f, name = m["file"], m["metaVariables"]["single"]["V"]["text"]
-        if (f, name) not in turns:
-            continue
-        rec = {"line": _line(m["range"]), "rule": FLUSH, "position": "turn", "kind": "condition", "value": name,
-               "floor": None, "status": "finding", "mark": None,
-               "reason": f"`await {name}()` yields a fixed count of event-loop turns outside React's act(): wait for the "
-                         "condition the next assertion checks"}
+        rec = {"line": _line(m["range"]), "rule": family, "position": position, "kind": "condition", "value": name,
+               "floor": None, "status": "finding", "mark": None, "reason": why.format(name)}
         mark = next((marks_raw[(f, ln)] for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)
                      if (f, ln) in marks_raw), None)
         if mark is not None:
@@ -1487,7 +1497,8 @@ def self_test(verbose: bool = False) -> list[str]:
             print(f"self-test {case.name}: {'ok' if not any(x.startswith(case.name + ':') for x in failures) else 'FAILED'}")
     # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed.
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED}|{FLUSH})\.\S+)$", compose_rules(lang)):
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED}|{FLUSH}|{SETTLE})\.\S+)$",
+                              compose_rules(lang) + compose_rules(lang, second=True)):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
     return failures

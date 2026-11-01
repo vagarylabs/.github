@@ -10,6 +10,7 @@ async function waitFor(fn: () => Promise<boolean>, timeoutMs = 120_000) {
     if (await fn()) return;
     await sleep(50);
   }
+  throw new Error("waitFor: the condition did not hold within its deadline");
 }
 
 async function pollTimes(fn: () => Promise<boolean>, tries: number) {

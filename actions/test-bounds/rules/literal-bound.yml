@@ -211,6 +211,22 @@ utils:
         - inside: { stopBy: end, kind: program, has: { matches: react-act-import } }
   open-turn: { all: [{ matches: zero-timer }, { not: { matches: sheltered } }] }
   ff-fn: { any: [{ kind: arrow_function }, { kind: function_expression }, { kind: function_declaration }] }
+  # Silent settles (the vagaris hardening branch, 45d7d8996): a helper with a defaulted /timeout|deadline|budget/i
+  # parameter, a Date.now() deadline loop in its OWN body, and no throw and no `return <value>`, waits up to its
+  # deadline and then returns as if it settled. Its OWN body stops at nested functions, except Promise executors.
+  bound-param-default:
+    any:
+      - all: [{ kind: required_parameter }, { has: { field: pattern, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: value, kind: number } }] #[typescript,tsx]
+      - all: [{ kind: required_parameter }, { has: { field: pattern, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: value, not: { kind: number } } }] #[typescript,tsx]
+      - all: [{ kind: assignment_pattern }, { has: { field: left, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: right, regex: "." } }]
+  own-boundary:
+    all:
+      - matches: ff-fn
+      - not: { inside: { kind: arguments, inside: { kind: new_expression, has: { field: constructor, regex: "^Promise$" } } } }
+  settle-body:
+    all:
+      - has: { stopBy: { matches: own-boundary }, any: [{ kind: while_statement }, { kind: for_statement }, { kind: do_statement }], has: { stopBy: end, pattern: Date.now() } }
+      - not: { has: { stopBy: { matches: own-boundary }, any: [{ kind: throw_statement }, { all: [{ kind: return_statement }, { not: { regex: "^return\\s*;?$" } }] }] } }
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
 id: literal-bound.option.case
@@ -464,3 +480,33 @@ rule:
         stopBy: { matches: ff-fn }
         matches: ff-fn
         inside: { kind: arguments, inside: { kind: call_expression, has: { field: function, any: [{ matches: case-callee }, { matches: hook-callee }] } } }
+---
+# Silent-settle facts: a function name whose definition is a silent settle (see the utils).
+id: ss-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside:
+        kind: function_declaration
+        field: name
+        all: [{ has: { field: parameters, has: { matches: bound-param-default } } }, { has: { field: body, matches: settle-body } }]
+    - inside:
+        kind: variable_declarator
+        field: name
+        has:
+          field: value
+          all:
+            - any: [{ kind: arrow_function }, { kind: function_expression }]
+            - has: { field: parameters, has: { matches: bound-param-default } }
+            - has: { field: body, matches: settle-body }
+---
+# A call of a silent settle ($V, by name) outside an afterEach/afterAll callback: a condition wait in effect that
+# returns as if it settled at its deadline (check.py keeps it when $V is a silent settle). Runs in the second scan.
+id: silent-settle.call.condition
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $V }
+    - not: { inside: { stopBy: end, kind: call_expression, has: { field: function, regex: "^after(?:Each|All)(?:\\.\\w+)*$" } } }

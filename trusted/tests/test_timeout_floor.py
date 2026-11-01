@@ -542,6 +542,56 @@ class ManifestTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    # The one job's steps, in order (root's ruling A, R4 of .github #69 at 160c388): the trusted bytes first, the
+    # checkout and bind, then each judge, and the fetched third-party tools LAST, after every other judge has read the
+    # trusted bytes.
+    ONE_JOB_STEPS = [
+        "Write the trusted classifier, manifest and actionlint config",
+        "Resolve exact base and head SHAs",
+        "Check out the PR head as data (no credentials kept, nothing executed)",
+        "Bind base, head and merge-base in the local object store",
+        "Classify against BASE (integrity)",
+        "Check every job's timeout-minutes against the completion floor (HEAD tree)",
+        "Check that a fresh App token reads a sibling only through sibling-repo-read (HEAD tree)",
+        "Check every uses is pinned to a commit with its exact release (HEAD tree)",
+        "Fetch zizmor 1.31.1 (release-assets.lock)",
+        "Fetch actionlint 1.7.7 (release-assets.lock)",
+        "Run zizmor and actionlint over the head tree, and report (manifest workflow_lint)",
+    ]
+    FETCH_STEPS = {"Fetch zizmor 1.31.1 (release-assets.lock)", "Fetch actionlint 1.7.7 (release-assets.lock)"}
+
+    @staticmethod
+    def one_job():
+        """(the job's own keys, [each step's keys]) of the rendered one job. A key is a line at exactly the job's (4
+        spaces) or a step's (8 spaces) indentation, so nothing inside a run block (10 or more) is ever read as one."""
+        text = (ROOT / ".github" / "workflows" / "trusted-workflow-integrity.yml").read_text()
+        head, body = text.split("\n  trusted-workflow-integrity:\n", 1)[1].split("\n    steps:\n", 1)
+        job = dict(re.findall(r"^    ([A-Za-z_-]+):[ ]?(.*)$", head, re.M))
+        steps = []
+        for block in re.split(r"\n(?=      - )", "\n" + body):
+            if block.startswith("      - "):
+                lines = ["        " + block[len("      - "):].split("\n", 1)[0]] + block.split("\n")[1:]
+                steps.append(dict(m.groups() for m in map(re.compile(r"^        ([A-Za-z_-]+):[ ]?(.*)$").match, lines)
+                                  if m))
+        return job, steps
+
+    def test_the_one_job_runs_every_judge_in_order_and_no_judge_can_skip_another(self):
+        job, steps = self.one_job()
+        # the FULL order, the tools last
+        self.assertEqual([s.get("name") for s in steps], self.ONE_JOB_STEPS)
+        # every step after the integrity judge runs whatever an earlier one concluded
+        first = self.ONE_JOB_STEPS.index("Classify against BASE (integrity)") + 1
+        for s in steps[first:]:
+            with self.subTest(step=s["name"]):
+                self.assertEqual(s.get("if"), "${{ !cancelled() }}")
+        # continue-on-error ONLY on the two fetches (their outcome reaches classify.py), never on a judge or the job
+        self.assertEqual({s["name"] for s in steps if "continue-on-error" in s}, self.FETCH_STEPS)
+        self.assertEqual({s["continue-on-error"] for s in steps if "continue-on-error" in s}, {"true"})
+        self.assertNotIn("continue-on-error", job)
+        # positive control: the reader sees the job's own keys and each step's
+        self.assertEqual((job.get("name"), job.get("timeout-minutes")), ("trusted-workflow-integrity", "30"))
+        self.assertTrue(all("run" in s or "uses" in s for s in steps))
+
     def test_the_timeout_floor_is_its_own_step_of_the_one_integrity_job(self):
         # Root's ruling A (2026-11-02): one job, one inline copy. The floor reads the head tree from the checkout the
         # integrity step already has, runs whatever the integrity step concluded, and keeps its own exit code.

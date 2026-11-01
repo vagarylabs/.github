@@ -114,7 +114,10 @@ TEST_LIKE = re.compile(r"(?:^|/)(?:[^/]+\.(?:test|spec)\.[^/]+|test_[^/]+\.py|[^
                        r"|(?:^|/)(?:__tests__|tests?)/[^/]+$")
 # What each language's rules read, printed with every run so a consumer never reads absence as clean (root's #60 R4).
 COVERED = {
-    "ts/tsx/js": "the `timeout` option of a call (its kind from the callee: it/test/bench/describe*, hooks, child "
+    "ts/tsx/js": "a before*/after* hook with NO explicit bound in a file that calls a declared launcher, when the "
+                 "nearest vitest config (and the file) set no hookTimeout: vitest's 10 s default, judged at the hook "
+                 "floor (default.hook; a configured hookTimeout is judged once, at its config); "
+                 "the `timeout` option of a call (its kind from the callee: it/test/bench/describe*, hooks, child "
                  "processes by name or through an aliased import, destructured require or promisify, any other call); "
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
@@ -1008,6 +1011,14 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             + re.escape(la["name"]) + "$\" } } } }\n"
             "    - has: { field: arguments, has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, "
             "pattern: $V } }")
+        # default.hook: a call of the launcher anywhere in the file (a helper that starts a cluster counts).
+        launch_rules.append(f"id: launcher-call.{i}\nlanguage: typescript\nrule:\n  kind: call_expression\n"
+                            "  has: { field: function, kind: identifier, regex: \"^" + re.escape(la["name"]) + "$\" }")
+    if launchers:
+        # default.hook: a hook whose only argument is its callback, so its bound is the project's hookTimeout.
+        launch_rules.append("id: default-hook\nlanguage: typescript\nrule:\n  kind: call_expression\n  all:\n"
+                            "    - has: { field: function, kind: identifier, regex: \"^(?:beforeAll|afterAll|beforeEach|afterEach)$\" }\n"
+                            "    - has: { field: arguments, not: { has: { nthChild: { position: 2, ofRule: { matches: nc } } } } }")
     matches, marks_raw, unparsable, errors, parsed = [], {}, {}, set(), Counter()
     for f in files:
         try:
@@ -1062,6 +1073,9 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
                 need.setdefault(m["file"], set()).add(text)
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
+    launcher_calls = {(m["file"], int(m["ruleId"].split(".")[1])) for m in matches if m["ruleId"].startswith("launcher-call.")}
+    for f, i in launcher_calls:
+        need.setdefault(f, set()).add(launchers[i]["name"])
     resolved = _resolve_all(tree, need)
     # A condition-kind `timeout` option whose callee is an identifier may be an aliased child process (#60 delta L1).
     alias_files = sorted({m["file"] for m in bounds if m["ruleId"] == RULE + ".option.condition"
@@ -1151,6 +1165,30 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             name = m["metaVariables"]["single"]["A"]["text"]
             not_covered.append((f, _line(m["range"]), f"an upper bound on `{name}`, which a call or a destructuring "
                                                       "binds: a helper read goes one hop (D6), so this assert is not read"))
+    # K2 default.hook (root, 11-02, on #832's fourth merge group): a hook with NO explicit bound, in a file that calls a
+    # declared launcher (by binding), in a vitest project whose config sets no hookTimeout, runs at vitest's 10 s
+    # default. Nothing in the tree says so, so it is a finding here. A configured hookTimeout is judged once, at its
+    # config file (config.hook), never again at every hook that inherits it.
+    launcher_files = {f for f, i in launcher_calls
+                      if resolved.get((f, launchers[i]["name"]), (None, ""))[0] == ("module", launchers[i]["module"], launchers[i]["name"])}
+    for m in sorted((m for m in matches if m["ruleId"] == "default-hook" and m["file"] in launcher_files),
+                    key=lambda m: (m["file"], m["range"]["byteOffset"]["start"])):
+        f = m["file"]
+        config, configured = vitest_hook_config(tree, f)
+        if config is None or configured:
+            continue
+        floor = FLOORS_S["hook"] * UNIT[LANGUAGE_OF[posixpath.splitext(f)[1]]]
+        ln = _line(m["range"])
+        rec = {"line": ln, "rule": RULE, "position": "default-hook", "kind": "hook", "value": "vitest default 10_000",
+               "floor": floor, "status": "finding", "mark": None,
+               "reason": (f"no explicit bound, and {config} sets no hookTimeout, so this hook runs at vitest's 10 s "
+                          f"default, below the floor {floor} (it is in a file that starts a declared launcher)")}
+        mark = marks_raw.get((f, ln))
+        if mark is not None:
+            rec["mark"] = mark
+            if REASON.search(mark):
+                rec["status"] = "marked"
+        findings.setdefault(f, []).append(rec)
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
             unparsable.setdefault((f, 0), "CPython cannot parse it")
@@ -1787,6 +1825,28 @@ def elapsed_record(m: dict, lang: str, resolved: dict, faked: bool) -> dict:
     return rec
 
 
+VITEST_CONFIGS = tuple(f"vitest.config.{ext}" for ext in ("ts", "mts", "cts", "js", "mjs", "cjs"))
+
+
+def vitest_hook_config(tree: "Tree", f: str) -> tuple[str | None, bool]:
+    """(the vitest config nearest `f`, whether it or `f` itself sets hookTimeout). No vitest config up the tree: (None,
+    False), so default.hook judges nothing (the runner is unknown). Comments are stripped before the match; one that
+    eats a string's `//` can only miss a setting, which is toward a finding."""
+    def sets(path: str) -> bool:
+        tree.ensure([path])
+        code = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", tree.read(path))
+        return bool(re.search(r"\bhookTimeout\s*:", code))
+    d = posixpath.dirname(f)
+    while True:
+        for name in VITEST_CONFIGS:
+            config = posixpath.join(d, name) if d else name
+            if config in tree.fileset:
+                return config, sets(config) or sets(f)
+        if not d:
+            return None, False
+        d = posixpath.dirname(d)
+
+
 def _value_of(text: str, lang: str, file: str, resolved: dict) -> tuple[Fraction | None, str]:
     if NAME.match(text):
         ok, why = resolved.get((file, text), (None, f"`{text}` is not resolved"))
@@ -2228,7 +2288,7 @@ def self_test(verbose: bool = False) -> list[str]:
         failures.append(f"the binding pass reads {sorted(reads)}, PY_BOUND_RULES declares {sorted(PY_BOUND_RULES)}")
     for lang in ("typescript", "tsx", "javascript", "python"):
         for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)) + (
-                list(PY_BOUND_RULES) if lang == "python" else []):
+                list(PY_BOUND_RULES) if lang == "python" else []) + ([f"{RULE}.default-hook.hook"] if lang == "typescript" else []):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
     return failures

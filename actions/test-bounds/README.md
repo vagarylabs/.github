@@ -134,6 +134,14 @@ Otherwise it is a finding. The proof can be:
 - **the launcher class**: a `beforeAll` whose first argument calls a declared launcher. The launcher must be bound
   by a plain named import from its declared module, under the same guards. Such a hook is judged against the
   launcher's own floor. Embedded Postgres owns a 180 s startup, so its hook floor is 210 000 ms.
+- **default.hook** (root, 11-02, on vagaris #832's fourth merge group). A `beforeAll`/`afterAll`/`beforeEach`/
+  `afterEach` whose only argument is its callback has no explicit bound: it runs at its project's `hookTimeout`.
+  - When the file calls a declared launcher (by binding, anywhere in the file: a helper that starts a cluster counts)
+    and the nearest vitest config, and the file itself (`vi.setConfig`), set NO hookTimeout, the hook runs at vitest's
+    10 s default. Nothing in the tree says so, so the hook is a finding, judged at the hook floor.
+  - A configured hookTimeout is judged once, at its config file (`config.hook`), never again at every hook that
+    inherits it.
+  - A file with no vitest config up the tree is not judged here: the runner is unknown.
 - **a mark**: `timeout under test: <what it proves>`, with the mark's own text on the value's line (not merely a
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.

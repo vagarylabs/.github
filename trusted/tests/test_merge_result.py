@@ -32,6 +32,7 @@ MANIFEST = ROOT / "trusted" / "manifest.json"
 REPO = "vagarylabs/.github"
 SIGNER = ".github/workflows/sign-image.yml"
 SIGNER_TESTS = "trusted/tests/test_sign_image.py"
+BASE_IS_LIVE = object()
 
 
 class Repo:
@@ -85,15 +86,27 @@ class Repo:
         return self.git("rev-parse", ref)
 
 
-def judge(d, base, head, repo=REPO):
-    """classify.main protected-paths, as the workflow runs it: (exit code, stdout)."""
+def judge(d, base, head, repo=REPO, live=BASE_IS_LIVE, event="pull_request", base_ref="main"):
+    """classify.main protected-paths, as the workflow runs it: (exit code, stdout). On pull_request the checkout's
+    refs/remotes/origin/main is the live base: by default the event's base; `live` sets another tip, None removes it."""
     out, cwd = io.StringIO(), os.getcwd()
     os.environ.pop("GITHUB_STEP_SUMMARY", None)
+    ref = "refs/remotes/origin/main"
+    if live is BASE_IS_LIVE:
+        live = base
+    if live is None:
+        subprocess.run(["git", "update-ref", "-d", ref], cwd=d, capture_output=True)
+    else:
+        subprocess.run(["git", "update-ref", ref, live], cwd=d, check=True, capture_output=True)
+    args = ["protected-paths", "--manifest", str(MANIFEST), "--repo", repo, "--base", base, "--head", head]
+    if event is not None:
+        args += ["--event", event]
+    if base_ref is not None:
+        args += ["--base-ref=" + base_ref]  # the template's form: a value with a leading dash stays a value
     try:
         os.chdir(d)
         with contextlib.redirect_stdout(out):
-            code = classify.main(["protected-paths", "--manifest", str(MANIFEST), "--repo", repo,
-                                  "--base", base, "--head", head])
+            code = classify.main(args)
     finally:
         os.chdir(cwd)
     return code, out.getvalue()
@@ -395,6 +408,76 @@ class FailClosedTests(Fixture):
             classify.git_version()
         self.assertIn("needs git >= 2.38", str(cm.exception))
         self.assertGreaterEqual(classify.git_version(), classify.MERGE_TREE_MIN_GIT)  # the git these tests run
+
+
+class LiveBaseTests(Fixture):
+    """N2 (delta R4 of .github #69): on pull_request the judge diffs against the base branch's LIVE tip
+    (origin/<base.ref> in the checkout), not the event's base.sha, which was seen 47 minutes stale on #69."""
+
+    def build_door_then_rollback(self, head_contains_live_tip):
+        r = self.r
+        m0 = r.commit("C0", {SIGNER: "signer S0 (old, weak)\n", "README.md": "r0\n"})
+        r.branch("door", "main")
+        x = r.commit("door: fix the signer", {SIGNER: "signer S1 (security fix)\n"})
+        r.branch("main", "main")
+        m1 = r.merge("door", "door merges (root lift and restore)")
+        # P10 (strict on): the head contains the live tip. P3 (strict off): it holds only the door commit.
+        r.branch("attack", m1 if head_contains_live_tip else x)
+        head = r.commit("docs (and the old signer)", {SIGNER: "signer S0 (old, weak)\n", "README.md": "r0 docs\n"})
+        self.assertEqual(self.landed_signer(m1, head), "signer S0 (old, weak)")  # the merge rolls the fix back
+        return m0, m1, head
+
+    def test_a_stale_event_base_is_judged_at_the_live_tip(self):
+        for contains in (True, False):
+            with self.subTest(head_contains_live_tip=contains):
+                self.tearDown()
+                self.setUp()
+                m0, m1, head = self.build_door_then_rollback(contains)
+                # precondition: at the stale event base the same head is green (what the judge read before N2)
+                code, out = judge(self.r.d, m0, head, live=m0)
+                self.assertEqual(code, 0, out)
+                code, out = judge(self.r.d, m0, head, live=m1)
+                self.assertEqual(code, 1, out)
+                self.assertIn("- `%s` M (authority-binding, ci-judge)" % SIGNER, out)
+                self.assertIn("Judged: the live tip `%s` of `main` (the event's base `%s` is its ancestor)" % (m1, m0),
+                              out)
+
+    def test_an_event_base_that_is_not_an_ancestor_of_the_live_tip_fails_closed(self):
+        r = self.r
+        m0 = r.commit("C0", {"README.md": "r0\n"})
+        r.branch("elsewhere", "main")
+        other = r.commit("a branch the event base is not on", {"x": "x\n"})
+        r.branch("main", "main")
+        base = r.commit("main", {"y": "y\n"})
+        head = r.commit("pr", {"README.md": "r1\n"})
+        code, out = judge(r.d, base, head, live=other)
+        self.assertEqual(code, 2, out)
+        self.assertIn("is not an ancestor of main's live tip %s" % other, out)
+        self.assertEqual(judge(r.d, base, head, live=base)[0], 0)  # control: the same PR at its own live tip
+        self.assertNotEqual(m0, other)
+
+    def test_a_missing_live_tip_fails_closed(self):
+        base = self.r.commit("C0", {"README.md": "r0\n"})
+        head = self.r.commit("pr", {"README.md": "r1\n"})
+        code, out = judge(self.r.d, base, head, live=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn("refs/remotes/origin/main is not in this checkout", out)
+
+    def test_a_hostile_or_missing_base_ref_fails_closed(self):
+        base = self.r.commit("C0", {"README.md": "r0\n"})
+        head = self.r.commit("pr", {"README.md": "r1\n"})
+        for ref in ("../x", "-x", "main\n", "a..b", "", None, "refs/heads/main extra"):
+            with self.subTest(ref=ref):
+                code, out = judge(self.r.d, base, head, base_ref=ref)
+                self.assertEqual(code, 2, out)
+                self.assertIn("needs the base branch name (--base-ref)", out)
+
+    def test_the_event_is_required(self):
+        base = self.r.commit("C0", {"README.md": "r0\n"})
+        head = self.r.commit("pr", {"README.md": "r1\n"})
+        code, out = judge(self.r.d, base, head, event=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn("protected-paths needs --event pull_request or merge_group", out)
 
 
 class RealCommitTests(unittest.TestCase):

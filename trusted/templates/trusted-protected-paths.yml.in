@@ -17,6 +17,12 @@
 # any other merge-tree failure fails the job closed (exit 2), with no merge-base fallback. A rebase merge replays
 # commits and is not modelled, so where this job BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase
 # merges.
+# PRECONDITIONS of "what the merge lands" (delta R4 of .github #69), each held here or by root's ruleset:
+# - A LIVE BASE (N2): on pull_request the judge diffs against the base branch's live tip, origin/<base.ref> in the
+#   checkout, not the event's base.sha (seen 47 minutes stale); it fails closed if base.sha is not that tip's ancestor.
+# - STRICT up-to-date on the ruleset: the base can still move between this run and the merge; strict makes GitHub
+#   demand a new run when it does.
+# - No rebase merges (above).
 #
 # BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py)
 # or to this judge itself (this workflow, trusted/templates/trusted-protected-paths.yml.in and the _shas.yml.in and
@@ -70,6 +76,9 @@ jobs:
           REPO: ${{ github.repository }}
           BASE: ${{ steps.shas.outputs.base }}
           HEAD_SHA: ${{ steps.shas.outputs.head }}
+          EVENT: ${{ github.event_name }}
+          # pull_request only (empty on merge_group): the judge reads this branch's LIVE tip from the checkout.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/trusted"
@@ -82,4 +91,4 @@ jobs:
           TRUSTED_MANIFEST_JSON
           # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
           python3 -I "$d/classify.py" protected-paths --manifest "$d/manifest.json" \
-            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA"
+            --repo "$REPO" --base "$BASE" --head "$HEAD_SHA" --event="$EVENT" --base-ref="$BASE_REF"

@@ -319,6 +319,37 @@ def landing_tree(base, head):
     return tree
 
 
+# THE BASE IT JUDGES AGAINST (N2, delta R4 of .github #69): on pull_request, the base branch's LIVE tip, never the
+# event's pull_request.base.sha. That sha goes stale: on #69 a run judged fa7d4abc 47 minutes after main had moved to
+# 389813b, and a verdict at a stale base can roll back a door change main gained since (one merge base is enough).
+# The live tip is refs/remotes/origin/<base.ref> in the job's checkout (fetch-depth 0 fetches
+# +refs/heads/*:refs/remotes/origin/*), read when the judge runs; the event's base must be its ancestor, or the judge
+# fails closed. Strict "branch must be up to date" on the ruleset closes the window between this run and the merge.
+BRANCH_RE = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)(?!/)[A-Za-z0-9._/-]+(?<!/)(?<!\.lock)\Z")
+
+
+def live_base(payload_base, base_ref):
+    """The live tip of the PR's base branch, origin/<base_ref> in this checkout; IntegrityError (fail closed) when it is
+    missing, or when the event's base is not its ancestor."""
+    if not BRANCH_RE.match(base_ref or ""):
+        raise IntegrityError("pull_request needs the base branch name (--base-ref), a plain branch name; got %r"
+                             % (base_ref,))
+    ref = "refs/remotes/origin/%s" % base_ref
+    r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"], capture_output=True, text=True)
+    live = r.stdout.strip()
+    if r.returncode != 0 or not SHA_RE.match(live):
+        raise IntegrityError("the base branch's live tip %s is not in this checkout; the judge reads the base it "
+                             "judges against there and fails closed without it" % ref)
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", payload_base, live], capture_output=True, text=True)
+    if r.returncode == 1:
+        raise IntegrityError("the event's base %s is not an ancestor of %s's live tip %s: the base branch moved in a "
+                             "way the judge cannot reconcile, so it fails closed" % (payload_base, base_ref, live))
+    if r.returncode != 0:
+        raise IntegrityError("git merge-base --is-ancestor %s %s failed (exit %d): %s"
+                             % (payload_base, live, r.returncode, r.stderr.strip() or "no message"))
+    return live
+
+
 def changed_paths(mb, head):
     out = []
     for line in git("diff", "--name-status", "--no-renames", "-z", mb, head).split("\0"):
@@ -2081,12 +2112,20 @@ def run_integrity(m, repo, base, head):
     return 0
 
 
-def run_protected(m, repo, base, head):
+def run_protected(m, repo, base, head, event=None, base_ref=None):
     entry = repo_entry(m, repo)
     check_commits(base, head)
-    tree = landing_tree(base, head)
-    rows = classify(entry, changed_paths(base, tree))
-    bases = len(git("merge-base", "--all", base, head).split())
+    if event == "pull_request":
+        judged = live_base(base, base_ref)
+        how = "the live tip `%s` of `%s` (the event's base `%s` is its ancestor)" % (judged, base_ref, base)
+    elif event == "merge_group":
+        judged = base
+        how = "the merge-group base `%s`" % base
+    else:
+        raise IntegrityError("protected-paths needs --event pull_request or merge_group; got %r" % (event,))
+    tree = landing_tree(judged, head)
+    rows = classify(entry, changed_paths(judged, tree))
+    bases = len(git("merge-base", "--all", judged, head).split())
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
     code, msg = protected_decision(classes, verdict)
@@ -2098,8 +2137,8 @@ def run_protected(m, repo, base, head):
                "pin after an R4 of the judge diff between the pins"
                % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
     lines = ["## Protected paths: %s" % repo, msg,
-             "Judged: base `%s` against tree `%s`, what merging head `%s` into it lands (git merge-tree --write-tree; "
-             "%d merge base%s)." % (base, tree, head, bases, "" if bases == 1 else "s")]
+             "Judged: %s against tree `%s`, what merging head `%s` into it lands (git merge-tree --write-tree; "
+             "%d merge base%s)." % (how, tree, head, bases, "" if bases == 1 else "s")]
     lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
     summary(lines)
     if classes:
@@ -2576,6 +2615,8 @@ def main(argv=None):
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", help="required, except in timeout-floor mode (which reads the head tree only)")
     ap.add_argument("--head", required=True)
+    ap.add_argument("--event", choices=("pull_request", "merge_group"), help="protected-paths: the triggering event")
+    ap.add_argument("--base-ref", help="protected-paths on pull_request: the base branch name (its live tip is judged)")
     ap.add_argument("--zizmor", help="workflow-lint: zizmor's JSON output")
     ap.add_argument("--zizmor-rc", type=int, help="workflow-lint: zizmor's exit code")
     ap.add_argument("--actionlint", help="workflow-lint: actionlint's JSON output")
@@ -2593,7 +2634,9 @@ def main(argv=None):
                 raise IntegrityError("workflow-lint needs --zizmor, --zizmor-rc, --actionlint and --actionlint-rc")
             return run_workflow_lint(m, a.repo, a.head, a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc,
                                      a.zizmor_fetch, a.actionlint_fetch)
-        fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor,
+        if a.mode == "protected-paths":
+            return run_protected(m, a.repo, a.base, a.head, a.event, a.base_ref)
+        fn = {"integrity": run_integrity, "timeout-floor": run_timeout_floor,
               "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:

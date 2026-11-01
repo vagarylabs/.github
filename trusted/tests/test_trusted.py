@@ -243,9 +243,11 @@ class SignerBlockingTests(unittest.TestCase):
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
         try:
             os.chdir(self.d)
+            git(self.d, "update-ref", "refs/remotes/origin/main", self.base)  # the live base, as the checkout has it
             with contextlib.redirect_stdout(out):
                 code = classify.main(["protected-paths", "--manifest", str(MANIFEST), "--repo", self.REPO,
-                                      "--base", self.base, "--head", head])
+                                      "--base", self.base, "--head", head, "--event", "pull_request",
+                                      "--base-ref", "main"])
         finally:
             os.chdir(cwd)
         return code, out.getvalue()
@@ -395,11 +397,15 @@ class EndToEndTests(unittest.TestCase):
         out = io.StringIO()
         cwd = os.getcwd()
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        extra = []
+        if mode == "protected-paths":  # the live base, as the checkout has it
+            git(self.d, "update-ref", "refs/remotes/origin/main", base or self.base)
+            extra = ["--event", "pull_request", "--base-ref", "main"]
         try:
             os.chdir(self.d)
             with contextlib.redirect_stdout(out):
                 code = classify.main([mode, "--manifest", str(MANIFEST), "--repo", "vagarylabs/vps-ansible",
-                                      "--base", base or self.base, "--head", head or self.head])
+                                      "--base", base or self.base, "--head", head or self.head] + extra)
         finally:
             os.chdir(cwd)
         return code, out.getvalue()

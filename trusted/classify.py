@@ -245,12 +245,64 @@ def resolve_head(base, head):
     git("cat-file", "-e", "%s^{commit}" % head)
 
 
-def resolve(base, head):
+def check_commits(base, head):
     for label, sha in (("base", base), ("head", head)):
         if not SHA_RE.match(sha or ""):
             raise IntegrityError("%s is not an exact 40-hex SHA: %r" % (label, sha))
         git("cat-file", "-e", "%s^{commit}" % sha)
+
+
+def resolve(base, head):
+    check_commits(base, head)
     return git("merge-base", base, head).strip()
+
+
+# WHAT THE PROTECTED-PATHS JUDGE CLASSIFIES (B1, R4 of .github #69): the change the merge LANDS on the base, never
+# merge-base..head. `git merge-base` names ONE common ancestor; when base and head have two or more (a criss-cross,
+# e.g. a head that merges two PR heads main already merged), the diff from that one can miss what the merge does. On
+# real .github commits a head that merged #60's and #62's heads, deleted sign-image.yml and added a README line passed,
+# and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort, git >= 2.38) writes the tree the merge
+# of head into base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
+# An older git, a conflict, or any other merge-tree failure FAILS CLOSED (exit 2). There is no fallback to a merge-base
+# diff. This models a merge commit and a squash (the same tree); a rebase merge replays commits and can land something
+# else, so where this judge BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase merges (root's setting).
+MERGE_TREE_MIN_GIT = (2, 38)
+
+
+def git_version():
+    out = git("version").strip()
+    m = re.match(r"git version (\d+)\.(\d+)", out)
+    if not m:
+        raise IntegrityError("cannot read the git version from %r: the protected-paths judge needs git >= %d.%d "
+                             "(`git merge-tree --write-tree`) and has no merge-base fallback"
+                             % ((out,) + MERGE_TREE_MIN_GIT))
+    return int(m.group(1)), int(m.group(2))
+
+
+def landing_tree(base, head):
+    """The tree that merging head into base produces, from `git merge-tree --write-tree`; IntegrityError otherwise."""
+    have = git_version()
+    if have < MERGE_TREE_MIN_GIT:
+        raise IntegrityError("git %d.%d has no `git merge-tree --write-tree` (needs >= %d.%d): the protected-paths "
+                             "judge cannot compute what the merge lands, and has no merge-base fallback"
+                             % (have + MERGE_TREE_MIN_GIT))
+    r = subprocess.run(["git", "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", base, head],
+                       capture_output=True, text=True)
+    fields = r.stdout.split("\0")
+    tree = fields[0]
+    # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
+    if r.returncode == 1 and SHA_RE.match(tree):
+        conflicted = ", ".join(sorted({f for f in fields[1:] if f})) or "no path named"
+        raise IntegrityError("merge CONFLICT: head %s does not merge cleanly into base %s (%s). The judge classifies "
+                             "what the merge lands, and a conflicted merge lands nothing it can classify, so it fails "
+                             "closed: bring the PR up to date with its base and resolve the conflict"
+                             % (head, base, conflicted))
+    if r.returncode != 0 or not SHA_RE.match(tree):
+        raise IntegrityError("git merge-tree --write-tree %s %s failed (exit %d): %s; the judge fails closed and has "
+                             "no merge-base fallback" % (base, head, r.returncode, r.stderr.strip() or "no message"))
+    if git("cat-file", "-t", tree).strip() != "tree":
+        raise IntegrityError("git merge-tree --write-tree returned %s, which is not a tree" % tree)
+    return tree
 
 
 def changed_paths(mb, head):
@@ -2017,8 +2069,10 @@ def run_integrity(m, repo, base, head):
 
 def run_protected(m, repo, base, head):
     entry = repo_entry(m, repo)
-    mb = resolve(base, head)
-    rows = classify(entry, changed_paths(mb, head))
+    check_commits(base, head)
+    tree = landing_tree(base, head)
+    rows = classify(entry, changed_paths(base, tree))
+    bases = len(git("merge-base", "--all", base, head).split())
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
     code, msg = protected_decision(classes, verdict)
@@ -2028,7 +2082,9 @@ def run_protected(m, repo, base, head):
         msg = ("BLOCKING: %s change the shared signer (%s) and need a Vagaris signed approval (verdict: %s); until it "
                "exists, root lifts the ruleset, merges with R4 and restores the pin"
                % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
-    lines = ["## Protected paths: %s" % repo, msg]
+    lines = ["## Protected paths: %s" % repo, msg,
+             "Judged: base `%s` against tree `%s`, what merging head `%s` into it lands (git merge-tree --write-tree; "
+             "%d merge base%s)." % (base, tree, head, bases, "" if bases == 1 else "s")]
     lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
     summary(lines)
     if classes:

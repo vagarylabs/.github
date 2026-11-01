@@ -33,6 +33,7 @@ with the workflow and printed in the summary; this reader cannot verify it.
 from __future__ import annotations
 
 import io
+import http.client
 import json
 import os
 import re
@@ -48,8 +49,11 @@ PAGE = 100
 POLL_SECONDS = 20
 MAX_WAIT_MINUTES = 30
 PASSING = ("success", "skipped", "neutral")
-# Any of these from a malformed response or receipt is a refusal (FULL), never a crash.
-UNREADABLE = (OSError, KeyError, TypeError, ValueError, AttributeError, IndexError, zipfile.BadZipFile)
+# Any of these from a malformed response or receipt is a refusal (FULL), never a crash. http.client.HTTPException is a
+# torn transfer (IncompleteRead, BadStatusLine, LineTooLong): not an OSError, and before root's #858 R4 it escaped,
+# so the push run concluded failure and the release gate refused that commit until a re-run.
+UNREADABLE = (OSError, KeyError, TypeError, ValueError, AttributeError, IndexError, zipfile.BadZipFile,
+              http.client.HTTPException)
 
 
 class _NoAuthOnRedirect(urllib.request.HTTPRedirectHandler):

@@ -85,6 +85,25 @@ utils:
     all:
       - kind: identifier
       - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, pattern: $N } } }
+  # Sleep-as-wait (K2 step 2C, A; see literal-bound.yml): ONE fixed sleep statement (time.sleep / asyncio.sleep, not 0)
+  # in a test function's own body (`test_*`), outside any loop, then an assertion. Judged by its SHAPE.
+  py-fixed-sleep:
+    any:
+      - all: [{ kind: call }, { has: { field: function, regex: "^(?:time\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0(?:\\.0*)?$" } } } }]
+      - all: [{ kind: await }, { has: { kind: call, all: [{ has: { field: function, regex: "^(?:asyncio\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0(?:\\.0*)?$" } } } }] } }]
+  py-test-stmt:
+    all:
+      - kind: expression_statement
+      - inside: { stopBy: { matches: poll-boundary }, kind: function_definition, has: { field: name, regex: "^test" } }
+      - not: { inside: { stopBy: { matches: poll-boundary }, any: [{ kind: for_statement }, { kind: while_statement }] } }
+  py-assertion:
+    any:
+      - kind: assert_statement
+      - all: [{ kind: call }, { has: { field: function, regex: "(?:^|\\.)assert[A-Z]\\w*$" } }]
+  py-then-asserts:
+    any:
+      - precedes: { stopBy: end, any: [{ matches: py-assertion }, { has: { stopBy: end, matches: py-assertion } }] }
+      - inside: { stopBy: { matches: poll-boundary }, precedes: { stopBy: end, any: [{ matches: py-assertion }, { has: { stopBy: end, matches: py-assertion } }] } }
 ---
 id: literal-bound.keyword.subprocess
 language: python
@@ -225,3 +244,30 @@ rule:
         - all:
             - kind: while_statement
             - has: { field: condition, any: [{ matches: py-deadline-test }, { has: { stopBy: end, matches: py-deadline-test } }] }
+---
+# Sleep-as-wait: a fixed sleep statement in a test function's own body, then an assertion.
+id: sleep-as-wait.direct.condition
+language: python
+rule:
+  all:
+    - matches: py-test-stmt
+    - has: { matches: py-fixed-sleep }
+    - matches: py-then-asserts
+---
+# Sleep-as-wait through a same-file helper whose body is ONE fixed sleep (sleep-def names them).
+id: sleep-as-wait.helper.condition
+language: python
+rule:
+  all:
+    - matches: py-test-stmt
+    - has: { kind: call, all: [{ has: { field: function, any: [{ kind: identifier, pattern: $V }, { kind: attribute, has: { field: attribute, pattern: $V } }] } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }] }
+    - matches: py-then-asserts
+---
+id: sleep-def
+language: python
+rule:
+  kind: identifier
+  inside:
+    kind: function_definition
+    field: name
+    has: { field: body, all: [{ has: { kind: expression_statement, has: { matches: py-fixed-sleep } } }, { not: { has: { nthChild: 2 } } }] }

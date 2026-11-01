@@ -1,0 +1,32 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 5
+   }
+  ]
+ },
+ "files": {
+  "red.test.ts": {
+   "finding": 6,
+   "marked": 1
+  },
+  "green.test.ts": {
+   "finding": 1,
+   "cleared": 1
+  },
+  "a.test.tsx": {
+   "finding": 2,
+   "cleared": 1
+  },
+  "a.test.js": {
+   "finding": 2,
+   "cleared": 1
+  },
+  "test_sleep.py": {
+   "finding": 3,
+   "marked": 1
+  }
+ }
+}

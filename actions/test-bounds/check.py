@@ -94,6 +94,9 @@ ELAPSED = "elapsed-assert"
 FLUSH = "fixed-flush"
 # Silent settles (the same branch): a call of a helper that returns as if settled at its deadline. Judged by SHAPE.
 SETTLE = "silent-settle"
+# Sleep-as-wait (K2 step 2C, A): one fixed sleep in a test body, then an assertion. Judged by SHAPE (a longer sleep is
+# the worst fix, so no value clears one).
+SLEEP = "sleep-as-wait"
 ELAPSED_PER_S = {"date": 1000, "perf": 1000, "hrtime": 10**9, "time": 1, "time-ns": 10**9, "monotonic": 1,
                  "monotonic-ns": 10**9, "perf-counter": 1, "perf-counter-ns": 10**9, "loop": 1, "datetime": 1}
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
@@ -143,6 +146,9 @@ COVERED = {
           "helper (one hop)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
+    "sleep-as-wait": "one fixed, non-zero sleep (ts/js sleep/delay/wait/pause or new Promise(setTimeout); py "
+                     "time.sleep/asyncio.sleep) as a statement of a test or hook body, outside any loop, followed by an "
+                     "assertion; or an awaited zero-argument call of a same-file helper that is that one sleep",
     "kill timers": "ts/tsx/js: `setTimeout(() => { child.kill(...) }, V)`, a cap on a hung child, judged as a subprocess "
                    "bound; a timer that injects an event (emit, end, abort) is a stimulus and is not read",
     "fixed flushes": "ts/tsx/js: an awaited zero-argument call, directly in a test or hook callback, of a same-file "
@@ -155,7 +161,7 @@ COVERED = {
                   "and can exit early, judged by N x interval; a deadline loop (`now - start < D`, or `now < deadline` "
                   "with `deadline = now + D`), judged by D. A budget that is a parameter of the enclosing function is "
                   "not judged here",
-    "not yet (K2 step 2C)": "sleep-as-wait and absence windows",
+    "not yet (K2 step 2C)": "absence windows as their own notice-level family (they are read as sleep-as-wait for now)",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -951,6 +957,11 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     shaped = [(m, FLUSH, "turn", f"`await {{}}()` yields a fixed count of event-loop turns outside React's act(): wait for "
                                  "the condition the next assertion checks")
               for m in flushes if (m["file"], m["metaVariables"]["single"]["V"]["text"]) in turns]
+    sleep_defs = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "sleep-def"}
+    shaped += [(m, SLEEP, m["ruleId"].split(".")[1], "a fixed sleep (`{}`) stands in for the condition the next assertion "
+                "checks: wait for that condition (a longer sleep is never the fix)")
+               for m in matches if m["ruleId"].startswith(SLEEP + ".")
+               and (m["ruleId"] == SLEEP + ".direct.condition" or (m["file"], m["metaVariables"]["single"]["V"]["text"]) in sleep_defs)]
     shaped += [(m, SETTLE, "call", "`{}(...)` waits up to its deadline and then returns as if it settled: wait for the "
                                    "condition, and fail when the deadline passes")
                for m in settle_calls]
@@ -1499,7 +1510,7 @@ def self_test(verbose: bool = False) -> list[str]:
             print(f"self-test {case.name}: {'ok' if not any(x.startswith(case.name + ':') for x in failures) else 'FAILED'}")
     # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed.
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED}|{FLUSH}|{SETTLE})\.\S+)$",
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED}|{FLUSH}|{SETTLE}|{SLEEP})\.\S+)$",
                               compose_rules(lang) + compose_rules(lang, second=True)):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")

@@ -227,6 +227,38 @@ utils:
     all:
       - has: { stopBy: { matches: own-boundary }, any: [{ kind: while_statement }, { kind: for_statement }, { kind: do_statement }], has: { stopBy: end, pattern: Date.now() } }
       - not: { has: { stopBy: { matches: own-boundary }, any: [{ kind: throw_statement }, { all: [{ kind: return_statement }, { not: { regex: "^return\\s*;?$" } }] }] } }
+  # Sleep-as-wait (K2 step 2C, A; DESIGN-K2 §2C revised): ONE fixed awaited sleep as a statement of a test or hook
+  # body, then an assertion. Judged by its SHAPE: under value semantics the cheapest "fix" would be a longer sleep,
+  # so no value clears it; a condition wait does, or the mark with a reason (a JWT `iat` boundary, an mtime tick).
+  # A zero sleep is a flush (fixed-flush), a sleep in a loop is a poll (poll.condition), and a sleep in a mock
+  # handler is latency injection (not in the test's own body).
+  sleep-expr:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:sleep|delay|wait|pause)$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0$" } } } }]
+      - all:
+          - kind: new_expression
+          - has: { field: constructor, regex: "^Promise$" }
+          - has: { field: arguments, has: { nthChild: 1, kind: arrow_function, has: { field: body, any: [{ matches: nonzero-timer }, { has: { stopBy: end, matches: nonzero-timer } }] } } }
+  nonzero-timer:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:(?:window|globalThis)\\.)?setTimeout$" }
+      - has: { field: arguments, has: { nthChild: 2, pattern: $V, not: { regex: "^0$" } } }
+  # A statement of a test or hook callback's own body, outside any loop.
+  test-body-stmt:
+    all:
+      - kind: expression_statement
+      - inside: { stopBy: { matches: ff-fn }, matches: ff-fn, inside: { kind: arguments, inside: { kind: call_expression, has: { field: function, any: [{ matches: case-callee }, { matches: hook-callee }] } } } }
+      - not: { inside: { stopBy: { matches: ff-fn }, any: [{ kind: for_statement }, { kind: for_in_statement }, { kind: while_statement }, { kind: do_statement }] } }
+  assertion-call: { kind: call_expression, has: { field: function, regex: "^(?:expect(?:\\.soft)?\\(|assert(?:\\.\\w+)?$)" } }
+  then-asserts:
+    any:
+      - precedes: { stopBy: end, any: [{ matches: assertion-call }, { has: { stopBy: end, matches: assertion-call } }] }
+      - inside: { stopBy: { matches: ff-fn }, precedes: { stopBy: end, any: [{ matches: assertion-call }, { has: { stopBy: end, matches: assertion-call } }] } }
+  sleep-helper-body:
+    any:
+      - all: [{ kind: new_expression }, { matches: sleep-expr }]
+      - all: [{ kind: statement_block }, { has: { kind: expression_statement, has: { kind: await_expression, has: { matches: sleep-expr } } } }, { not: { has: { nthChild: 2 } } }]
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
 id: literal-bound.option.case
@@ -527,3 +559,34 @@ rule:
           any: [{ kind: arrow_function }, { kind: function_expression }]
           has: { stopBy: { matches: ff-fn }, kind: call_expression, has: { field: function, kind: member_expression, has: { field: property, regex: "^kill$" } } }
     - has: { field: arguments, has: { nthChild: 2, pattern: $V, matches: bound-value } }
+---
+# Sleep-as-wait: `await sleep(V)` / `await new Promise(r => setTimeout(r, V))` (V not 0) as a test or hook statement,
+# then an assertion.
+id: sleep-as-wait.direct.condition
+language: typescript
+rule:
+  all:
+    - matches: test-body-stmt
+    - has: { kind: await_expression, has: { matches: sleep-expr } }
+    - matches: then-asserts
+---
+# Sleep-as-wait through a same-file helper: `await settle()` where settle's body is ONE fixed sleep (ss-def's twin,
+# sleep-def, names them; check.py keeps the call when $V is one).
+id: sleep-as-wait.helper.condition
+language: typescript
+rule:
+  all:
+    - matches: test-body-stmt
+    - has: { kind: await_expression, has: { kind: call_expression, all: [{ has: { field: function, kind: identifier, pattern: $V } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }] } }
+    - matches: then-asserts
+---
+id: sleep-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside: { kind: function_declaration, field: name, has: { field: body, matches: sleep-helper-body } }
+    - inside:
+        kind: variable_declarator
+        field: name
+        has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, matches: sleep-helper-body } }] }

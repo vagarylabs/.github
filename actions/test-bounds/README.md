@@ -117,6 +117,30 @@ Otherwise it is a finding. The proof can be:
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.
 
+## Sleep-as-wait
+
+K2 step 2C, A (DESIGN-K2 §2C revised): ONE fixed sleep, as a statement of a test or hook body, followed by an
+assertion. The sleep stands in for a condition wait. Its own family, `sleep-as-wait`, is judged by SHAPE. Under
+value semantics the cheapest clear would be a longer sleep, which makes every run slower, so no value clears it. A
+condition wait does, or the `timeout under test:` mark with a reason, for a sleep that waits on clock granularity (a
+JWT `iat` second, an mtime tick, a server TTL).
+
+- `sleep-as-wait.direct.condition`:
+  - ts/tsx/js: `await sleep(V)` / `delay` / `wait` / `pause`, or `await new Promise(r => setTimeout(r, V))`, with V
+    not 0, directly in an it/test/describe or hook callback;
+  - py: `time.sleep(V)` / `await asyncio.sleep(V)` in a `test_*` function.
+  - In both, the statement is outside any loop, and an assertion follows it in its block or after an enclosing
+    block.
+- `sleep-as-wait.helper.condition`: an awaited zero-argument call of a same-file helper whose body is that ONE
+  sleep (`const settle = () => new Promise(r => setTimeout(r, 150))`).
+- Not matched:
+  - a zero sleep, which is a flush (fixed flushes);
+  - a sleep in a loop, which is a poll (`literal-bound.poll.condition`);
+  - a sleep inside a mock or other nested function, which is latency injection;
+  - a sleep with no assertion after it.
+- An absence window (a sleep, then a NEGATIVE assertion) is read here until its own notice-level family exists.
+- vagaris adoption tree: 51 findings (44 direct, 7 through helpers) in 26 files.
+
 ## Fixed flushes
 
 The vagaris hardening branch's `fixed-flush` kind (45d7d8996). Root accepted the class on 10-30 (lanes/cli/BATCH-B-ui):

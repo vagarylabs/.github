@@ -9,10 +9,10 @@
  },
  "files": {
   "test_red.py": {
-   "finding": 21
+   "finding": 22
   },
   "test_green.py": {
-   "cleared": 7
+   "cleared": 8
   }
  }
 }

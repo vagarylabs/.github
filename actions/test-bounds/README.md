@@ -142,8 +142,9 @@ one per clock family (each `clock-<family>` util, with its unit in check.py's `E
   helpers.
 - **Fake clocks clear only on positive proof, per family.**
   - ts/js: a statement that precedes the assert, in its block or an enclosing one, either makes the faking call
-    itself or is a beforeEach/beforeAll hook that makes it, and no direct `useRealTimers()`, `clock.uninstall()` or
-    `clock.restore()` statement precedes the assert. A sibling test's body never counts.
+    itself or is a beforeEach/beforeAll hook that makes it. No `useRealTimers()`, `clock.uninstall()` or
+    `clock.restore()` may precede the assert, either as a statement or inside a beforeEach/beforeAll hook. An
+    afterEach, the usual cleanup, runs after the test and revokes nothing. A sibling test's body never counts.
     - The call is `vi/jest/sinon.useFakeTimers()`, with no argument or an object literal that does not advance with
       real time (`shouldAdvanceTime`, `advanceTimers`, `legacyFakeTimers`).
     - Date is faked unless `toFake` omits it or `toNotFake`/`doNotFake` names it. `performance` and `hrtime` are
@@ -152,10 +153,14 @@ one per clock family (each `clock-<family>` util, with its unit in check.py's `E
     - A config-level `fakeTimers` default is not read.
   - py:
     - freezegun's `freeze_time` without `tick=True` fakes every clock above (loop.time() reads time.monotonic). It
-      counts as a decorator, as a `with`, as a preceding started freezer, through the `freezer` fixture, or as
-      `@pytest.mark.freeze_time`.
-    - `mock.patch("...time.<fn>")`, `patch.object(time, "<fn>")` or `monkeypatch.setattr(time, "<fn>", ...)` fakes
-      that one function's clock.
+      counts as a decorator, as a `with`, as a preceding `freeze_time(...).start()`, through the `freezer`
+      fixture, or as `@pytest.mark.freeze_time`.
+    - `mock.patch("...time.<fn>")` or `patch.object(time, "<fn>")` fakes that one function's clock as a decorator, a
+      `with`, or a preceding chained `.start()`. `monkeypatch.setattr(time, "<fn>", ...)` fakes it as a preceding
+      statement.
+    - A preceding statement must take effect when it runs. An unstarted `f = freeze_time(...)` or
+      `p = mock.patch(...)` leaves the clock real, and a two-statement start (`f.start()`) is not read, so both are
+      findings.
     - time_machine is not read: its `travel()` ticks by default, and it never fakes monotonic or perf_counter.
 
 ast-grep runs isolated from the consumer's `sgconfig.yml` (a `languageGlobs` line would otherwise hide files). A

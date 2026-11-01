@@ -1,5 +1,5 @@
 // Greens: cleared by value or by a proven fake clock, or not an elapsed upper bound at all.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const LIMIT_MS = 90_000;
 
@@ -35,6 +35,9 @@ it("a sibling's clock-bound name", () => {
 describe("fake timers from a hook", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
   it("advances the fake clock", () => {
     const t0 = Date.now();

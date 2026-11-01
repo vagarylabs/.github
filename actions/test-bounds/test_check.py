@@ -581,6 +581,29 @@ class TreesAndMarks(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_a_seed_writes_both_families_and_the_next_run_is_clean(self):
+        """write-baseline --seed counts elapsed-assert under its own rule beside literal-bound (K2 step 2B)."""
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            body = (file("a", 0, 1) + 'it("y", async () => {\n  const t0 = Date.now();\n  await work();\n'
+                    '  expect(Date.now() - t0).toBeLessThan(500);\n}, 120_000);\n')
+            cfg = json.loads(baseline({}))
+            cfg.pop("counts")
+            repo.commit({a: body, BL: json.dumps(cfg, indent=2) + "\n"})
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+            run = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
+                                                "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
+            seeded = run("write-baseline", "--seed")
+            self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+            self.assertEqual(json.loads((repo.dir / BL).read_text())["counts"], {a: {C.ELAPSED: 1, C.RULE: 1}})
+            ok = run("check")
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            self.assertIn("2 finding(s) counted", ok.stdout)
+            self.assertIn("elapsed-time asserts", ok.stdout, "the elapsed positions are printed as covered")
+        finally:
+            repo.done()
+
     def test_exit_codes(self):
         repo = Repo()
         try:

@@ -187,8 +187,9 @@ utils:
       - has: { field: arguments, has: { stopBy: end, matches: to-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]hrtime[\"'`]$" } } } }
   real-timers: { kind: call_expression, has: { field: function, regex: "^(?:(?:vi|jest)\\.useRealTimers|clock\\.(?:uninstall|restore))$" } }
   # In scope: a preceding statement (of the assert's block or an enclosing one) that is the faking call itself, or a
-  # beforeEach/beforeAll hook that makes it; and no later-reached direct useRealTimers() statement. A sibling test's
-  # body never counts.
+  # beforeEach/beforeAll hook that makes it; and no preceding useRealTimers() statement or beforeEach/beforeAll hook
+  # that calls it (afterEach, the usual cleanup, runs after the test and revokes nothing). A sibling test's body
+  # never counts.
   fake-stmt-CLOCK:
     kind: expression_statement
     any:
@@ -200,6 +201,7 @@ utils:
     any:
       - has: { matches: real-timers }
       - has: { kind: await_expression, has: { matches: real-timers } }
+      - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: real-timers } } }] }
   under-fake-CLOCK:
     all:
       - inside: { stopBy: end, follows: { stopBy: end, matches: fake-stmt-CLOCK } }

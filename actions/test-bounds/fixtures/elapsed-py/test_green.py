@@ -43,6 +43,11 @@ class Green(unittest.TestCase):
         t0 = time.monotonic()
         assert time.monotonic() - t0 < 1
 
+    def test_a_started_freezer(self):
+        self.frozen = freeze_time("2020-01-01").start()
+        t0 = time.monotonic()
+        assert time.monotonic() - t0 < 1
+
     def test_patched(self):
         t0 = 0
         with mock.patch("time.monotonic", side_effect=[0, 1]):

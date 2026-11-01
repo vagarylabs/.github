@@ -1,5 +1,5 @@
 // Planted REDs: each assert puts an upper bound below 60 s on a real-clock elapsed difference.
-import { expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 it("direct", async () => {
   const started = Date.now();
@@ -63,6 +63,20 @@ it("faked, then real", () => {
   vi.useFakeTimers();
   vi.useRealTimers();
   expect(Date.now() - t0).toBeLessThan(40);
+});
+
+describe("faked by an outer hook, made real by an inner one", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  describe("inner", () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+    it("is real", () => {
+      expect(Date.now() - t0).toBeLessThan(60);
+    });
+  });
 });
 
 it("no-argument fake timers do not prove performance", () => {

@@ -101,7 +101,7 @@ utils:
           - kind: identifier
           - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
   bind-A-CLOCK: { kind: assignment, all: [{ has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }] }
-  # Fake clocks, proven positively: freezegun's freeze_time (decorator, `with`, a started freezer, pytest's
+  # Fake clocks, proven positively: freezegun's freeze_time (decorator, `with`, a chained `.start()`, pytest's
   # `freezer` fixture or freeze_time marker) without tick=True fakes every clock here (loop.time() reads
   # time.monotonic); a mock.patch / patch.object / monkeypatch.setattr of the exact `time` function fakes that one.
   # time_machine is not read (its travel() ticks by default and never fakes monotonic or perf_counter).
@@ -119,11 +119,20 @@ utils:
   fakes-perf-counter-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.perf_counter_ns[\"']|\\btime\\s*,\\s*[\"']perf_counter_ns[\"']" }] }] }
   fakes-loop: { matches: freeze-call }
   fakes-datetime: { matches: freeze-call }
+  # A statement takes effect when it runs only through monkeypatch.setattr or a chained `.start()`: an unstarted
+  # `f = freeze_time(...)` or `p = mock.patch(...)` leaves the clock real (a two-statement start is not read).
+  started-CLOCK:
+    any:
+      - all: [{ matches: fakes-CLOCK }, { has: { field: function, regex: "^monkeypatch\\.setattr$" } }]
+      - all:
+          - kind: call
+          - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+          - has: { field: function, kind: attribute, all: [{ has: { field: attribute, regex: "^start$" } }, { has: { field: object, matches: fakes-CLOCK } }] }
   under-fake-CLOCK:
     any:
       - inside: { stopBy: end, kind: decorated_definition, has: { kind: decorator, any: [{ has: { stopBy: end, matches: fakes-CLOCK } }, { regex: "^@\\s*pytest\\.mark\\.freeze_time\\s*$" }] } }
       - inside: { stopBy: end, kind: with_statement, has: { kind: with_clause, has: { stopBy: end, matches: fakes-CLOCK } } }
-      - inside: { stopBy: end, follows: { stopBy: end, kind: expression_statement, has: { stopBy: { kind: lambda }, matches: fakes-CLOCK } } }
+      - inside: { stopBy: end, follows: { stopBy: end, kind: expression_statement, has: { stopBy: { kind: lambda }, matches: started-CLOCK } } }
       - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, kind: identifier, regex: "^freezer$" } } }
 ---
 id: elapsed-assert.CLOCK.condition

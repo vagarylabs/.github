@@ -45,6 +45,12 @@ class Red(unittest.TestCase):
             took = time.monotonic() - start
         assert took < 5
 
+    def test_unstarted_fakes(self):
+        f = freeze_time("2020-01-01")
+        p = mock.patch("time.monotonic")
+        t0 = time.monotonic()
+        assert time.monotonic() - t0 < 1
+
     def test_fakes_that_prove_nothing(self):
         t0 = time.monotonic()
         with freeze_time("2020-01-01", tick=True):

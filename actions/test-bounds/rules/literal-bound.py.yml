@@ -1,0 +1,80 @@
+# literal-bound, for python (.py). The positions are vps-ansible's #1140 gate's
+# (scripts/test_subprocess_hang_guards.py): a `timeout` passed to a subprocess call (run, check_output, check_call,
+# call, Popen, communicate, wait) by keyword or positionally (wait(N), communicate(input, N)), and the default of a
+# `timeout` parameter. All are judged against the subprocess floor (seconds). The first document holds the utils
+# every rule carries; rule ids are `literal-bound.<position>.<kind>` as in literal-bound.yml.
+utils:
+  nc: { not: { kind: comment } }
+  positional: { not: { any: [{ kind: keyword_argument }, { kind: comment }, { kind: list_splat }, { kind: dictionary_splat }] } }
+  sp-name: { regex: "^(?:run|check_output|check_call|call|Popen|communicate|wait)$" }
+  sp-callee:
+    any:
+      - { kind: identifier, matches: sp-name }
+      - { kind: attribute, has: { field: attribute, matches: sp-name } }
+  # A value that cannot be a time bound (None is no bound at all, so it is not one either).
+  bound-value:
+    not:
+      any:
+        - { kind: string }
+        - { kind: concatenated_string }
+        - { kind: list }
+        - { kind: dictionary }
+        - { kind: set }
+        - { kind: tuple }
+        - { kind: lambda }
+        - { kind: none }
+        - { kind: "true" }
+        - { kind: "false" }
+        - { kind: list_splat }
+        - { kind: dictionary_splat }
+        - { kind: comment }
+---
+id: literal-bound.keyword.subprocess
+language: python
+rule:
+  kind: keyword_argument
+  all:
+    - has: { field: name, regex: "^timeout$" }
+    - has: { field: value, pattern: $V, matches: bound-value }
+  inside:
+    kind: argument_list
+    inside: { kind: call, has: { field: function, matches: sp-callee } }
+---
+# p.wait(N): the first positional argument.
+id: literal-bound.positional.subprocess
+language: python
+rule:
+  kind: call
+  any:
+    - all:
+        - has:
+            field: function
+            any:
+              - { kind: identifier, regex: "^wait$" }
+              - { kind: attribute, has: { field: attribute, regex: "^wait$" } }
+        - has:
+            field: arguments
+            has: { nthChild: { position: 1, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] }
+    - all:
+        - has:
+            field: function
+            any:
+              - { kind: identifier, regex: "^communicate$" }
+              - { kind: attribute, has: { field: attribute, regex: "^communicate$" } }
+        - has:
+            field: arguments
+            has: { nthChild: { position: 2, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] }
+---
+# def f(cmd, timeout=45) / lambda timeout=45: ...
+id: literal-bound.default.subprocess
+language: python
+rule:
+  any:
+    - kind: default_parameter
+      all:
+        - has: { field: name, regex: "^timeout$" }
+        - has: { field: value, pattern: $V, matches: bound-value }
+    - kind: typed_default_parameter
+      all:
+        - has: { field: name, regex: "^timeout$" }
+        - has: { field: value, pattern: $V, matches: bound-value }

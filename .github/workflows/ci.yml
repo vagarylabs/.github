@@ -103,6 +103,34 @@ jobs:
           python3 -m unittest discover -s actions/full-run-reuse -p 'test_*.py' -v
           python3 -m unittest discover -s distribution -p 'test_*.py' -v
 
+  test-bounds-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 8  # >= the 6-minute completion floor; the suite runs ast-grep over fixtures and throwaway repos
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: test-bounds self-test and tests (the pinned ast-grep from release-assets.lock)
+        run: |
+          set -euo pipefail
+          case "$RUNNER_ARCH" in X64) arch=x86_64 ;; ARM64) arch=aarch64 ;; *) echo "no pin for $RUNNER_ARCH" >&2; exit 1 ;; esac
+          mapfile -t pins < <(awk -v a="app-${arch}-unknown-linux-gnu.zip" \
+            '$1 == "ast-grep" && $2 == "0.42.1" && $3 ~ ("/" a "$") { print }' release-assets.lock)
+          [ "${#pins[@]}" -eq 1 ] || { echo "Expected one locked ast-grep 0.42.1 asset for $arch" >&2; exit 1; }
+          read -r ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256 extra <<< "${pins[0]}"
+          [ -z "$extra" ] || { echo "Malformed ast-grep lock entry" >&2; exit 1; }
+          export ASSET_TOOL ASSET_VERSION ASSET_URL ASSET_SHA256
+          export ASSET_DEST="$RUNNER_TEMP/ast-grep.zip"
+          export RUNNER_TOOL_CACHE="$RUNNER_TEMP/ast-grep-cache"
+          bash actions/fetch-release-asset/fetch.sh
+          python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("ast-grep", sys.argv[2])' \
+            "$ASSET_DEST" "$RUNNER_TEMP/ast-grep-bin"
+          chmod 0755 "$RUNNER_TEMP/ast-grep-bin/ast-grep"
+          export TEST_BOUNDS_SG="$RUNNER_TEMP/ast-grep-bin/ast-grep"
+          [ "$("$TEST_BOUNDS_SG" --version)" = "ast-grep 0.42.1" ]
+          python3 -I actions/test-bounds/check.py self-test
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s actions/test-bounds -p 'test_*.py' -v
+
   fetch-release-asset-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)

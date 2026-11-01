@@ -37,3 +37,8 @@ zizmor 1.31.1 https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/ziz
 # equals the file's own hash, 2026-10-29). The release publishes no signature over the checksum file; its multiple.intoto.jsonl SLSA provenance covers the archives and is NOT verified here.
 # source: https://github.com/ossf/scorecard/releases/download/v5.6.0/scorecard_checksums.txt
 scorecard 5.6.0 https://github.com/ossf/scorecard/releases/download/v5.6.0/scorecard_5.6.0_linux_amd64.tar.gz 19bde07129450cb65a95c6e3b9f34e034341579e6f0e241546ec3ae6efb2dd9a
+# ast-grep: the GitHub release's recorded asset digests for 0.42.1 (the release publishes no checksum file; the API's
+# `digest` field is GitHub's sha256 of the uploaded asset). Read by actions/test-bounds, one line per runner arch.
+# source: https://api.github.com/repos/ast-grep/ast-grep/releases/tags/0.42.1 (assets[].digest)
+ast-grep 0.42.1 https://github.com/ast-grep/ast-grep/releases/download/0.42.1/app-x86_64-unknown-linux-gnu.zip 5de8b87cba67fc8dc3e239d54b6484802ad745a7ae3de76be4fe89661dc52657
+ast-grep 0.42.1 https://github.com/ast-grep/ast-grep/releases/download/0.42.1/app-aarch64-unknown-linux-gnu.zip 3ba383839044cf9817929435f5ce0027f91d06931e8efb32d942e58d73d92be5

@@ -120,11 +120,17 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - An untouched file is judged against the committed counts, which may not rise against the base's, with ONE
   exception (K2 D8, root 11-01 and the #68 review): a pin bump may lock in debt that more detection found, when all
   of these hold:
-  1. the change moves the consumer's pin of this check (`uses: vagarylabs/.github/actions/test-bounds@<sha>` in its
-     workflows, read at the base and at the head), never a field the baseline declares;
+  1. the change moves the consumer's pin of this check. In Actions, the running job's one step `uses:` of
+     `vagarylabs/.github/actions/test-bounds@<sha>` must be the running action's own ref (read from where the
+     runner put it) and must differ from that job's pin at the base. Comments, `run:` bodies and other jobs or
+     workflows are not read. A pin form this reader misses fails SAFE: no lock-in, so the pin bump stays red until
+     its findings are fixed. Outside Actions (`write-baseline`), every job's pins at the base and head are compared,
+     and CI then judges the strict form;
   2. the file is byte-identical at the base (its base blob against the file the scan read), and the BASE TREE,
-     scanned under the running check, already holds the same findings. A change elsewhere, such as a lowered
-     constant an untouched test imports, therefore cannot pass new findings off as old debt;
+     scanned with the running check under the BASE's own configuration (its launchers and their floors), holds the
+     same findings: the same count and the same identities (line, position, kind, value). So a change elsewhere
+     cannot pass new findings off as old debt: a lowered constant an untouched test imports, a removed or raised
+     launcher, or a swap of which bound is short;
   3. the raise goes to EXACTLY that count (committed = base tree = head);
   4. every raised (file, rule) is listed ("Debt locked in by a detection change" in the summary, `DEBT LOCKED IN` in
      the log, `locked_in` in the findings JSON).

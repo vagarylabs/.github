@@ -142,16 +142,99 @@ def check_digest() -> str:
     return h.hexdigest()
 
 
-ACTION_PIN = re.compile(r"vagarylabs/\.github/actions/test-bounds@([0-9a-f]{40})")
+ACTION_PIN = re.compile(r"^vagarylabs/\.github/actions/test-bounds@([0-9a-f]{40})$")
 
 
-def consumer_pins(root: Path, rev: str) -> frozenset:
-    """The commits the consumer's workflows pin this check at, at `rev` (D8 guard 1: a raise needs a change of pin)."""
-    r = subprocess.run(["git", "grep", "-h", "-o", "-E", ACTION_PIN.pattern, rev, "--", ".github/workflows"],
-                       cwd=root, capture_output=True, text=True)
-    if r.returncode not in (0, 1) or "unable to read" in r.stderr:
-        raise Refusal(f"git grep for the check's pin at {rev} failed (rc {r.returncode}): {r.stderr.strip()[:200]}")
-    return frozenset(m.group(1) for m in ACTION_PIN.finditer(r.stdout))
+def job_action_pins(text: str, job: str | None) -> list[str]:
+    """The refs this check is pinned at by the step `uses:` of one job (or of every job, when `job` is None) in a
+    workflow's text: only a step's own `uses:` key counts, never a comment, a `run:` body or a block scalar (D8 guard
+    1, root's #68 delta B2'). A form this reader does not parse yields no pin, so the guard fails SAFE: no lock-in,
+    and the pin bump is red until its findings are fixed."""
+    pins, in_jobs, job_indent, cur_job, steps_indent, step_prop, block = [], False, None, None, None, None, None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if indent > block:
+                continue  # block scalar content
+            block = None
+        if indent == 0:
+            in_jobs, cur_job, steps_indent, step_prop = stripped == "jobs:", None, None, None
+            continue
+        if not in_jobs:
+            continue
+        if job_indent is None and re.fullmatch(r"[A-Za-z_][\w-]*:\s*", stripped):
+            job_indent = indent
+        if indent == job_indent and re.match(r"[A-Za-z_][\w-]*:", stripped):
+            cur_job, steps_indent, step_prop = stripped.split(":", 1)[0], None, None
+            continue
+        if cur_job is None or (job is not None and cur_job != job):
+            continue
+        if stripped == "steps:":
+            steps_indent, step_prop = indent, None
+            continue
+        if steps_indent is None or indent <= steps_indent:
+            continue
+        key_text = stripped
+        if stripped.startswith("- "):
+            step_prop = indent + 2
+            key_text = stripped[2:].lstrip()
+        elif indent != step_prop:
+            m = re.match(r"([A-Za-z_][\w-]*):\s*[|>][-+0-9]*\s*$", stripped)
+            if m:
+                block = indent
+            continue
+        m = re.match(r"([A-Za-z_][\w-]*):\s*(.*)$", key_text)
+        if not m:
+            continue
+        value = re.sub(r"\s+#.*$", "", m.group(2)).strip().strip("'\"")
+        if re.match(r"[|>][-+0-9]*$", value):
+            block = step_prop
+            continue
+        if m.group(1) == "uses":
+            pm = ACTION_PIN.match(value)
+            if pm:
+                pins.append(pm.group(1))
+    return pins
+
+
+def running_context(env: dict, here: Path = HERE) -> tuple[str, str, str] | None:
+    """(workflow path, job id, this action's ref) of the Actions run executing this check, or None. The ref is read
+    from where the runner put this action (`_actions/vagarylabs/.github/<ref>/...`), and the workflow and job from
+    GITHUB_WORKFLOW_REF and GITHUB_JOB, none of which the workflow under judgement can set."""
+    parts = here.parts
+    if "_actions" not in parts:
+        return None
+    i = parts.index("_actions")
+    if parts[i + 1:i + 3] != ("vagarylabs", ".github") or not re.fullmatch(r"[0-9a-f]{40}", parts[i + 3] if len(parts) > i + 3 else ""):
+        return None
+    wref, job = env.get("GITHUB_WORKFLOW_REF", ""), env.get("GITHUB_JOB", "")
+    m = re.fullmatch(r"[^/]+/[^/]+/(\.github/workflows/[^@]+)@.+", wref)
+    if not (m and job):
+        return None
+    return m.group(1), job, parts[i + 3]
+
+
+def pin_moved(root: Path, base: str, running: tuple[str, str, str] | None) -> bool:
+    """D8 guard 1: this change moves the check's pin. In Actions: the running job's one test-bounds step pins the
+    running action's ref at the head, and pinned another ref at the base. Outside Actions (write-baseline, a local
+    check): the pins of every job differ between base and head; CI then judges the strict form."""
+    def at_base(path: str) -> str:
+        r = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root, capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+    if running is not None:
+        wf, job, ref = running
+        head_text = (root / wf).read_text(encoding="utf-8") if (root / wf).is_file() else ""
+        head_pins, base_pins = job_action_pins(head_text, job), job_action_pins(at_base(wf), job)
+        return head_pins == [ref] and len(base_pins) == 1 and base_pins[0] != ref
+    head, before = set(), set()
+    for f in tracked_files(root):
+        if f.startswith(".github/workflows/") and f.endswith((".yml", ".yaml")):
+            head |= set(job_action_pins((root / f).read_text(encoding="utf-8"), None))
+            before |= set(job_action_pins(at_base(f), None))
+    return bool(head) and head != before
 
 
 class Refusal(Exception):
@@ -1068,14 +1151,16 @@ def judge(found: dict, allowed: dict) -> tuple[list[str], list[str]]:
 
 
 def base_raises(committed: dict, base: dict, found: dict, detection_changed: bool, identical: set,
-                base_tree_found: dict) -> tuple[list[str], list[str], list[tuple[str, int, int]]]:
+                base_tree_found: dict, same_debt: set | None = None) -> tuple[list[str], list[str], list[tuple[str, int, int]]]:
     """(problems, notices, locked) for the committed counts of UNTOUCHED files against the base's (K2 D8). A raise is
     refused unless all of root's guards hold (11-01, and the #68 RC):
       1. the change moves the consumer's PIN of this check (`detection_changed`), read from its workflows at the base
          and at the head, never from a field the baseline declares;
       2. the file is byte-identical at the base (`identical`), and the BASE TREE, censused under the running check,
-         already holds the same findings (`base_tree_found`): so a change elsewhere, such as a lowered constant an
-         untouched file imports, can never pass its new findings off as old debt;
+         already holds the same findings (`base_tree_found`, and by identity `same_debt`: the same line, position,
+         kind and value, so a swap of which bound is short cannot keep the count), censused under the BASE's own
+         configuration (its launchers): so a change elsewhere, such as a lowered constant an untouched file imports
+         or a removed launcher, can never pass its new findings off as old debt;
       3. the raise goes to EXACTLY that count: committed = base tree = head;
       4. every raised file is returned in `locked`, for the summary."""
     problems, notices, locked = [], [], []
@@ -1090,7 +1175,10 @@ def base_raises(committed: dict, base: dict, found: dict, detection_changed: boo
             why = "the file is not byte-identical at the base"
         elif was != held:
             why = (f"the base tree holds {was} finding(s) in it under this check, the head {held}: a change elsewhere "
-                   "(an imported constant) added them, so they are new, not old debt")
+                   "(an imported constant, a launcher) added them, so they are new, not old debt")
+        elif same_debt is not None and f not in same_debt:
+            why = ("the base tree holds the same count but not the same findings (line, position, value): a change "
+                   "elsewhere swapped which bound is short")
         elif n != held:
             why = f"a detection change may lock in exactly the {held} finding(s) the file holds, not {n}"
         if why:
@@ -1104,7 +1192,8 @@ def base_raises(committed: dict, base: dict, found: dict, detection_changed: boo
 
 
 def analyze(found: dict, committed: dict, change: dict | None, event: str, detection_changed: bool = False,
-            identical: frozenset = frozenset(), base_tree_found: dict | None = None) -> tuple[list[str], list[str], set, list]:
+            identical: frozenset = frozenset(), base_tree_found: dict | None = None,
+            same_debt: set | None = None) -> tuple[list[str], list[str], set, list]:
     """One rule's judgement: (problems, notices, allow_raise, locked). `found`/`committed` map file -> count; `change`
     is pr_change()'s result for this rule, or None without a base. `locked` lists the untouched files whose debt a
     detection change locks in (base_raises)."""
@@ -1118,7 +1207,7 @@ def analyze(found: dict, committed: dict, change: dict | None, event: str, detec
     locked = []
     if change["base_counts"] is not None:
         p, n, locked = base_raises(keep(committed), change["base_counts"], keep(found), detection_changed, identical,
-                                   base_tree_found or {})
+                                   base_tree_found or {}, same_debt)
         problems += p
         notices += n
     else:
@@ -1126,7 +1215,8 @@ def analyze(found: dict, committed: dict, change: dict | None, event: str, detec
     # Under a detection change, write-baseline --base may lock in an untouched, byte-identical file's findings (the
     # debt the base tree held); otherwise nothing untouched may rise.
     allow = ({f for f, n in keep(found).items() if n > keep(committed).get(f, 0) and f in identical
-              and (base_tree_found or {}).get(f, 0) == n} if detection_changed else set())
+              and (base_tree_found or {}).get(f, 0) == n and (same_debt is None or f in same_debt)}
+             if detection_changed else set())
     for g in change["groups"]:
         head = sum(found.get(f, 0) for f in g["now"])
         was = sum(change["base_found"].get(f, 0) for f in g["old"])
@@ -1427,7 +1517,7 @@ def load_head_config(root: Path) -> dict:
     return load_config(path.read_text(encoding="utf-8"), BASELINE_PATH)
 
 
-def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
+def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str, str, str] | None = None) -> dict:
     cfg = load_head_config(root)
     files = tracked_files(root)
     scope = Scope(cfg)
@@ -1454,9 +1544,8 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     elif cfg["check_digest"] != digest:
         problems.append(f"[check_digest] the baseline names check {cfg['check_digest'][:12]}, not this check ({digest[:12]}): "
                         "a baseline names the check that wrote it, so run write-baseline with this check")
-    detection_changed = bool(change and change["base_cfg"] is not None and consumer_pins(root, "HEAD")
-                             and consumer_pins(root, change["sha"]) != consumer_pins(root, "HEAD"))
-    identical, base_tree_found_all = frozenset(), {}
+    detection_changed = bool(change and change["base_cfg"] is not None and pin_moved(root, change["sha"], running))
+    identical, base_tree_found_all, base_ids = frozenset(), {}, {}
     if change:
         touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
         identical = frozenset(f for f in byte_identical(root, change["sha"], sorted(set(found) | set(cfg["counts"])))
@@ -1467,7 +1556,10 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
                                    > base_counts_all.get(f, {}).get(r, 0)
                                    for r in set(found.get(f, {})) | set(cfg["counts"].get(f, {}))))
         if detection_changed and candidates:
-            base_tree_found_all = counts_of(census(change["base_tree"], candidates, cfg["launchers"])["findings"])
+            # The base tree, under the BASE's own configuration (its launchers and their floors), with this check.
+            base_res = census(change["base_tree"], candidates, change["base_cfg"]["launchers"])["findings"]
+            base_tree_found_all = counts_of(base_res)
+            base_ids = finding_ids(base_res)
     allow, locked_in = {}, []
     for rule in sorted({r for c in list(found.values()) + list(cfg["counts"].values()) for r in c} | {RULE}):
         sub = None
@@ -1475,8 +1567,10 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
             sub = {"sha": change["sha"], "groups": change["groups"],
                    "base_counts": per_rule(change["base_counts_all"], rule) if change["base_counts_all"] is not None
                    else None, "base_found": per_rule(change["base_found_all"], rule)}
+        head_ids = finding_ids({f: res["findings"].get(f, []) for f in base_ids})
+        same = {f for f in base_ids if base_ids[f].get(rule) == head_ids.get(f, {}).get(rule)}
         p, n, a, lk = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event, detection_changed,
-                              identical, per_rule(base_tree_found_all, rule))
+                              identical, per_rule(base_tree_found_all, rule), same)
         problems += [f"[{rule}] {x}" for x in p]
         notices += [f"[{rule}] {x}" for x in n]
         allow[rule] = sorted(a)
@@ -1491,6 +1585,17 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
             "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "covered": COVERED,
             "locked_in": locked_in, "check_digest": digest, "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
+
+
+def finding_ids(findings: dict) -> dict:
+    """file -> rule -> the multiset of its findings' identities (line, position, kind, value), so a lock-in compares
+    WHICH bounds are short, not only how many."""
+    out = {}
+    for f, recs in findings.items():
+        for r in recs:
+            if r["status"] == "finding":
+                out.setdefault(f, {}).setdefault(r["rule"], Counter())[(r["line"], r["position"], r["kind"], r["value"])] += 1
+    return out
 
 
 def byte_identical(root: Path, base: str, paths: list[str]) -> set[str]:
@@ -1624,7 +1729,7 @@ def main(argv: list[str]) -> int:
         if base:
             ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:
-            out = run(root, base, event, Path(tmp))
+            out = run(root, base, event, Path(tmp), running_context(os.environ) if in_actions else None)
         out["problems"] = [f"the check's own self-test failed: {f}" for f in failures] + out["problems"]
         if args.cmd == "check":
             emit(out, args.findings)

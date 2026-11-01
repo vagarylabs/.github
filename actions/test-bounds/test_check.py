@@ -46,9 +46,9 @@ class Repo:
         self.git("commit", "-q", "--allow-empty", "-m", "fixture")
         return self.git("rev-parse", "HEAD")
 
-    def verdict(self, base: str | None, event: str = "pull_request") -> dict:
+    def verdict(self, base: str | None, event: str = "pull_request", running=None) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
-            return C.run(self.dir, base, event, Path(tmp))
+            return C.run(self.dir, base, event, Path(tmp), running)
 
     def done(self):
         self._tmp.cleanup()
@@ -71,9 +71,14 @@ PIN_A, PIN_B = "a" * 40, "b" * 40
 WF = ".github/workflows/pr.yml"
 
 
-def workflow(pin: str) -> str:
-    """A consumer workflow pinning this check (D8 guard 1 reads the pin at the base and at the head)."""
-    return f"jobs:\n  t:\n    steps:\n      - uses: vagarylabs/.github/actions/test-bounds@{pin}\n"
+def workflow(pin: str, extra: str = "") -> str:
+    """A consumer workflow pinning this check in job `t` (D8 guard 1 reads that job's step `uses:`)."""
+    return f"jobs:\n  t:\n    steps:\n      - uses: vagarylabs/.github/actions/test-bounds@{pin}\n{extra}"
+
+
+def running(pin: str):
+    """The Actions run that executes the check: job `t` of WF, with the action at `pin`."""
+    return (WF, "t", pin)
 
 
 def file(tag: str, frm: int, to: int, bound=lambda i: f"{15_000 + i}") -> str:
@@ -256,6 +261,113 @@ class Baseline(unittest.TestCase):
         self.repo.commit({BL: baseline({x: 2, y: 4})})
         self.assertEqual(self.repo.verdict(base)["problems"], [])
 
+    LAUNCHER = [{"name": "startPg", "module": "s/__tests__/pg.ts", "hook_floor_ms": 210_000}]
+    PG_TEST = ('import { beforeAll } from "vitest";\nimport { startPg } from "./pg";\n\n'
+               'beforeAll(async () => { await startPg(); }, 210_000);\n')
+
+    def lock_in_refused(self, base, head_files, why, run=None):
+        self.repo.commit(head_files)
+        v = self.repo.verdict(base, running=run or running(PIN_B))
+        self.assertTrue(has(v["problems"], why), v["problems"])
+        self.assertEqual(v["locked_in"], [])
+
+    def test_a_removed_launcher_is_new_debt_not_old(self):
+        """B1' (#68 delta): the base tree is censused under the BASE's launchers, so removing one cannot turn an
+        untouched 210 s hook into lockable debt."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: self.PG_TEST, "s/__tests__/pg.ts": "export async function startPg() {}\n",
+                                 WF: workflow(PIN_A), BL: baseline({}, launchers=self.LAUNCHER)})
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 1}, launchers=[])},
+                             "the base tree holds 0 finding(s) in it under this check, the head 1")
+
+    def test_a_raised_launcher_floor_is_new_debt_not_old(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: self.PG_TEST, "s/__tests__/pg.ts": "export async function startPg() {}\n",
+                                 WF: workflow(PIN_A), BL: baseline({}, launchers=self.LAUNCHER)})
+        raised = [{**self.LAUNCHER[0], "hook_floor_ms": 300_000}]
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 1}, launchers=raised)},
+                             "the base tree holds 0 finding(s) in it under this check, the head 1")
+
+    def test_a_pin_in_a_comment_moves_nothing(self):
+        """B2' (#68 delta): only the running job's step `uses:` is the pin; a comment, an `echo`, or another job is not."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        self.lock_in_refused(base, {WF: workflow(PIN_A, f"      # vagarylabs/.github/actions/test-bounds@{PIN_B}\n"),
+                                    BL: baseline({x: 3})}, "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_pin_in_an_echo_moves_nothing(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        echo = f'      - run: echo "uses: vagarylabs/.github/actions/test-bounds@{PIN_B}"\n'
+        self.lock_in_refused(base, {WF: workflow(PIN_A, echo), BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_pin_in_another_workflow_moves_nothing(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        other = f"jobs:\n  off:\n    if: false\n    steps:\n      - uses: vagarylabs/.github/actions/test-bounds@{PIN_B}\n"
+        self.lock_in_refused(base, {".github/workflows/other.yml": other, BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_the_running_action_must_be_the_head_pin(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        self.lock_in_refused(base, {WF: workflow(PIN_B), BL: baseline({x: 3})},
+                             "this change does not move the check's pin", running(PIN_A))
+
+    def test_a_swapped_short_bound_is_not_the_same_debt(self):
+        """LOW (#68 delta): the lock-in compares WHICH bounds are short, so a helper change that makes one bound short
+        and another long keeps the count but is refused."""
+        x, h = "s/__tests__/x.test.ts", "s/__tests__/helpers.ts"
+        body = ('import { it } from "vitest";\nimport { P, Q } from "./helpers";\n\n'
+                'it("p settles", async () => { await p(); }, P);\nit("q settles", async () => { await q(); }, Q);\n')
+        base = self.repo.commit({x: body, h: "export const P = 5_000;\nexport const Q = 120_000;\n",
+                                 WF: workflow(PIN_A), BL: baseline({x: 0})})
+        self.lock_in_refused(base, {h: "export const P = 120_000;\nexport const Q = 5_000;\n", WF: workflow(PIN_B),
+                                    BL: baseline({x: 1})}, "")
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["locked_in"], [])
+
+    def test_the_running_context_is_read_from_the_runner(self):
+        A = PIN_A
+        here = Path(f"/home/r/_work/_actions/vagarylabs/.github/{A}/actions/test-bounds")
+        env = {"GITHUB_WORKFLOW_REF": "vagarylabs/vagaris/.github/workflows/pr.yml@refs/pull/1/merge", "GITHUB_JOB": "t"}
+        self.assertEqual(C.running_context(env, here), (".github/workflows/pr.yml", "t", A))
+        self.assertIsNone(C.running_context(env, Path("/src/actions/test-bounds")), "a checkout is not a pinned action")
+        self.assertIsNone(C.running_context({}, here), "no workflow or job, no context: the guard fails safe")
+
+    def test_the_pin_reader_reads_only_a_steps_own_uses(self):
+        """B2' (#68 delta): a comment, a `run:` body and a block scalar's lines (even one that reads `- uses:`) are not
+        a step's `uses:`; with no job named, every job's step pins are read."""
+        other, at = "c" * 40, "vagarylabs/.github/actions/test-bounds@"
+        text = (f"jobs:\n  t:\n    steps:\n"
+                f"      # - uses: {at}{PIN_B}\n"
+                f'      - run: echo "uses: {at}{PIN_B}"\n'
+                f"      - name: block\n        run: |\n          - uses: {at}{PIN_B}\n"
+                f"      - uses: {at}{PIN_A}\n        with:\n          note: >\n            - uses: {at}{PIN_B}\n"
+                f"  u:\n    steps:\n      - uses: {at}{other}\n")
+        self.assertEqual(C.job_action_pins(text, "t"), [PIN_A])
+        self.assertEqual(C.job_action_pins(text, "u"), [other])
+        self.assertEqual(C.job_action_pins(text, None), [PIN_A, other])
+
+    def test_outside_actions_a_commented_pin_moves_nothing(self):
+        """write-baseline reads every job's pins, through the same reader: a comment cannot make it lock debt in."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})
+        self.repo.commit({WF: workflow(PIN_A, f"      # - uses: vagarylabs/.github/actions/test-bounds@{PIN_B}\n")})
+        self.assertEqual(self.repo.verdict(base)["_allow"][C.RULE], [])
+
+    def test_only_the_running_jobs_pin_is_compared(self):
+        """In Actions the guard reads the RUNNING job: another job of the same workflow still at the old pin does not
+        stop the running job's bump from locking its debt in."""
+        x, at = "s/__tests__/x.test.ts", "vagarylabs/.github/actions/test-bounds@"
+        second = lambda pin: f"  u:\n    steps:\n      - uses: {at}{pin}\n"
+        base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A, second(PIN_A)), BL: baseline({x: 1})})
+        self.repo.commit({WF: workflow(PIN_B, second(PIN_A)), BL: baseline({x: 3})})
+        v = self.repo.verdict(base, running=running(PIN_B))
+        self.assertEqual(v["problems"], [])
+        self.assertEqual(v["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}])
+
     def test_the_committed_counts_may_not_raise_a_file(self):
         x, y = "s/__tests__/x.test.ts", "s/__tests__/y.test.ts"
         base = self.repo.commit({x: file("x", 0, 3), y: file("y", 0, 1), BL: baseline({x: 3, y: 1})})
@@ -273,11 +385,12 @@ class Baseline(unittest.TestCase):
         x = "s/__tests__/x.test.ts"
         base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1})})  # an older check counted 1
         self.repo.commit({WF: workflow(PIN_B)})
-        v = self.repo.verdict(base)
+        v = self.repo.verdict(base, running=running(PIN_B))
         self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: 3 finding(s), the baseline allows 1: a new one"), v["problems"])
         self.assertEqual(v["_allow"][C.RULE], [x], "write-baseline --base may lock it in")
+        self.assertEqual(self.repo.verdict(base)["_allow"][C.RULE], [x], "outside Actions, every job's pin is read")
         self.repo.commit({BL: baseline({x: 3})})
-        v = self.repo.verdict(base)
+        v = self.repo.verdict(base, running=running(PIN_B))
         self.assertEqual(v["problems"], [])
         self.assertEqual(v["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}])
         self.assertTrue(has(v["notices"], f"[{C.RULE}] {x}: debt locked in by a detection change: 1 -> 3"), v["notices"])
@@ -288,7 +401,7 @@ class Baseline(unittest.TestCase):
         x = "s/__tests__/x.test.ts"
         base = self.repo.commit({x: file("x", 0, 3), WF: workflow(PIN_A), BL: baseline({x: 1}, digest="0" * 64)})
         self.repo.commit({BL: baseline({x: 3})})
-        v = self.repo.verdict(base)
+        v = self.repo.verdict(base, running=running(PIN_A))
         self.assertTrue(has(v["problems"], "this change does not move the check's pin"), v["problems"])
         self.assertEqual((v["locked_in"], v["_allow"][C.RULE]), ([], []))
 
@@ -300,10 +413,10 @@ class Baseline(unittest.TestCase):
                 'it("x settles its fixture write", async () => {\n  await write();\n}, T);\n')
         base = self.repo.commit({x: body, h: "export const T = 120_000;\n", WF: workflow(PIN_A), BL: baseline({})})
         self.repo.commit({h: "export const T = 5_000;\n", WF: workflow(PIN_B)})
-        v = self.repo.verdict(base)
+        v = self.repo.verdict(base, running=running(PIN_B))
         self.assertEqual(v["_allow"][C.RULE], [], "write-baseline may not lock in the import's new finding")
         self.repo.commit({BL: baseline({x: 1})})
-        v = self.repo.verdict(base)
+        v = self.repo.verdict(base, running=running(PIN_B))
         self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: the committed baseline allows 1, the base allowed 0: a raise of "
                                            "the baseline itself (the base tree holds 0 finding(s) in it under this check, "
                                            "the head 1"), v["problems"])
@@ -325,7 +438,7 @@ class Baseline(unittest.TestCase):
         for n in (4, 2):
             with self.subTest(n=n):
                 self.repo.commit({WF: workflow(PIN_B), BL: baseline({x: n})})
-                v = self.repo.verdict(base)
+                v = self.repo.verdict(base, running=running(PIN_B))
                 self.assertTrue(has(v["problems"], f"a detection change may lock in exactly the 3 finding(s) the file holds, "
                                                    f"not {n}"), v["problems"])
                 self.assertEqual(v["locked_in"], [])

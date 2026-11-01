@@ -112,8 +112,15 @@ class Evaluation(unittest.TestCase):
                            ("(120_000)", 120000), ("0.5", Fraction(1, 2)), ("-(-300_000) + 0", 300000)]:
             self.assertEqual(C.evaluate_js(text), want, text)
 
+    def test_bigint_literals(self):
+        """#66 RC L6: a BigInt bound (an hrtime.bigint() difference) is exact, so it can clear at the hrtime floor."""
+        for text, want in [("60_000_000_000n", 60 * 10**9), ("0n", 0), ("5n * 2n", 10)]:
+            self.assertEqual(C.evaluate_js(text), want, text)
+        for text in ("60n0", "1.5n", "0x10n"):
+            self.assertIsNone(C.evaluate_js(text), text)
+
     def test_refused_shapes(self):
-        for text in ["0210000", "08", "0x10", "10n", "600_000 / 2", "2 ** 19", "Number(1)", "+5", "5000 as const",
+        for text in ["0210000", "08", "0x10", "600_000 / 2", "2 ** 19", "Number(1)", "+5", "5000 as const",
                      "`5`", "1_000_", "a * 2", "", "5 5"]:
             self.assertIsNone(C.evaluate_js(text), text)
 
@@ -148,6 +155,17 @@ class SelfTest(unittest.TestCase):
             C.compose_rules = original
         self.assertTrue(has(failures, "literal-bound.wait.condition"), failures)
 
+    def test_a_gutted_clock_family_fails_the_self_test_by_name(self):
+        """The planted-RED check reads the elapsed-assert ids too, one per clock family (K2 step 2B)."""
+        original = C.compose_rules
+        try:
+            C.compose_rules = lambda lang, extra=(): original(lang, extra).replace(
+                "id: elapsed-assert.hrtime.condition", "id: elapsed-assert.hrtime.condition\nseverity: off")
+            failures = C.self_test()
+        finally:
+            C.compose_rules = original
+        self.assertTrue(has(failures, "rule elapsed-assert.hrtime.condition (typescript) has no planted RED"), failures)
+
 
     def test_a_gutted_binding_position_fails_the_self_test_by_name(self):
         """The binding pass's positions are declared (PY_BOUND_RULES): emptying one from PY_CALLS is named, and so is
@@ -165,6 +183,24 @@ class SelfTest(unittest.TestCase):
         finally:
             C.PY_CALLS.clear()
             C.PY_CALLS.update(original)
+
+
+class ElapsedNotCovered(unittest.TestCase):
+    """Root's D6: what the elapsed rules see but cannot read is listed with every run, never silently clean."""
+
+    def test_a_two_hop_value_is_listed_in_every_output(self):
+        repo = Repo()
+        try:
+            t = "s/tests/test_a.py"
+            repo.commit({t: "def test_x(b):\n    rc, out, elapsed = b.hook(env={})\n    assert elapsed < 30\n",
+                         BL: baseline({}, trees=[{"glob": "s/tests/**", "min_files": 1}])})
+            v = repo.verdict(None)
+            self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [(t, 3)])
+            self.assertIn("a helper read goes one hop (D6)", v["not_covered"][0][2])
+            self.assertIn(f"- {t}:3 an upper bound on `elapsed`", C.summary_md(v))
+            self.assertEqual(v["counts"], {}, "listed, not counted: the helper is not read")
+        finally:
+            repo.done()
 
 
 class PythonBinding(unittest.TestCase):
@@ -677,6 +713,22 @@ class Marks(unittest.TestCase):
         self.assertEqual([(m["file"], m["line"]) for m in v["new_marks"]], [(a, 2)])
         self.assertEqual(v["problems"], [], "a mark clears its finding; it is listed, not failed")
 
+    def test_a_mark_never_exempts_an_elapsed_assert(self):
+        """Root's R3a: a short upper bound on a real-clock difference is a finding a mark cannot clear; it is counted
+        under its own rule, so a new one is a rise even where the literal bounds are clean."""
+        a = "s/__tests__/a.test.ts"
+        base = self.repo.commit({a: 'it("x", async () => {}, 120_000);\n', BL: baseline({})})
+        self.repo.commit({a: 'it("x", async () => {\n  const t0 = Date.now();\n  await work();\n'
+                             '  expect(Date.now() - t0).toBeLessThan(500); // timeout under test: the latency contract\n'
+                             '}, 120_000);\n'})
+        v = self.repo.verdict(base)
+        rec = next(r for r in v["findings"][a] if r["rule"] == C.ELAPSED)
+        self.assertEqual((rec["status"], rec["mark"], rec["floor"]), ("finding", None, 60_000))
+        self.assertIn("never exempts", rec["reason"])
+        self.assertEqual(v["counts"], {a: {C.ELAPSED: 1}})
+        self.assertTrue(has(v["problems"], f"[{C.ELAPSED}] {a}: 1 finding(s), the base had 0: a new one"), v["problems"])
+        self.assertEqual(v["new_marks"], [], "the mark exempted nothing, so it is not a new exemption")
+
     def test_an_unparsable_file_is_red(self):
         a = "s/__tests__/a.test.ts"
         self.repo.commit({a: 'it("x", async () => { const = ; });\n', BL: baseline({})})
@@ -952,6 +1004,29 @@ class Cli(unittest.TestCase):
                                capture_output=True, text=True, env=self.cli_env())
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertEqual(json.loads((repo.dir / BL).read_text())["check_digest"], C.check_digest())
+        finally:
+            repo.done()
+
+    def test_a_seed_writes_both_families_and_the_next_run_is_clean(self):
+        """write-baseline --seed counts elapsed-assert under its own rule beside literal-bound (K2 step 2B)."""
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            body = (file("a", 0, 1) + 'it("y", async () => {\n  const t0 = Date.now();\n  await work();\n'
+                    '  expect(Date.now() - t0).toBeLessThan(500);\n}, 120_000);\n')
+            cfg = json.loads(baseline({}))
+            cfg.pop("counts")
+            repo.commit({a: body, BL: json.dumps(cfg, indent=2) + "\n"})
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+            run = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
+                                                "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
+            seeded = run("write-baseline", "--seed")
+            self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+            self.assertEqual(json.loads((repo.dir / BL).read_text())["counts"], {a: {C.ELAPSED: 1, C.RULE: 1}})
+            ok = run("check")
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            self.assertIn("2 finding(s) counted", ok.stdout)
+            self.assertIn("elapsed-time asserts", ok.stdout, "the elapsed positions are printed as covered")
         finally:
             repo.done()
 

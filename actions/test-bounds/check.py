@@ -87,6 +87,11 @@ SCHEMA = 1
 CHECK_ID = "vagarylabs/.github/actions/test-bounds"
 BASELINE_PATH = ".github/test-bounds.baseline.json"
 RULE = "literal-bound"
+# Elapsed-time asserts (root's R3a, 10-31): an UPPER bound on a real-clock difference, judged against the condition
+# floor and never exempted by a mark. Readings per second of each clock family (rules/elapsed-assert*.yml).
+ELAPSED = "elapsed-assert"
+ELAPSED_PER_S = {"date": 1000, "perf": 1000, "hrtime": 10**9, "time": 1, "time-ns": 10**9, "monotonic": 1,
+                 "monotonic-ns": 10**9, "perf-counter": 1, "perf-counter-ns": 10**9, "loop": 1, "datetime": 1}
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
 # fixture: a test fixture's client timeout (PostgreSQL connect/pool), at vagary-core #949's 120 s readiness floor.
 FLOORS_S = {"case": 120, "hook": 240, "condition": 60, "subprocess": 120, "fixture": 120}
@@ -94,8 +99,9 @@ LANGUAGE_OF = {".ts": "typescript", ".mts": "typescript", ".cts": "typescript", 
                ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript", ".py": "python"}
 UNIT = {"typescript": 1000, "tsx": 1000, "javascript": 1000, "python": 1}
 JS_LANGS = ("typescript", "tsx", "javascript")
-RULE_FILES = {"typescript": "literal-bound.yml", "tsx": "literal-bound.yml", "javascript": "literal-bound.yml",
-              "python": "literal-bound.py.yml"}
+JS_RULE_FILES = ("literal-bound.yml", "elapsed-assert.yml")
+RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": JS_RULE_FILES,
+              "python": ("literal-bound.py.yml", "elapsed-assert.py.yml")}
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
@@ -113,7 +119,15 @@ COVERED = {
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
-                 "statement_timeout, query_timeout)",
+                 "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
+                 ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
+                 "assert.ok/expect(..).toBe(true), as an `&&` operand or in parentheses too) on a Date, performance or "
+                 "hrtime.bigint difference (BigInt bounds evaluated), direct, parenthesised, through a bound name, "
+                 "scaled, or returned by a same-file helper (one hop); and a LOWER bound on a remaining time "
+                 "`deadline - now` (D5). Not read: Math.round / Number() wrappers, chai `.below()` without `to.be`, "
+                 "node:test `t.assert.ok`, assert.strictEqual(A < V, true), an `||` operand. An upper bound on a "
+                 "duration-named value a call or a destructuring binds (two hops, object destructuring) is listed as "
+                 "NOT COVERED",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
           "communicate(input, N), a `timeout` parameter default); thread and process join (a positional name or "
           "arithmetic only when it resolves to a number, since str.join takes one). Read by binding, with Python's "
@@ -133,12 +147,19 @@ COVERED = {
           "library this check does not read, or one reached through getattr, importlib.import_module or "
           "functools.partial; any aiohttp call with a bound keyword (aiohttp is not read yet). NOT READ, and not "
           "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
-          "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name",
+          "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name"
+          "; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), "
+          "assertGreater[Equal](V, A), `A < V` and chained `LO < A < V` in assert/assertTrue, as an `and` operand or "
+          "in parentheses too) on a time, monotonic, perf_counter (and _ns), loop.time() or datetime difference, "
+          "direct, parenthesised, through a bound name, scaled, or returned by a same-file helper (one hop); and a "
+          "LOWER bound on a remaining time `deadline - now` (D5). Not read: an alias of time or datetime (`import "
+          "time as t`), `//` scaling, round()/abs() wrappers, `assert not (...)`, assertAlmostEqual, `.seconds`, "
+          "total_seconds() * k, an `or` operand. An upper bound on a duration-named value a call or a destructuring "
+          "binds (two hops) is listed as NOT COVERED",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",
-    "not yet (K2 step 2)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows, elapsed-time "
-                           "asserts",
+    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -309,6 +330,9 @@ _NUM = re.compile(r"(?:0|[1-9](?:_?\d)*)(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d(?:
                   r"|\.\d(?:_?\d)*(?:[eE][+-]?\d(?:_?\d)*)?(?![\w$.])")
 
 
+_BIGINT = re.compile(r"(0|[1-9](?:_?\d)*)n(?![\w$.])")
+
+
 def evaluate_js(text: str) -> Fraction | None:
     """The exact value of a JS/TS literal expression: numbers, unary minus, + - * and parentheses; else None."""
     s, i = text, 0
@@ -329,6 +353,10 @@ def evaluate_js(text: str) -> Fraction | None:
                 return None
             i += 1
             return v
+        big = _BIGINT.match(s, i)  # 60_000_000_000n: a BigInt (hrtime.bigint() differences, root's #66 RC L6)
+        if big:
+            i = big.end()
+            return Fraction(int(big.group(1).replace("_", "")))
         m = _NUM.match(s, i)
         if not m:
             return None
@@ -418,19 +446,54 @@ def _keep(text: str, lang: str) -> str:
     return "".join(out)
 
 
-def compose_rules(lang: str, extra: list[str] = ()) -> str:
-    """Every rule of rules/<file> for one language: its language line set, its utils appended, tagged lines kept."""
-    docs = re.split(r"(?m)^---[ \t]*$", (HERE / "rules" / RULE_FILES[lang]).read_text(encoding="utf-8"))
-    head = docs[0]
-    if "utils:" not in head:
-        raise Refusal(f"rules/{RULE_FILES[lang]}: the first document must hold the utils")
-    utils = _keep(head[head.index("utils:"):], lang)
+_UTIL_KEY = re.compile(r"(?m)^  (?P<key>[\w-]+):")
+
+
+def _per_clock(utils: str, docs: list[str], name: str) -> tuple[str, list[str]]:
+    """Each util and rule whose name holds CLOCK, once per clock family: every `clock-<family>` util is a family, with
+    its readings per second in ELAPSED_PER_S and its fake-clock proof in a `fakes-<family>` util."""
+    keys = [m.group("key") for m in _UTIL_KEY.finditer(utils)]
+    families = [k[len("clock-"):] for k in keys if k.startswith("clock-")]
+    if not families:
+        return utils, docs
+    for f in families:
+        if f not in ELAPSED_PER_S:
+            raise Refusal(f"rules/{name}: clock family `{f}` has no readings per second in ELAPSED_PER_S")
+        if "fakes-" + f not in keys:
+            raise Refusal(f"rules/{name}: clock family `{f}` has no `fakes-{f}` util")
+    starts = [m.start() for m in _UTIL_KEY.finditer(utils)]
+    blocks = [utils[:starts[0]]] + [utils[a:b] for a, b in zip(starts, starts[1:] + [len(utils)])]
     out = []
-    for doc in list(docs[1:]) + list(extra):
-        doc = re.sub(r"(?m)^language: \w+$", "language: " + lang, doc.strip("\n"))
-        if not re.search(r"(?m)^id: ", doc):
-            raise Refusal("a rule document has no id")
-        out.append(_keep(doc, lang) + "\n" + utils)
+    for block in blocks:
+        key = _UTIL_KEY.match(block)
+        if key and "CLOCK" in key.group("key"):
+            out += [block.replace("CLOCK", f) for f in families]
+        elif "CLOCK" in re.sub(r"(?m)#.*$", "", block):
+            raise Refusal(f"rules/{name}: util `{key.group('key') if key else '?'}` names CLOCK but is not one")
+        else:
+            out.append(block)
+    expanded = []
+    for doc in docs:
+        rid = re.search(r"(?m)^id: (\S+)", doc)
+        expanded += [doc.replace("CLOCK", f) for f in families] if rid and "CLOCK" in rid.group(1) else [doc]
+    return "".join(out), expanded
+
+
+def compose_rules(lang: str, extra: list[str] = ()) -> str:
+    """Every rule of the language's rules/ files: its language line set, its file's utils appended, tagged lines
+    kept, and each CLOCK util and rule emitted once per clock family."""
+    out = []
+    for i, name in enumerate(RULE_FILES[lang]):
+        docs = re.split(r"(?m)^---[ \t]*$", (HERE / "rules" / name).read_text(encoding="utf-8"))
+        head = docs[0]
+        if "utils:" not in head:
+            raise Refusal(f"rules/{name}: the first document must hold the utils")
+        utils, body = _per_clock(_keep(head[head.index("utils:"):], lang), list(docs[1:]), name)
+        for doc in body + (list(extra) if i == 0 else []):
+            doc = re.sub(r"(?m)^language: \w+$", "language: " + lang, doc.strip("\n"))
+            if not re.search(r"(?m)^id: ", doc):
+                raise Refusal("a rule document has no id")
+            out.append(_keep(doc, lang) + "\n" + utils)
     # tree-sitter recovers from what its grammar lacks (vagaris: `f<typeof import("x")>()`). An ERROR holding no
     # identifier or digit, or lying inside a string, cannot hide a bound: it is RECOVERED and listed. Any other ERROR
     # is a red (root's R2, 10-31; tree-sitter-typescript #367 is the upstream gap).
@@ -984,12 +1047,19 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     # span it read and at every direct argument of a call it resolved.
     owned = direct | {(m["file"], _span(m["metaVariables"]["single"]["V"]["range"])) for m in bound_py}
     bounds = [m for m in bounds if (m["file"], _span(m["metaVariables"]["single"]["V"]["range"])) not in owned] + bound_py
+    elapsed = [m for m in matches if m["ruleId"].startswith(ELAPSED + ".")]
+    faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
+             if m["ruleId"].startswith("fake-clock.")}
+    defined = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-def")
+    methods = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-method")
+    unread = [m for m in matches if m["ruleId"] == "elapsed-unread"]
     # Names to resolve, and the files that read them.
     need = {}
-    for m in bounds:
-        text = m["metaVariables"]["single"]["V"]["text"].strip()
-        if NAME.match(text):
-            need.setdefault(m["file"], set()).add(text)
+    for m in bounds + elapsed:
+        for key in ("V", "DB"):  # DB: a D5 deadline's budget
+            text = m["metaVariables"]["single"].get(key, {}).get("text", "").strip()
+            if NAME.match(text):
+                need.setdefault(m["file"], set()).add(text)
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
     resolved = _resolve_all(tree, need)
@@ -1043,6 +1113,44 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
                 else:
                     rec["reason"] += "; the `timeout under test:` mark gives no reason, so it clears nothing"
         findings.setdefault(f, []).append(rec)
+    groups, dropped = {}, {}
+    for m in sorted(elapsed, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"], m["ruleId"])):
+        f, span, mv = m["file"], _span(m["range"]), m["metaVariables"]["single"]
+        helper = mv.get("FN", {}).get("text")
+        # A bare call reaches a function, a member call a function or a method (L4): exactly one such definition
+        # in the file, or the helper read is unproven.
+        n = None if helper is None else defined[(f, helper)] + (methods[(f, helper)] if "FO" in mv else 0)
+        if n is not None and n != 1:
+            dropped.setdefault((f, span), (_line(m["range"]), helper, n))
+            continue
+        groups.setdefault((f, span), []).append(m)
+    for (f, span), ms in groups.items():
+        # One assert is one record. Every clock family its measured side may read must clear it, each by its own
+        # fake or its own floor (root's #66 RC B2): a name rebound from one clock to another clears on neither alone.
+        lang = LANGUAGE_OF[posixpath.splitext(f)[1]]
+        recs = [elapsed_record(m, lang, resolved, (f, m["ruleId"].split(".")[1], span) in faked) for m in ms]
+        rec = next((r for r in recs if r["status"] != "cleared"), recs[0])
+        families = sorted({r["position"] for r in recs})
+        if len(families) > 1:
+            rec["reason"] += (f"; its measured side may read {len(families)} clock families ({', '.join(families)}), "
+                              "so it clears only when each one is proven")
+        m = ms[0]
+        if rec["status"] == "finding" and any((f, ln) in marks_raw
+                                              for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)):
+            rec["reason"] += ("; a `timeout under test:` mark never exempts an elapsed-time assert (root's R3a): "
+                              "use a fake clock, or the code's own logged times")
+        findings.setdefault(f, []).append(rec)
+    # What the elapsed rules see but cannot read is listed, never silently clean (D6).
+    for (f, span), (ln, helper, n) in sorted(dropped.items()):
+        if (f, span) not in groups:
+            not_covered.append((f, ln, f"an elapsed value returned by `{helper}`, which the file defines {n} times "
+                                       "(a helper read needs exactly one definition it can reach), so it is not read"))
+    for m in unread:
+        f, span = m["file"], _span(m["range"])
+        if (f, span) not in groups and (f, span) not in dropped:
+            name = m["metaVariables"]["single"]["A"]["text"]
+            not_covered.append((f, _line(m["range"]), f"an upper bound on `{name}`, which a call or a destructuring "
+                                                      "binds: a helper read goes one hop (D6), so this assert is not read"))
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
             unparsable.setdefault((f, 0), "CPython cannot parse it")
@@ -1572,6 +1680,113 @@ def py_binding_matches(tree: "Tree", files: list[str]) -> tuple[list[dict], list
     return out, not_covered, direct
 
 
+def timedelta_seconds(text: str) -> Fraction | None:
+    """The exact seconds of a `timedelta(...)` / `datetime.timedelta(...)` of exact literal arguments, else None."""
+    try:
+        node = ast.parse(text.strip(), mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(node, ast.Call) and re.fullmatch(r"(?:\w+\.)?timedelta", ast.unparse(node.func))):
+        return None
+    scale = {"days": 86400, "seconds": 1, "microseconds": Fraction(1, 10**6), "milliseconds": Fraction(1, 1000),
+             "minutes": 60, "hours": 3600, "weeks": 604800}
+    args = list(zip(scale, node.args)) + [(k.arg, k.value) for k in node.keywords]
+    if len(node.args) > len(scale) or any(k not in scale for k, _ in args):
+        return None
+    total = Fraction(0)
+    for k, v in args:
+        x = evaluate_py_node(v, text.strip())
+        if x is None:
+            return None
+        total += x * scale[k]
+    return total
+
+
+def remaining_record(rec: dict, mv: dict, lang: str, file: str, resolved: dict, faked: bool, family: str,
+                     floor: Fraction, shown: str) -> dict:
+    """D5 (root 11-01): a LOWER bound X on a remaining time `D - now` bounds the elapsed time by B - X, where D was
+    bound to `now + B`. It clears only under a proven fake clock, or when B and X are exact and B - X is at or above
+    the floor; an unread budget is unproven, so it is a finding."""
+    what = f"`{shown}`, a remaining time on the {family} clock, is bounded from below (an upper bound on elapsed time)"
+    rec["kind"] = "remaining"  # its rule's id (elapsed-assert.<family>.remaining); the floor is still the condition's
+    if faked:
+        rec["status"], rec["reason"] = "cleared", f"{what} under a proven fake clock (rules/elapsed-assert*.yml)"
+        return rec
+    d, x_text = mv["D"]["text"].strip(), mv["V"]["text"].strip()
+    if "DB" not in mv:
+        rec["reason"] = f"{what}; `{d}` is not bound to `now + budget` in a preceding statement, so the budget is unproven"
+        return rec
+    b_text = mv["DB"]["text"].strip()
+
+    def exact(text: str) -> tuple[Fraction | None, str]:
+        if family == "datetime":
+            v = timedelta_seconds(text)
+            return v, (f"timedelta {text[:40]} = {_fmt(v)} s" if v is not None else f"`{text[:40]}` is not an exact timedelta(...)")
+        return _value_of(text, lang, file, resolved)
+    b, b_why = exact(b_text)
+    x, x_why = exact(x_text)
+    rec["value"] = re.sub(r"\s+", " ", f"{b_text} - {x_text}")[:120]
+    if b is None or x is None:
+        rec["reason"] = f"{what}; budget: {b_why}; margin: {x_why}"
+        return rec
+    left = b - x
+    why = f"the budget {b_text} = {_fmt(b)} minus the margin {x_text} = {_fmt(x)} leaves {_fmt(left)}"
+    if left >= floor:
+        rec["status"], rec["reason"] = "cleared", f"{what}; {why}"
+    else:
+        rec["reason"] = f"{what}; {why}, below the floor {rec['floor']}"
+    return rec
+
+
+def elapsed_record(m: dict, lang: str, resolved: dict, faked: bool) -> dict:
+    """One elapsed-time assert (rules/elapsed-assert*.yml): its bound against the 60 s condition floor, in the units
+    of the clock its difference reads. Only a bound proven at or above the floor, or a proven fake clock, clears it;
+    a scale or a bound that is not exact is a finding."""
+    mv, file = m["metaVariables"]["single"], m["file"]
+    family = m["ruleId"].split(".")[1]
+    a, v = mv["A"]["text"].strip(), mv["V"]["text"].strip()
+    measured = mv.get("BV", mv["A"])  # a NAME's bound value, else the measured side itself
+    per_s, scale_why, timedelta = Fraction(ELAPSED_PER_S[family]), None, False
+    if "K" in mv:
+        k = evaluate_py(mv["K"]["text"]) if lang == "python" else evaluate_js(mv["K"]["text"])
+        base, pr, kr = measured["range"]["byteOffset"]["start"], _span(mv["P"]["range"]), _span(mv["K"]["range"])
+        raw = measured["text"].encode("utf-8")
+        op = (raw[pr[1] - base:kr[0] - base] if pr < kr else raw[kr[1] - base:pr[0] - base]).decode("utf-8").strip()
+        if k is None or k <= 0 or (op == "/" and kr < pr) or op not in ("*", "/"):
+            scale_why = f"scaled by `{mv['K']['text'].strip()[:40]}`, not an exact positive factor"
+        else:
+            per_s = per_s * k if op == "*" else per_s / k
+    elif "P" in mv:
+        per_s = Fraction(1)  # (d).total_seconds()
+    elif family == "datetime":
+        timedelta = True
+    floor = 60 * per_s
+    rec = {"line": _line(m["range"]), "rule": ELAPSED, "position": family, "kind": "condition",
+           "value": re.sub(r"\s+", " ", v)[:120], "floor": int(floor) if floor.denominator == 1 else str(floor),
+           "status": "finding", "reason": "", "mark": None}
+    shown = re.sub(r"\s+", " ", a)[:60]
+    what = f"`{shown}` reads the {family} clock"
+    if m["ruleId"].endswith(".remaining"):
+        return remaining_record(rec, mv, lang, file, resolved, faked, family, floor, shown)
+    if faked:
+        rec["status"], rec["reason"] = "cleared", f"{what} under a proven fake clock (rules/elapsed-assert*.yml)"
+        return rec
+    if scale_why:
+        rec["reason"] = f"{what}, {scale_why}"
+        return rec
+    if timedelta:
+        value = timedelta_seconds(v)
+        why = f"timedelta {v[:60]} = {_fmt(value)} s" if value is not None else (
+            f"a timedelta compared with `{v[:60]}`, not an exact timedelta(...)")
+    else:
+        value, why = _value_of(v, lang, file, resolved)
+    if value is not None and value >= floor:
+        rec["status"], rec["reason"] = "cleared", f"{what}; {why}"
+    else:
+        rec["reason"] = f"{what}; {why}" + ("" if value is None else f", below the floor {rec['floor']}")
+    return rec
+
+
 def _value_of(text: str, lang: str, file: str, resolved: dict) -> tuple[Fraction | None, str]:
     if NAME.match(text):
         ok, why = resolved.get((file, text), (None, f"`{text}` is not resolved"))
@@ -2012,7 +2227,7 @@ def self_test(verbose: bool = False) -> list[str]:
     if reads != set(PY_BOUND_RULES):
         failures.append(f"the binding pass reads {sorted(reads)}, PY_BOUND_RULES declares {sorted(PY_BOUND_RULES)}")
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(r"(?m)^id: (literal-bound\.\S+)$", compose_rules(lang)) + (
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)) + (
                 list(PY_BOUND_RULES) if lang == "python" else []):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")

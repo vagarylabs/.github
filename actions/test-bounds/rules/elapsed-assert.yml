@@ -1,0 +1,474 @@
+# elapsed-assert, for typescript, tsx and javascript (K2 step 2B, root's R3a 10-31). An UPPER bound, in an
+# assertion, on a real-clock ELAPSED difference (now minus an earlier reading of the same clock) is a condition
+# bound: below the 60 s floor it is a finding, and a `timeout under test:` mark never exempts it. The remedy is a
+# fake clock, or the code's own logged times. A lower bound, a remaining time (`deadline - Date.now()`), and a
+# value the test did not read from a clock (a logged duration, an injected clock) are not matched.
+#
+# A util or rule naming CLOCK is emitted once per clock family: each `clock-<family>` util is a family, and
+# check.py's ELAPSED_PER_S gives its readings per second. Each family has a `fakes-<family>` util: the calls that
+# prove its clock fake. Captures: $A the measured side, $V the bound; $P and $K a scaled difference `(d) / K`;
+# $BV the value a measured NAME is bound to.
+#   elapsed-assert.<family>.condition  the assert, when $A is that family's elapsed difference;
+#   fake-clock.<family>                the same assert, when a fake clock for that family is proven in scope:
+#                                      check.py clears the bound, with that reason.
+utils:
+  # The clock families (ELAPSED_PER_S: date and perf in ms, hrtime in ns).
+  clock-date:
+    any:
+      - pattern: Date.now()
+      - pattern: new Date().getTime()
+      - pattern: new Date().valueOf()
+      - pattern: +new Date()
+      - pattern: new Date()
+  clock-perf:
+    any:
+      - pattern: performance.now()
+      - pattern: globalThis.performance.now()
+  clock-hrtime: { pattern: process.hrtime.bigint() }
+  # The assertions that put an UPPER bound on $A, when $A is this family's measured side. The measured check runs
+  # where $A is captured: ast-grep 0.42.1 does not re-find a captured node holding a TS non-null `!` by
+  # `has: { pattern: $A, kind: ... }`, so a later re-match would drop `Date.now() - x!.getTime()`.
+  a-CLOCK: { all: [{ pattern: $A }, { matches: measured-CLOCK }] }
+  expect-call-CLOCK:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+  upper-CLOCK:
+    any:
+      - kind: call_expression
+        all:
+          - has:
+              field: function
+              kind: member_expression
+              all:
+                - has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" }
+                - has: { field: object, matches: expect-call-CLOCK }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has:
+              field: function
+              kind: member_expression
+              all:
+                - has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" }
+                - has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-call-CLOCK } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^expect(?:\\.soft)?\\([\\s\\S]*\\)\\.to\\.be\\.(?:at\\.)?(?:below|lessThan|lt|lte|most)$", has: { stopBy: end, matches: expect-call-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^assert\\.(?:isBelow|isAtMost)$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - all: [{ matches: cmp-upper-CLOCK }, { matches: asserted }]
+  # The node an assertion requires true: a truthy assert's first argument, an operand of `&&`, or a parenthesis of
+  # one (root's #66 RC B1). An `||` operand and a `!` are not read: neither is required true.
+  asserted:
+    any:
+      - all: [{ nthChild: 1 }, { inside: { kind: arguments, inside: { matches: truthy-assert } } }]
+      - inside: { kind: parenthesized_expression, matches: asserted }
+      - inside: { kind: binary_expression, has: { field: operator, regex: "^&&$" }, matches: asserted }
+  cmp-upper-CLOCK:
+    kind: binary_expression
+    any:
+      - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, matches: a-CLOCK } }, { has: { field: right, pattern: $V } }]
+      - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: left, pattern: $V } }, { has: { field: right, matches: a-CLOCK } }]
+  # A call that asserts its first argument is true: assert(x), assert.ok(x), assert.isTrue(x), expect(x).toBe(true),
+  # .toEqual(true), .toStrictEqual(true), .toBeTruthy().
+  truthy-assert:
+    kind: call_expression
+    any:
+      - has: { field: function, regex: "^(?:assert|assert\\.ok|assert\\.isTrue)$" }
+      - all:
+          - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+          - inside:
+              kind: member_expression
+              inside:
+                kind: call_expression
+                any:
+                  - all: [{ has: { field: function, regex: "\\.(?:toBe|toEqual|toStrictEqual)$" } }, { has: { field: arguments, regex: "^\\(\\s*true\\s*\\)$" } }]
+                  - all: [{ has: { field: function, regex: "\\.toBeTruthy$" } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }]
+  # Scope: a binding counts when it sits in a statement that PRECEDES the assert's (in its block or an enclosing one),
+  # searched down to, never into, another function; a preceding function or class declaration is not searched.
+  fn-boundary:
+    any:
+      - kind: arrow_function
+      - kind: function_expression
+      - kind: function_declaration
+      - kind: generator_function
+      - kind: generator_function_declaration
+      - kind: method_definition
+      - kind: class_declaration
+      - kind: abstract_class_declaration #[typescript,tsx]
+      - kind: class
+  def-boundary:
+    any:
+      - kind: function_declaration
+      - kind: generator_function_declaration
+      - kind: class_declaration
+      - kind: abstract_class_declaration #[typescript,tsx]
+  # Shapes 1 and 2: now minus an earlier reading. The left operand is this family's clock, or a name bound to it.
+  diff-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has:
+          field: left
+          any:
+            - matches: clock-CLOCK
+            - all:
+                - kind: identifier
+                - pattern: $L
+                - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-L-CLOCK } } }
+  bind-L-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $L } }, { has: { field: value, matches: clock-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $L } }, { has: { field: right, matches: clock-CLOCK } }]
+  # tree-sitter-typescript parses `a - b!.c()` as `(a - b)!.c()`: the difference sits under the non-null postfix at
+  # the head of a member/call chain (vagaris board-session-authentication-time.test.ts:98). Read it as the difference.
+  nonnull-diff-CLOCK: #[typescript,tsx]
+    any: #[typescript,tsx]
+      - all: [{ kind: non_null_expression }, { has: { matches: diff-CLOCK } }] #[typescript,tsx]
+      - all: [{ kind: member_expression }, { has: { field: object, matches: nonnull-diff-CLOCK } }] #[typescript,tsx]
+      - all: [{ kind: call_expression }, { has: { field: function, matches: nonnull-diff-CLOCK } }] #[typescript,tsx]
+  # The measured side: a difference, or one scaled by a factor (shape 4): `(d) / K`, `(d) * K`, `K * (d)`.
+  elapsed-CLOCK:
+    any:
+      - matches: diff-CLOCK
+      - matches: nonnull-diff-CLOCK #[typescript,tsx]
+      - all: [{ kind: parenthesized_expression }, { has: { matches: elapsed-CLOCK } }]
+      - all:
+          - kind: binary_expression
+          - has: { field: operator, regex: "^[*/]$" }
+          - any:
+              - all: [{ has: { field: left, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }, { has: { field: right, pattern: $K } }]
+              - all: [{ has: { field: left, pattern: $K } }, { has: { field: right, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }]
+  # The measured side: an elapsed difference, or (shape 3) a name bound to one in a preceding statement.
+  measured-CLOCK:
+    any:
+      - matches: elapsed-CLOCK
+      - all:
+          - kind: identifier
+          - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
+  # Shape 3's binding; $BV is the bound value.
+  # A name bound to a call of a same-file helper (one hop; vagary-core security-events.mjs:318 `return Date.now() -
+  # t0`): $FN is the helper's name (a function declaration, a const bound to an arrow or function expression, or a
+  # method), and a return in its body (never a nested function's), or an arrow's expression body, gives the measured
+  # side, as the whole value or at the binding's array position (1-4, no holes). The helper is resolved first in the
+  # nearest enclosing function (a direct statement of its body, captured as $FNL), then in the file, where check.py
+  # requires exactly ONE definition named $FN, or the read is not proven. Two hops are not read.
+  helper-call:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, any: [{ kind: identifier, pattern: $FN }, { kind: member_expression, all: [{ has: { field: property, pattern: $FN } }, { has: { field: object, pattern: $FO } }] }] } }]
+      - all: [{ kind: await_expression }, { has: { matches: helper-call } }]
+  returns-CLOCK-0: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-CLOCK-0:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-0 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-0 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FN }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ pattern: $BV, matches: elapsed-CLOCK }, { matches: returns-CLOCK-0 }] } }] }
+  returns-CLOCK-1: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-1:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-1 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-1 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FN }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-CLOCK-1 }] } }] }
+  returns-CLOCK-2: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-2:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-2 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-2 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FN }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-CLOCK-2 }] } }] }
+  returns-CLOCK-3: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-3:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-3 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-3 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FN }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-CLOCK-3 }] } }] }
+  returns-CLOCK-4: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-4:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-4 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FN } }, { has: { field: body, matches: returns-CLOCK-4 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FN }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-CLOCK-4 }] } }] }
+  helper-call-local:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, any: [{ kind: identifier, pattern: $FNL }, { kind: member_expression, has: { field: property, pattern: $FNL } }] } }]
+      - all: [{ kind: await_expression }, { has: { matches: helper-call-local } }]
+  returns-local-CLOCK-0: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-local-CLOCK-0:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-0 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-0 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FNL }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ pattern: $BV, matches: elapsed-CLOCK }, { matches: returns-local-CLOCK-0 }] } }] }
+  returns-local-CLOCK-1: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-1:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-1 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-1 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FNL }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-local-CLOCK-1 }] } }] }
+  returns-local-CLOCK-2: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-2:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-2 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-2 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FNL }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-local-CLOCK-2 }] } }] }
+  returns-local-CLOCK-3: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-3:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-3 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-3 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FNL }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-local-CLOCK-3 }] } }] }
+  returns-local-CLOCK-4: { has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: array, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-4:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-4 } }]
+      - all: [{ kind: method_definition }, { has: { field: name, pattern: $FNL } }, { has: { field: body, matches: returns-local-CLOCK-4 } }]
+      - all:
+          - kind: variable_declarator
+          - has: { field: name, pattern: $FNL }
+          - has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, any: [{ kind: array, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } }, { matches: returns-local-CLOCK-4 }] } }] }
+  bind-A-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $A } }, { has: { field: value, pattern: $BV, matches: elapsed-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $A } }, { has: { field: value, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, matches: fn-boundary, has: { field: body, has: { any: [{ matches: helper-local-CLOCK-0 }, { kind: lexical_declaration, has: { matches: helper-local-CLOCK-0 } }] } } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 1, pattern: $A } } }, { has: { field: value, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, matches: fn-boundary, has: { field: body, has: { any: [{ matches: helper-local-CLOCK-1 }, { kind: lexical_declaration, has: { matches: helper-local-CLOCK-1 } }] } } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 2, pattern: $A } } }, { has: { field: value, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, matches: fn-boundary, has: { field: body, has: { any: [{ matches: helper-local-CLOCK-2 }, { kind: lexical_declaration, has: { matches: helper-local-CLOCK-2 } }] } } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 3, pattern: $A } } }, { has: { field: value, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, matches: fn-boundary, has: { field: body, has: { any: [{ matches: helper-local-CLOCK-3 }, { kind: lexical_declaration, has: { matches: helper-local-CLOCK-3 } }] } } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 4, pattern: $A } } }, { has: { field: value, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, matches: fn-boundary, has: { field: body, has: { any: [{ matches: helper-local-CLOCK-4 }, { kind: lexical_declaration, has: { matches: helper-local-CLOCK-4 } }] } } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $A } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-0 } } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $A } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-0 } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 1, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-1 } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 2, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-2 } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 3, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-3 } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, kind: array_pattern, not: { regex: "^\\[\\s*,|,\\s*,|,\\s*\\]$" }, has: { nthChild: 4, pattern: $A } } }, { has: { field: value, matches: helper-call } }, { inside: { stopBy: end, kind: program, has: { stopBy: end, matches: helper-CLOCK-4 } } }]
+  # D5 (root 11-01, split by polarity): a LOWER bound on a remaining time is an upper bound on the elapsed one:
+  # `D - now >= X`, `X <= D - now`, expect(D - now).toBeGreaterThan[OrEqual](X), .not.toBeLessThan[OrEqual](X) and
+  # assert.isAbove/isAtLeast(D - now, X), with D a deadline name. When D is bound to `now + B` of the same clock in a
+  # preceding statement ($DB is B), check.py judges B - X against the floor; otherwise the budget is unproven, so it
+  # is a finding. An UPPER bound on a remaining time bounds the elapsed time from BELOW: compliant, never matched.
+  remaining-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has: { field: left, kind: identifier, pattern: $D }
+      - has: { field: right, matches: clock-CLOCK }
+  r-CLOCK: { all: [{ pattern: $A }, { matches: remaining-CLOCK }] }
+  deadline-value-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: clock-CLOCK } }, { has: { field: right, pattern: $DB } }]
+          - all: [{ has: { field: left, pattern: $DB } }, { has: { field: right, matches: clock-CLOCK } }]
+  bind-D-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $D } }, { has: { field: value, matches: deadline-value-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $D } }, { has: { field: right, matches: deadline-value-CLOCK } }]
+  deadline-CLOCK: { inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-D-CLOCK } } } }
+  expect-remaining-CLOCK:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: r-CLOCK } }
+  cmp-lower-remaining-CLOCK:
+    kind: binary_expression
+    any:
+      - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: left, matches: r-CLOCK } }, { has: { field: right, pattern: $V } }]
+      - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, pattern: $V } }, { has: { field: right, matches: r-CLOCK } }]
+  lower-remaining-CLOCK:
+    any:
+      - kind: call_expression
+        all:
+          - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" } }, { has: { field: object, matches: expect-remaining-CLOCK } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" } }, { has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-remaining-CLOCK } }] } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^assert\\.(?:isAbove|isAtLeast)$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: r-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - all: [{ matches: cmp-lower-remaining-CLOCK }, { matches: asserted }]
+  # D6 (root 11-01): helper reads go one hop. A duration-named value that a call or a destructuring (an array or an
+  # object pattern) binds may read a clock two hops away; `elapsed-unread` finds an upper bound on one, and check.py
+  # lists it as NOT COVERED unless an elapsed rule read the same assert.
+  duration-name:
+    kind: identifier
+    regex: "^(?:elapsed|duration|took|latency)|(?:Elapsed|Duration|Took|Latency|Ms|Secs?|Seconds|Millis|_ms|_secs?|_seconds|_millis)$"
+  bind-call-U:
+    kind: variable_declarator
+    all:
+      - has: { field: name, any: [{ pattern: $A }, { all: [{ any: [{ kind: array_pattern }, { kind: object_pattern }] }, { has: { stopBy: end, pattern: $A } }] }] }
+      - has: { field: value, any: [{ kind: call_expression }, { kind: await_expression }] }
+  a-unread:
+    all:
+      - pattern: $A
+      - matches: duration-name
+      - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-call-U } } }
+  expect-unread:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: a-unread } }
+  # Fake clocks. Proof is positive: vi/jest/sinon.useFakeTimers() with no argument or an object literal that does not
+  # advance with real time (shouldAdvanceTime, advanceTimers, legacyFakeTimers) and does not leave the clock native.
+  # Date is faked by default; performance and hrtime only when `toFake` names them (vitest's default list changed
+  # across versions). vi.setSystemTime fakes Date even with real timers (vitest's mockDate); jest's is a no-op without
+  # jest.useFakeTimers() (jest 30.2.0, root's #66 RC B3), which proves Date itself. An option bag holding a spread is
+  # no proof (B4). A config-level `fakeTimers` default is not read.
+  fake-timers-call:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:vi|jest|sinon)\\.useFakeTimers$" }
+      - has: { field: arguments, any: [{ regex: "^\\(\\s*\\)$" }, { has: { nthChild: 1, kind: object, not: { has: { stopBy: end, kind: spread_element } } } }] }
+      - not: { has: { field: arguments, has: { stopBy: end, kind: pair, all: [{ has: { field: key, regex: "^[\"']?(?:shouldAdvanceTime|advanceTimers|legacyFakeTimers)[\"']?$" } }, { has: { field: value, not: { regex: "^false$" } } }] } } }
+  to-fake-names:
+    kind: pair
+    has: { field: key, regex: "^[\"']?toFake[\"']?$" }
+  not-fake-names:
+    kind: pair
+    has: { field: key, regex: "^[\"']?(?:toNotFake|doNotFake)[\"']?$" }
+  fakes-date:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, regex: "^vi\\.setSystemTime$" } }]
+      - all:
+          - matches: fake-timers-call
+          - not: { has: { field: arguments, has: { stopBy: end, matches: not-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]Date[\"'`]$" } } } } }
+          - not: { has: { field: arguments, has: { stopBy: end, matches: to-fake-names, not: { has: { field: value, has: { kind: string, regex: "^[\"'`]Date[\"'`]$" } } } } } }
+  fakes-perf:
+    all:
+      - matches: fake-timers-call
+      - has: { field: arguments, has: { stopBy: end, matches: to-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]performance[\"'`]$" } } } }
+  fakes-hrtime:
+    all:
+      - matches: fake-timers-call
+      - has: { field: arguments, has: { stopBy: end, matches: to-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]hrtime[\"'`]$" } } } }
+  real-timers: { kind: call_expression, has: { field: function, regex: "^(?:(?:vi|jest)\\.useRealTimers|clock\\.(?:uninstall|restore))$" } }
+  # In scope: a preceding statement (of the assert's block or an enclosing one) that is the faking call itself, or a
+  # beforeEach/beforeAll hook that makes it; and no preceding useRealTimers() statement or beforeEach/beforeAll hook
+  # that calls it (afterEach, the usual cleanup, runs after the test and revokes nothing). A sibling test's body
+  # never counts.
+  fake-stmt-CLOCK:
+    any:
+      - kind: expression_statement
+        any:
+          - has: { matches: fakes-CLOCK }
+          - has: { kind: await_expression, has: { matches: fakes-CLOCK } }
+          - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: fakes-CLOCK } } }] }
+      # `const clock = sinon.useFakeTimers()` (L5).
+      - all:
+          - any: [{ kind: lexical_declaration }, { kind: variable_declaration }]
+          - has: { kind: variable_declarator, has: { field: value, any: [{ matches: fakes-CLOCK }, { kind: await_expression, has: { matches: fakes-CLOCK } }] } }
+  # A revocation (L1): useRealTimers / clock.uninstall / clock.restore anywhere in a preceding statement's subtree
+  # (a try/finally included, a function body never), or a call to a same-file function whose body makes one; and a
+  # beforeEach/beforeAll hook that makes one. One before the fake revokes it too, which fails toward a finding.
+  revoking-def:
+    any:
+      - all: [{ kind: function_declaration }, { has: { field: name, pattern: $RH } }, { has: { field: body, has: { stopBy: end, matches: real-timers } } }]
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $RH } }, { has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }], has: { stopBy: end, matches: real-timers } } }]
+  revokes:
+    any:
+      - matches: real-timers
+      - all:
+          - kind: call_expression
+          - has: { field: function, kind: identifier, pattern: $RH }
+          - inside: { stopBy: end, kind: program, has: { stopBy: end, matches: revoking-def } }
+  real-stmt:
+    any:
+      - all: [{ not: { matches: def-boundary } }, { has: { stopBy: { matches: fn-boundary }, matches: revokes } }]
+      - kind: expression_statement
+        has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: real-timers } } }] }
+  under-fake-CLOCK:
+    all:
+      - inside: { stopBy: end, follows: { stopBy: end, matches: fake-stmt-CLOCK } }
+      - not: { inside: { stopBy: end, follows: { stopBy: end, matches: real-stmt } } }
+---
+id: elapsed-assert.CLOCK.condition
+language: typescript
+rule: { matches: upper-CLOCK }
+---
+# D6: an upper bound on a duration-named value a call or a destructuring binds: listed as NOT COVERED when no elapsed
+# rule read the assert.
+id: elapsed-unread
+language: typescript
+rule:
+  any:
+    - kind: call_expression
+      all:
+        - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" } }, { has: { field: object, matches: expect-unread } }] }
+    - kind: call_expression
+      all:
+        - has: { field: function, kind: member_expression, all: [{ has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" } }, { has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-unread } }] } }] }
+    - kind: call_expression
+      all:
+        - has: { field: function, regex: "^assert\\.(?:isBelow|isAtMost)$" }
+        - has: { field: arguments, has: { nthChild: 1, matches: a-unread } }
+    - all:
+        - kind: binary_expression
+        - matches: asserted
+        - any:
+            - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, matches: a-unread } }]
+            - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: right, matches: a-unread } }]
+---
+# D5's mirror: a lower bound on a remaining time (see remaining-CLOCK), with the deadline's budget when it is read.
+id: elapsed-assert.CLOCK.remaining
+language: typescript
+rule:
+  any:
+    - all: [{ matches: lower-remaining-CLOCK }, { matches: deadline-CLOCK }]
+    - matches: lower-remaining-CLOCK
+---
+# Every function name defined in the file, as a function (helper-def) or a method (helper-method): check.py counts
+# them for the helper read's one-definition guard. A bare call reaches a function, never a method (L4).
+id: helper-def
+language: typescript
+rule:
+  any:
+    - { kind: identifier, inside: { kind: function_declaration, field: name } }
+    - kind: identifier
+      inside: { kind: variable_declarator, field: name, has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }] } }
+---
+id: helper-method
+language: typescript
+rule: { kind: property_identifier, inside: { kind: method_definition, field: name } }
+---
+id: fake-clock.CLOCK
+language: typescript
+rule:
+  all:
+    - any: [{ matches: upper-CLOCK }, { matches: lower-remaining-CLOCK }]
+    - matches: under-fake-CLOCK

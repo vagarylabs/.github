@@ -1,0 +1,348 @@
+# elapsed-assert, for python (K2 step 2B, root's R3a 10-31): the shapes and semantics of elapsed-assert.yml. An UPPER
+# bound, in an assertion, on a real-clock ELAPSED difference (now minus an earlier reading of the same clock), below
+# the 60 s floor, is a finding that a mark never exempts. The remedy is a fake clock, or the code's own logged times.
+#
+# A util or rule naming CLOCK is emitted once per clock family (each `clock-<family>` util; ELAPSED_PER_S gives its
+# readings per second, the `_ns` clocks in ns). A datetime difference is read through `.total_seconds()` (seconds) or
+# against an exact `timedelta(...)`. Captures: $A the measured side, $V the bound; $P and $K a scaled difference or
+# the `(d).total_seconds()` operand; $BV the value a measured NAME is bound to.
+utils:
+  clock-time: { pattern: time.time() }
+  clock-time-ns: { pattern: time.time_ns() }
+  clock-monotonic: { any: [{ pattern: time.monotonic() }, { pattern: monotonic() }] }
+  clock-monotonic-ns: { any: [{ pattern: time.monotonic_ns() }, { pattern: monotonic_ns() }] }
+  clock-perf-counter: { any: [{ pattern: time.perf_counter() }, { pattern: perf_counter() }] }
+  clock-perf-counter-ns: { any: [{ pattern: time.perf_counter_ns() }, { pattern: perf_counter_ns() }] }
+  clock-loop:
+    kind: call
+    all:
+      - has: { field: function, regex: "^(?:(?:self\\.)?loop|asyncio\\.get_(?:event|running)_loop\\(\\))\\.time$" }
+      - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+  clock-datetime: { kind: call, has: { field: function, regex: "^(?:\\w+\\.)?datetime\\.(?:now|utcnow)$" } }
+  # The assertions that put an UPPER bound on $A, when $A is this family's measured side (checked where $A is
+  # captured, as in elapsed-assert.yml): assertLess/assertLessEqual(A, V), assertGreater/assertGreaterEqual(V, A),
+  # and a comparison that is an `assert` statement's test or assertTrue's first argument.
+  a-CLOCK: { all: [{ pattern: $A }, { matches: measured-CLOCK }] }
+  upper-CLOCK:
+    any:
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertLess(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertGreater(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+          - has: { field: arguments, has: { nthChild: 2, matches: a-CLOCK } }
+      - all: [{ matches: cmp-upper-CLOCK }, { matches: asserted }]
+  # The node an assertion requires true: an `assert` statement's test, assertTrue's first argument, an operand of
+  # `and`, or a parenthesis of one (root's #66 RC B1; core test_voice_paid_consumer.py:216). An `or` operand and a
+  # `not` are not read: neither is required true.
+  asserted:
+    any:
+      - inside: { kind: assert_statement }
+      - all:
+          - nthChild: 1
+          - inside: { kind: argument_list, inside: { kind: call, has: { field: function, regex: "(?:^|\\.)assertTrue$" } } }
+      - inside: { kind: parenthesized_expression, matches: asserted }
+      - inside: { kind: boolean_operator, has: { field: operator, regex: "^and$" }, matches: asserted }
+  # A comparison bounding $A from above: `A < V`, `A <= V`, `V > A`, `V >= A`, and `LO < A < V` (< or <= each).
+  # Operands are counted, never pattern-matched: ast-grep reads `$A < $V` against the PREFIX of `0 < d < 2`. The
+  # `operators` field yields only a chain's first operator, so a chain's two are pinned by its text.
+  cmp-upper-CLOCK:
+    kind: comparison_operator
+    any:
+      - all:
+          - not: { has: { nthChild: 3 } }
+          - has: { field: operators, regex: "^<=?$" }
+          - has: { nthChild: 1, matches: a-CLOCK }
+          - has: { nthChild: 2, pattern: $V }
+      - all:
+          - not: { has: { nthChild: 3 } }
+          - has: { field: operators, regex: "^>=?$" }
+          - has: { nthChild: 1, pattern: $V }
+          - has: { nthChild: 2, matches: a-CLOCK }
+      - all:
+          - has: { nthChild: 3 }
+          - not: { has: { nthChild: 4 } }
+          - regex: "^[^<>=!]*<=?[^<>=!]*<=?[^<>=!]*$"
+          - has: { nthChild: 2, matches: a-CLOCK }
+          - has: { nthChild: 3, pattern: $V }
+  # Scope: a binding counts when it sits in a statement that PRECEDES the assert's (in its block or an enclosing one),
+  # searched down to, never into, another function, lambda or class; a preceding def or class is not searched.
+  fn-boundary: { any: [{ kind: function_definition }, { kind: lambda }, { kind: class_definition }] }
+  def-boundary: { any: [{ kind: function_definition }, { kind: class_definition }, { kind: decorated_definition }] }
+  diff-CLOCK:
+    kind: binary_operator
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has:
+          field: left
+          any:
+            - matches: clock-CLOCK
+            - all:
+                - kind: identifier
+                - pattern: $L
+                - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-L-CLOCK } } }
+  bind-L-CLOCK: { kind: assignment, all: [{ has: { field: left, pattern: $L } }, { has: { field: right, matches: clock-CLOCK } }] }
+  elapsed-CLOCK:
+    any:
+      - matches: diff-CLOCK
+      - all: [{ kind: parenthesized_expression }, { has: { matches: elapsed-CLOCK } }]
+      - all:
+          - kind: binary_operator
+          - has: { field: operator, regex: "^[*/]$" }
+          - any:
+              - all: [{ has: { field: left, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }, { has: { field: right, pattern: $K } }]
+              - all: [{ has: { field: left, pattern: $K } }, { has: { field: right, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }]
+      - all:
+          - kind: call
+          - has: { field: function, kind: attribute, all: [{ has: { field: attribute, regex: "^total_seconds$" } }, { has: { field: object, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }] }
+          - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+  measured-CLOCK:
+    any:
+      - matches: elapsed-CLOCK
+      - all:
+          - kind: identifier
+          - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
+  # A name bound to a call of a same-file helper (one hop; vps test_uplink_probe.py:55 `return r, time.monotonic() -
+  # t0`): $FN is the helper's name, and a return in its body (never a nested function's) gives the measured side, at
+  # the binding's tuple position (1-4) or as the whole value. The helper is resolved first in the nearest enclosing
+  # function (a def that is a direct statement of its body, captured as $FNL), then in the file, where check.py
+  # requires exactly ONE definition named $FN, or the read is not proven. The call may be awaited, or run by
+  # asyncio.run / run_until_complete. A helper that returns another helper's call (two hops) is not read.
+  run-call: { kind: call, has: { field: function, regex: "^(?:asyncio\\.run|(?:[\\w.]+\\.)?run_until_complete)$" } }
+  helper-call:
+    any:
+      - all: [{ kind: call }, { not: { matches: run-call } }, { has: { field: function, any: [{ kind: identifier, pattern: $FN }, { kind: attribute, all: [{ has: { field: attribute, pattern: $FN } }, { has: { field: object, pattern: $FO } }] }] } }]
+      - all: [{ kind: await }, { has: { matches: helper-call } }]
+      - all: [{ matches: run-call }, { has: { field: arguments, has: { nthChild: 1, matches: helper-call } } }]
+  helper-CLOCK-0:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-CLOCK-1:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-2:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-3:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-4:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-call-local:
+    any:
+      - all: [{ kind: call }, { not: { matches: run-call } }, { has: { field: function, any: [{ kind: identifier, pattern: $FNL }, { kind: attribute, has: { field: attribute, pattern: $FNL } }] } }]
+      - all: [{ kind: await }, { has: { matches: helper-call-local } }]
+      - all: [{ matches: run-call }, { has: { field: arguments, has: { nthChild: 1, matches: helper-call-local } } }]
+  helper-local-CLOCK-0:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-local-CLOCK-1:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-2:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-3:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-4:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  bind-A-CLOCK:
+    any:
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }]
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-0 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 1, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-1 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 2, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-2 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 3, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-3 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 4, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-4 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-0 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 1, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-1 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 2, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-2 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 3, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-3 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 4, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-4 } } }]
+  # D5 (root 11-01, split by polarity): a LOWER bound on a remaining time is an upper bound on the elapsed one.
+  # `D - now >= X`, `X <= D - now`, assertGreater[Equal](D - now, X) and assertLess[Equal](X, D - now), with D a
+  # deadline name. When D is bound to `now + B` of the same clock in a preceding statement ($DB is B), check.py judges
+  # B - X against the floor; otherwise the budget is unproven, so it is a finding. An UPPER bound on a remaining time
+  # (`D - now < X`) bounds the elapsed time from BELOW: compliant, never matched.
+  remaining-CLOCK:
+    kind: binary_operator
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has: { field: left, kind: identifier, pattern: $D }
+      - has: { field: right, matches: clock-CLOCK }
+  r-CLOCK: { all: [{ pattern: $A }, { matches: remaining-CLOCK }] }
+  bind-D-CLOCK:
+    kind: assignment
+    all:
+      - has: { field: left, pattern: $D }
+      - has:
+          field: right
+          kind: binary_operator
+          all:
+            - has: { field: operator, regex: "^\\+$" }
+            - any:
+                - all: [{ has: { field: left, matches: clock-CLOCK } }, { has: { field: right, pattern: $DB } }]
+                - all: [{ has: { field: left, pattern: $DB } }, { has: { field: right, matches: clock-CLOCK } }]
+  deadline-CLOCK: { inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-D-CLOCK } } } }
+  cmp-lower-remaining-CLOCK:
+    kind: comparison_operator
+    any:
+      - all: [{ not: { has: { nthChild: 3 } } }, { has: { field: operators, regex: "^>=?$" } }, { has: { nthChild: 1, matches: r-CLOCK } }, { has: { nthChild: 2, pattern: $V } }]
+      - all: [{ not: { has: { nthChild: 3 } } }, { has: { field: operators, regex: "^<=?$" } }, { has: { nthChild: 1, pattern: $V } }, { has: { nthChild: 2, matches: r-CLOCK } }]
+  lower-remaining-CLOCK:
+    any:
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertGreater(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: r-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertLess(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+          - has: { field: arguments, has: { nthChild: 2, matches: r-CLOCK } }
+      - all: [{ matches: cmp-lower-remaining-CLOCK }, { matches: asserted }]
+  # D6 (root 11-01): helper reads go one hop. A duration-named value that a call or a destructuring binds may read a
+  # clock two hops away; `elapsed-unread` finds an upper bound on one, and check.py lists it as NOT COVERED unless an
+  # elapsed rule read the same assert.
+  duration-name:
+    kind: identifier
+    regex: "^(?:elapsed|duration|took|latency)|(?:_elapsed|_duration|_took|_latency|_ms|_secs?|_seconds|_millis)$"
+  bind-call-U:
+    kind: assignment
+    all:
+      - has: { field: left, any: [{ pattern: $A }, { all: [{ any: [{ kind: pattern_list }, { kind: tuple_pattern }] }, { has: { pattern: $A } }] }] }
+      - has: { field: right, any: [{ kind: call }, { kind: await }] }
+  a-unread:
+    all:
+      - pattern: $A
+      - matches: duration-name
+      - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-call-U } } }
+  # Fake clocks, proven positively: freezegun's freeze_time (decorator, `with`, a chained `.start()`, pytest's
+  # `freezer` fixture or freeze_time marker) without tick=True fakes every clock here (loop.time() reads
+  # time.monotonic); a mock.patch / patch.object / monkeypatch.setattr of the exact `time` function fakes that one.
+  # time_machine is not read (its travel() ticks by default and never fakes monotonic or perf_counter).
+  freeze-call:
+    kind: call
+    all:
+      - has: { field: function, regex: "^(?:(?:freezegun|pytest\\.mark)\\.)?freeze_time$" }
+      # Proof is positive (root's #66 RC B4): a `tick` whose value is not the literal False, or a `**` splat that may
+      # carry one, is no proof.
+      - not: { has: { field: arguments, has: { kind: keyword_argument, has: { field: name, regex: "^tick$" }, not: { has: { field: value, regex: "^False$" } } } } }
+      - not: { has: { field: arguments, has: { kind: dictionary_splat } } }
+  patch-call: { kind: call, has: { field: function, regex: "^(?:(?:(?:unittest\\.)?mock\\.)?patch(?:\\.object)?|monkeypatch\\.setattr)$" } }
+  fakes-time: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.time[\"']|\\btime\\s*,\\s*[\"']time[\"']" }] }] }
+  fakes-time-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.time_ns[\"']|\\btime\\s*,\\s*[\"']time_ns[\"']" }] }] }
+  fakes-monotonic: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.monotonic[\"']|\\btime\\s*,\\s*[\"']monotonic[\"']" }] }] }
+  fakes-monotonic-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.monotonic_ns[\"']|\\btime\\s*,\\s*[\"']monotonic_ns[\"']" }] }] }
+  fakes-perf-counter: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.perf_counter[\"']|\\btime\\s*,\\s*[\"']perf_counter[\"']" }] }] }
+  fakes-perf-counter-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.perf_counter_ns[\"']|\\btime\\s*,\\s*[\"']perf_counter_ns[\"']" }] }] }
+  # real_asyncio=True (freezegun 1.3+) gives asyncio the real monotonic clock, so loop.time() stays real (L2).
+  fakes-loop:
+    all:
+      - matches: freeze-call
+      - not: { has: { field: arguments, has: { kind: keyword_argument, has: { field: name, regex: "^real_asyncio$" }, not: { has: { field: value, regex: "^False$" } } } } }
+  fakes-datetime: { matches: freeze-call }
+  # A statement takes effect when it runs only through monkeypatch.setattr or a chained `.start()`: an unstarted
+  # `f = freeze_time(...)` or `p = mock.patch(...)` leaves the clock real (a two-statement start is not read).
+  started-CLOCK:
+    any:
+      - all: [{ matches: fakes-CLOCK }, { has: { field: function, regex: "^monkeypatch\\.setattr$" } }]
+      - all:
+          - kind: call
+          - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+          - has: { field: function, kind: attribute, all: [{ has: { field: attribute, regex: "^start$" } }, { has: { field: object, matches: fakes-CLOCK } }] }
+  # A revocation: patch.stopall(), a patcher's `.stop()`, monkeypatch.undo() (L1). One anywhere in a preceding
+  # statement's subtree (not inside a function) revokes a started fake; one before the start revokes it too, which
+  # fails toward a finding.
+  revoke-call:
+    kind: call
+    all:
+      - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+      - has: { field: function, regex: "(?:^|\\.)stopall$|\\.stop$|^monkeypatch\\.undo$" }
+  under-fake-CLOCK:
+    any:
+      - inside: { stopBy: end, kind: decorated_definition, has: { kind: decorator, any: [{ has: { stopBy: end, matches: fakes-CLOCK } }, { regex: "^@\\s*pytest\\.mark\\.freeze_time\\s*$" }] } }
+      - inside: { stopBy: end, kind: with_statement, has: { kind: with_clause, has: { stopBy: end, matches: fakes-CLOCK } } }
+      - all:
+          - inside: { stopBy: end, follows: { stopBy: end, kind: expression_statement, has: { stopBy: { kind: lambda }, matches: started-CLOCK } } }
+          - not: { inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: revoke-call } } } }
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, kind: identifier, regex: "^freezer$" } } }
+---
+id: elapsed-assert.CLOCK.condition
+language: python
+rule: { matches: upper-CLOCK }
+---
+# Every function name defined in the file, outside a class (helper-def) and inside one (helper-method): check.py
+# counts them for the helper read's one-definition guard. A bare call reaches a function, never a method (L4).
+id: helper-def
+language: python
+rule: { kind: identifier, inside: { kind: function_definition, field: name, not: { inside: { stopBy: end, kind: class_definition } } } }
+---
+id: helper-method
+language: python
+rule: { kind: identifier, inside: { kind: function_definition, field: name, inside: { stopBy: end, kind: class_definition } } }
+---
+# D6: an upper bound on a duration-named value a call or a destructuring binds (vps test_disk_floor_reclaim.py:472,
+# `rc, out, elapsed = b.hook(...)`): listed as NOT COVERED when no elapsed rule read the assert.
+id: elapsed-unread
+language: python
+rule:
+  any:
+    - kind: call
+      all:
+        - has: { field: function, regex: "(?:^|\\.)assertLess(?:Equal)?$" }
+        - has: { field: arguments, has: { nthChild: 1, matches: a-unread } }
+    - kind: call
+      all:
+        - has: { field: function, regex: "(?:^|\\.)assertGreater(?:Equal)?$" }
+        - has: { field: arguments, has: { nthChild: 2, matches: a-unread } }
+    - all:
+        - kind: comparison_operator
+        - matches: asserted
+        - not: { has: { nthChild: 3 } }
+        - any:
+            - all: [{ has: { field: operators, regex: "^<=?$" } }, { has: { nthChild: 1, matches: a-unread } }]
+            - all: [{ has: { field: operators, regex: "^>=?$" } }, { has: { nthChild: 2, matches: a-unread } }]
+---
+# D5's mirror: a lower bound on a remaining time (see remaining-CLOCK), with the deadline's budget when it is read.
+id: elapsed-assert.CLOCK.remaining
+language: python
+rule:
+  any:
+    - all: [{ matches: lower-remaining-CLOCK }, { matches: deadline-CLOCK }]
+    - matches: lower-remaining-CLOCK
+---
+id: fake-clock.CLOCK
+language: python
+rule:
+  all:
+    - any: [{ matches: upper-CLOCK }, { matches: lower-remaining-CLOCK }]
+    - matches: under-fake-CLOCK

@@ -54,9 +54,11 @@ class Repo:
         self._tmp.cleanup()
 
 
-def baseline(counts: dict, trees=None, launchers=None, exclude=None) -> str:
+def baseline(counts: dict, trees=None, launchers=None, exclude=None, digest=None) -> str:
     cfg = {"schema": 1, "check": C.CHECK_ID, "trees": trees or TREES, "counts":
            {f: {C.RULE: n} for f, n in counts.items() if n}}
+    if digest is not None:
+        cfg["check_digest"] = digest
     if launchers is not None:
         cfg["launchers"] = launchers
     if exclude is not None:
@@ -250,9 +252,75 @@ class Baseline(unittest.TestCase):
         self.repo.commit({x: file("x", 0, 3) + "\n// touched\n", BL: baseline({x: 7, y: 4})})
         v = self.repo.verdict(base, "merge_group")
         self.assertEqual(v["problems"], [
-            f"[{C.RULE}] {y}: the committed baseline allows 4, the base allowed 1: a raise of the baseline itself",
+            f"[{C.RULE}] {y}: the committed baseline allows 4, the base allowed 1: a raise of the baseline itself (a "
+            "detection change may lock in exactly the 1 finding(s) the file holds, not 4)",
             f"[{C.RULE}] {x}: the committed baseline allows 7, the file has 3 and the base allowed 3: a raise of the "
             "baseline itself"])
+
+    def test_a_detection_change_locks_in_an_untouched_files_debt(self):
+        """K2 D8 (root 11-01, 4 guards): a check that detects more finds debt in a file the change does not touch. With
+        the base's baseline written by an OLDER check (no digest, or another), the raise to EXACTLY the found count
+        lands, is listed, and needs the head baseline to record this check's version."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), BL: baseline({x: 1})})  # an older check counted 1 of the 3
+        self.repo.commit({"README": "pin bump\n"})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: 3 finding(s), the baseline allows 1: a new one"), v["problems"])
+        self.assertEqual(v["_allow"][C.RULE], [x], "write-baseline --base may lock it in")
+        self.repo.commit({BL: baseline({x: 3}, digest=C.check_digest())})
+        v = self.repo.verdict(base)
+        self.assertEqual(v["problems"], [])
+        self.assertEqual(v["locked_in"], [{"rule": C.RULE, "file": x, "base": 1, "now": 3}])
+        self.assertTrue(has(v["notices"], f"[{C.RULE}] {x}: debt locked in by a detection change: 1 -> 3"), v["notices"])
+        self.assertIn("Debt locked in by a detection change: 1", C.summary_md(v))
+
+    def test_a_locked_in_raise_must_record_this_checks_version(self):
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), BL: baseline({x: 1})})
+        self.repo.commit({BL: baseline({x: 3})})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], "does not record this check's version"), v["problems"])
+
+    def test_no_raise_under_an_unchanged_check(self):
+        """Guard 1: the base's baseline was written by THIS check, so there is no new debt to lock in."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), BL: baseline({x: 1}, digest=C.check_digest())})
+        self.repo.commit({"README": "a change\n"})
+        v = self.repo.verdict(base)
+        self.assertEqual(v["_allow"][C.RULE], [], "write-baseline may not raise it")
+        self.repo.commit({BL: baseline({x: 3}, digest=C.check_digest())})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"[{C.RULE}] {x}: the committed baseline allows 3, the base allowed 1: a raise of "
+                                           "the baseline itself (the check detects exactly as it did at the base"), v["problems"])
+        self.assertEqual(v["locked_in"], [])
+
+    def test_a_lock_in_goes_to_exactly_the_found_count(self):
+        """Guard 3: above the findings is slack, below them is a partial lock-in; both are refused."""
+        x = "s/__tests__/x.test.ts"
+        base = self.repo.commit({x: file("x", 0, 3), BL: baseline({x: 1})})
+        for n in (4, 2):
+            with self.subTest(n=n):
+                self.repo.commit({BL: baseline({x: n}, digest=C.check_digest())})
+                v = self.repo.verdict(base)
+                self.assertTrue(has(v["problems"], f"a detection change may lock in exactly the 3 finding(s) the file holds, "
+                                                   f"not {n}"), v["problems"])
+                self.assertEqual(v["locked_in"], [])
+
+    def test_base_raises_refuses_a_file_not_byte_identical_at_the_base(self):
+        """Guard 2 as base_raises' own contract: a raise to exactly the found count under a detection change is still
+        refused for a file that is not byte-identical at the base (run() passes only blob-identical files)."""
+        p, n, locked = C.base_raises({"x": 3}, {"x": 1}, {"x": 3}, True, set())
+        self.assertEqual(locked, [])
+        self.assertTrue(has(p, "the file is not byte-identical at the base"), p)
+        p, n, locked = C.base_raises({"x": 3}, {"x": 1}, {"x": 3}, True, {"x"})
+        self.assertEqual((p, locked), ([], [("x", 1, 3)]))
+
+    def test_byte_identity_is_read_from_the_base_tree(self):
+        """Guard 2: a file whose blob differs at the base is never an untouched lock-in candidate."""
+        x, y = "s/__tests__/x.test.ts", "s/__tests__/y.test.ts"
+        base = self.repo.commit({x: file("x", 0, 2), y: file("y", 0, 2), BL: baseline({})})
+        self.repo.commit({y: file("y", 0, 2) + "\n// edited\n"})
+        self.assertEqual(C.byte_identical(self.repo.dir, base, [x, y, "s/__tests__/absent.test.ts"]), {x})
 
     def test_a_base_without_a_baseline_still_judges_touched_files(self):
         x = "s/__tests__/x.test.ts"
@@ -554,6 +622,22 @@ class TreesAndMarks(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def cli_env(self):
+        return {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+
+    def test_write_baseline_records_this_checks_version(self):
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
+            repo.commit({a: file("a", 0, 1)})
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "write-baseline", "--root", str(repo.dir)],
+                               capture_output=True, text=True, env=self.cli_env())
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.loads((repo.dir / BL).read_text())["check_digest"], C.check_digest())
+        finally:
+            repo.done()
+
     def test_exit_codes(self):
         repo = Repo()
         try:

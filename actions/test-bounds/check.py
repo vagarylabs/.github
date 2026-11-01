@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import posixpath
@@ -125,6 +126,16 @@ CHILD_PROCESS = {"child_process": {"spawn", "spawnSync", "exec", "execSync", "ex
 CHILD_PROCESS["node:child_process"] = CHILD_PROCESS["child_process"]
 SUBPROCESS_NAMES = set().union(*CHILD_PROCESS.values())
 SG_BATCH = 400
+
+
+def check_digest() -> str:
+    """The digest of what this check DETECTS: check.py, its rules, and the glob semantics it scopes by. A baseline
+    records the digest it was written under (K2 D8, guard 1): a raise is only ever allowed in a change whose check
+    detects differently from the one the base's baseline was written by."""
+    h = hashlib.sha256()
+    for path in [HERE / "check.py", *sorted((HERE / "rules").glob("*.yml")), HERE.parent / "change-impact-plan" / "plan.py"]:
+        h.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    return h.hexdigest()
 
 
 class Refusal(Exception):
@@ -423,10 +434,13 @@ def load_config(text: str, where: str) -> dict:
                                              and all(isinstance(r, str) and isinstance(n, int) and n >= 1
                                                      for r, n in v.items()) for f, v in counts.items())):
         raise Refusal(f"{where}: `counts` must map path -> {{rule: count >= 1}}")
-    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts"}
+    digest = cfg.get("check_digest")
+    if digest is not None and not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise Refusal(f"{where}: `check_digest` must be the 64-hex digest write-baseline records")
+    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts", "check_digest"}
     if unknown:
         raise Refusal(f"{where}: unknown keys {sorted(unknown)}")
-    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts}
+    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts, "check_digest": digest}
 
 
 class Scope:
@@ -988,26 +1002,60 @@ def judge(found: dict, allowed: dict) -> tuple[list[str], list[str]]:
     return problems, notices
 
 
-def base_raises(committed: dict, base: dict) -> list[str]:
-    return [f"{f}: the committed baseline allows {n}, the base allowed {base.get(f, 0)}: a raise of the baseline itself"
-            for f, n in sorted(committed.items()) if n > base.get(f, 0)]
+def base_raises(committed: dict, base: dict, found: dict, detection_changed: bool,
+                identical: set) -> tuple[list[str], list[str], list[tuple[str, int, int]]]:
+    """(problems, notices, locked) for the committed counts of UNTOUCHED files against the base's (K2 D8). A raise is
+    refused unless all four of root's guards hold (11-01):
+      1. the check detects differently from the one the base's baseline was written by (`detection_changed`);
+      2. the file is byte-identical at the base, judged from the base TREE (`identical`), never from the change;
+      3. the raise goes to EXACTLY the file's found count: the debt the base tree already held, nothing more;
+      4. every raised file is returned in `locked`, for the summary.
+    Such a raise is a pin bump locking in debt that more detection found. Anything else is a raise of the baseline."""
+    problems, notices, locked = [], [], []
+    for f, n in sorted(committed.items()):
+        b, held = base.get(f, 0), found.get(f, 0)
+        if n <= b:
+            continue
+        why = None
+        if not detection_changed:
+            why = "the check detects exactly as it did at the base, so there is no new debt to lock in"
+        elif f not in identical:
+            why = "the file is not byte-identical at the base"
+        elif n != held:
+            why = f"a detection change may lock in exactly the {held} finding(s) the file holds, not {n}"
+        if why:
+            problems.append(f"{f}: the committed baseline allows {n}, the base allowed {b}: a raise of the baseline "
+                            f"itself ({why})")
+        else:
+            locked.append((f, b, n))
+            notices.append(f"{f}: debt locked in by a detection change: {b} -> {n} (the file is byte-identical at the "
+                           "base, so the base tree already held it)")
+    return problems, notices, locked
 
 
-def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tuple[list[str], list[str], set]:
-    """One rule's judgement: (problems, notices, allow_raise). `found`/`committed` map file -> count; `change` is
-    pr_change()'s result for this rule, or None without a base."""
+def analyze(found: dict, committed: dict, change: dict | None, event: str, detection_changed: bool = False,
+            identical: frozenset = frozenset()) -> tuple[list[str], list[str], set, list]:
+    """One rule's judgement: (problems, notices, allow_raise, locked). `found`/`committed` map file -> count; `change`
+    is pr_change()'s result for this rule, or None without a base. `locked` lists the untouched files whose debt a
+    detection change locks in (base_raises)."""
     if change is None:
         problems, notices = judge(found, committed)
         return problems, notices + ["no base commit given: every file is judged against the committed baseline; the "
-                                    "touched-file, raise and narrowing checks need --base"], set()
+                                    "touched-file, raise and narrowing checks need --base"], set(), []
     touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
     keep = lambda d: {f: n for f, n in d.items() if f not in touched}  # noqa: E731
     problems, notices = judge(keep(found), keep(committed))
+    locked = []
     if change["base_counts"] is not None:
-        problems += base_raises(keep(committed), change["base_counts"])
+        p, n, locked = base_raises(keep(committed), change["base_counts"], keep(found), detection_changed, identical)
+        problems += p
+        notices += n
     else:
         notices.append(f"the base {change['sha'][:12]} has no baseline: this change introduces it")
-    allow = set()
+    # Under a detection change, write-baseline --base may lock in an untouched, byte-identical file's findings (the
+    # debt the base tree held); otherwise nothing untouched may rise.
+    allow = ({f for f, n in keep(found).items() if n > keep(committed).get(f, 0) and f in identical}
+             if detection_changed else set())
     for g in change["groups"]:
         head = sum(found.get(f, 0) for f in g["now"])
         was = sum(change["base_found"].get(f, 0) for f in g["old"])
@@ -1036,7 +1084,7 @@ def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tu
                 else:
                     notices.append(f"{f}: {n} finding(s), the baseline lists {listed}: a gain; write-baseline locks "
                                    "it in")
-    return problems, notices, allow
+    return problems, notices, allow, locked
 
 
 def baseline_write(found: dict, old: dict, seed: bool, allow: set) -> tuple[dict | None, str]:
@@ -1320,17 +1368,34 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     if change:
         problems += [f"{frm} is renamed to {to}, outside the scanned trees: a test file that leaves the trees is a "
                      "narrowing (move it back, or widen the trees in the same change)" for frm, to in change["renamed_out"]]
-    allow = {}
+    digest = check_digest()
+    detection_changed = bool(change and change["base_cfg"] is not None
+                             and change["base_cfg"].get("check_digest") != digest)
+    identical = frozenset()
+    if change:
+        touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
+        identical = frozenset(f for f in byte_identical(root, change["sha"], sorted(set(found) | set(cfg["counts"])))
+                              if f not in touched)
+    allow, locked_in = {}, []
     for rule in sorted({r for c in list(found.values()) + list(cfg["counts"].values()) for r in c} | {RULE}):
         sub = None
         if change:
             sub = {"sha": change["sha"], "groups": change["groups"],
                    "base_counts": per_rule(change["base_counts_all"], rule) if change["base_counts_all"] is not None
                    else None, "base_found": per_rule(change["base_found_all"], rule)}
-        p, n, a = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event)
+        p, n, a, lk = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event, detection_changed,
+                              identical)
         problems += [f"[{rule}] {x}" for x in p]
         notices += [f"[{rule}] {x}" for x in n]
         allow[rule] = sorted(a)
+        locked_in += [{"rule": rule, "file": f, "base": b, "now": now} for f, b, now in lk]
+    if detection_changed and cfg.get("check_digest") != digest:
+        if locked_in:
+            problems.append("the baseline locks in debt under a detection change but does not record this check's "
+                            f"version (check_digest {digest[:12]}): run write-baseline --base {change['sha']}")
+        else:
+            notices.append(f"this check detects differently from the one the base's baseline was written by; "
+                           f"write-baseline --base {change['sha']} records its version (check_digest {digest[:12]})")
     if change and change["skipped"]:
         notices.append("git skipped inexact rename detection on this diff, so a rename or split may read as new files")
     marks = res["marks"]
@@ -1338,8 +1403,28 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     return {"schema": SCHEMA, "check": CHECK_ID, "base": base, "event": event, "scanned_files": len(scanned),
             "counts": found, "findings": res["findings"], "marks": marks, "new_marks": added,
             "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "covered": COVERED,
-            "problems": problems,
+            "locked_in": locked_in, "check_digest": digest, "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
+
+
+def byte_identical(root: Path, base: str, paths: list[str]) -> set[str]:
+    """The paths whose blob at `base` is the blob at HEAD (D8 guard 2: judged from the base TREE)."""
+    if not paths:
+        return set()
+
+    def blobs(rev: str) -> dict:
+        r = subprocess.run(["git", "ls-tree", "-r", "-z", rev, "--", *paths], cwd=root, capture_output=True)
+        if r.returncode:
+            raise Refusal(f"git ls-tree {rev} exited {r.returncode}: the byte-identity check cannot run")
+        out = {}
+        for entry in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
+            if "\t" in entry:
+                meta, path = entry.split("\t", 1)
+                out[path] = meta.split()[2]
+        return out
+
+    at_base, at_head = blobs(base), blobs("HEAD")
+    return {f for f in paths if f in at_base and at_base[f] == at_head.get(f)}
 
 
 def summary_md(out: dict) -> str:
@@ -1351,6 +1436,9 @@ def summary_md(out: dict) -> str:
     lines += [f"- {k}: {v}" for k, v in out["covered"].items()] + [""]
     if out["problems"]:
         lines += [f"**{len(out['problems'])} problem(s)**", ""] + [f"- {p}" for p in out["problems"][:60]] + [""]
+    lk = out.get("locked_in", [])
+    lines += [f"**Debt locked in by a detection change: {len(lk)} (file, rule) raise(s)**", ""]
+    lines += [f"- [{x['rule']}] {x['file']}: {x['base']} -> {x['now']}" for x in lk[:60]] + [""]
     lines += [f"**New `timeout under test:` marks: {len(out['new_marks'])}**", ""]
     lines += [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}" for m in out["new_marks"][:50]] + [""]
     lines += [f"All marks: {len(out['marks'])}", ""] + [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}"
@@ -1374,6 +1462,8 @@ def emit(out: dict, findings_path: str | None) -> None:
         print(f"notice: {n}")
     for m in out["new_marks"]:
         print(f"NEW MARK: {m['file']}:{m['line']} timeout under test: {m['reason'] or '(no reason)'}")
+    for x in out.get("locked_in", []):
+        print(f"DEBT LOCKED IN: [{x['rule']}] {x['file']}: {x['base']} -> {x['now']} (a detection change)")
     for k, v in out["covered"].items():
         print(f"covered ({k}): {v}")
     u = out["unscanned"]
@@ -1398,6 +1488,7 @@ def write_baseline_file(root: Path, cfg: dict, counts: dict) -> None:
     raw = json.loads(text)
     raw["counts"] = {f: counts[f] for f in sorted(counts)}
     raw.setdefault("check", CHECK_ID)
+    raw["check_digest"] = check_digest()
     (root / BASELINE_PATH).write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
 
 

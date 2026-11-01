@@ -115,7 +115,19 @@ tree-sitter recovers from what its grammar lacks. One such gap, tree-sitter-type
 The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - A touched file is judged against the base's ACTUAL findings, read from its blobs, by rename/split group. A gain
   must be locked in on a pull_request, and is a notice on merge_group and push.
-- An untouched file is judged against the committed counts, which may not rise against the base's.
+- An untouched file is judged against the committed counts, which may not rise against the base's, with ONE
+  exception (K2 D8, root 11-01): a change to the check's version may lock in debt that more detection found. All
+  four guards must hold:
+  1. the check detects differently from the one that wrote the base's baseline. Each baseline records
+     `check_digest`, the digest of check.py, rules/ and the scope globs, which `write-baseline` writes; a baseline
+     without one was written by an older check;
+  2. the file is byte-identical at the base, read from the base TREE;
+  3. the raise goes to EXACTLY the file's found count;
+  4. every raised (file, rule) is listed ("Debt locked in by a detection change" in the summary, `DEBT LOCKED IN` in
+     the log), and the head baseline records this check's version.
+
+  `write-baseline --base` writes such a raise. Any other raise, a raise past the findings, or one under an unchanged
+  check, is red.
 - The configuration is also judged from the base. Each of these is red:
   - a file the base scans that the candidate does not;
   - a tree removed, or given a lower `min_files`;

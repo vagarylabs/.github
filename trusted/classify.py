@@ -4,7 +4,8 @@
 This file is the single source of the classifier. trusted-workflow-integrity.yml and
 trusted-protected-paths.yml carry a byte-identical copy inline (a heredoc), because a ruleset
 workflow must not read anything from the repository it judges, and the pinned workflow bytes are
-the trust root. trusted/tests/test_classify.py fails if an inline copy drifts from this file.
+the trust root. trusted/tests/test_trusted.py (WorkflowTests, CI job trusted-tests) fails if an inline copy drifts
+from this file.
 
 The PR is DATA. Every file is read with `git show <sha>:<path>`; nothing from the PR is executed or
 imported. Ratchet constants are read with ast.parse, which parses and never runs the code.
@@ -49,7 +50,20 @@ INTERIM_REPORT_ONLY = True
 # verify_vagaris_approval() returns "verified" (the in-band door, not available yet). Every other class and path stays
 # under INTERIM_REPORT_ONLY. The legitimate door today is OUT-OF-BAND: root LIFTS the ruleset (sets it to evaluate or
 # re-pins it), the change merges with a root R4, root RESTORES (re-pins to the new main sha) and logs before and after.
-BLOCKING_PATHS = frozenset((".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"))
+# THE JUDGE'S OWN FILES (root ruling B2a, R4 of .github #69): a judge whose bytes change without the door is not a
+# judge. Each RESTORE pins a newer main, so it would adopt, unseen, any change to the judge merged since the last pin.
+# So the workflow whose pinned bytes run, every file render.py builds it from (its template, the fragments that
+# template INCLUDEs, the classifier and manifest it INLINEs), render.py, and the drift tests that hold the inline copies
+# to their sources (test_trusted.py) block like the signer. test_trusted.py fails if a render input is missing here.
+# RE-PIN RULE (root ruling B2b, a process rule no check here can see): every re-pin of the ruleset that requires this
+# workflow is preceded by a root R4 of the judge diff between the old and the new pinned sha (`git diff <old-pin>
+# <new-pin> -- .github/workflows/trusted-protected-paths.yml`, the rendered bytes that run, with the sources above),
+# recorded in reviews/.
+SIGNER_PATHS = (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py")
+JUDGE_PATHS = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
+               "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
+               "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py")
+BLOCKING_PATHS = frozenset(SIGNER_PATHS + JUDGE_PATHS)
 BLOCKING_CLASS = "authority-binding"
 
 
@@ -2079,8 +2093,9 @@ def run_protected(m, repo, base, head):
     blocked = blocking_rows(rows)
     if blocked and verdict != "verified":
         code = 1
-        msg = ("BLOCKING: %s change the shared signer (%s) and need a Vagaris signed approval (verdict: %s); until it "
-               "exists, root lifts the ruleset, merges with R4 and restores the pin"
+        msg = ("BLOCKING: %s change the shared signer or the protected-paths judge itself (%s) and need a Vagaris "
+               "signed approval (verdict: %s); until it exists, root lifts the ruleset, merges with R4 and restores the "
+               "pin after an R4 of the judge diff between the pins"
                % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
     lines = ["## Protected paths: %s" % repo, msg,
              "Judged: base `%s` against tree `%s`, what merging head `%s` into it lands (git merge-tree --write-tree; "

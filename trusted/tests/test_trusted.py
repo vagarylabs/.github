@@ -145,11 +145,18 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertIn("authority-binding", classify.classes_for(entry, path))
-        self.assertEqual(sorted(pat for p in entry["protected"] if p["class"] == "authority-binding"
-                                for pat in p["patterns"]),
-                         [".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"])
+        # The signer, then the judge's own files (root ruling B2a, R4 of .github #69), and nothing else: the manifest
+        # patterns and classify.BLOCKING_PATHS are the same list, so neither mechanism can drift from the other.
+        binding = [pat for p in entry["protected"] if p["class"] == "authority-binding" for pat in p["patterns"]]
+        self.assertEqual(binding, [".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"]
+                         + list(SignerBlockingTests.JUDGE))
+        self.assertEqual(set(binding), classify.BLOCKING_PATHS)
         # nothing else this repository holds becomes authority-binding
-        self.assertEqual(classify.classes_for(entry, "trusted/tests/test_trusted.py"), set())
+        for other in ("trusted/tests/test_weakening.py", "trusted/inline_scripts.py", "README.md",
+                      "trusted/templates/trusted-secret-scan.yml.in"):
+            self.assertEqual(classify.classes_for(entry, other), set(), other)
+        integrity = ".github/workflows/trusted-workflow-integrity.yml"
+        self.assertEqual(classify.classes_for(entry, integrity), {"ci-judge"})
         # a PR that edits the signer is classified, with the class the protected-paths check reports
         rows = classify.classify(entry, [("M", ".github/workflows/sign-image.yml"), ("M", "README.md")])
         self.assertEqual(rows, [("M", ".github/workflows/sign-image.yml", ["authority-binding", "ci-judge"])])
@@ -179,7 +186,8 @@ class DecisionTests(unittest.TestCase):
 
 
 class SignerBlockingTests(unittest.TestCase):
-    """D2: a change to the shared signer blocks, whatever INTERIM_REPORT_ONLY says.
+    """D2: a change to the shared signer, or to the protected-paths judge's own files (B2a), blocks, whatever
+    INTERIM_REPORT_ONLY says.
 
     WHAT THESE PROVE LOCALLY: the decision LOGIC of classify.py (which paths block, that the blocking ignores the
     interim flag, that a diff cannot argue its way out by also editing the workflow or the classifier, that only a
@@ -193,6 +201,12 @@ class SignerBlockingTests(unittest.TestCase):
     SIGNER = ".github/workflows/sign-image.yml"
     TESTS = "trusted/tests/test_sign_image.py"
     REPO = "vagarylabs/.github"
+    # Root ruling B2a: the workflow whose pinned bytes run, every file it is rendered from, render.py, and this file
+    # (it holds the drift tests: WorkflowTests.test_generated_workflows_are_current and
+    # test_inline_copies_are_byte_identical).
+    JUDGE = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
+             "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
+             "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py")
 
     @classmethod
     def setUpClass(cls):
@@ -277,14 +291,48 @@ class SignerBlockingTests(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("BLOCKING", out)
 
-    def test_the_blocking_set_is_exactly_the_two_signer_paths(self):
-        self.assertEqual(classify.BLOCKING_PATHS, {self.SIGNER, self.TESTS})
+    def test_e_a_diff_to_any_one_of_the_judges_files_is_red(self):
+        # B2a: the judge's bytes change only through the door, so a re-pin cannot adopt a judge change unseen.
+        for path in self.JUDGE:
+            with self.subTest(path=path):
+                code, out = self.check(self.head_with({path: "changed\n"}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error title=protected paths::BLOCKING: %s change the shared signer or the "
+                              "protected-paths judge itself" % path, out)
+
+    def test_the_blocking_set_is_exactly_the_signer_and_the_judge(self):
+        self.assertEqual(classify.BLOCKING_PATHS, {self.SIGNER, self.TESTS} | set(self.JUDGE))
         entry = classify.repo_entry(manifest(), self.REPO)
         self.assertEqual(classify.blocking_rows(classify.classify(
-            entry, [("M", self.SIGNER), ("M", "trusted/classify.py"), ("M", "README.md")])),
-            [("M", self.SIGNER, ["authority-binding", "ci-judge"])])
+            entry, [("M", self.SIGNER), ("M", "trusted/classify.py"), ("M", "README.md"),
+                    ("M", ".github/workflows/ci.yml")])),
+            [("M", self.SIGNER, ["authority-binding", "ci-judge"]),
+             ("M", "trusted/classify.py", ["authority-binding"])])
         # a path outside the set never blocks even if some profile classes it authority-binding
         self.assertEqual(classify.blocking_rows([("M", "docker/docker-compose.override.yml", ["authority-binding"])]), [])
+
+    def test_the_blocking_set_names_every_file_the_judge_is_rendered_from(self):
+        # A new INCLUDE or INLINE in the judge's template must join the blocking set (and the manifest), or the next
+        # re-pin adopts its bytes unseen. Every path in the set is a real file of this repository.
+        inputs, todo = set(), [render.TEMPLATES / "trusted-protected-paths.yml.in"]
+        while todo:
+            t = todo.pop()
+            inputs.add(str(t.relative_to(ROOT)))
+            for line in t.read_text(encoding="utf-8").splitlines():
+                m = render.DIRECTIVE.match(line)
+                if m and m["kind"] == "INCLUDE":
+                    todo.append(render.TEMPLATES / m["path"])
+                elif m:
+                    inputs.add(m["path"])
+        inputs |= {str(WORKFLOWS["trusted-protected-paths"].relative_to(ROOT)), "trusted/render.py",
+                   str(pathlib.Path(__file__).resolve().relative_to(ROOT))}
+        self.assertEqual(inputs, set(self.JUDGE))
+        self.assertLessEqual(inputs, classify.BLOCKING_PATHS)
+        for path in classify.BLOCKING_PATHS:
+            self.assertTrue((ROOT / path).is_file(), path)
+        # this file holds the drift tests that bind the inline copies to their sources
+        self.assertTrue(callable(getattr(WorkflowTests, "test_generated_workflows_are_current")))
+        self.assertTrue(callable(getattr(WorkflowTests, "test_inline_copies_are_byte_identical")))
 
     def test_mutant_that_drops_the_blocking_turns_the_red_assertions_green(self):
         # The discriminator: with blocking_rows neutered, the signer diff passes (code 0), so test (a) and (d) above,

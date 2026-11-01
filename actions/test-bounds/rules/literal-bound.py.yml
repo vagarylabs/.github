@@ -1,13 +1,14 @@
 # literal-bound, for python (.py). The positions are vps-ansible's #1140 gate's
 # (scripts/test_subprocess_hang_guards.py): a `timeout` passed to a subprocess call (run, check_output, check_call,
 # call, Popen, communicate, wait) by keyword or positionally (wait(N), communicate(input, N)), and the default of a
-# `timeout` parameter, judged against the subprocess floor (seconds). K2 step 2 adds, each with its own kind:
-#   condition: asyncio.wait_for / wait_for (positional or `timeout=`), asyncio.timeout / async_timeout.timeout, and an
-#     HTTP client's `timeout=` (urlopen, requests.*, httpx.*);
-#   subprocess: a thread or process `.join(timeout)` (a positional literal, or `timeout=`; a positional NAME is not
-#     read, since str.join takes one);
-#   fixture: a PostgreSQL client's timeout / connect_timeout / command_timeout (vagary-core #949's PG_CONNECT_CALLS);
-#   case: pytest.mark.timeout(N).
+# `timeout` parameter, judged against the subprocess floor (seconds). K2 step 2 adds a thread or process
+# `.join(timeout)` (subprocess kind): a positional number, name or arithmetic, or `timeout=`. check.py drops a
+# positional one that does not resolve to a number, since str.join takes one.
+#
+# The library calls (asyncio.wait_for/wait/timeout, async_timeout, urlopen, requests/httpx, the PostgreSQL clients,
+# pytest.mark.timeout) are NOT here. check.py's binding pass reads them over CPython's parse (PY_CALLS), through import
+# aliases, bare imported names and client instances (root's #65 RC B3), and it owns every direct argument of a call it
+# resolves: so `from asyncio import wait; wait(t, timeout=5)` is a condition wait, never a subprocess one.
 # The first document holds the utils every rule carries; rule ids are `literal-bound.<position>.<kind>` as in
 # literal-bound.yml.
 utils:
@@ -15,13 +16,10 @@ utils:
   positional: { not: { any: [{ kind: keyword_argument }, { kind: comment }, { kind: list_splat }, { kind: dictionary_splat }] } }
   sp-name: { regex: "^(?:run|check_output|check_call|call|Popen|communicate|wait)$" }
   number-literal: { any: [{ kind: integer }, { kind: float }] }
-  wait-for: { regex: "^(?:asyncio\\.)?wait_for$" }
-  pg-call: { regex: "^(?:asyncpg\\.(?:pool\\.)?(?:connect|create_pool)|create_pool|psycopg2?\\.connect|psycopg\\.(?:Async)?Connection\\.connect|(?:psycopg_pool\\.)?(?:Async)?ConnectionPool)$" }
-  http-call: { regex: "^(?:(?:urllib\\.request\\.)?urlopen|(?:requests|httpx)\\.(?:get|post|put|patch|delete|head|options|request|stream)|httpx\\.(?:Async)?Client)$" }
   sp-callee:
     any:
       - { kind: identifier, matches: sp-name }
-      - { kind: attribute, has: { field: attribute, matches: sp-name } }
+      - { kind: attribute, has: { field: attribute, matches: sp-name }, not: { regex: "^asyncio\\.wait$" } }
   # A value that cannot be a time bound (None is no bound at all, so it is not one either).
   bound-value:
     not:
@@ -62,7 +60,7 @@ rule:
             field: function
             any:
               - { kind: identifier, regex: "^wait$" }
-              - { kind: attribute, has: { field: attribute, regex: "^wait$" } }
+              - { kind: attribute, has: { field: attribute, regex: "^wait$" }, not: { regex: "^asyncio\\.wait$" } }
         - has:
             field: arguments
             has: { nthChild: { position: 1, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] }
@@ -90,32 +88,8 @@ rule:
         - has: { field: name, regex: "^timeout$" }
         - has: { field: value, pattern: $V, matches: bound-value }
 ---
-# asyncio.wait_for(aw, N) / wait_for(aw, timeout=N): a condition wait.
-id: literal-bound.wait.condition
-language: python
-rule:
-  any:
-    - kind: call
-      all:
-        - has: { field: function, matches: wait-for }
-        - has: { field: arguments, has: { nthChild: { position: 2, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] } }
-    - kind: keyword_argument
-      all:
-        - has: { field: name, regex: "^timeout$" }
-        - has: { field: value, pattern: $V, matches: bound-value }
-      inside: { kind: argument_list, inside: { kind: call, has: { field: function, matches: wait-for } } }
----
-# async with asyncio.timeout(N): a condition wait.
-id: literal-bound.timeout-ctx.condition
-language: python
-rule:
-  kind: call
-  all:
-    - has: { field: function, regex: "^(?:asyncio|async_timeout)\\.timeout$" }
-    - has: { field: arguments, has: { nthChild: { position: 1, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] } }
----
-# t.join(N) / p.join(timeout=N): a thread or process join. A positional value is read only as a numeric literal
-# (", ".join(names) is str.join).
+# t.join(N) / p.join(timeout=N): a thread or process join. A positional name or arithmetic is read too, and judged
+# only when it resolves to a number (check.py drops it otherwise: ", ".join(names) is str.join, root's #65 RC L3).
 id: literal-bound.join.subprocess
 language: python
 rule:
@@ -123,44 +97,14 @@ rule:
     - kind: call
       all:
         - has: { field: function, kind: attribute, has: { field: attribute, regex: "^join$" } }
-        - has: { field: arguments, has: { nthChild: { position: 1, ofRule: { matches: positional } }, pattern: $V, matches: number-literal } }
+        - has:
+            field: arguments
+            has:
+              nthChild: { position: 1, ofRule: { matches: positional } }
+              pattern: $V
+              any: [{ matches: number-literal }, { kind: identifier }, { kind: binary_operator }, { kind: unary_operator }]
     - kind: keyword_argument
       all:
         - has: { field: name, regex: "^timeout$" }
         - has: { field: value, pattern: $V, matches: bound-value }
       inside: { kind: argument_list, inside: { kind: call, has: { field: function, kind: attribute, has: { field: attribute, regex: "^join$" } } } }
----
-# A PostgreSQL client's timeout / connect_timeout / command_timeout (vagary-core #949's fixture bounds).
-id: literal-bound.client.fixture
-language: python
-rule:
-  kind: keyword_argument
-  all:
-    - has: { field: name, regex: "^(?:timeout|connect_timeout|command_timeout)$" }
-    - has: { field: value, pattern: $V, matches: bound-value }
-  inside: { kind: argument_list, inside: { kind: call, has: { field: function, matches: pg-call } } }
----
-# An HTTP client's timeout= against the system under test: a condition wait.
-id: literal-bound.http.condition
-language: python
-rule:
-  kind: keyword_argument
-  all:
-    - has: { field: name, regex: "^timeout$" }
-    - has: { field: value, pattern: $V, matches: bound-value }
-  inside: { kind: argument_list, inside: { kind: call, has: { field: function, matches: http-call } } }
----
-# @pytest.mark.timeout(N) / pytest.mark.timeout(timeout=N): a case bound.
-id: literal-bound.mark.case
-language: python
-rule:
-  any:
-    - kind: call
-      all:
-        - has: { field: function, regex: "^pytest\\.mark\\.timeout$" }
-        - has: { field: arguments, has: { nthChild: { position: 1, ofRule: { matches: positional } }, pattern: $V, all: [{ matches: positional }, { matches: bound-value }] } }
-    - kind: keyword_argument
-      all:
-        - has: { field: name, regex: "^timeout$" }
-        - has: { field: value, pattern: $V, matches: bound-value }
-      inside: { kind: argument_list, inside: { kind: call, has: { field: function, regex: "^pytest\\.mark\\.timeout$" } } }

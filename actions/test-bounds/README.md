@@ -68,20 +68,33 @@ value. The rules are in `rules/`.
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
 | `literal-bound.default.condition` | ts tsx js | a parameter default named /timeout\|deadline\|budget/i | 60 s |
 | `literal-bound.config.{case,hook}` | ts tsx js | testTimeout / hookTimeout, teardownTimeout | 120 / 240 s |
-| `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait | 120 s |
+| `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait (not asyncio's `wait`, read below) | 120 s |
 | `literal-bound.positional.subprocess` | py | `wait(N)`, `communicate(input, N)` | 120 s |
 | `literal-bound.default.subprocess` | py | a `timeout` parameter default | 120 s |
-| `literal-bound.client.fixture` | ts tsx js py | a PostgreSQL client's timeout: node-postgres `connectionTimeoutMillis` / `statement_timeout` / `query_timeout`; asyncpg / psycopg / psycopg_pool connect and pool `timeout` / `connect_timeout` / `command_timeout` | 120 s (`fixture`) |
-| `literal-bound.wait.condition` | py | `asyncio.wait_for(aw, N)` / `wait_for(aw, timeout=N)` | 60 s |
-| `literal-bound.timeout-ctx.condition` | py | `asyncio.timeout(N)`, `async_timeout.timeout(N)` | 60 s |
-| `literal-bound.join.subprocess` | py | a thread or process `.join(N)` (a positional numeric literal; `str.join` takes names) or `.join(timeout=N)` | 120 s |
-| `literal-bound.http.condition` | py | `timeout=` of urlopen, requests.*, httpx.* (and httpx clients) | 60 s |
-| `literal-bound.mark.case` | py | `@pytest.mark.timeout(N)` | 120 s |
-| `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`) and pyproject.toml (`[tool.pytest.ini_options]`), read in Python; a file that does not parse is unparsable | 120 s |
+| `literal-bound.client.fixture` | ts tsx js py | a PostgreSQL client's timeout: node-postgres `connectionTimeoutMillis` / `statement_timeout` / `query_timeout`; asyncpg / psycopg / psycopg2 / psycopg_pool connect and pool `timeout` / `connect_timeout` / `command_timeout` (py: by binding, below; a literal 0 is "no limit") | 120 s (`fixture`) |
+| `literal-bound.join.subprocess` | py | a thread or process `.join(N)` or `.join(timeout=N)`. A positional name or arithmetic is judged only when it resolves to a number, since `str.join` takes one | 120 s |
+| `literal-bound.wait.condition` | py, by binding | `asyncio.wait_for(aw, N)` / `timeout=`, and `asyncio.wait(aws, timeout=N)` | 60 s |
+| `literal-bound.timeout-ctx.condition` | py, by binding | `asyncio.timeout(N)`, `async_timeout.timeout(N)` | 60 s |
+| `literal-bound.http.condition` | py, by binding | `timeout=` of `urllib.request.urlopen` (or its third positional argument), the requests and httpx functions, `requests.Session` / `httpx.Client` / `httpx.AsyncClient` methods, and the httpx client constructors | 60 s |
+| `literal-bound.http-tuple.condition` | py, by binding | each element of an HTTP `timeout=(connect, read)` tuple (a `None` element is no bound) | 60 s |
+| `literal-bound.mark.case` | py, by binding | `@pytest.mark.timeout(N)` (a literal 0 is "no limit") | 120 s |
+| `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini and .pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`), pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's native `[tool.pytest]`), pytest.toml and .pytest.toml (`[pytest]`), read in Python. A file that does not parse is unparsable; `timeout = 0` is "no limit" | 120 s |
+
+**By binding** (root's #65 RC B3): the Python library calls are read over CPython's own parse of the file, not by
+spelling (`check.py` PY_CALLS). A callee is resolved through `import x as y`, `from x import y` and a client
+instance (`s = requests.Session()`, `with httpx.Client() as c`, `self.s = httpx.Client()`,
+`requests.Session().get(...)`). The binding pass owns every direct argument of a call it resolves, so
+`from asyncio import wait; wait(aws, timeout=5)` is a condition wait at 60 s, never a subprocess one. What it cannot
+read is listed as NOT COVERED with every run (the summary, the log and the findings JSON), so its absence from the
+findings is never a pass:
+- a covered call whose bound may come through a `**` splat, with no explicit bound keyword;
+- a call through a name two imports bind differently (`import requests as r` in one branch, `import httpx as r` in
+  another).
+A client reached any other way (a fixture parameter, a factory's return value) is not resolved, and a file CPython
+cannot parse is unparsable (red).
 
 Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not
-yet covered, and due in K2 step 2: Python `asyncio.wait_for` and pool/connect timeouts, pytest-timeout and ini
-defaults, fixed flushes, sleep-as-wait, and elapsed-time asserts.
+yet covered, and due in K2 step 2: fixed flushes, sleep-as-wait, and elapsed-time asserts.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -139,6 +152,7 @@ The summary and the findings JSON list two kinds of file:
 ## Self-test
 
 Every run starts by checking `fixtures/<case>/` against its `expect.json`: exact counts per file and status, plus
-the unparsable and recovered lists. Every rule of every language must be planted RED somewhere, so a new rule
-without a fixture, or a gutted one, fails the check itself. Run it with `check.py self-test`; the tests are in
+the unparsable, recovered and NOT COVERED lists. Every rule of every language must be planted RED somewhere, so a
+new rule without a fixture, or a gutted one, fails the check itself. For the binding pass the rule ids are declared
+(PY_BOUND_RULES), and PY_CALLS must read exactly those, so emptying a position from PY_CALLS fails by name. Run it with `check.py self-test`; the tests are in
 `test_check.py`.

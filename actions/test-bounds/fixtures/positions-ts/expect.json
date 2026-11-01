@@ -3,7 +3,7 @@
   "trees": [
    {
     "glob": "**/*",
-    "min_files": 3
+    "min_files": 4
    }
   ]
  },
@@ -15,6 +15,9 @@
    "finding": 1
   },
   "c.test.cts": {
+   "finding": 1
+  },
+  "pg-shorthand.test.ts": {
    "finding": 1
   }
  }

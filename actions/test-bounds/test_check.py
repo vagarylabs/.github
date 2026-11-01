@@ -3,6 +3,8 @@ guards.test.mjs, root R4'd on #849), run in throwaway git repositories through t
 required: $TEST_BOUNDS_SG or `ast-grep` on PATH (ci.yml fetches the pinned binary); a missing binary fails, never skips."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -124,6 +126,63 @@ class SelfTest(unittest.TestCase):
         finally:
             C.compose_rules = original
         self.assertTrue(has(failures, "literal-bound.wait.condition"), failures)
+
+
+    def test_a_gutted_binding_position_fails_the_self_test_by_name(self):
+        """The binding pass's positions are declared (PY_BOUND_RULES): emptying one from PY_CALLS is named, and so is
+        dropping one callable a fixture plants RED."""
+        original = dict(C.PY_CALLS)
+        try:
+            for k in [k for k, v in original.items() if v[0] == "mark"]:
+                del C.PY_CALLS[k]
+            failures = C.self_test()
+            self.assertTrue(has(failures, "PY_BOUND_RULES declares"), failures)
+            self.assertTrue(has(failures, "rule literal-bound.mark.case (python) has no planted RED"), failures)
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update({k: v for k, v in original.items() if k != "urllib.request.urlopen"})
+            self.assertTrue(has(C.self_test(), "py-binding: findings"), "urlopen is planted RED in py-binding")
+        finally:
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update(original)
+
+
+class PythonBinding(unittest.TestCase):
+    """Root's #65 RC B3: what the binding pass cannot read is listed as NOT COVERED with every run."""
+
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def verdict(self, body: str) -> dict:
+        self.repo.commit({"s/tests/test_a.py": body, BL: baseline({}, trees=[{"glob": "s/tests/**", "min_files": 1}])})
+        return self.repo.verdict(None)
+
+    def test_a_splat_is_listed_in_every_output(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", **opts)\n')
+        why = "requests.get: its bound may come through a ** splat, which is not read"
+        self.assertEqual(v["not_covered"], [("s/tests/test_a.py", 5, why)])
+        self.assertIn(f"- s/tests/test_a.py:5 {why}", C.summary_md(v))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            C.emit(v, None)
+        self.assertIn(f"NOT COVERED: s/tests/test_a.py:5 {why}", out.getvalue())
+
+    def test_an_explicit_keyword_beside_a_splat_is_read(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", timeout=5, **opts)\n')
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_name_two_imports_bind_is_listed(self):
+        v = self.verdict("try:\n    import requests as r\nexcept ImportError:\n    import httpx as r\n\n\n"
+                         'def test_x():\n    r.get("u", timeout=5)\n')
+        self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [("s/tests/test_a.py", 8)])
+        self.assertIn("bound by more than one import (httpx, requests)", v["not_covered"][0][2])
+
+    def test_a_shadowing_local_is_not_a_library_call(self):
+        """A bare name with no import is not asyncio's: `wait_for` defined here is the test's own helper."""
+        v = self.verdict("def wait_for(c, n):\n    return c\n\n\ndef test_x(c):\n    wait_for(c, 5)\n")
+        self.assertEqual(v["counts"], {})
 
 
 class DiffEntries(unittest.TestCase):

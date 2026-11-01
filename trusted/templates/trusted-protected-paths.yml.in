@@ -9,7 +9,17 @@
 # Contract: classifies changed paths into protected classes (ci-judge, release, iac, authority-binding) and asks
 # verify_vagaris_approval() for the Vagaris signed approval (the G-23 seam).
 #
-# INTERIM EXCEPTION (the single one in this set): verify_vagaris_approval() returns "not-yet-available" and
+# BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py,
+# class authority-binding, classify.BLOCKING_PATHS) FAILS this job whatever INTERIM_REPORT_ONLY says, unless
+# verify_vagaris_approval() returns "verified" (not available yet). THE DOOR for a legitimate signer change is
+# OUT-OF-BAND, because one account approves every PR and an in-band record would be no stronger: (1) root LIFTS (sets
+# the D2 ruleset to evaluate, or re-pins it), (2) the change merges with a root R4, (3) root RESTORES (re-pins the
+# ruleset's workflows rule to the new main sha), each logged in operator-acts with before and after.
+# TRIGGERS: pull_request and merge_group. vagarylabs/.github main has no merge queue today (rules on main:
+# deletion, non_fast_forward, pull_request, required_status_checks), so merge_group is inert there and kept for the
+# target repos that do use one.
+#
+# INTERIM EXCEPTION (every other class and path): verify_vagaris_approval() returns "not-yet-available" and
 # INTERIM_REPORT_ONLY is True, so this job REPORTS (job summary + neutral notice) and does NOT block. One org
 # account cannot approve its own PR, and a blocking gate would deadlock every protected IaC change.
 # THE SWITCH: in trusted/classify.py, implement verify_vagaris_approval() so it can return "verified", and set
@@ -28,8 +38,9 @@ permissions:
 jobs:
   trusted-protected-paths:
     name: trusted-protected-paths
-    # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
-    if: github.repository != 'vagarylabs/.github'
+    # No repository guard: this job also judges vagarylabs/.github itself (D2). It runs from the ruleset's PINNED copy
+    # of this file, never the PR's: only that pin makes the check a control, because a PR that edits this file or
+    # trusted/classify.py to pass would otherwise judge itself.
     # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
     runs-on: [self-hosted, Linux, X64, vl-light]
     timeout-minutes: 10

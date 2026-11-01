@@ -43,6 +43,16 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 INTERIM_REPORT_ONLY = True
 
 
+# BLOCKING PATHS (D2, root 2026-11-01): the shared keyless signer is the signing trust root of the fleet, and the repo that
+# holds it is public, so a push ruleset cannot guard it and one account approves every PR. A change to exactly these
+# paths, when classified authority-binding, FAILS the check regardless of INTERIM_REPORT_ONLY, unless
+# verify_vagaris_approval() returns "verified" (the in-band door, not available yet). Every other class and path stays
+# under INTERIM_REPORT_ONLY. The legitimate door today is OUT-OF-BAND: root LIFTS the ruleset (sets it to evaluate or
+# re-pins it), the change merges with a root R4, root RESTORES (re-pins to the new main sha) and logs before and after.
+BLOCKING_PATHS = frozenset((".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"))
+BLOCKING_CLASS = "authority-binding"
+
+
 class IntegrityError(Exception):
     pass
 
@@ -56,6 +66,11 @@ def verify_vagaris_approval(repo, head_sha, classes):
     """
     del repo, head_sha, classes
     return "not-yet-available"
+
+
+def blocking_rows(rows):
+    """The (status, path, classes) rows that block unconditionally: a BLOCKING_PATHS path classified BLOCKING_CLASS."""
+    return [r for r in rows if r[1] in BLOCKING_PATHS and BLOCKING_CLASS in r[2]]
 
 
 def protected_decision(classes, verdict, interim=None):
@@ -2007,6 +2022,12 @@ def run_protected(m, repo, base, head):
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
     code, msg = protected_decision(classes, verdict)
+    blocked = blocking_rows(rows)
+    if blocked and verdict != "verified":
+        code = 1
+        msg = ("BLOCKING: %s change the shared signer (%s) and need a Vagaris signed approval (verdict: %s); until it "
+               "exists, root lifts the ruleset, merges with R4 and restores the pin"
+               % (", ".join(p for _, p, _ in blocked), BLOCKING_CLASS, verdict))
     lines = ["## Protected paths: %s" % repo, msg]
     lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
     summary(lines)

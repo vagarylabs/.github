@@ -178,6 +178,125 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(classify.protected_decision([], "not-required", interim=False)[0], 0)
 
 
+class SignerBlockingTests(unittest.TestCase):
+    """D2: a change to the shared signer blocks, whatever INTERIM_REPORT_ONLY says.
+
+    WHAT THESE PROVE LOCALLY: the decision LOGIC of classify.py (which paths block, that the blocking ignores the
+    interim flag, that a diff cannot argue its way out by also editing the workflow or the classifier, that only a
+    "verified" verdict opens the in-band door). WHAT THEY CANNOT PROVE: that the copy of classify.py that runs in CI
+    is not the PR's. Every test here runs the classifier from THIS checkout. Only the org/repo ruleset's `workflows`
+    rule, pinned to a vagarylabs/.github main sha, makes the workflow bytes (and the classifier inlined in them) the
+    trusted ones; that is a live-state fact for root to verify on the ruleset, not a unit-test fact. Likewise (b) proves
+    the wiring of the FUTURE in-band door with a stub; today verify_vagaris_approval returns "not-yet-available" and
+    the legitimate door is out-of-band (root lifts the ruleset, merges with R4, restores the pin).
+    """
+    SIGNER = ".github/workflows/sign-image.yml"
+    TESTS = "trusted/tests/test_sign_image.py"
+    REPO = "vagarylabs/.github"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.d = cls.tmp.name
+        git(cls.d, "init", "-q", "-b", "main")
+        git(cls.d, "config", "user.email", "t@example.invalid")
+        git(cls.d, "config", "user.name", "t")
+        cls.write({cls.SIGNER: "name: sign-image\n", cls.TESTS: "# t\n", "README.md": "r\n",
+                   ".github/workflows/trusted-protected-paths.yml": "name: p\n", "trusted/classify.py": "X = 1\n"})
+        git(cls.d, "add", "-A")
+        git(cls.d, "commit", "-q", "-m", "base")
+        cls.base = git(cls.d, "rev-parse", "HEAD")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @classmethod
+    def write(cls, files):
+        for p, text in files.items():
+            pathlib.Path(cls.d, p).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(cls.d, p).write_text(text)
+
+    def head_with(self, files):
+        git(self.d, "checkout", "-q", "-B", "pr", self.base)
+        self.write(files)
+        git(self.d, "add", "-A")
+        git(self.d, "commit", "-q", "-m", "pr")
+        return git(self.d, "rev-parse", "HEAD")
+
+    def check(self, head):
+        out, cwd = io.StringIO(), os.getcwd()
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        try:
+            os.chdir(self.d)
+            with contextlib.redirect_stdout(out):
+                code = classify.main(["protected-paths", "--manifest", str(MANIFEST), "--repo", self.REPO,
+                                      "--base", self.base, "--head", head])
+        finally:
+            os.chdir(cwd)
+        return code, out.getvalue()
+
+    def test_a_signer_diff_is_red_under_the_interim_flag(self):
+        self.assertTrue(classify.INTERIM_REPORT_ONLY)  # the repo-wide interim is untouched
+        for path in (self.SIGNER, self.TESTS):
+            with self.subTest(path=path):
+                code, out = self.check(self.head_with({path: "changed\n"}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error title=protected paths::BLOCKING", out)
+                self.assertIn(path, out)
+
+    def test_b_a_verified_approval_passes_the_future_in_band_door(self):
+        # Proves the wiring only: with verify_vagaris_approval stubbed to "verified" the same diff passes. The real
+        # verifier does not exist yet (G-23 seam), so today this door cannot open.
+        head = self.head_with({self.SIGNER: "changed\n"})
+        with mock.patch.object(classify, "verify_vagaris_approval", return_value="verified"):
+            code, out = self.check(head)
+        self.assertEqual(code, 0, out)
+        for verdict in ("not-yet-available", "missing", "denied"):
+            with self.subTest(verdict=verdict), mock.patch.object(classify, "verify_vagaris_approval",
+                                                                  return_value=verdict):
+                self.assertEqual(self.check(head)[0], 1)
+
+    def test_c_unrelated_and_other_protected_paths_are_not_blocked(self):
+        code, out = self.check(self.head_with({"README.md": "x\n", "docs/a.md": "y\n"}))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no protected class touched", out)
+        # another ci-judge path in this repo stays report-only under the interim
+        code, out = self.check(self.head_with({".github/workflows/ci.yml": "name: ci\n"}))
+        self.assertEqual(code, 0, out)
+        self.assertIn("INTERIM report-only", out)
+
+    def test_d_a_diff_that_also_edits_the_judge_is_still_red(self):
+        # LOGIC ONLY: the verdict is a function of the changed PATHS, so editing the workflow or the classifier in the
+        # same diff cannot lower it. That the PR's own copy of those files is not the one RUN is proven only by the
+        # ruleset pin (see the class docstring), not here.
+        head = self.head_with({self.SIGNER: "changed\n",
+                               ".github/workflows/trusted-protected-paths.yml": "name: p\non: nothing\n",
+                               "trusted/classify.py": "X = 2  # always pass\n"})
+        code, out = self.check(head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("BLOCKING", out)
+
+    def test_the_blocking_set_is_exactly_the_two_signer_paths(self):
+        self.assertEqual(classify.BLOCKING_PATHS, {self.SIGNER, self.TESTS})
+        entry = classify.repo_entry(manifest(), self.REPO)
+        self.assertEqual(classify.blocking_rows(classify.classify(
+            entry, [("M", self.SIGNER), ("M", "trusted/classify.py"), ("M", "README.md")])),
+            [("M", self.SIGNER, ["authority-binding", "ci-judge"])])
+        # a path outside the set never blocks even if some profile classes it authority-binding
+        self.assertEqual(classify.blocking_rows([("M", "docker/docker-compose.override.yml", ["authority-binding"])]), [])
+
+    def test_mutant_that_drops_the_blocking_turns_the_red_assertions_green(self):
+        # The discriminator: with blocking_rows neutered, the signer diff passes (code 0), so test (a) and (d) above,
+        # which assert code 1, would fail. A mutant of the blocking therefore cannot go unnoticed.
+        head = self.head_with({self.SIGNER: "changed\n"})
+        self.assertEqual(self.check(head)[0], 1)
+        with mock.patch.object(classify, "blocking_rows", lambda rows: []):
+            self.assertEqual(self.check(head)[0], 0)
+        with mock.patch.object(classify, "BLOCKING_CLASS", "no-such-class"):
+            self.assertEqual(self.check(head)[0], 0)
+
+
 class RatchetTests(unittest.TestCase):
     def test_constant_diff_without_execution(self):
         base = classify.ratchet_constants("A = 1\nB = 'x'\nC: str = 'c'\ndef f():\n    D = 2\n", "b")
@@ -305,7 +424,9 @@ class WorkflowTests(unittest.TestCase):
                 jobs = re.findall(r"\n    runs-on: (.*)\n", text)
                 self.assertTrue(jobs)
                 self.assertEqual(set(jobs), {"[self-hosted, Linux, X64, vl-light]"})
-                self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), len(jobs))
+                # D2: trusted-protected-paths judges vagarylabs/.github too (no guard); the others still skip it.
+                guards = 0 if name == "trusted-protected-paths" else len(jobs)
+                self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), guards)
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):
                     self.assertRegex(use, r"@[0-9a-f]{40}$")

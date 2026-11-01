@@ -116,6 +116,26 @@ Otherwise it is a finding. The proof can be:
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.
 
+## Fixed flushes
+
+The vagaris hardening branch's `fixed-flush` kind (45d7d8996). Root accepted the class on 10-30 (lanes/cli/BATCH-B-ui):
+a fixed count of event-loop turns OUTSIDE React's own `act()` is a disguised time bound. React renders through its
+time-sliced scheduler, which yields by wall clock, and react-query batches notifications through `setTimeout(0)`, so
+the number of turns a render needs grows with load. Inside an `act` imported from React, the work a turn schedules
+is flushed before act returns, which is deterministic.
+
+- **A turn helper** is a function defined in the file (`function f() {}`, or `const f = () => {}` / function
+  expression). Its body, callbacks included, makes a zero turn outside an `act` imported from React. A zero turn is
+  `setTimeout(fn)` or `setTimeout(fn, 0)` (also on window, globalThis or global), or `setImmediate`. React means
+  react, react-dom/test-utils, react-test-renderer or @testing-library/react, with the local name, aliased or not. A
+  function that calls a turn helper is one too: check.py closes the set, from a second scan over only the files that
+  define a turn helper. A file-local `act` shelters nothing.
+- **A finding** (`fixed-flush.turn.condition`, counted under its own rule) is an awaited, zero-argument call of a
+  turn helper that sits directly in a test or hook callback. It is judged by its SHAPE, so no value clears it: wait
+  for the condition the next assertion checks, or give the `timeout under test:` mark a reason.
+- **Parity:** the vagaris adoption tree at 41b03e468 has 313 findings in 33 files, the same sites as the hardening
+  branch's own detector.
+
 ## Elapsed-time asserts
 
 Root's R3a (10-31): an UPPER bound, in an assertion, on a real-clock ELAPSED difference (now minus an earlier

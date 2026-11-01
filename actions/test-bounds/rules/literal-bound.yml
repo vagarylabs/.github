@@ -175,6 +175,42 @@ utils:
     all:
       - kind: identifier
       - inside: { stopBy: end, matches: poll-boundary, any: [{ has: { field: parameters, has: { stopBy: end, pattern: $N } } }, { has: { field: parameter, pattern: $N } }] }
+  # Fixed flushes (the vagaris hardening branch, 45d7d8996; root accepted the class 10-30, lanes/cli/BATCH-B-ui): a
+  # fixed count of event-loop turns OUTSIDE React's own act() is a disguised time bound. React renders through its
+  # time-sliced scheduler and react-query batches through setTimeout(0), so the turns a render needs grow with load.
+  # Inside an act imported from React, the work is flushed before act returns (deterministic).
+  # A zero turn: setTimeout(fn) / setTimeout(fn, 0) (window./globalThis./global.), or setImmediate.
+  zero-timer:
+    kind: call_expression
+    any:
+      - all:
+          - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setTimeout$" }
+          - has: { field: arguments, any: [{ not: { has: { nthChild: 2 } } }, { has: { nthChild: 2, regex: "^0$" } }] }
+      - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setImmediate$" }
+  # act imported from React (react, react-dom/test-utils, react-test-renderer, @testing-library/react); $ACT is its
+  # local name, aliased or not.
+  react-act-spec:
+    kind: import_specifier
+    all:
+      - has: { field: name, regex: "^act$" }
+      - any:
+          - has: { field: alias, pattern: $ACT }
+          - all: [{ not: { has: { field: alias, kind: identifier } } }, { has: { field: name, pattern: $ACT } }]
+  # A top-level import of act from React (a direct child of the program, so the program is never searched whole).
+  react-act-import:
+    kind: import_statement
+    all:
+      - has: { field: source, regex: "^[\"'](?:react|react-dom/test-utils|react-test-renderer|@testing-library/react)[\"']$" }
+      - has: { stopBy: end, matches: react-act-spec }
+  sheltered:
+    inside:
+      stopBy: end
+      kind: call_expression
+      all:
+        - has: { field: function, kind: identifier, pattern: $ACT }
+        - inside: { stopBy: end, kind: program, has: { matches: react-act-import } }
+  open-turn: { all: [{ matches: zero-timer }, { not: { matches: sheltered } }] }
+  ff-fn: { any: [{ kind: arrow_function }, { kind: function_expression }, { kind: function_declaration }] }
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
 id: literal-bound.option.case
@@ -382,3 +418,49 @@ rule:
       stopBy: { kind: call_expression }
       kind: call_expression
       not: { has: { field: function, kind: member_expression, has: { field: property, matches: equality-matcher } } }
+---
+# Fixed-flush facts (ff-call runs in a second scan, only over files that define a turn helper): a named function whose body (callbacks included) makes an unsheltered zero turn. check.py closes
+# the set over calls (a helper that calls a turn helper is one) and keeps an awaited zero-argument call of one that
+# sits directly in a test or hook callback.
+id: ff-turn-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside: { kind: function_declaration, field: name, has: { field: body, has: { stopBy: end, matches: open-turn } } }
+    - inside:
+        kind: variable_declarator
+        field: name
+        has:
+          field: value
+          all:
+            - any: [{ kind: arrow_function }, { kind: function_expression }]
+            - has: { field: body, any: [{ matches: open-turn }, { has: { stopBy: end, matches: open-turn } }] }
+---
+id: ff-call
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $C }
+    - inside:
+        stopBy: end
+        any:
+          - all: [{ kind: function_declaration }, { has: { field: name, pattern: $F } }]
+          - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $F } }, { has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }] } }]
+    - not: { matches: sheltered }
+---
+# An awaited zero-argument call ($V, the callee's name) directly in a test or hook callback: a fixed flush when $V is a
+# turn helper (check.py). Judged by its shape, never by a value.
+id: fixed-flush.turn.condition
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $V }
+    - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+    - inside: { kind: await_expression }
+    - inside:
+        stopBy: { matches: ff-fn }
+        matches: ff-fn
+        inside: { kind: arguments, inside: { kind: call_expression, has: { field: function, any: [{ matches: case-callee }, { matches: hook-callee }] } } }

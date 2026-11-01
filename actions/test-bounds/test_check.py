@@ -118,7 +118,7 @@ class SelfTest(unittest.TestCase):
         """Every rule must be planted RED: the coverage check names a rule with no red finding."""
         original = C.compose_rules
         try:
-            C.compose_rules = lambda lang, extra=(): original(lang, extra).replace(
+            C.compose_rules = lambda lang, extra=(), **kw: original(lang, extra, **kw).replace(
                 "id: literal-bound.wait.condition", "id: literal-bound.wait.condition\nseverity: off")
             failures = C.self_test()
         finally:
@@ -129,7 +129,7 @@ class SelfTest(unittest.TestCase):
         """The planted-RED check reads the elapsed-assert ids too, one per clock family (K2 step 2B)."""
         original = C.compose_rules
         try:
-            C.compose_rules = lambda lang, extra=(): original(lang, extra).replace(
+            C.compose_rules = lambda lang, extra=(), **kw: original(lang, extra, **kw).replace(
                 "id: elapsed-assert.hrtime.condition", "id: elapsed-assert.hrtime.condition\nseverity: off")
             failures = C.self_test()
         finally:

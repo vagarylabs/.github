@@ -728,5 +728,47 @@ class TestInventory(unittest.TestCase):
                         self.assertTrue(P.rule_matches(rule, set(subset) | {extra})[0], (rule, subset, extra))
 
 
+
+class GitTimeoutTest(unittest.TestCase):
+    """1.7.3: every git call gets a scaled ceiling and one retry after a timeout; nothing else is retried."""
+
+    def test_the_scale_is_an_integer_one_to_eight(self):
+        from unittest.mock import patch
+        for raw, want in (("1", 15), ("3", 45), ("8", 120), ("9", 15), ("0", 15), ("2.5", 15), ("x", 15), ("", 15)):
+            with patch.dict(P.os.environ, {"CHANGE_IMPACT_GIT_TIMEOUT_SCALE": raw}):
+                self.assertEqual(P.git_timeout(15), want, raw)
+        with patch.dict(P.os.environ, {}, clear=True):
+            self.assertEqual(P.git_timeout(15), 15)
+
+    def test_one_retry_after_a_timeout_only(self):
+        import subprocess
+        from unittest.mock import patch
+        calls = []
+        def run(cmd, **k):
+            calls.append(k["timeout"])
+            raise subprocess.TimeoutExpired(cmd, k["timeout"])
+        with patch.object(P.subprocess, "run", run), self.assertRaises(subprocess.TimeoutExpired):
+            P.run_git(["git", "status"], timeout=5)
+        self.assertEqual(calls, [5, 5])
+        calls.clear()
+        def fails(cmd, **k):
+            calls.append(k["timeout"])
+            raise subprocess.CalledProcessError(1, cmd)
+        with patch.object(P.subprocess, "check_output", fails), self.assertRaises(subprocess.CalledProcessError):
+            P.run_git(["git", "status"], timeout=5, check_output=True)
+        self.assertEqual(calls, [5], "a failure that is not a timeout is never retried")
+
+    def test_a_target_lookup_timeout_has_its_own_reason(self):
+        import subprocess
+        from unittest.mock import patch
+        context = dict(repository="fixture/repo", event_repository="fixture/repo", target_ref="refs/heads/main",
+                       server_url="https://github.com", candidate="a" * 40, run_id="41", run_attempt="1")
+        with patch.object(P, "canonical_target", side_effect=subprocess.TimeoutExpired(["git"], 15)):
+            observation = P.resolve_target_observation(**context)
+        self.assertEqual((observation["status"], observation["reason"]), ("unknown", P.TARGET_TIMEOUT))
+        with patch.object(P, "canonical_target", side_effect=subprocess.CalledProcessError(2, ["git"])):
+            observation = P.resolve_target_observation(**context)
+        self.assertEqual((observation["status"], observation["reason"]), ("unknown", "canonical target snapshot unavailable"))
+
 if __name__ == "__main__":
     unittest.main()

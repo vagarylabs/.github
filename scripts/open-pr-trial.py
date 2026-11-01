@@ -57,14 +57,15 @@ def open_prs(repo: str, base_branch: str, prs_json: str | None) -> list[dict]:
     else:
         if not repo:
             raise Usage("--repo OWNER/NAME is required to list the open PRs (or pass --prs-json)")
-        p = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/pulls?state=open&base={base_branch}&per_page=100"],
+        # --jq prints one compact object per line, so a page boundary (or a "][" inside a PR body) never splits one.
+        p = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/pulls?state=open&base={base_branch}&per_page=100",
+                            "--jq", ".[] | {number, title, user: {login: .user.login}, head: {sha: .head.sha}}"],
                            capture_output=True, text=True, timeout=300)
         if p.returncode:
             raise RuntimeError(f"listing the open PRs failed (gh exited {p.returncode})")
-        raw = []
-        for chunk in p.stdout.replace("][", "]\n[").splitlines():
-            if chunk.strip():
-                raw.extend(json.loads(chunk))
+        raw = [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
+        if not raw:
+            raise RuntimeError("gh listed no open PRs; refusing to report an empty trial as clean")
     out = []
     for pr in raw:
         out.append({"number": int(pr["number"]), "author": (pr.get("user") or {}).get("login", pr.get("author", "?")),

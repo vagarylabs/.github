@@ -97,6 +97,168 @@ utils:
       - { kind: identifier, matches: subprocess-name }
       - { kind: member_expression, has: { field: property, matches: subprocess-name } }
   bound-name: { kind: identifier, regex: "(?i)timeout|deadline|budget" }
+  # Matchers that compare an expected VALUE (`expect(x).toEqual({ timeout: 12_345 })`): an object passed to one is
+  # data, never a bound (the vagaris hardening branch, f2961a44f). Playwright's web-first assertions (toBeVisible,
+  # toHaveURL, toPass) take a real bound and are not on this list.
+  equality-matcher: { regex: "^(?:toEqual|toStrictEqual|toMatchObject|toContainEqual|toHaveBeenCalledWith|toHaveBeenLastCalledWith|toHaveBeenNthCalledWith|toHaveProperty|toBe)$" }
+  # A registrar call carries its body (a function, or a name or member for one) beside the bound: `describeExit("wsl",
+  # 4)` names a describe-like helper but registers nothing (f2961a44f).
+  registrar-body:
+    all:
+      - any:
+          - { kind: arrow_function }
+          - { kind: function_expression }
+          - { kind: identifier }
+          - { kind: member_expression }
+      - not: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } } }
+  # Poll loops (K2 step 2C, B): a loop that re-checks a condition between fixed sleeps is judged by its BUDGET, never
+  # by its step. A counted loop (`for (let i = 0; i < N; i++)`) whose body awaits one fixed sleep ($V ms) and can exit
+  # early (break or return) has the budget N x V. A deadline loop's budget is D, from `now - start < D`, or from
+  # `now < deadline` with `deadline = now + D` in a preceding statement. A budget that is a parameter of the
+  # enclosing function is judged where it is declared (its default is literal-bound.default.condition), not here.
+  poll-boundary:
+    any:
+      - kind: arrow_function
+      - kind: function_expression
+      - kind: function_declaration
+      - kind: generator_function
+      - kind: generator_function_declaration
+      - kind: method_definition
+      - kind: class_declaration
+      - kind: class
+  poll-def: { any: [{ kind: function_declaration }, { kind: generator_function_declaration }, { kind: class_declaration }] }
+  timer-call:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:(?:window|globalThis)\\.)?setTimeout$" }
+      - has: { field: arguments, has: { nthChild: 2, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }
+  fixed-sleep:
+    kind: await_expression
+    has:
+      any:
+        - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:sleep|delay|wait|pause)$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: param-budget } }] } } }]
+        - all:
+            - kind: new_expression
+            - has: { field: constructor, regex: "^Promise$" }
+            - has: { field: arguments, has: { nthChild: 1, kind: arrow_function, has: { field: body, any: [{ matches: timer-call }, { has: { stopBy: end, matches: timer-call } }] } } }
+  early-exit: { any: [{ kind: break_statement }, { kind: return_statement }] }
+  poll-now: { any: [{ pattern: Date.now() }, { pattern: performance.now() }] }
+  counter-test:
+    kind: binary_expression
+    all: [{ has: { field: left, pattern: $I } }, { has: { field: operator, regex: "^<$" } }, { has: { field: right, all: [{ pattern: $N }, { not: { matches: param-count } }] } }]
+  now-plus:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: poll-now } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }]
+          - all: [{ has: { field: left, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }, { has: { field: right, matches: poll-now } }]
+  deadline-binding:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $D } }, { has: { field: value, matches: now-plus } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $D } }, { has: { field: right, matches: now-plus } }]
+  deadline-test:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^<=?$" }
+      - any:
+          - all: [{ has: { field: left, kind: binary_expression, all: [{ has: { field: operator, regex: "^-$" } }, { has: { field: left, matches: poll-now } }] } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: param-budget } }] } }]
+          - all:
+              - has: { field: left, matches: poll-now }
+              - has: { field: right, kind: identifier, pattern: $D }
+              - inside: { stopBy: end, follows: { stopBy: end, not: { matches: poll-def }, has: { stopBy: { matches: poll-boundary }, matches: deadline-binding } } }
+  param-budget:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, matches: poll-boundary, any: [{ has: { field: parameters, has: { stopBy: end, pattern: $V } } }, { has: { field: parameter, pattern: $V } }] }
+  param-count:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, matches: poll-boundary, any: [{ has: { field: parameters, has: { stopBy: end, pattern: $N } } }, { has: { field: parameter, pattern: $N } }] }
+  # Fixed flushes (the vagaris hardening branch, 45d7d8996; root accepted the class 10-30, lanes/cli/BATCH-B-ui): a
+  # fixed count of event-loop turns OUTSIDE React's own act() is a disguised time bound. React renders through its
+  # time-sliced scheduler and react-query batches through setTimeout(0), so the turns a render needs grow with load.
+  # Inside an act imported from React, the work is flushed before act returns (deterministic).
+  # A zero turn: setTimeout(fn) / setTimeout(fn, 0) (window./globalThis./global.), or setImmediate.
+  zero-timer:
+    kind: call_expression
+    any:
+      - all:
+          - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setTimeout$" }
+          - has: { field: arguments, any: [{ not: { has: { nthChild: 2 } } }, { has: { nthChild: 2, regex: "^0$" } }] }
+      - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setImmediate$" }
+  # act imported from React (react, react-dom/test-utils, react-test-renderer, @testing-library/react); $ACT is its
+  # local name, aliased or not.
+  react-act-spec:
+    kind: import_specifier
+    all:
+      - has: { field: name, regex: "^act$" }
+      - any:
+          - has: { field: alias, pattern: $ACT }
+          - all: [{ not: { has: { field: alias, kind: identifier } } }, { has: { field: name, pattern: $ACT } }]
+  # A top-level import of act from React (a direct child of the program, so the program is never searched whole).
+  react-act-import:
+    kind: import_statement
+    all:
+      - has: { field: source, regex: "^[\"'](?:react|react-dom/test-utils|react-test-renderer|@testing-library/react)[\"']$" }
+      - has: { stopBy: end, matches: react-act-spec }
+  sheltered:
+    inside:
+      stopBy: end
+      kind: call_expression
+      all:
+        - has: { field: function, kind: identifier, pattern: $ACT }
+        - inside: { stopBy: end, kind: program, has: { matches: react-act-import } }
+  open-turn: { all: [{ matches: zero-timer }, { not: { matches: sheltered } }] }
+  ff-fn: { any: [{ kind: arrow_function }, { kind: function_expression }, { kind: function_declaration }] }
+  # Silent settles (the vagaris hardening branch, 45d7d8996): a helper with a defaulted /timeout|deadline|budget/i
+  # parameter, a Date.now() deadline loop in its OWN body, and no throw and no `return <value>`, waits up to its
+  # deadline and then returns as if it settled. Its OWN body stops at nested functions, except Promise executors.
+  bound-param-default:
+    any:
+      - all: [{ kind: required_parameter }, { has: { field: pattern, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: value, kind: number } }] #[typescript,tsx]
+      - all: [{ kind: required_parameter }, { has: { field: pattern, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: value, not: { kind: number } } }] #[typescript,tsx]
+      - all: [{ kind: assignment_pattern }, { has: { field: left, kind: identifier, regex: "(?i)timeout|deadline|budget" } }, { has: { field: right, regex: "." } }]
+  own-boundary:
+    all:
+      - matches: ff-fn
+      - not: { inside: { kind: arguments, inside: { kind: new_expression, has: { field: constructor, regex: "^Promise$" } } } }
+  settle-body:
+    all:
+      - has: { stopBy: { matches: own-boundary }, any: [{ kind: while_statement }, { kind: for_statement }, { kind: do_statement }], has: { stopBy: end, pattern: Date.now() } }
+      - not: { has: { stopBy: { matches: own-boundary }, any: [{ kind: throw_statement }, { all: [{ kind: return_statement }, { not: { regex: "^return\\s*;?$" } }] }] } }
+  # Sleep-as-wait (K2 step 2C, A; DESIGN-K2 §2C revised): ONE fixed awaited sleep as a statement of a test or hook
+  # body, then an assertion. Judged by its SHAPE: under value semantics the cheapest "fix" would be a longer sleep,
+  # so no value clears it; a condition wait does, or the mark with a reason (a JWT `iat` boundary, an mtime tick).
+  # A zero sleep is a flush (fixed-flush), a sleep in a loop is a poll (poll.condition), and a sleep in a mock
+  # handler is latency injection (not in the test's own body).
+  sleep-expr:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:sleep|delay|wait|pause)$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0$" } } } }]
+      - all:
+          - kind: new_expression
+          - has: { field: constructor, regex: "^Promise$" }
+          - has: { field: arguments, has: { nthChild: 1, kind: arrow_function, has: { field: body, any: [{ matches: nonzero-timer }, { has: { stopBy: end, matches: nonzero-timer } }] } } }
+  nonzero-timer:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:(?:window|globalThis)\\.)?setTimeout$" }
+      - has: { field: arguments, has: { nthChild: 2, pattern: $V, not: { regex: "^0$" } } }
+  # A statement of a test or hook callback's own body, outside any loop.
+  test-body-stmt:
+    all:
+      - kind: expression_statement
+      - inside: { stopBy: { matches: ff-fn }, matches: ff-fn, inside: { kind: arguments, inside: { kind: call_expression, has: { field: function, any: [{ matches: case-callee }, { matches: hook-callee }] } } } }
+      - not: { inside: { stopBy: { matches: ff-fn }, any: [{ kind: for_statement }, { kind: for_in_statement }, { kind: while_statement }, { kind: do_statement }] } }
+  assertion-call: { kind: call_expression, has: { field: function, regex: "^(?:expect(?:\\.soft)?\\(|assert(?:\\.\\w+)?$)" } }
+  then-asserts:
+    any:
+      - precedes: { stopBy: end, any: [{ matches: assertion-call }, { has: { stopBy: end, matches: assertion-call } }] }
+      - inside: { stopBy: { matches: ff-fn }, precedes: { stopBy: end, any: [{ matches: assertion-call }, { has: { stopBy: end, matches: assertion-call } }] } }
+  sleep-helper-body:
+    any:
+      - all: [{ kind: new_expression }, { matches: sleep-expr }]
+      - all: [{ kind: statement_block }, { has: { kind: expression_statement, has: { kind: await_expression, has: { matches: sleep-expr } } } }, { not: { has: { nthChild: 2 } } }]
 ---
 # { timeout: V } in a call's arguments; the call decides the kind.
 id: literal-bound.option.case
@@ -169,9 +331,11 @@ rule:
       # $F: the callee, so check.py can resolve an aliased child process (`spawnSync as run`, promisify(execFile))
       has: { field: function, pattern: $F }
       not:
-        has:
-          field: function
-          any: [{ matches: case-callee }, { matches: hook-callee }, { matches: subprocess-callee }]
+        any:
+          - has:
+              field: function
+              any: [{ matches: case-callee }, { matches: hook-callee }, { matches: subprocess-callee }]
+          - has: { field: function, kind: member_expression, has: { field: property, matches: equality-matcher } }
 ---
 # The LAST argument of it/test/bench/describe*: any bound value with 3+ arguments (name, fn, timeout), only a literal
 # with 2 (the ratchet's rule; a 2-argument call's last argument is otherwise its body).
@@ -184,6 +348,7 @@ rule:
     - has:
         field: arguments
         has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has: { field: arguments, has: { matches: registrar-body } }
     - has:
         field: arguments
         any:
@@ -202,6 +367,7 @@ rule:
     - has:
         field: arguments
         has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has: { field: arguments, has: { matches: registrar-body } }
     - has:
         field: arguments
         has: { nthChild: { position: 2, ofRule: { matches: nc } } }
@@ -262,3 +428,165 @@ rule:
         - has: { field: key, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout|\"(?:connectionTimeoutMillis|statement_timeout|query_timeout)\"|'(?:connectionTimeoutMillis|statement_timeout|query_timeout)')$" }
         - has: { field: value, pattern: $V, matches: bound-value }
     - { kind: shorthand_property_identifier, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout)$", pattern: $V }
+---
+# A poll loop's budget (K2 step 2C, B): N x V for a counted loop, V for a deadline loop (see the poll utils).
+id: literal-bound.poll.condition
+language: typescript
+rule:
+  all:
+    - any:
+        - kind: for_statement
+          all:
+            - has: { field: initializer, any: [{ kind: lexical_declaration }, { kind: variable_declaration }], has: { kind: variable_declarator, all: [{ has: { field: name, pattern: $I } }, { has: { field: value, regex: "^0$" } }] } }
+            - has: { field: condition, any: [{ matches: counter-test }, { has: { stopBy: end, matches: counter-test } }] }
+            - has: { field: increment, any: [{ pattern: $I++ }, { pattern: ++$I }, { pattern: $I += 1 }] }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: fixed-sleep } }
+            - any:
+                - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: early-exit } }
+                - has: { field: condition, kind: binary_expression, has: { field: operator, regex: "^&&$" } }
+        - all:
+            - any: [{ kind: while_statement }, { kind: do_statement }, { kind: for_statement }]
+            - has: { field: condition, any: [{ matches: deadline-test }, { has: { stopBy: end, matches: deadline-test } }] }
+---
+# A deadline option passed INTO the code under test (the vagaris hardening branch, 4862e5050, from #835's drain red):
+# a property of an options object in a call's arguments whose key matches /(?:timeout|deadline|budget)\w*Ms$/i
+# (drainTimeoutMs, deadlineMs, budgetMs), outside the equality matchers. A literal zero is "none" (check.py), and a
+# shorthand `{ deadlineMs }` is not read, as in the ratchet.
+id: literal-bound.deadline-option.condition
+language: typescript
+rule:
+  kind: pair
+  all:
+    - has: { field: key, regex: "(?i)^[\"']?\\w*(?:timeout|deadline|budget)\\w*ms[\"']?$" }
+    - has: { field: value, pattern: $V, matches: bound-value }
+  inside:
+    kind: object
+    matches: call-arg
+    inside:
+      stopBy: { kind: call_expression }
+      kind: call_expression
+      not: { has: { field: function, kind: member_expression, has: { field: property, matches: equality-matcher } } }
+---
+# Fixed-flush facts (ff-call runs in a second scan, only over files that define a turn helper): a named function whose body (callbacks included) makes an unsheltered zero turn. check.py closes
+# the set over calls (a helper that calls a turn helper is one) and keeps an awaited zero-argument call of one that
+# sits directly in a test or hook callback.
+id: ff-turn-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside: { kind: function_declaration, field: name, has: { field: body, has: { stopBy: end, matches: open-turn } } }
+    - inside:
+        kind: variable_declarator
+        field: name
+        has:
+          field: value
+          all:
+            - any: [{ kind: arrow_function }, { kind: function_expression }]
+            - has: { field: body, any: [{ matches: open-turn }, { has: { stopBy: end, matches: open-turn } }] }
+---
+id: ff-call
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $C }
+    - inside:
+        stopBy: end
+        any:
+          - all: [{ kind: function_declaration }, { has: { field: name, pattern: $F } }]
+          - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $F } }, { has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }] } }]
+    - not: { matches: sheltered }
+---
+# An awaited zero-argument call ($V, the callee's name) directly in a test or hook callback: a fixed flush when $V is a
+# turn helper (check.py). Judged by its shape, never by a value.
+id: fixed-flush.turn.condition
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $V }
+    - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+    - inside: { kind: await_expression }
+    - inside:
+        stopBy: { matches: ff-fn }
+        matches: ff-fn
+        inside: { kind: arguments, inside: { kind: call_expression, has: { field: function, any: [{ matches: case-callee }, { matches: hook-callee }] } } }
+---
+# Silent-settle facts: a function name whose definition is a silent settle (see the utils).
+id: ss-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside:
+        kind: function_declaration
+        field: name
+        all: [{ has: { field: parameters, has: { matches: bound-param-default } } }, { has: { field: body, matches: settle-body } }]
+    - inside:
+        kind: variable_declarator
+        field: name
+        has:
+          field: value
+          all:
+            - any: [{ kind: arrow_function }, { kind: function_expression }]
+            - has: { field: parameters, has: { matches: bound-param-default } }
+            - has: { field: body, matches: settle-body }
+---
+# A call of a silent settle ($V, by name) outside an afterEach/afterAll callback: a condition wait in effect that
+# returns as if it settled at its deadline (check.py keeps it when $V is a silent settle). Runs in the second scan.
+id: silent-settle.call.condition
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, kind: identifier, pattern: $V }
+    - not: { inside: { stopBy: end, kind: call_expression, has: { field: function, regex: "^after(?:Each|All)(?:\\.\\w+)*$" } } }
+---
+# A kill timer on a child process (K2 step 2C, E): `setTimeout(() => { child.kill(...); ... }, V)` caps a hung child,
+# so V is a subprocess bound, judged by value (a cap at or above the floor costs nothing on a pass). A timer that
+# injects an event at time T (emit, end, abort, write) is a stimulus, not a bound, and is not read.
+id: literal-bound.kill-timer.subprocess
+language: typescript
+rule:
+  kind: call_expression
+  all:
+    - has: { field: function, regex: "^(?:(?:window|globalThis|global)\\.)?setTimeout$" }
+    - has:
+        field: arguments
+        has:
+          nthChild: 1
+          any: [{ kind: arrow_function }, { kind: function_expression }]
+          has: { stopBy: { matches: ff-fn }, kind: call_expression, has: { field: function, kind: member_expression, has: { field: property, regex: "^kill$" } } }
+    - has: { field: arguments, has: { nthChild: 2, pattern: $V, matches: bound-value } }
+---
+# Sleep-as-wait: `await sleep(V)` / `await new Promise(r => setTimeout(r, V))` (V not 0) as a test or hook statement,
+# then an assertion.
+id: sleep-as-wait.direct.condition
+language: typescript
+rule:
+  all:
+    - matches: test-body-stmt
+    - has: { kind: await_expression, has: { matches: sleep-expr } }
+    - matches: then-asserts
+---
+# Sleep-as-wait through a same-file helper: `await settle()` where settle's body is ONE fixed sleep (ss-def's twin,
+# sleep-def, names them; check.py keeps the call when $V is one).
+id: sleep-as-wait.helper.condition
+language: typescript
+rule:
+  all:
+    - matches: test-body-stmt
+    - has: { kind: await_expression, has: { kind: call_expression, all: [{ has: { field: function, kind: identifier, pattern: $V } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }] } }
+    - matches: then-asserts
+---
+id: sleep-def
+language: typescript
+rule:
+  kind: identifier
+  any:
+    - inside: { kind: function_declaration, field: name, has: { field: body, matches: sleep-helper-body } }
+    - inside:
+        kind: variable_declarator
+        field: name
+        has: { field: value, all: [{ any: [{ kind: arrow_function }, { kind: function_expression }] }, { has: { field: body, matches: sleep-helper-body } }] }

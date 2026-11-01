@@ -89,6 +89,14 @@ RULE = "literal-bound"
 # Elapsed-time asserts (root's R3a, 10-31): an UPPER bound on a real-clock difference, judged against the condition
 # floor and never exempted by a mark. Readings per second of each clock family (rules/elapsed-assert*.yml).
 ELAPSED = "elapsed-assert"
+# Fixed flushes (the vagaris hardening branch, 45d7d8996; root accepted the class 10-30): a fixed count of event-loop
+# turns outside React's own act(). Judged by SHAPE: no value clears one, only a reasoned mark (or a condition wait).
+FLUSH = "fixed-flush"
+# Silent settles (the same branch): a call of a helper that returns as if settled at its deadline. Judged by SHAPE.
+SETTLE = "silent-settle"
+# Sleep-as-wait (K2 step 2C, A): one fixed sleep in a test body, then an assertion. Judged by SHAPE (a longer sleep is
+# the worst fix, so no value clears one).
+SLEEP = "sleep-as-wait"
 ELAPSED_PER_S = {"date": 1000, "perf": 1000, "hrtime": 10**9, "time": 1, "time-ns": 10**9, "monotonic": 1,
                  "monotonic-ns": 10**9, "perf-counter": 1, "perf-counter-ns": 10**9, "loop": 1, "datetime": 1}
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
@@ -103,6 +111,11 @@ RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": J
               "python": ("literal-bound.py.yml", "elapsed-assert.py.yml")}
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
+# A poll loop's mark may sit on the loop's own first line, as well as on its budget's line.
+SMALL_MATCH |= {"poll", "deadline-option", "kill-timer"}
+# Option positions whose LITERAL zero means a count or "none" (the vagaris hardening branch, f2961a44f). A named zero is
+# still judged: a name that resolves to 0 is a bound someone chose.
+ZERO_IS_NONE = {"option", "deadline-option"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
 # A mark clears only with a reason: at least one word of three letters ("..." or "x" is not a reason).
 REASON = re.compile(r"[A-Za-z]{3,}")
@@ -118,7 +131,9 @@ COVERED = {
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
-                 "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
+                 "statement_timeout, query_timeout); deadline options passed into the code under test "
+                 "(/(?:timeout|deadline|budget)\\w*Ms$/i keys); never a literal-zero option, an object passed to an "
+                 "equality matcher, or a registrar-named call without a body; elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
                  ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
                  "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
                  "bound name, scaled, or returned by a same-file helper (one hop)",
@@ -131,7 +146,22 @@ COVERED = {
           "helper (one hop)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
-    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
+    "sleep-as-wait": "one fixed, non-zero sleep (ts/js sleep/delay/wait/pause or new Promise(setTimeout); py "
+                     "time.sleep/asyncio.sleep) as a statement of a test or hook body, outside any loop, followed by an "
+                     "assertion; or an awaited zero-argument call of a same-file helper that is that one sleep",
+    "kill timers": "ts/tsx/js: `setTimeout(() => { child.kill(...) }, V)`, a cap on a hung child, judged as a subprocess "
+                   "bound; a timer that injects an event (emit, end, abort) is a stimulus and is not read",
+    "fixed flushes": "ts/tsx/js: an awaited zero-argument call, directly in a test or hook callback, of a same-file "
+                     "helper that makes a zero turn (setTimeout(fn) / setTimeout(fn, 0) / setImmediate) outside an act "
+                     "imported from React, directly or through another such helper",
+    "silent settles": "ts/tsx/js: a call, outside afterEach/afterAll, of a same-file helper with a defaulted "
+                      "timeout/deadline/budget parameter and a Date.now() deadline loop that neither throws nor returns "
+                      "a value",
+    "poll loops": "a counted loop (`for (let i = 0; i < N; i++)`, py `for _ in range(N)`) that sleeps a fixed interval "
+                  "and can exit early, judged by N x interval; a deadline loop (`now - start < D`, or `now < deadline` "
+                  "with `deadline = now + D`), judged by D. A budget that is a parameter of the enclosing function is "
+                  "not judged here",
+    "not yet (K2 step 2C)": "absence windows as their own notice-level family (they are read as sleep-as-wait for now)",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -300,9 +330,13 @@ def _per_clock(utils: str, docs: list[str], name: str) -> tuple[str, list[str]]:
     return "".join(out), expanded
 
 
-def compose_rules(lang: str, extra: list[str] = ()) -> str:
+SECOND_SCAN = ("ff-call", "silent-settle.call.condition")  # rule ids that run only over the files a first scan selects (census)
+
+
+def compose_rules(lang: str, extra: list[str] = (), second: bool = False) -> str:
     """Every rule of the language's rules/ files: its language line set, its file's utils appended, tagged lines
-    kept, and each CLOCK util and rule emitted once per clock family."""
+    kept, and each CLOCK util and rule emitted once per clock family. `second` composes only the SECOND_SCAN rules
+    (and nothing else), which the first scan leaves out."""
     out = []
     for i, name in enumerate(RULE_FILES[lang]):
         docs = re.split(r"(?m)^---[ \t]*$", (HERE / "rules" / name).read_text(encoding="utf-8"))
@@ -312,9 +346,14 @@ def compose_rules(lang: str, extra: list[str] = ()) -> str:
         utils, body = _per_clock(_keep(head[head.index("utils:"):], lang), list(docs[1:]), name)
         for doc in body + (list(extra) if i == 0 else []):
             doc = re.sub(r"(?m)^language: \w+$", "language: " + lang, doc.strip("\n"))
-            if not re.search(r"(?m)^id: ", doc):
+            rid = re.search(r"(?m)^id: (\S+)", doc)
+            if not rid:
                 raise Refusal("a rule document has no id")
+            if (rid.group(1) in SECOND_SCAN) != second:
+                continue
             out.append(_keep(doc, lang) + "\n" + utils)
+    if second:
+        return "\n---\n".join(out) + "\n"
     # tree-sitter recovers from what its grammar lacks (vagaris: `f<typeof import("x")>()`). An ERROR holding no
     # identifier or digit, or lying inside a string, cannot hide a bound: it is RECOVERED and listed. Any other ERROR
     # is a red (root's R2, 10-31; tree-sitter-typescript #367 is the upstream gap).
@@ -814,12 +853,32 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
              if m["ruleId"].startswith("fake-clock.")}
     defined = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-def")
+    flushes = [m for m in matches if m["ruleId"].startswith(FLUSH + ".")]
+    turns = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "ff-turn-def"}
+    settles = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "ss-def"}
+    calls, settle_calls = set(), []
+    by_second_lang = {}  # the second scan: only files that define a turn helper or a silent settle
+    for f in sorted({f for f, _ in turns | settles}):
+        by_second_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
+    for lang, group in sorted(by_second_lang.items()):
+        for m in sg_scan(tree.root, compose_rules(lang, second=True), group):
+            mv = m["metaVariables"]["single"]
+            if m["ruleId"] == "ff-call":
+                calls.add((m["file"], mv["F"]["text"], mv["C"]["text"]))
+            elif (m["file"], mv["V"]["text"]) in settles:
+                settle_calls.append(m)
+    grew = True
+    while grew:  # the closure: a function that calls a turn helper is one
+        new = {(f, fn) for f, fn, callee in calls if (f, callee) in turns} - turns
+        turns |= new
+        grew = bool(new)
     # Names to resolve, and the files that read them.
     need = {}
     for m in bounds + elapsed:
-        text = m["metaVariables"]["single"]["V"]["text"].strip()
-        if NAME.match(text):
-            need.setdefault(m["file"], set()).add(text)
+        for var in ("V", "N"):
+            text = m["metaVariables"]["single"].get(var, {}).get("text", "").strip()
+            if NAME.match(text):
+                need.setdefault(m["file"], set()).add(text)
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
     resolved = _resolve_all(tree, need)
@@ -852,6 +911,17 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        if position in ZERO_IS_NONE and value == 0 and not NAME.match(text):
+            continue  # `timeout: 0` is a count or "none", never a bound a loaded runner reaches (f2961a44f)
+        count = m["metaVariables"]["single"].get("N")
+        if count is not None:  # a counted poll loop: its budget is iterations x interval
+            n_text = count["text"].strip()
+            n, n_why = _value_of(n_text, lang, f, resolved)
+            rec["value"] = re.sub(r"\s+", " ", f"{n_text} x {text}")[:120]
+            if n is None or value is None:
+                value, why = None, f"budget {n_text} x {text}: " + (n_why if n is None else why)
+            else:
+                value, why = n * value, f"budget {n_text} x {text} = {_fmt(n * value)} ({n_why}; {why})"
         if value is not None and value >= floor:
             rec["status"], rec["reason"] = "cleared", (rec["reason"] + "; " if rec["reason"] else "") + why
         else:
@@ -883,6 +953,30 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
                                               for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)):
             rec["reason"] += ("; a `timeout under test:` mark never exempts an elapsed-time assert (root's R3a): "
                               "use a fake clock, or the code's own logged times")
+        findings.setdefault(f, []).append(rec)
+    shaped = [(m, FLUSH, "turn", f"`await {{}}()` yields a fixed count of event-loop turns outside React's act(): wait for "
+                                 "the condition the next assertion checks")
+              for m in flushes if (m["file"], m["metaVariables"]["single"]["V"]["text"]) in turns]
+    sleep_defs = {(m["file"], m["text"]) for m in matches if m["ruleId"] == "sleep-def"}
+    shaped += [(m, SLEEP, m["ruleId"].split(".")[1], "a fixed sleep (`{}`) stands in for the condition the next assertion "
+                "checks: wait for that condition (a longer sleep is never the fix)")
+               for m in matches if m["ruleId"].startswith(SLEEP + ".")
+               and (m["ruleId"] == SLEEP + ".direct.condition" or (m["file"], m["metaVariables"]["single"]["V"]["text"]) in sleep_defs)]
+    shaped += [(m, SETTLE, "call", "`{}(...)` waits up to its deadline and then returns as if it settled: wait for the "
+                                   "condition, and fail when the deadline passes")
+               for m in settle_calls]
+    for m, family, position, why in sorted(shaped, key=lambda x: (x[0]["file"], x[0]["range"]["byteOffset"]["start"])):
+        f, name = m["file"], m["metaVariables"]["single"]["V"]["text"]
+        rec = {"line": _line(m["range"]), "rule": family, "position": position, "kind": "condition", "value": name,
+               "floor": None, "status": "finding", "mark": None, "reason": why.format(name)}
+        mark = next((marks_raw[(f, ln)] for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)
+                     if (f, ln) in marks_raw), None)
+        if mark is not None:
+            rec["mark"] = mark
+            if REASON.search(mark):
+                rec["status"] = "marked"
+            else:
+                rec["reason"] += "; the `timeout under test:` mark gives no reason, so it clears nothing"
         findings.setdefault(f, []).append(rec)
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
@@ -1416,7 +1510,8 @@ def self_test(verbose: bool = False) -> list[str]:
             print(f"self-test {case.name}: {'ok' if not any(x.startswith(case.name + ':') for x in failures) else 'FAILED'}")
     # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed.
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)):
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED}|{FLUSH}|{SETTLE}|{SLEEP})\.\S+)$",
+                              compose_rules(lang) + compose_rules(lang, second=True)):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
     return failures

@@ -63,6 +63,8 @@ value. The rules are in `rules/`.
 | rule id | languages | position | floor |
 |---|---|---|---|
 | `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
+| `literal-bound.kill-timer.subprocess` | ts tsx js | a kill timer on a child process, `setTimeout(() => { child.kill(...); ... }, V)`: a cap on a hung child, judged by value (a cap at or above the floor costs nothing on a pass). A timer that injects an event at time T (emit, end, abort, write) is a stimulus and is not read | 120 s |
+| `literal-bound.deadline-option.condition` | ts tsx js | a deadline option passed INTO the code under test: a property of an options object in a call's arguments whose key matches /(?:timeout\|deadline\|budget)\w*Ms$/i (drainTimeoutMs, deadlineMs, budgetMs), outside the equality matchers. A shorthand `{ deadlineMs }` is not read (vagaris hardening branch 4862e5050, #835's drain red) | 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
@@ -77,11 +79,21 @@ value. The rules are in `rules/`.
 | `literal-bound.join.subprocess` | py | a thread or process `.join(N)` (a positional numeric literal; `str.join` takes names) or `.join(timeout=N)` | 120 s |
 | `literal-bound.http.condition` | py | `timeout=` of urlopen, requests.*, httpx.* (and httpx clients) | 60 s |
 | `literal-bound.mark.case` | py | `@pytest.mark.timeout(N)` | 120 s |
+| `literal-bound.poll.condition` | ts tsx js py | a poll loop's BUDGET. A counted loop (`for (let i = 0; i < N; i++)`, py `for _ in range(N)`) whose body awaits one fixed sleep V (sleep/delay/wait, `new Promise(r => setTimeout(r, V))`; py time.sleep / asyncio.sleep) and can exit early (break or return, or an `&&` re-check in its test) has the budget N x V. A deadline loop (while, do-while, for) is bounded by D from `now - start < D`, or from `now < deadline` with `deadline = now + D` in a preceding statement (now: Date.now(), performance.now(); py time.monotonic, time.time, perf_counter, loop.time). A budget, or a count, that is a parameter of the enclosing function is not judged here; a `timeout`/`deadline`/`budget` parameter's default is `literal-bound.default.condition`. A poll's mark may sit on the loop's own line. A large budget exits early, so it costs nothing on a pass | 60 s |
 | `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`) and pyproject.toml (`[tool.pytest.ini_options]`), read in Python; a file that does not parse is unparsable | 120 s |
 
 Elapsed-time asserts are the `elapsed-assert` rules, below. Only these positions are read. Every run prints them
 (`covered (...)`), so absence elsewhere is never a pass. Not yet covered, and due in K2 step 2C: fixed flushes,
 sleep-as-wait, poll budgets, and read and absence windows.
+
+Not bounds, so not captured (the vagaris hardening branch, f2961a44f, 14 false findings on vagaris):
+- an option whose value is a LITERAL zero (`timeout: 0`, `end({ timeout: 0 })`, `drainTimeoutMs: 0`), which is a count
+  or "none". A NAME resolving to 0 is still judged, because someone chose that bound;
+- an object passed to an equality matcher (toEqual, toStrictEqual, toMatchObject, toContainEqual,
+  toHaveBeenCalledWith and its Last/Nth forms, toHaveProperty, toBe), which is an expected VALUE. Playwright's
+  web-first assertions (`toBeVisible({ timeout })`, toHaveURL, toPass) take a real bound and stay counted;
+- a registrar-named call with no body beside its bound (`describeExit("wsl", 4)` registers nothing). The body is a
+  function, or a name or member for one, so `it(name, handler, N)` still counts.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -104,6 +116,64 @@ Otherwise it is a finding. The proof can be:
 - **a mark**: `timeout under test: <what it proves>`, with the mark's own text on the value's line (not merely a
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.
+
+## Sleep-as-wait
+
+K2 step 2C, A (DESIGN-K2 §2C revised): ONE fixed sleep, as a statement of a test or hook body, followed by an
+assertion. The sleep stands in for a condition wait. Its own family, `sleep-as-wait`, is judged by SHAPE. Under
+value semantics the cheapest clear would be a longer sleep, which makes every run slower, so no value clears it. A
+condition wait does, or the `timeout under test:` mark with a reason, for a sleep that waits on clock granularity (a
+JWT `iat` second, an mtime tick, a server TTL).
+
+- `sleep-as-wait.direct.condition`:
+  - ts/tsx/js: `await sleep(V)` / `delay` / `wait` / `pause`, or `await new Promise(r => setTimeout(r, V))`, with V
+    not 0, directly in an it/test/describe or hook callback;
+  - py: `time.sleep(V)` / `await asyncio.sleep(V)` in a `test_*` function.
+  - In both, the statement is outside any loop, and an assertion follows it in its block or after an enclosing
+    block.
+- `sleep-as-wait.helper.condition`: an awaited zero-argument call of a same-file helper whose body is that ONE
+  sleep (`const settle = () => new Promise(r => setTimeout(r, 150))`).
+- Not matched:
+  - a zero sleep, which is a flush (fixed flushes);
+  - a sleep in a loop, which is a poll (`literal-bound.poll.condition`);
+  - a sleep inside a mock or other nested function, which is latency injection;
+  - a sleep with no assertion after it.
+- An absence window (a sleep, then a NEGATIVE assertion) is read here until its own notice-level family exists.
+- vagaris adoption tree: 51 findings (44 direct, 7 through helpers) in 26 files.
+
+## Fixed flushes
+
+The vagaris hardening branch's `fixed-flush` kind (45d7d8996). Root accepted the class on 10-30 (lanes/cli/BATCH-B-ui):
+a fixed count of event-loop turns OUTSIDE React's own `act()` is a disguised time bound. React renders through its
+time-sliced scheduler, which yields by wall clock, and react-query batches notifications through `setTimeout(0)`, so
+the number of turns a render needs grows with load. Inside an `act` imported from React, the work a turn schedules
+is flushed before act returns, which is deterministic.
+
+- **A turn helper** is a function defined in the file (`function f() {}`, or `const f = () => {}` / function
+  expression). Its body, callbacks included, makes a zero turn outside an `act` imported from React. A zero turn is
+  `setTimeout(fn)` or `setTimeout(fn, 0)` (also on window, globalThis or global), or `setImmediate`. React means
+  react, react-dom/test-utils, react-test-renderer or @testing-library/react, with the local name, aliased or not. A
+  function that calls a turn helper is one too: check.py closes the set, from a second scan over only the files that
+  define a turn helper. A file-local `act` shelters nothing.
+- **A finding** (`fixed-flush.turn.condition`, counted under its own rule) is an awaited, zero-argument call of a
+  turn helper that sits directly in a test or hook callback. It is judged by its SHAPE, so no value clears it: wait
+  for the condition the next assertion checks, or give the `timeout under test:` mark a reason.
+- **Parity:** the vagaris adoption tree at 41b03e468 has 313 findings in 33 files, the same sites as the hardening
+  branch's own detector.
+
+## Silent settles
+
+The vagaris hardening branch's `silent-settle` kind (45d7d8996), a family of its own judged by SHAPE, like fixed
+flushes. A silent settle is a same-file helper with three properties:
+- it has a defaulted `/timeout|deadline|budget/i` parameter;
+- its OWN body (stopping at nested functions, except Promise executors) has a deadline loop that reads `Date.now()`;
+- it has no `throw` and no `return <value>`.
+
+Such a helper waits up to its deadline and then returns as if the wait succeeded. A call of one outside an
+afterEach/afterAll callback (`silent-settle.call.condition`) is a finding. The remedy is to wait for the condition
+and fail when the deadline passes; a helper that throws, or returns its result for the caller to assert, is
+compliant. The helper's short default is judged separately, as `literal-bound.default.condition`. Parity: the vagaris
+adoption tree at 41b03e468 has 83 calls in 17 files, the hardening branch's own sites.
 
 ## Elapsed-time asserts
 

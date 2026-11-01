@@ -39,6 +39,71 @@ utils:
         - { kind: list_splat }
         - { kind: dictionary_splat }
         - { kind: comment }
+  # Poll loops (K2 step 2C, B; see literal-bound.yml): `for _ in range(N)` whose body sleeps a fixed V seconds
+  # (time.sleep / asyncio.sleep) and can exit early (break or return) has the budget N x V. A deadline loop's budget is
+  # D, from `now - t0 < D`, or from `now < deadline` with `deadline = now + D` in a preceding statement. A budget that
+  # is a parameter of the enclosing function is judged where it is declared.
+  poll-boundary: { any: [{ kind: function_definition }, { kind: lambda }, { kind: class_definition }] }
+  poll-def: { any: [{ kind: function_definition }, { kind: class_definition }, { kind: decorated_definition }] }
+  py-sleep:
+    any:
+      - all: [{ kind: call }, { has: { field: function, regex: "^(?:time\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } } }]
+      - all: [{ kind: await }, { has: { kind: call, all: [{ has: { field: function, regex: "^(?:asyncio\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } } }] } }]
+  py-exit: { any: [{ kind: break_statement }, { kind: return_statement }] }
+  py-now:
+    any:
+      - pattern: time.monotonic()
+      - pattern: time.time()
+      - pattern: time.perf_counter()
+      - pattern: monotonic()
+      - pattern: perf_counter()
+      - pattern: loop.time()
+  py-now-plus:
+    kind: binary_operator
+    all:
+      - has: { field: operator, regex: "^\\+$" }
+      - any:
+          - all: [{ has: { field: left, matches: py-now } }, { has: { field: right, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }]
+          - all: [{ has: { field: left, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }, { has: { field: right, matches: py-now } }]
+  py-deadline-binding: { kind: assignment, all: [{ has: { field: left, pattern: $D } }, { has: { field: right, matches: py-now-plus } }] }
+  py-deadline-test:
+    kind: comparison_operator
+    all:
+      - not: { has: { nthChild: 3 } }
+      - has: { field: operators, regex: "^<=?$" }
+      - any:
+          - all: [{ has: { nthChild: 1, kind: binary_operator, all: [{ has: { field: operator, regex: "^-$" } }, { has: { field: left, matches: py-now } }] } }, { has: { nthChild: 2, all: [{ pattern: $V }, { not: { matches: py-param-budget } }] } }]
+          - all:
+              - has: { nthChild: 1, matches: py-now }
+              - has: { nthChild: 2, kind: identifier, pattern: $D }
+              - inside: { stopBy: end, follows: { stopBy: end, not: { matches: poll-def }, has: { stopBy: { matches: poll-boundary }, matches: py-deadline-binding } } }
+  py-param-budget:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, pattern: $V } } }
+  py-param-count:
+    all:
+      - kind: identifier
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, pattern: $N } } }
+  # Sleep-as-wait (K2 step 2C, A; see literal-bound.yml): ONE fixed sleep statement (time.sleep / asyncio.sleep, not 0)
+  # in a test function's own body (`test_*`), outside any loop, then an assertion. Judged by its SHAPE.
+  py-fixed-sleep:
+    any:
+      - all: [{ kind: call }, { has: { field: function, regex: "^(?:time\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0(?:\\.0*)?$" } } } }]
+      - all: [{ kind: await }, { has: { kind: call, all: [{ has: { field: function, regex: "^(?:asyncio\\.)?sleep$" } }, { has: { field: arguments, has: { nthChild: 1, pattern: $V, not: { regex: "^0(?:\\.0*)?$" } } } }] } }]
+  py-test-stmt:
+    all:
+      - kind: expression_statement
+      - inside: { stopBy: { matches: poll-boundary }, kind: function_definition, has: { field: name, regex: "^test" } }
+      - not: { inside: { stopBy: { matches: poll-boundary }, any: [{ kind: for_statement }, { kind: while_statement }] } }
+  py-assertion:
+    any:
+      - kind: assert_statement
+      - all: [{ kind: call }, { has: { field: function, regex: "(?:^|\\.)assert[A-Z]\\w*$" } }]
+  py-then-asserts:
+    any:
+      - precedes: { stopBy: end, any: [{ matches: py-assertion }, { has: { stopBy: end, matches: py-assertion } }] }
+      - inside: { stopBy: { matches: poll-boundary }, precedes: { stopBy: end, any: [{ matches: py-assertion }, { has: { stopBy: end, matches: py-assertion } }] } }
 ---
 id: literal-bound.keyword.subprocess
 language: python
@@ -164,3 +229,45 @@ rule:
         - has: { field: name, regex: "^timeout$" }
         - has: { field: value, pattern: $V, matches: bound-value }
       inside: { kind: argument_list, inside: { kind: call, has: { field: function, regex: "^pytest\\.mark\\.timeout$" } } }
+---
+# A poll loop's budget (K2 step 2C, B): N x V for `for _ in range(N)`, V for a deadline loop.
+id: literal-bound.poll.condition
+language: python
+rule:
+  all:
+    - any:
+        - kind: for_statement
+          all:
+            - has: { field: right, kind: call, all: [{ has: { field: function, regex: "^range$" } }, { has: { field: arguments, all: [{ has: { nthChild: 1, all: [{ pattern: $N }, { not: { matches: py-param-count } }] } }, { not: { has: { nthChild: 2 } } }] } }] }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: py-sleep } }
+            - has: { field: body, has: { stopBy: { matches: poll-boundary }, matches: py-exit } }
+        - all:
+            - kind: while_statement
+            - has: { field: condition, any: [{ matches: py-deadline-test }, { has: { stopBy: end, matches: py-deadline-test } }] }
+---
+# Sleep-as-wait: a fixed sleep statement in a test function's own body, then an assertion.
+id: sleep-as-wait.direct.condition
+language: python
+rule:
+  all:
+    - matches: py-test-stmt
+    - has: { matches: py-fixed-sleep }
+    - matches: py-then-asserts
+---
+# Sleep-as-wait through a same-file helper whose body is ONE fixed sleep (sleep-def names them).
+id: sleep-as-wait.helper.condition
+language: python
+rule:
+  all:
+    - matches: py-test-stmt
+    - has: { kind: call, all: [{ has: { field: function, any: [{ kind: identifier, pattern: $V }, { kind: attribute, has: { field: attribute, pattern: $V } }] } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }] }
+    - matches: py-then-asserts
+---
+id: sleep-def
+language: python
+rule:
+  kind: identifier
+  inside:
+    kind: function_definition
+    field: name
+    has: { field: body, all: [{ has: { kind: expression_statement, has: { matches: py-fixed-sleep } } }, { not: { has: { nthChild: 2 } } }] }

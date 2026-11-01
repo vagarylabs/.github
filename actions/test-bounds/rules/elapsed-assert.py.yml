@@ -1,0 +1,138 @@
+# elapsed-assert, for python (K2 step 2B, root's R3a 10-31): the shapes and semantics of elapsed-assert.yml. An UPPER
+# bound, in an assertion, on a real-clock ELAPSED difference (now minus an earlier reading of the same clock), below
+# the 60 s floor, is a finding that a mark never exempts. The remedy is a fake clock, or the code's own logged times.
+#
+# A util or rule naming CLOCK is emitted once per clock family (each `clock-<family>` util; ELAPSED_PER_S gives its
+# readings per second, the `_ns` clocks in ns). A datetime difference is read through `.total_seconds()` (seconds) or
+# against an exact `timedelta(...)`. Captures: $A the measured side, $V the bound; $P and $K a scaled difference or
+# the `(d).total_seconds()` operand; $BV the value a measured NAME is bound to.
+utils:
+  clock-time: { pattern: time.time() }
+  clock-time-ns: { pattern: time.time_ns() }
+  clock-monotonic: { any: [{ pattern: time.monotonic() }, { pattern: monotonic() }] }
+  clock-monotonic-ns: { any: [{ pattern: time.monotonic_ns() }, { pattern: monotonic_ns() }] }
+  clock-perf-counter: { any: [{ pattern: time.perf_counter() }, { pattern: perf_counter() }] }
+  clock-perf-counter-ns: { any: [{ pattern: time.perf_counter_ns() }, { pattern: perf_counter_ns() }] }
+  clock-loop:
+    kind: call
+    all:
+      - has: { field: function, regex: "^(?:(?:self\\.)?loop|asyncio\\.get_(?:event|running)_loop\\(\\))\\.time$" }
+      - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+  clock-datetime: { kind: call, has: { field: function, regex: "^(?:\\w+\\.)?datetime\\.(?:now|utcnow)$" } }
+  # The assertions that put an UPPER bound on $A, when $A is this family's measured side (checked where $A is
+  # captured, as in elapsed-assert.yml): assertLess/assertLessEqual(A, V), assertGreater/assertGreaterEqual(V, A),
+  # and a comparison that is an `assert` statement's test or assertTrue's first argument.
+  a-CLOCK: { all: [{ pattern: $A }, { matches: measured-CLOCK }] }
+  upper-CLOCK:
+    any:
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertLess(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - kind: call
+        all:
+          - has: { field: function, regex: "(?:^|\\.)assertGreater(?:Equal)?$" }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+          - has: { field: arguments, has: { nthChild: 2, matches: a-CLOCK } }
+      - all:
+          - matches: cmp-upper-CLOCK
+          - any:
+              - inside: { kind: assert_statement }
+              - all:
+                  - nthChild: 1
+                  - inside: { kind: argument_list, inside: { kind: call, has: { field: function, regex: "(?:^|\\.)assertTrue$" } } }
+  # A comparison bounding $A from above: `A < V`, `A <= V`, `V > A`, `V >= A`, and `LO < A < V` (< or <= each).
+  # Operands are counted, never pattern-matched: ast-grep reads `$A < $V` against the PREFIX of `0 < d < 2`. The
+  # `operators` field yields only a chain's first operator, so a chain's two are pinned by its text.
+  cmp-upper-CLOCK:
+    kind: comparison_operator
+    any:
+      - all:
+          - not: { has: { nthChild: 3 } }
+          - has: { field: operators, regex: "^<=?$" }
+          - has: { nthChild: 1, matches: a-CLOCK }
+          - has: { nthChild: 2, pattern: $V }
+      - all:
+          - not: { has: { nthChild: 3 } }
+          - has: { field: operators, regex: "^>=?$" }
+          - has: { nthChild: 1, pattern: $V }
+          - has: { nthChild: 2, matches: a-CLOCK }
+      - all:
+          - has: { nthChild: 3 }
+          - not: { has: { nthChild: 4 } }
+          - regex: "^[^<>=!]*<=?[^<>=!]*<=?[^<>=!]*$"
+          - has: { nthChild: 2, matches: a-CLOCK }
+          - has: { nthChild: 3, pattern: $V }
+  # Scope: a binding counts when it sits in a statement that PRECEDES the assert's (in its block or an enclosing one),
+  # searched down to, never into, another function, lambda or class; a preceding def or class is not searched.
+  fn-boundary: { any: [{ kind: function_definition }, { kind: lambda }, { kind: class_definition }] }
+  def-boundary: { any: [{ kind: function_definition }, { kind: class_definition }, { kind: decorated_definition }] }
+  diff-CLOCK:
+    kind: binary_operator
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has:
+          field: left
+          any:
+            - matches: clock-CLOCK
+            - all:
+                - kind: identifier
+                - pattern: $L
+                - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-L-CLOCK } } }
+  bind-L-CLOCK: { kind: assignment, all: [{ has: { field: left, pattern: $L } }, { has: { field: right, matches: clock-CLOCK } }] }
+  elapsed-CLOCK:
+    any:
+      - matches: diff-CLOCK
+      - all:
+          - kind: binary_operator
+          - has: { field: operator, regex: "^[*/]$" }
+          - any:
+              - all: [{ has: { field: left, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }, { has: { field: right, pattern: $K } }]
+              - all: [{ has: { field: left, pattern: $K } }, { has: { field: right, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }]
+      - all:
+          - kind: call
+          - has: { field: function, kind: attribute, all: [{ has: { field: attribute, regex: "^total_seconds$" } }, { has: { field: object, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }] }
+          - has: { field: arguments, regex: "^\\(\\s*\\)$" }
+  measured-CLOCK:
+    any:
+      - matches: elapsed-CLOCK
+      - all:
+          - kind: identifier
+          - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
+  bind-A-CLOCK: { kind: assignment, all: [{ has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }] }
+  # Fake clocks, proven positively: freezegun's freeze_time (decorator, `with`, a started freezer, pytest's
+  # `freezer` fixture or freeze_time marker) without tick=True fakes every clock here (loop.time() reads
+  # time.monotonic); a mock.patch / patch.object / monkeypatch.setattr of the exact `time` function fakes that one.
+  # time_machine is not read (its travel() ticks by default and never fakes monotonic or perf_counter).
+  freeze-call:
+    kind: call
+    all:
+      - has: { field: function, regex: "^(?:(?:freezegun|pytest\\.mark)\\.)?freeze_time$" }
+      - not: { has: { field: arguments, has: { kind: keyword_argument, regex: "^tick\\s*=\\s*True$" } } }
+  patch-call: { kind: call, has: { field: function, regex: "^(?:(?:(?:unittest\\.)?mock\\.)?patch(?:\\.object)?|monkeypatch\\.setattr)$" } }
+  fakes-time: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.time[\"']|\\btime\\s*,\\s*[\"']time[\"']" }] }] }
+  fakes-time-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.time_ns[\"']|\\btime\\s*,\\s*[\"']time_ns[\"']" }] }] }
+  fakes-monotonic: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.monotonic[\"']|\\btime\\s*,\\s*[\"']monotonic[\"']" }] }] }
+  fakes-monotonic-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.monotonic_ns[\"']|\\btime\\s*,\\s*[\"']monotonic_ns[\"']" }] }] }
+  fakes-perf-counter: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.perf_counter[\"']|\\btime\\s*,\\s*[\"']perf_counter[\"']" }] }] }
+  fakes-perf-counter-ns: { any: [{ matches: freeze-call }, { all: [{ matches: patch-call }, { regex: "[\"'](?:[\\w.]*\\.)?time\\.perf_counter_ns[\"']|\\btime\\s*,\\s*[\"']perf_counter_ns[\"']" }] }] }
+  fakes-loop: { matches: freeze-call }
+  fakes-datetime: { matches: freeze-call }
+  under-fake-CLOCK:
+    any:
+      - inside: { stopBy: end, kind: decorated_definition, has: { kind: decorator, any: [{ has: { stopBy: end, matches: fakes-CLOCK } }, { regex: "^@\\s*pytest\\.mark\\.freeze_time\\s*$" }] } }
+      - inside: { stopBy: end, kind: with_statement, has: { kind: with_clause, has: { stopBy: end, matches: fakes-CLOCK } } }
+      - inside: { stopBy: end, follows: { stopBy: end, kind: expression_statement, has: { stopBy: { kind: lambda }, matches: fakes-CLOCK } } }
+      - inside: { stopBy: end, kind: function_definition, has: { field: parameters, has: { stopBy: end, kind: identifier, regex: "^freezer$" } } }
+---
+id: elapsed-assert.CLOCK.condition
+language: python
+rule: { matches: upper-CLOCK }
+---
+id: fake-clock.CLOCK
+language: python
+rule:
+  all:
+    - matches: upper-CLOCK
+    - matches: under-fake-CLOCK

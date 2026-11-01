@@ -86,6 +86,11 @@ SCHEMA = 1
 CHECK_ID = "vagarylabs/.github/actions/test-bounds"
 BASELINE_PATH = ".github/test-bounds.baseline.json"
 RULE = "literal-bound"
+# Elapsed-time asserts (root's R3a, 10-31): an UPPER bound on a real-clock difference, judged against the condition
+# floor and never exempted by a mark. Readings per second of each clock family (rules/elapsed-assert*.yml).
+ELAPSED = "elapsed-assert"
+ELAPSED_PER_S = {"date": 1000, "perf": 1000, "hrtime": 10**9, "time": 1, "time-ns": 10**9, "monotonic": 1,
+                 "monotonic-ns": 10**9, "perf-counter": 1, "perf-counter-ns": 10**9, "loop": 1, "datetime": 1}
 # Floors in seconds, per kind (root's K2 GO 10-31). JS/TS values are milliseconds, Python values seconds.
 # fixture: a test fixture's client timeout (PostgreSQL connect/pool), at vagary-core #949's 120 s readiness floor.
 FLOORS_S = {"case": 120, "hook": 240, "condition": 60, "subprocess": 120, "fixture": 120}
@@ -93,8 +98,9 @@ LANGUAGE_OF = {".ts": "typescript", ".mts": "typescript", ".cts": "typescript", 
                ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript", ".py": "python"}
 UNIT = {"typescript": 1000, "tsx": 1000, "javascript": 1000, "python": 1}
 JS_LANGS = ("typescript", "tsx", "javascript")
-RULE_FILES = {"typescript": "literal-bound.yml", "tsx": "literal-bound.yml", "javascript": "literal-bound.yml",
-              "python": "literal-bound.py.yml"}
+JS_RULE_FILES = ("literal-bound.yml", "elapsed-assert.yml")
+RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": JS_RULE_FILES,
+              "python": ("literal-bound.py.yml", "elapsed-assert.py.yml")}
 # Rules whose matched node is the bound itself (a pair, a parameter, a keyword): a mark may sit on its first line.
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
@@ -112,15 +118,20 @@ COVERED = {
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
-                 "statement_timeout, query_timeout)",
+                 "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
+                 ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
+                 "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
+                 "bound name, or scaled",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
           "communicate(input, N), a `timeout` parameter default); asyncio.wait_for and asyncio.timeout; thread and "
           "process join(timeout); PostgreSQL client timeouts; HTTP client timeout= (urlopen, requests, httpx); "
-          "pytest.mark.timeout",
+          "pytest.mark.timeout; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), assertGreater[Equal]"
+          "(V, A), `A < V` and chained `LO < A < V` in assert/assertTrue) on a time, monotonic, perf_counter (and "
+          "_ns), loop.time() or datetime difference, direct, through a bound name, or scaled",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
-    "not yet (K2 step 2)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows, elapsed-time "
-                           "asserts",
+    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows, an elapsed "
+                            "difference computed in a helper and returned",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -256,19 +267,54 @@ def _keep(text: str, lang: str) -> str:
     return "".join(out)
 
 
-def compose_rules(lang: str, extra: list[str] = ()) -> str:
-    """Every rule of rules/<file> for one language: its language line set, its utils appended, tagged lines kept."""
-    docs = re.split(r"(?m)^---[ \t]*$", (HERE / "rules" / RULE_FILES[lang]).read_text(encoding="utf-8"))
-    head = docs[0]
-    if "utils:" not in head:
-        raise Refusal(f"rules/{RULE_FILES[lang]}: the first document must hold the utils")
-    utils = _keep(head[head.index("utils:"):], lang)
+_UTIL_KEY = re.compile(r"(?m)^  (?P<key>[\w-]+):")
+
+
+def _per_clock(utils: str, docs: list[str], name: str) -> tuple[str, list[str]]:
+    """Each util and rule whose name holds CLOCK, once per clock family: every `clock-<family>` util is a family, with
+    its readings per second in ELAPSED_PER_S and its fake-clock proof in a `fakes-<family>` util."""
+    keys = [m.group("key") for m in _UTIL_KEY.finditer(utils)]
+    families = [k[len("clock-"):] for k in keys if k.startswith("clock-")]
+    if not families:
+        return utils, docs
+    for f in families:
+        if f not in ELAPSED_PER_S:
+            raise Refusal(f"rules/{name}: clock family `{f}` has no readings per second in ELAPSED_PER_S")
+        if "fakes-" + f not in keys:
+            raise Refusal(f"rules/{name}: clock family `{f}` has no `fakes-{f}` util")
+    starts = [m.start() for m in _UTIL_KEY.finditer(utils)]
+    blocks = [utils[:starts[0]]] + [utils[a:b] for a, b in zip(starts, starts[1:] + [len(utils)])]
     out = []
-    for doc in list(docs[1:]) + list(extra):
-        doc = re.sub(r"(?m)^language: \w+$", "language: " + lang, doc.strip("\n"))
-        if not re.search(r"(?m)^id: ", doc):
-            raise Refusal("a rule document has no id")
-        out.append(_keep(doc, lang) + "\n" + utils)
+    for block in blocks:
+        key = _UTIL_KEY.match(block)
+        if key and "CLOCK" in key.group("key"):
+            out += [block.replace("CLOCK", f) for f in families]
+        elif "CLOCK" in re.sub(r"(?m)#.*$", "", block):
+            raise Refusal(f"rules/{name}: util `{key.group('key') if key else '?'}` names CLOCK but is not one")
+        else:
+            out.append(block)
+    expanded = []
+    for doc in docs:
+        rid = re.search(r"(?m)^id: (\S+)", doc)
+        expanded += [doc.replace("CLOCK", f) for f in families] if rid and "CLOCK" in rid.group(1) else [doc]
+    return "".join(out), expanded
+
+
+def compose_rules(lang: str, extra: list[str] = ()) -> str:
+    """Every rule of the language's rules/ files: its language line set, its file's utils appended, tagged lines
+    kept, and each CLOCK util and rule emitted once per clock family."""
+    out = []
+    for i, name in enumerate(RULE_FILES[lang]):
+        docs = re.split(r"(?m)^---[ \t]*$", (HERE / "rules" / name).read_text(encoding="utf-8"))
+        head = docs[0]
+        if "utils:" not in head:
+            raise Refusal(f"rules/{name}: the first document must hold the utils")
+        utils, body = _per_clock(_keep(head[head.index("utils:"):], lang), list(docs[1:]), name)
+        for doc in body + (list(extra) if i == 0 else []):
+            doc = re.sub(r"(?m)^language: \w+$", "language: " + lang, doc.strip("\n"))
+            if not re.search(r"(?m)^id: ", doc):
+                raise Refusal("a rule document has no id")
+            out.append(_keep(doc, lang) + "\n" + utils)
     # tree-sitter recovers from what its grammar lacks (vagaris: `f<typeof import("x")>()`). An ERROR holding no
     # identifier or digit, or lying inside a string, cannot hide a bound: it is RECOVERED and listed. Any other ERROR
     # is a red (root's R2, 10-31; tree-sitter-typescript #367 is the upstream gap).
@@ -764,9 +810,12 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             v = m["metaVariables"]["single"]["V"]
             launcher_hits[(m["file"], _span(v["range"]))] = launchers[int(m["ruleId"].split(".")[1])]
     bounds = [m for m in matches if m["ruleId"].startswith(RULE + ".")]
+    elapsed = [m for m in matches if m["ruleId"].startswith(ELAPSED + ".")]
+    faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
+             if m["ruleId"].startswith("fake-clock.")}
     # Names to resolve, and the files that read them.
     need = {}
-    for m in bounds:
+    for m in bounds + elapsed:
         text = m["metaVariables"]["single"]["V"]["text"].strip()
         if NAME.match(text):
             need.setdefault(m["file"], set()).add(text)
@@ -817,6 +866,19 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
                     rec["status"] = "marked"
                 else:
                     rec["reason"] += "; the `timeout under test:` mark gives no reason, so it clears nothing"
+        findings.setdefault(f, []).append(rec)
+    seen = set()
+    for m in sorted(elapsed, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"], m["ruleId"])):
+        f, span = m["file"], _span(m["range"])
+        if (f, span) in seen:
+            continue  # one assert is one record, even when its difference mixes two clock families
+        seen.add((f, span))
+        family = m["ruleId"].split(".")[1]
+        rec = elapsed_record(m, LANGUAGE_OF[posixpath.splitext(f)[1]], resolved, (f, family, span) in faked)
+        if rec["status"] == "finding" and any((f, ln) in marks_raw
+                                              for ln in range(_line(m["range"]), m["range"]["end"]["line"] + 2)):
+            rec["reason"] += ("; a `timeout under test:` mark never exempts an elapsed-time assert (root's R3a): "
+                              "use a fake clock, or the code's own logged times")
         findings.setdefault(f, []).append(rec)
     for f in files:
         if LANGUAGE_OF[posixpath.splitext(f)[1]] == "python" and _parse_py(tree.read(f)) is None:
@@ -893,6 +955,75 @@ def pytest_config_bounds(text: str, name: str) -> tuple[list[dict], str | None]:
                     rec["status"] = "marked"
         out.append(rec)
     return out, None
+
+
+def timedelta_seconds(text: str) -> Fraction | None:
+    """The exact seconds of a `timedelta(...)` / `datetime.timedelta(...)` of exact literal arguments, else None."""
+    try:
+        node = ast.parse(text.strip(), mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(node, ast.Call) and re.fullmatch(r"(?:\w+\.)?timedelta", ast.unparse(node.func))):
+        return None
+    scale = {"days": 86400, "seconds": 1, "microseconds": Fraction(1, 10**6), "milliseconds": Fraction(1, 1000),
+             "minutes": 60, "hours": 3600, "weeks": 604800}
+    args = list(zip(scale, node.args)) + [(k.arg, k.value) for k in node.keywords]
+    if len(node.args) > len(scale) or any(k not in scale for k, _ in args):
+        return None
+    total = Fraction(0)
+    for k, v in args:
+        x = evaluate_py_node(v, text.strip())
+        if x is None:
+            return None
+        total += x * scale[k]
+    return total
+
+
+def elapsed_record(m: dict, lang: str, resolved: dict, faked: bool) -> dict:
+    """One elapsed-time assert (rules/elapsed-assert*.yml): its bound against the 60 s condition floor, in the units
+    of the clock its difference reads. Only a bound proven at or above the floor, or a proven fake clock, clears it;
+    a scale or a bound that is not exact is a finding."""
+    mv, file = m["metaVariables"]["single"], m["file"]
+    family = m["ruleId"].split(".")[1]
+    a, v = mv["A"]["text"].strip(), mv["V"]["text"].strip()
+    measured = mv.get("BV", mv["A"])  # a NAME's bound value, else the measured side itself
+    per_s, scale_why, timedelta = Fraction(ELAPSED_PER_S[family]), None, False
+    if "K" in mv:
+        k = evaluate_py(mv["K"]["text"]) if lang == "python" else evaluate_js(mv["K"]["text"])
+        base, pr, kr = measured["range"]["byteOffset"]["start"], _span(mv["P"]["range"]), _span(mv["K"]["range"])
+        raw = measured["text"].encode("utf-8")
+        op = (raw[pr[1] - base:kr[0] - base] if pr < kr else raw[kr[1] - base:pr[0] - base]).decode("utf-8").strip()
+        if k is None or k <= 0 or (op == "/" and kr < pr) or op not in ("*", "/"):
+            scale_why = f"scaled by `{mv['K']['text'].strip()[:40]}`, not an exact positive factor"
+        else:
+            per_s = per_s * k if op == "*" else per_s / k
+    elif "P" in mv:
+        per_s = Fraction(1)  # (d).total_seconds()
+    elif family == "datetime":
+        timedelta = True
+    floor = 60 * per_s
+    rec = {"line": _line(m["range"]), "rule": ELAPSED, "position": family, "kind": "condition",
+           "value": re.sub(r"\s+", " ", v)[:120], "floor": int(floor) if floor.denominator == 1 else str(floor),
+           "status": "finding", "reason": "", "mark": None}
+    shown = re.sub(r"\s+", " ", a)[:60]
+    what = f"`{shown}` reads the {family} clock"
+    if faked:
+        rec["status"], rec["reason"] = "cleared", f"{what} under a proven fake clock (rules/elapsed-assert*.yml)"
+        return rec
+    if scale_why:
+        rec["reason"] = f"{what}, {scale_why}"
+        return rec
+    if timedelta:
+        value = timedelta_seconds(v)
+        why = f"timedelta {v[:60]} = {_fmt(value)} s" if value is not None else (
+            f"a timedelta compared with `{v[:60]}`, not an exact timedelta(...)")
+    else:
+        value, why = _value_of(v, lang, file, resolved)
+    if value is not None and value >= floor:
+        rec["status"], rec["reason"] = "cleared", f"{what}; {why}"
+    else:
+        rec["reason"] = f"{what}; {why}" + ("" if value is None else f", below the floor {rec['floor']}")
+    return rec
 
 
 def _value_of(text: str, lang: str, file: str, resolved: dict) -> tuple[Fraction | None, str]:
@@ -1281,7 +1412,7 @@ def self_test(verbose: bool = False) -> list[str]:
             print(f"self-test {case.name}: {'ok' if not any(x.startswith(case.name + ':') for x in failures) else 'FAILED'}")
     # Every rule of every language must be planted RED somewhere, so a gutted rule cannot pass unnoticed.
     for lang in ("typescript", "tsx", "javascript", "python"):
-        for rid in re.findall(r"(?m)^id: (literal-bound\.\S+)$", compose_rules(lang)):
+        for rid in re.findall(rf"(?m)^id: ((?:{RULE}|{ELAPSED})\.\S+)$", compose_rules(lang)):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
     return failures

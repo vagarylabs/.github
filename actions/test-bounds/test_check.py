@@ -125,6 +125,17 @@ class SelfTest(unittest.TestCase):
             C.compose_rules = original
         self.assertTrue(has(failures, "literal-bound.wait.condition"), failures)
 
+    def test_a_gutted_clock_family_fails_the_self_test_by_name(self):
+        """The planted-RED check reads the elapsed-assert ids too, one per clock family (K2 step 2B)."""
+        original = C.compose_rules
+        try:
+            C.compose_rules = lambda lang, extra=(): original(lang, extra).replace(
+                "id: elapsed-assert.hrtime.condition", "id: elapsed-assert.hrtime.condition\nseverity: off")
+            failures = C.self_test()
+        finally:
+            C.compose_rules = original
+        self.assertTrue(has(failures, "rule elapsed-assert.hrtime.condition (typescript) has no planted RED"), failures)
+
 
 class DiffEntries(unittest.TestCase):
     def test_renames_and_copies_join_groups(self):
@@ -339,6 +350,22 @@ class Marks(unittest.TestCase):
         self.assertEqual([m["line"] for m in v["marks"]], [1, 2])
         self.assertEqual([(m["file"], m["line"]) for m in v["new_marks"]], [(a, 2)])
         self.assertEqual(v["problems"], [], "a mark clears its finding; it is listed, not failed")
+
+    def test_a_mark_never_exempts_an_elapsed_assert(self):
+        """Root's R3a: a short upper bound on a real-clock difference is a finding a mark cannot clear; it is counted
+        under its own rule, so a new one is a rise even where the literal bounds are clean."""
+        a = "s/__tests__/a.test.ts"
+        base = self.repo.commit({a: 'it("x", async () => {}, 120_000);\n', BL: baseline({})})
+        self.repo.commit({a: 'it("x", async () => {\n  const t0 = Date.now();\n  await work();\n'
+                             '  expect(Date.now() - t0).toBeLessThan(500); // timeout under test: the latency contract\n'
+                             '}, 120_000);\n'})
+        v = self.repo.verdict(base)
+        rec = next(r for r in v["findings"][a] if r["rule"] == C.ELAPSED)
+        self.assertEqual((rec["status"], rec["mark"], rec["floor"]), ("finding", None, 60_000))
+        self.assertIn("never exempts", rec["reason"])
+        self.assertEqual(v["counts"], {a: {C.ELAPSED: 1}})
+        self.assertTrue(has(v["problems"], f"[{C.ELAPSED}] {a}: 1 finding(s), the base had 0: a new one"), v["problems"])
+        self.assertEqual(v["new_marks"], [], "the mark exempted nothing, so it is not a new exemption")
 
     def test_an_unparsable_file_is_red(self):
         a = "s/__tests__/a.test.ts"

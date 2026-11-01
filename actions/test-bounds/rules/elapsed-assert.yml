@@ -1,0 +1,217 @@
+# elapsed-assert, for typescript, tsx and javascript (K2 step 2B, root's R3a 10-31). An UPPER bound, in an
+# assertion, on a real-clock ELAPSED difference (now minus an earlier reading of the same clock) is a condition
+# bound: below the 60 s floor it is a finding, and a `timeout under test:` mark never exempts it. The remedy is a
+# fake clock, or the code's own logged times. A lower bound, a remaining time (`deadline - Date.now()`), and a
+# value the test did not read from a clock (a logged duration, an injected clock) are not matched.
+#
+# A util or rule naming CLOCK is emitted once per clock family: each `clock-<family>` util is a family, and
+# check.py's ELAPSED_PER_S gives its readings per second. Each family has a `fakes-<family>` util: the calls that
+# prove its clock fake. Captures: $A the measured side, $V the bound; $P and $K a scaled difference `(d) / K`;
+# $BV the value a measured NAME is bound to.
+#   elapsed-assert.<family>.condition  the assert, when $A is that family's elapsed difference;
+#   fake-clock.<family>                the same assert, when a fake clock for that family is proven in scope:
+#                                      check.py clears the bound, with that reason.
+utils:
+  # The clock families (ELAPSED_PER_S: date and perf in ms, hrtime in ns).
+  clock-date:
+    any:
+      - pattern: Date.now()
+      - pattern: new Date().getTime()
+      - pattern: new Date().valueOf()
+      - pattern: +new Date()
+      - pattern: new Date()
+  clock-perf:
+    any:
+      - pattern: performance.now()
+      - pattern: globalThis.performance.now()
+  clock-hrtime: { pattern: process.hrtime.bigint() }
+  # The assertions that put an UPPER bound on $A, when $A is this family's measured side. The measured check runs
+  # where $A is captured: ast-grep 0.42.1 does not re-find a captured node holding a TS non-null `!` by
+  # `has: { pattern: $A, kind: ... }`, so a later re-match would drop `Date.now() - x!.getTime()`.
+  a-CLOCK: { all: [{ pattern: $A }, { matches: measured-CLOCK }] }
+  expect-call-CLOCK:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+      - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+  upper-CLOCK:
+    any:
+      - kind: call_expression
+        all:
+          - has:
+              field: function
+              kind: member_expression
+              all:
+                - has: { field: property, regex: "^(?:toBeLessThan|toBeLessThanOrEqual)$" }
+                - has: { field: object, matches: expect-call-CLOCK }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has:
+              field: function
+              kind: member_expression
+              all:
+                - has: { field: property, regex: "^(?:toBeGreaterThan|toBeGreaterThanOrEqual)$" }
+                - has: { field: object, kind: member_expression, all: [{ has: { field: property, regex: "^not$" } }, { has: { field: object, matches: expect-call-CLOCK } }] }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^expect(?:\\.soft)?\\([\\s\\S]*\\)\\.to\\.be\\.(?:at\\.)?(?:below|lessThan|lt|lte|most)$", has: { stopBy: end, matches: expect-call-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 1, pattern: $V } }
+      - kind: call_expression
+        all:
+          - has: { field: function, regex: "^assert\\.(?:isBelow|isAtMost)$" }
+          - has: { field: arguments, has: { nthChild: 1, matches: a-CLOCK } }
+          - has: { field: arguments, has: { nthChild: 2, pattern: $V } }
+      - all:
+          - matches: cmp-upper-CLOCK
+          - nthChild: 1
+          - inside: { kind: arguments, inside: { matches: truthy-assert } }
+  cmp-upper-CLOCK:
+    kind: binary_expression
+    any:
+      - all: [{ has: { field: operator, regex: "^<=?$" } }, { has: { field: left, matches: a-CLOCK } }, { has: { field: right, pattern: $V } }]
+      - all: [{ has: { field: operator, regex: "^>=?$" } }, { has: { field: left, pattern: $V } }, { has: { field: right, matches: a-CLOCK } }]
+  # A call that asserts its first argument is true: assert(x), assert.ok(x), assert.isTrue(x), expect(x).toBe(true),
+  # .toEqual(true), .toStrictEqual(true), .toBeTruthy().
+  truthy-assert:
+    kind: call_expression
+    any:
+      - has: { field: function, regex: "^(?:assert|assert\\.ok|assert\\.isTrue)$" }
+      - all:
+          - has: { field: function, regex: "^expect(?:\\.soft)?$" }
+          - inside:
+              kind: member_expression
+              inside:
+                kind: call_expression
+                any:
+                  - all: [{ has: { field: function, regex: "\\.(?:toBe|toEqual|toStrictEqual)$" } }, { has: { field: arguments, regex: "^\\(\\s*true\\s*\\)$" } }]
+                  - all: [{ has: { field: function, regex: "\\.toBeTruthy$" } }, { has: { field: arguments, regex: "^\\(\\s*\\)$" } }]
+  # Scope: a binding counts when it sits in a statement that PRECEDES the assert's (in its block or an enclosing one),
+  # searched down to, never into, another function; a preceding function or class declaration is not searched.
+  fn-boundary:
+    any:
+      - kind: arrow_function
+      - kind: function_expression
+      - kind: function_declaration
+      - kind: generator_function
+      - kind: generator_function_declaration
+      - kind: method_definition
+      - kind: class_declaration
+      - kind: abstract_class_declaration #[typescript,tsx]
+      - kind: class
+  def-boundary:
+    any:
+      - kind: function_declaration
+      - kind: generator_function_declaration
+      - kind: class_declaration
+      - kind: abstract_class_declaration #[typescript,tsx]
+  # Shapes 1 and 2: now minus an earlier reading. The left operand is this family's clock, or a name bound to it.
+  diff-CLOCK:
+    kind: binary_expression
+    all:
+      - has: { field: operator, regex: "^-$" }
+      - has:
+          field: left
+          any:
+            - matches: clock-CLOCK
+            - all:
+                - kind: identifier
+                - pattern: $L
+                - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-L-CLOCK } } }
+  bind-L-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $L } }, { has: { field: value, matches: clock-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $L } }, { has: { field: right, matches: clock-CLOCK } }]
+  # tree-sitter-typescript parses `a - b!.c()` as `(a - b)!.c()`: the difference sits under the non-null postfix at
+  # the head of a member/call chain (vagaris board-session-authentication-time.test.ts:98). Read it as the difference.
+  nonnull-diff-CLOCK: #[typescript,tsx]
+    any: #[typescript,tsx]
+      - all: [{ kind: non_null_expression }, { has: { matches: diff-CLOCK } }] #[typescript,tsx]
+      - all: [{ kind: member_expression }, { has: { field: object, matches: nonnull-diff-CLOCK } }] #[typescript,tsx]
+      - all: [{ kind: call_expression }, { has: { field: function, matches: nonnull-diff-CLOCK } }] #[typescript,tsx]
+  # The measured side: a difference, or one scaled by a factor (shape 4): `(d) / K`, `(d) * K`, `K * (d)`.
+  elapsed-CLOCK:
+    any:
+      - matches: diff-CLOCK
+      - matches: nonnull-diff-CLOCK #[typescript,tsx]
+      - all:
+          - kind: binary_expression
+          - has: { field: operator, regex: "^[*/]$" }
+          - any:
+              - all: [{ has: { field: left, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }, { has: { field: right, pattern: $K } }]
+              - all: [{ has: { field: left, pattern: $K } }, { has: { field: right, kind: parenthesized_expression, pattern: $P, has: { matches: diff-CLOCK } } }]
+  # The measured side: an elapsed difference, or (shape 3) a name bound to one in a preceding statement.
+  measured-CLOCK:
+    any:
+      - matches: elapsed-CLOCK
+      - all:
+          - kind: identifier
+          - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
+  # Shape 3's binding; $BV is the bound value.
+  bind-A-CLOCK:
+    any:
+      - all: [{ kind: variable_declarator }, { has: { field: name, pattern: $A } }, { has: { field: value, pattern: $BV, matches: elapsed-CLOCK } }]
+      - all: [{ kind: assignment_expression }, { has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }]
+  # Fake clocks. Proof is positive: vi/jest/sinon.useFakeTimers() with no argument or an object literal that does not
+  # advance with real time (shouldAdvanceTime, advanceTimers, legacyFakeTimers) and does not leave the clock native.
+  # Date is faked by default; performance and hrtime only when `toFake` names them (vitest's default list changed
+  # across versions). vi/jest.setSystemTime fakes Date even with real timers (vitest docs). A config-level
+  # `fakeTimers` default is not read.
+  fake-timers-call:
+    kind: call_expression
+    all:
+      - has: { field: function, regex: "^(?:vi|jest|sinon)\\.useFakeTimers$" }
+      - has: { field: arguments, any: [{ regex: "^\\(\\s*\\)$" }, { has: { nthChild: 1, kind: object } }] }
+      - not: { has: { field: arguments, has: { stopBy: end, kind: pair, all: [{ has: { field: key, regex: "^[\"']?(?:shouldAdvanceTime|advanceTimers|legacyFakeTimers)[\"']?$" } }, { has: { field: value, not: { regex: "^false$" } } }] } } }
+  to-fake-names:
+    kind: pair
+    has: { field: key, regex: "^[\"']?toFake[\"']?$" }
+  not-fake-names:
+    kind: pair
+    has: { field: key, regex: "^[\"']?(?:toNotFake|doNotFake)[\"']?$" }
+  fakes-date:
+    any:
+      - all: [{ kind: call_expression }, { has: { field: function, regex: "^(?:vi|jest)\\.setSystemTime$" } }]
+      - all:
+          - matches: fake-timers-call
+          - not: { has: { field: arguments, has: { stopBy: end, matches: not-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]Date[\"'`]$" } } } } }
+          - not: { has: { field: arguments, has: { stopBy: end, matches: to-fake-names, not: { has: { field: value, has: { kind: string, regex: "^[\"'`]Date[\"'`]$" } } } } } }
+  fakes-perf:
+    all:
+      - matches: fake-timers-call
+      - has: { field: arguments, has: { stopBy: end, matches: to-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]performance[\"'`]$" } } } }
+  fakes-hrtime:
+    all:
+      - matches: fake-timers-call
+      - has: { field: arguments, has: { stopBy: end, matches: to-fake-names, has: { field: value, has: { kind: string, regex: "^[\"'`]hrtime[\"'`]$" } } } }
+  real-timers: { kind: call_expression, has: { field: function, regex: "^(?:(?:vi|jest)\\.useRealTimers|clock\\.(?:uninstall|restore))$" } }
+  # In scope: a preceding statement (of the assert's block or an enclosing one) that is the faking call itself, or a
+  # beforeEach/beforeAll hook that makes it; and no later-reached direct useRealTimers() statement. A sibling test's
+  # body never counts.
+  fake-stmt-CLOCK:
+    kind: expression_statement
+    any:
+      - has: { matches: fakes-CLOCK }
+      - has: { kind: await_expression, has: { matches: fakes-CLOCK } }
+      - has: { kind: call_expression, all: [{ has: { field: function, regex: "^(?:beforeEach|beforeAll)$" } }, { has: { field: arguments, has: { stopBy: end, matches: fakes-CLOCK } } }] }
+  real-stmt:
+    kind: expression_statement
+    any:
+      - has: { matches: real-timers }
+      - has: { kind: await_expression, has: { matches: real-timers } }
+  under-fake-CLOCK:
+    all:
+      - inside: { stopBy: end, follows: { stopBy: end, matches: fake-stmt-CLOCK } }
+      - not: { inside: { stopBy: end, follows: { stopBy: end, matches: real-stmt } } }
+---
+id: elapsed-assert.CLOCK.condition
+language: typescript
+rule: { matches: upper-CLOCK }
+---
+id: fake-clock.CLOCK
+language: typescript
+rule:
+  all:
+    - matches: upper-CLOCK
+    - matches: under-fake-CLOCK

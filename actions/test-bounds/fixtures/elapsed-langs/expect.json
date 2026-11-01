@@ -1,0 +1,18 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 2
+   }
+  ]
+ },
+ "files": {
+  "a.test.tsx": {
+   "finding": 3
+  },
+  "a.test.js": {
+   "finding": 3
+  }
+ }
+}

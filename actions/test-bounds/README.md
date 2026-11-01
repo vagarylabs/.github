@@ -79,9 +79,9 @@ value. The rules are in `rules/`.
 | `literal-bound.mark.case` | py | `@pytest.mark.timeout(N)` | 120 s |
 | `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`) and pyproject.toml (`[tool.pytest.ini_options]`), read in Python; a file that does not parse is unparsable | 120 s |
 
-Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not
-yet covered, and due in K2 step 2: Python `asyncio.wait_for` and pool/connect timeouts, pytest-timeout and ini
-defaults, fixed flushes, sleep-as-wait, and elapsed-time asserts.
+Elapsed-time asserts are the `elapsed-assert` rules, below. Only these positions are read. Every run prints them
+(`covered (...)`), so absence elsewhere is never a pass. Not yet covered, and due in K2 step 2C: fixed flushes,
+sleep-as-wait, poll budgets, read and absence windows, and an elapsed difference computed in a helper and returned.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -104,6 +104,59 @@ Otherwise it is a finding. The proof can be:
 - **a mark**: `timeout under test: <what it proves>`, with the mark's own text on the value's line (not merely a
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.
+
+## Elapsed-time asserts
+
+Root's R3a (10-31): an UPPER bound, in an assertion, on a real-clock ELAPSED difference (now minus an earlier
+reading of the same clock) is a condition bound, judged against the 60 s floor in the clock's units. A
+`timeout under test:` mark never exempts one: the remedy is a fake clock, or the code's own logged times. The family
+is counted under its own rule (`counts: {file: {"elapsed-assert": n}}`); the rules are `rules/elapsed-assert*.yml`,
+one per clock family (each `clock-<family>` util, with its unit in check.py's `ELAPSED_PER_S`).
+
+| rule id | languages | clock | unit |
+|---|---|---|---|
+| `elapsed-assert.date.condition` | ts tsx js | `Date.now()`, `new Date()` (with `.getTime()`, `.valueOf()`, `+new Date()`) | ms |
+| `elapsed-assert.perf.condition` | ts tsx js | `performance.now()` | ms |
+| `elapsed-assert.hrtime.condition` | ts tsx js | `process.hrtime.bigint()` (a bigint bound is not exact, so a finding) | ns |
+| `elapsed-assert.{time,monotonic,perf-counter}.condition` | py | `time.time()`, `time.monotonic()` / `monotonic()`, `time.perf_counter()` / `perf_counter()` | s |
+| `elapsed-assert.{time-ns,monotonic-ns,perf-counter-ns}.condition` | py | the `_ns` forms | ns |
+| `elapsed-assert.loop.condition` | py | `loop.time()`, `asyncio.get_running_loop().time()`, `get_event_loop().time()` | s |
+| `elapsed-assert.datetime.condition` | py | `datetime.now()` / `utcnow()`: through `.total_seconds()`, or against an exact `timedelta(...)` | s |
+
+- **The assertion.** ts/js: `expect(A).toBeLessThan(V)` and `toBeLessThanOrEqual` (also `expect.soft`, and with a
+  message argument), `expect(A).not.toBeGreaterThan[OrEqual](V)`, chai `expect(A).to.be.below / lessThan / lt / lte
+  / at.most(V)`, `assert.isBelow / isAtMost(A, V)`, and `A < V`, `A <= V`, `V > A` or `V >= A` as the first argument
+  of `assert`, `assert.ok`, `assert.isTrue`, or of an `expect` that ends `.toBe(true)`, `.toEqual(true)`,
+  `.toStrictEqual(true)` or `.toBeTruthy()`. py: `assertLess[Equal](A, V)`, `assertGreater[Equal](V, A)`, and those
+  comparisons, or a chained `LO < A < V`, as an `assert`'s test or `assertTrue`'s first argument.
+- **The measured side A.** (1) `clock - x`; (2) `name - x`, with `name` bound to the clock; (3) a name bound to a
+  measured side; (4) `(d) / K`, `(d) * K` or `K * (d)`, which scales the unit by an exact K (an inexact K is a
+  finding). A binding counts when it sits in a statement that precedes the assert's statement, in the same block or
+  an enclosing one. The search goes down to, never into, another function. A preceding function or class
+  declaration is not searched, so a sibling test's binding never counts. tree-sitter-typescript parses
+  `a - b!.c()` as `(a - b)!.c()`, and the check reads it as the difference it is.
+- **Not matched.** A lower bound. A remaining time (`deadline - now`), which a slow machine only shrinks. A value
+  the test did not read from a clock, such as a logged duration or an injected clock. A clock call wrapped in another
+  call (`Math.round(...)`, `round(...)`). A difference computed in a helper and returned (vagary-core
+  `test_ci_test_pg.py:646`, vagary-platform `test_rate_limiter.py:88`), which is due in step 2C with the same-file
+  helpers.
+- **Fake clocks clear only on positive proof, per family.**
+  - ts/js: a statement that precedes the assert, in its block or an enclosing one, either makes the faking call
+    itself or is a beforeEach/beforeAll hook that makes it, and no direct `useRealTimers()`, `clock.uninstall()` or
+    `clock.restore()` statement precedes the assert. A sibling test's body never counts.
+    - The call is `vi/jest/sinon.useFakeTimers()`, with no argument or an object literal that does not advance with
+      real time (`shouldAdvanceTime`, `advanceTimers`, `legacyFakeTimers`).
+    - Date is faked unless `toFake` omits it or `toNotFake`/`doNotFake` names it. `performance` and `hrtime` are
+      faked only when `toFake` names them, because vitest's default list changed across versions.
+    - `vi/jest.setSystemTime(...)` fakes Date.
+    - A config-level `fakeTimers` default is not read.
+  - py:
+    - freezegun's `freeze_time` without `tick=True` fakes every clock above (loop.time() reads time.monotonic). It
+      counts as a decorator, as a `with`, as a preceding started freezer, through the `freezer` fixture, or as
+      `@pytest.mark.freeze_time`.
+    - `mock.patch("...time.<fn>")`, `patch.object(time, "<fn>")` or `monkeypatch.setattr(time, "<fn>", ...)` fakes
+      that one function's clock.
+    - time_machine is not read: its `travel()` ticks by default, and it never fakes monotonic or perf_counter.
 
 ast-grep runs isolated from the consumer's `sgconfig.yml` (a `languageGlobs` line would otherwise hide files). A
 sentinel rule must parse every scanned file exactly once: a file it skips, such as one holding non-UTF-8 bytes, is

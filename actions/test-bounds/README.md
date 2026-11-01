@@ -30,6 +30,7 @@ base-judged checks:
 - `push` takes the payload's `before` and ignores the input. All zeros (a branch's first push) means no base: the run
   says so and judges the committed counts only. A push outside the repository's default branch is refused (exit 2),
   because a feature branch's first push would pass unjudged; its pull request's run is what gates it;
+  so a consumer runs this check on `push` only for its default branch (`on: push: branches: [<default>]`);
 - `workflow_dispatch` alone takes the input;
 - every other event is refused.
 
@@ -63,7 +64,7 @@ value. The rules are in `rules/`.
 
 | rule id | languages | position | floor |
 |---|---|---|---|
-| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess, also through an alias resolved by binding: a named or default+named import, a `const`/`let`/`var` destructured require, a member of a child_process module object (`const run = cp.spawnSync`), and `promisify()` of any of these) | 120 / 240 / 120 / 60 s |
+| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess, also through an alias resolved by binding: a named or default+named import, a `const`/`let`/`var` destructured require, a member of a child_process module object (`const run = cp.spawnSync`), and `promisify()` of any of these. Not resolved, so read at 60 s: a destructure from a module object (`const { execFile } = cp`), `require("child_process").execFile` bound to a name, a dynamic `import()`, a re-export, `.bind()`, and a launcher passed as an argument) | 120 / 240 / 120 / 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
@@ -117,18 +118,21 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - A touched file is judged against the base's ACTUAL findings, read from its blobs, by rename/split group. A gain
   must be locked in on a pull_request, and is a notice on merge_group and push.
 - An untouched file is judged against the committed counts, which may not rise against the base's, with ONE
-  exception (K2 D8, root 11-01): a change to the check's version may lock in debt that more detection found. All
-  four guards must hold:
-  1. the check detects differently from the one that wrote the base's baseline. Each baseline records
-     `check_digest`, the digest of check.py, rules/ and the scope globs, which `write-baseline` writes; a baseline
-     without one was written by an older check;
-  2. the file is byte-identical at the base, read from the base TREE;
-  3. the raise goes to EXACTLY the file's found count;
+  exception (K2 D8, root 11-01 and the #68 review): a pin bump may lock in debt that more detection found, when all
+  of these hold:
+  1. the change moves the consumer's pin of this check (`uses: vagarylabs/.github/actions/test-bounds@<sha>` in its
+     workflows, read at the base and at the head), never a field the baseline declares;
+  2. the file is byte-identical at the base (its base blob against the file the scan read), and the BASE TREE,
+     scanned under the running check, already holds the same findings. A change elsewhere, such as a lowered
+     constant an untouched test imports, therefore cannot pass new findings off as old debt;
+  3. the raise goes to EXACTLY that count (committed = base tree = head);
   4. every raised (file, rule) is listed ("Debt locked in by a detection change" in the summary, `DEBT LOCKED IN` in
-     the log), and the head baseline records this check's version.
+     the log, `locked_in` in the findings JSON).
 
-  `write-baseline --base` writes such a raise. Any other raise, a raise past the findings, or one under an unchanged
-  check, is red.
+  `write-baseline --base` writes such a raise. Any other raise is red.
+- A baseline names the check that wrote it: `check_digest`, the digest of check.py, rules/, the scope globs and the
+  ast-grep pin, written by `write-baseline`. A missing digest, or one that is not the running check's, is red, so a pin
+  bump re-runs `write-baseline` (`[check_digest]` problems do not block it).
 - The configuration is also judged from the base. Each of these is red:
   - a file the base scans that the candidate does not;
   - a tree removed, or given a lower `min_files`;

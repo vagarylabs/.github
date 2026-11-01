@@ -28,7 +28,9 @@ base-judged checks:
   `pull_request_review_comment`) takes `pull_request.base.sha`, and `merge_group` takes `merge_group.base_sha`. An
   input naming another commit, or the head, is refused;
 - `push` takes the payload's `before` and ignores the input. All zeros (a branch's first push) means no base: the run
-  says so and judges the committed counts only;
+  says so and judges the committed counts only. A push outside the repository's default branch is refused (exit 2),
+  because a feature branch's first push would pass unjudged; its pull request's run is what gates it;
+  so a consumer runs this check on `push` only for its default branch (`on: push: branches: [<default>]`);
 - `workflow_dispatch` alone takes the input;
 - every other event is refused.
 
@@ -62,7 +64,7 @@ value. The rules are in `rules/`.
 
 | rule id | languages | position | floor |
 |---|---|---|---|
-| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess) | 120 / 240 / 120 / 60 s |
+| `literal-bound.option.{case,hook,subprocess,condition}` | ts tsx js | `{ timeout: V }` (or `{ timeout }`) in a call's arguments; the callee decides the kind (spawn/exec/execFile/fork and their Sync forms, and execa*, are subprocess, also through an alias resolved by binding: a named or default+named import, a `const`/`let`/`var` destructured require, a member of a child_process module object (`const run = cp.spawnSync`), and `promisify()` of any of these. Not resolved, so read at 60 s: a destructure from a module object (`const { execFile } = cp`), `require("child_process").execFile` bound to a name, a dynamic `import()`, a re-export, `.bind()`, and a launcher passed as an argument) | 120 / 240 / 120 / 60 s |
 | `literal-bound.registrar.case` | ts tsx js | the last argument of it/test/bench/describe* (with .each/.only/... modifiers). With 3+ arguments any value is captured; with 2, only a literal | 120 s |
 | `literal-bound.registrar.hook` | ts tsx js | the last argument of beforeAll/beforeEach/afterAll/afterEach, including `beforeAll?.(fn, N)` | 240 s |
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
@@ -115,7 +117,41 @@ tree-sitter recovers from what its grammar lacks. One such gap, tree-sitter-type
 The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
 - A touched file is judged against the base's ACTUAL findings, read from its blobs, by rename/split group. A gain
   must be locked in on a pull_request, and is a notice on merge_group and push.
-- An untouched file is judged against the committed counts, which may not rise against the base's.
+- An untouched file is judged against the committed counts, which may not rise against the base's, with ONE
+  exception (K2 D8, root 11-01 and the #68 review): a pin bump may lock in debt that more detection found, when all
+  of these hold:
+  1. the change is a DETECTION change: BOTH
+     - (a) the change moves the consumer's pin of this check. In Actions, the running job's one step `uses:` of
+       `vagarylabs/.github/actions/test-bounds@<sha>` must be the running action's own ref (read from where the
+       runner put it) and must differ from that job's pin at the base. Comments, `run:` bodies and other jobs or
+       workflows are not read. The running workflow and job are the runner's `GITHUB_WORKFLOW_REF` and
+       `GITHUB_JOB` (GitHub documents that a step cannot overwrite `GITHUB_*` through `$GITHUB_ENV`), and they must
+       equal the `github` context the action passes in (`TB_CTX_*`, an expression no step can write). In Actions, a
+       context that cannot be read locks nothing in. Outside Actions (`write-baseline`), every job's pins at the
+       base and head are compared, and CI then judges the strict form;
+     - (b) the base baseline's recorded `check_digest` is not the running check's. A pin move to a commit whose
+       check detects identically locks nothing in. A base baseline with no digest was written by a check from
+       before digests, so it differs;
+  2. the file is byte-identical at the base (its base blob against the file the scan read), and the BASE TREE,
+     scanned with the running check under the BASE's own configuration (its launchers and their floors), holds the
+     same findings: the same count and the same identities (line, position, kind, value). So a change elsewhere
+     cannot pass new findings off as old debt: a lowered constant an untouched test imports, a removed or raised
+     launcher, or a swap of which bound is short;
+  3. the raise goes to EXACTLY that count (committed = base tree = head);
+  4. every raised (file, rule) is listed ("Debt locked in by a detection change" in the summary, `DEBT LOCKED IN` in
+     the log, `locked_in` in the findings JSON).
+
+  Fail-safe false reds, for adopters: a form guard 1 cannot prove locks nothing in, so the pin bump stays red until
+  its findings are fixed (or fixed and then locked by a bump guard 1 can read). These are:
+  - a tag pin (`@v1`): the runner's path names the tag, not a commit;
+  - a pin bump inside a reusable workflow: `GITHUB_WORKFLOW_REF` names the caller, whose jobs do not hold the step;
+  - the action run from a workspace checkout (`uses: ./...`);
+  - renaming the running job in the same change.
+
+  `write-baseline --base` writes such a raise. Any other raise is red.
+- A baseline names the check that wrote it: `check_digest`, the digest of check.py, rules/, the scope globs and the
+  ast-grep pin, written by `write-baseline`. A missing digest, or one that is not the running check's, is red, so a pin
+  bump re-runs `write-baseline` (`[check_digest]` problems do not block it).
 - The configuration is also judged from the base. Each of these is red:
   - a file the base scans that the candidate does not;
   - a tree removed, or given a lower `min_files`;

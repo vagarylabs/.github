@@ -16,15 +16,24 @@ test-bounds:
   timeout-minutes: 8
   steps:
     - uses: actions/checkout@<sha>
-      with: { fetch-depth: 0, persist-credentials: false }
+      # depth 1 is enough when the credentials persist (the default): the base commit is fetched alone
     - uses: vagarylabs/.github/actions/test-bounds@<sha>
       with:
         base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 ```
 
-On pull_request and merge_group the base is the EVENT's (read from `GITHUB_EVENT_PATH`). The `base` input must
-name that same commit: an empty input, another commit, or the head is refused, so an edit to the workflow cannot
-switch off the base-judged checks. The action fetches the base commit alone when a depth-1 checkout lacks it.
+In CI the base is the EVENT's, read from `GITHUB_EVENT_PATH`, so an edit to the workflow cannot switch off the
+base-judged checks:
+- every event that carries a pull request (`pull_request`, `pull_request_target`, `pull_request_review`,
+  `pull_request_review_comment`) takes `pull_request.base.sha`, and `merge_group` takes `merge_group.base_sha`. An
+  input naming another commit, or the head, is refused;
+- `push` takes the payload's `before` and ignores the input. All zeros (a branch's first push) means no base: the run
+  says so and judges the committed counts only;
+- `workflow_dispatch` alone takes the input;
+- every other event is refused.
+
+The action fetches the base commit alone when a depth-1 checkout lacks it. That fetch needs the checkout's
+credentials, so keep `persist-credentials` (the default) or use `fetch-depth: 0`; otherwise the run refuses.
 
 The consumer's `.github/test-bounds.baseline.json` holds the configuration and the counts. Give it a CODEOWNERS entry.
 

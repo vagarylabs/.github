@@ -90,6 +90,18 @@ class Trial(unittest.TestCase):
         rc, data = self.run_tool()
         self.assertEqual((rc, data["rows"][0]["result"]), (1, "ERROR"))
 
+    def test_a_command_that_executes_repo_content_is_refused(self):
+        for cmd in ("pnpm test", "npx vitest run", "node scripts/x.mjs", "python3 -m pytest", "bash ./run.sh",
+                    "cd x && make check", "./gate.sh"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(T.repo_code_reason(cmd))
+        self.assertIsNotNone(T.repo_code_reason("python3 -c 'import gate'"), "inline code imports from the cwd")
+        for cmd in ("nice -n 10 /usr/bin/python3 -B /opt/gate/check.py check --worktree", "test ! -e RED"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(T.repo_code_reason(cmd))
+        self.assertEqual(T.main(["--clone", str(self.clone), "--candidate", "gate", "--cmd", "pnpm test",
+                                 "--prs-json", str(self.prs)]), 2)
+
     def test_a_bad_candidate_is_a_usage_error(self):
         self.assertEqual(T.main(["--clone", str(self.clone), "--candidate", "nope", "--cmd", "true",
                                  "--prs-json", str(self.prs)]), 2)

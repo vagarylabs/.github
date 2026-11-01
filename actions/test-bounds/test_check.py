@@ -363,9 +363,10 @@ class EventBase(unittest.TestCase):
         mg = {"merge_group": {"base_sha": self.BASE}}
         self.assertEqual(self.resolve(self.BASE, "merge_group", mg), self.BASE)
 
-    def test_an_empty_different_or_self_base_is_refused(self):
+    def test_a_different_or_self_base_is_refused_and_an_empty_one_takes_the_events(self):
         pr = {"pull_request": {"base": {"sha": self.BASE}}}
-        for given in ("", "0" * 40, "c" * 40, self.HEAD):
+        self.assertEqual(self.resolve("", "pull_request", pr), self.BASE)
+        for given in ("0" * 40, "c" * 40, self.HEAD):
             with self.subTest(given=given), self.assertRaises(C.Refusal):
                 self.resolve(given, "pull_request", pr)
         with self.assertRaises(C.Refusal):
@@ -376,6 +377,41 @@ class EventBase(unittest.TestCase):
     def test_a_missing_event_payload_refuses(self):
         with self.assertRaises(C.Refusal):
             C.resolve_base(self.BASE, "pull_request", {}, self.HEAD)
+
+    def ci(self, given, event, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "event.json"
+            path.write_text(json.dumps(payload))
+            return C.resolve_base(given, event, {"GITHUB_EVENT_PATH": str(path)}, self.HEAD, in_actions=True)
+
+    def test_every_event_carrying_a_pull_request_takes_its_base(self):
+        # pull_request_review(_comment) run the PR's own workflow from its merge ref (#60 delta B3).
+        pr = {"pull_request": {"base": {"sha": self.BASE}}}
+        for event in ("pull_request", "pull_request_target", "pull_request_review", "pull_request_review_comment"):
+            with self.subTest(event=event):
+                self.assertEqual(self.ci("", event, pr), self.BASE)
+                with self.assertRaises(C.Refusal):
+                    self.ci("c" * 40, event, pr)
+        self.assertIn("pull_request_target", C.PR_PAYLOAD_EVENTS)
+
+    def test_push_in_ci_takes_before_and_ignores_the_input(self):
+        self.assertEqual(self.ci("c" * 40, "push", {"before": self.BASE}), self.BASE)
+        self.assertIsNone(self.ci(self.BASE, "push", {"before": "0" * 40}), "a branch's first push: no base")
+        with self.assertRaises(C.Refusal):
+            self.ci("", "push", {})
+
+    def test_only_workflow_dispatch_takes_the_input_and_others_are_refused_in_ci(self):
+        self.assertEqual(self.ci(self.BASE, "workflow_dispatch", {}), self.BASE)
+        self.assertIsNone(self.ci("", "workflow_dispatch", {}))
+        for event in ("issue_comment", "schedule", "workflow_run", ""):
+            with self.subTest(event=event), self.assertRaises(C.Refusal):
+                self.ci(self.BASE, event, {})
+
+    def test_any_runner_trace_means_ci(self):
+        self.assertFalse(C.in_actions_env({}))
+        for env in ({"GITHUB_ACTIONS": "true"}, {"GITHUB_EVENT_PATH": "/x"}, {"RUNNER_TEMP": "/t"}):
+            with self.subTest(env=env):
+                self.assertTrue(C.in_actions_env(env))
 
     def test_push_and_local_runs_take_the_input(self):
         self.assertEqual(C.resolve_base(self.BASE, "push", {}, self.HEAD), self.BASE)
@@ -423,6 +459,52 @@ class Isolation(unittest.TestCase):
         finally:
             C.sg_scan = real
         self.assertTrue(has(v["problems"], f"{b}: unparsable (ast-grep parsed it 0 time(s)"), v["problems"])
+
+    def test_the_private_config_alone_isolates_even_from_inside_the_repo(self):
+        # -c alone (root's #60 delta survivor): the temp directory sits INSIDE the repo, under its sgconfig.yml.
+        a = "s/__tests__/a.test.ts"
+        self.repo.commit({a: file("a", 0, 2), BL: baseline({a: 2}),
+                          "sgconfig.yml": 'languageGlobs:\n  css: ["*.test.ts"]\nruleDirs: []\n'})
+        inner = self.repo.dir / "scratch-tmp"
+        inner.mkdir()
+        old = tempfile.tempdir
+        tempfile.tempdir = str(inner)
+        try:
+            v = self.repo.verdict(None)
+        finally:
+            tempfile.tempdir = old
+        self.assertEqual(v["counts"], {a: {C.RULE: 2}})
+
+    def test_the_private_config_alone_isolates_with_the_cwd_at_the_repo_root(self):
+        # -c on its own (root's #60 delta survivor): ast-grep run FROM the repository root, under its sgconfig.yml.
+        a = "s/__tests__/a.test.ts"
+        self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1}),
+                          "sgconfig.yml": 'languageGlobs:\n  css: ["*.test.ts"]\nruleDirs: []\n'})
+        found = C.sg_scan(self.repo.dir, C.compose_rules("typescript"), [a], _cwd=self.repo.dir)
+        self.assertEqual(sum(1 for m in found if m["ruleId"] == "sentinel"), 1, "the file is parsed under -c alone")
+
+    def test_a_symlinked_test_file_is_an_explicit_red(self):
+        a, link = "s/__tests__/a.test.ts", "s/__tests__/link.test.ts"
+        self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+        (self.repo.dir / link).symlink_to("a.test.ts")
+        self.repo.git("add", link)
+        self.repo.git("commit", "-q", "-m", "a link")
+        v = self.repo.verdict(None)
+        self.assertTrue(has(v["problems"], f"{link}: a symlink in the trees is not scanned"), v["problems"])
+
+    def test_a_missing_base_is_fetched_alone_in_ci(self):
+        a = "s/__tests__/a.test.ts"
+        base = self.repo.commit({a: file("a", 0, 1), BL: baseline({a: 1})})
+        self.repo.commit({a: file("a", 0, 1) + "\n"})
+        with tempfile.TemporaryDirectory() as tmp:
+            shallow = Path(tmp) / "shallow"
+            subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{self.repo.dir}", str(shallow)], env=GIT_ENV,
+                           check=True, capture_output=True)
+            have = lambda: subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=shallow,  # noqa: E731
+                                          capture_output=True).returncode == 0
+            self.assertFalse(have(), "positive control: the depth-1 clone lacks the base")
+            C.ensure_commit(shallow, base, in_actions=True)
+            self.assertTrue(have(), "the base commit is fetched alone")
 
     def test_a_failing_ast_grep_refuses(self):
         a = "s/__tests__/a.test.ts"
@@ -488,7 +570,7 @@ class Worktree(unittest.TestCase):
                 committed = C.run(repo.dir, base, "pull_request", Path(tmp))
             self.assertEqual([p for p in committed["problems"] if "the base had" in p], [],
                              "positive control: without --worktree the uncommitted change is not the change")
-            clean = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
             r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--worktree", "--base", base,
                                 "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
             self.assertEqual(r.returncode, 1, r.stdout)
@@ -510,7 +592,7 @@ class Cli(unittest.TestCase):
         try:
             a = "s/__tests__/a.test.ts"
             repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
-            clean = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
             run = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
                                                 "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
             ok = run("check")
@@ -543,12 +625,17 @@ class Cli(unittest.TestCase):
             as_ci = lambda *args: subprocess.run([sys.executable, "-B", str(HERE / "check.py"), *args,  # noqa: E731
                                                   "--root", str(repo.dir)], capture_output=True, text=True, env=ci)
             for args, why in ((("check", "--event", "push", "--base", base), "is not this run's event"),
-                              (("check",), "is not the pull_request event's base"),
                               (("check", "--base", repo.git("rev-parse", "HEAD")), "is not the pull_request event's base")):
                 r = as_ci(*args)
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertIn(why, r.stdout)
             self.assertEqual(as_ci("check", "--base", base).returncode, 0, "the event's own base is accepted")
+            self.assertEqual(as_ci("check").returncode, 0, "an empty input takes the event's base")
+            # An event outside the allowlist is refused in CI, whatever the input.
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--root", str(repo.dir)],
+                               capture_output=True, text=True, env={**ci, "GITHUB_EVENT_NAME": "issue_comment"})
+            self.assertEqual(r.returncode, 2, r.stdout)
+            self.assertIn("is not one this check judges in CI", r.stdout)
         finally:
             repo.done()
 

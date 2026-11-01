@@ -19,6 +19,12 @@ Result per PR:
 Nothing is committed or pushed, and nothing is written to --clone. The scratch clone is this tool's own temporary
 directory, removed at the end.
 
+SAFETY (root's #64 R4). --cmd runs in every open PR's tree, on the machine running this tool, with its credentials.
+A command that EXECUTES repository content (npm/pnpm/yarn/npx/make/pytest/tox, an interpreter given a relative script
+or `-m`, or a ./path) would run each PR's own code there, so it is refused unless --allow-repo-code says that is
+intended. A gate that only READS the tree, such as test-bounds, given as an absolute path, needs no flag. Run large
+trials (100+ PRs) on the bridge or in a CI job, never on a starved workstation.
+
 Example (K2's test-bounds adoption in vagaris):
   open-pr-trial.py --clone ~/vagaris --candidate cli/test-bounds-adoption --repo vagarylabs/vagaris \\
     --cmd 'python3 /path/to/.github/actions/test-bounds/check.py check --worktree --base "$TRIAL_BASE" --event pull_request'
@@ -30,6 +36,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,6 +45,10 @@ import tempfile
 from pathlib import Path
 
 TAIL_LINES = 12
+# Commands that run a repository's own scripts, and interpreters whose script argument must be an absolute path.
+REPO_RUNNERS = {"npm", "pnpm", "yarn", "npx", "bun", "bunx", "make", "pytest", "tox", "nox", "just", "task", "cargo",
+                "go", "mvn", "gradle", "gradlew", "rake", "bundle", "composer"}
+INTERPRETERS = {"node", "deno", "bash", "sh", "zsh", "ruby", "perl", "php", "tsx", "ts-node"}
 
 
 class Usage(Exception):
@@ -48,6 +60,31 @@ def git(cwd, *args, check=True, timeout=600):
     if check and p.returncode:
         raise RuntimeError(f"git {' '.join(args[:3])} exited {p.returncode}: {p.stderr.strip()[:300]}")
     return p
+
+
+def repo_code_reason(cmd: str) -> str | None:
+    """Why `cmd` would execute the trial tree's own code, or None when it only runs tools given by absolute path."""
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return "the command cannot be parsed"
+    for i, tok in enumerate(tokens):
+        name = tok.rsplit("/", 1)[-1]
+        if name in REPO_RUNNERS:
+            return f"`{tok}` runs the repository's own scripts"
+        if tok.startswith(("./", "../")):
+            return f"`{tok}` is a path inside the trial tree"
+        if name in INTERPRETERS or re.fullmatch(r"python[\d.]*", name):
+            for arg in tokens[i + 1:]:
+                if arg in ("-m", "-c", "-e", "--eval"):
+                    # -m and inline code put the cwd (the trial tree) on the import path
+                    return f"`{tok} {arg}` can import the trial tree's own modules"
+                if arg.startswith("-"):
+                    continue
+                if not arg.startswith("/"):
+                    return f"`{tok} {arg}` runs a script from the trial tree (give tools by absolute path)"
+                break
+    return None
 
 
 def open_prs(repo: str, base_branch: str, prs_json: str | None) -> list[dict]:
@@ -124,8 +161,14 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--only", default="", help="comma-separated PR numbers")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per PR for --cmd")
     ap.add_argument("--json", dest="json_out", help="write the rows here")
+    ap.add_argument("--allow-repo-code", action="store_true",
+                    help="--cmd executes repository content: every open PR's code runs on this machine")
     args = ap.parse_args(argv)
     try:
+        why = repo_code_reason(args.cmd)
+        if why and not args.allow_repo_code:
+            raise Usage(f"--cmd would execute each PR's own code ({why}); give the gate by absolute path, or pass "
+                        "--allow-repo-code to accept that")
         clone = Path(args.clone).resolve()
         cand = git(clone, "rev-parse", "--verify", f"{args.candidate}^{{commit}}", check=False)
         if cand.returncode:

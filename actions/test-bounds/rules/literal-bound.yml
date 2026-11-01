@@ -166,6 +166,8 @@ rule:
     inside:
       stopBy: { kind: call_expression }
       kind: call_expression
+      # $F: the callee, so check.py can resolve an aliased child process (`spawnSync as run`, promisify(execFile))
+      has: { field: function, pattern: $F }
       not:
         has:
           field: function

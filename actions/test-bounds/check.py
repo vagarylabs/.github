@@ -101,12 +101,13 @@ REASON = re.compile(r"[A-Za-z]{3,}")
 SIMILARITY = "30%"
 # Test-like paths, for the UNSCANNED list only (never for scope: the trees decide that).
 TEST_LIKE = re.compile(r"(?:^|/)(?:[^/]+\.(?:test|spec)\.[^/]+|test_[^/]+\.py|[^/]+_test\.(?:py|go)|[^/]+\.bats"
-                       r"|conftest\.py|(?:vite|vitest|jest|playwright)\.config\.[^/]+|pytest\.ini)$"
+                       r"|conftest\.py|(?:vite|vitest|jest|playwright)\.config\.[^/]+|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini)$"
                        r"|(?:^|/)(?:__tests__|tests?)/[^/]+$")
 # What each language's rules read, printed with every run so a consumer never reads absence as clean (root's #60 R4).
 COVERED = {
     "ts/tsx/js": "the `timeout` option of a call (its kind from the callee: it/test/bench/describe*, hooks, child "
-                 "processes, any other call); the last argument of it/test/bench/describe* and of hooks; "
+                 "processes by name or through an aliased import, destructured require or promisify, any other call); "
+                 "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties",
     "py": "subprocess timeouts only: `timeout=` of run/check_output/check_call/call/Popen/communicate/wait, "
@@ -118,6 +119,11 @@ COVERED = {
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 JS_TWIN = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 NAME = re.compile(r"^[A-Za-z_$][\w$]*$")
+# Child-process launchers, by module, for resolving an aliased callee (rules/literal-bound.yml names them directly).
+CHILD_PROCESS = {"child_process": {"spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"},
+                 "execa": {"execa", "execaSync", "execaCommand", "execaCommandSync", "execaNode", "$"}}
+CHILD_PROCESS["node:child_process"] = CHILD_PROCESS["child_process"]
+SUBPROCESS_NAMES = set().union(*CHILD_PROCESS.values())
 SG_BATCH = 400
 
 
@@ -278,7 +284,7 @@ def sg_binary() -> str:
     return sg
 
 
-def sg_scan(root: Path, rules_text: str, files: list[str]) -> list[dict]:
+def sg_scan(root: Path, rules_text: str, files: list[str], _cwd: Path | None = None) -> list[dict]:
     """Every match of the rules over `files` (repo-relative, under root). A tool failure raises: fail closed.
 
     ast-grep runs ISOLATED from the consumer (root's #60 R4 B2): from a private directory, under this action's own
@@ -301,7 +307,7 @@ def sg_scan(root: Path, rules_text: str, files: list[str]) -> list[dict]:
             with tempfile.TemporaryFile() as err:
                 p = subprocess.Popen([sg, "scan", "-c", str(config), "-r", str(rules), "--json=stream", "--no-ignore",
                                       "hidden", "--no-ignore", "dot", "--no-ignore", "vcs", "--no-ignore", "parent",
-                                      "--", *batch], cwd=tmp, stdout=subprocess.PIPE, stderr=err)
+                                      "--", *batch], cwd=_cwd or tmp, stdout=subprocess.PIPE, stderr=err)
                 for raw in p.stdout:
                     if not raw.strip():
                         continue
@@ -338,7 +344,8 @@ class Tree:
             self._fetch([p for p in paths if p in self.fileset])
 
     def read(self, path: str) -> str:
-        return (self.root / path).read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig: a BOM is not code (CPython would read U+FEFF as an invalid character).
+        return (self.root / path).read_text(encoding="utf-8-sig", errors="replace")
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -346,6 +353,18 @@ def tracked_files(root: Path) -> list[str]:
     if p.returncode != 0:
         raise Refusal(f"git ls-files exited {p.returncode}")
     return sorted(f for f in p.stdout.decode("utf-8", "surrogateescape").split("\0") if f)
+
+
+def tracked_symlinks(root: Path) -> set[str]:
+    """Tracked paths whose mode is a symlink (120000): never scanned, and red when a tree covers them."""
+    p = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=root, capture_output=True)
+    if p.returncode != 0:
+        raise Refusal(f"git ls-files -s exited {p.returncode}")
+    out = set()
+    for row in p.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        if row.startswith("120000 "):
+            out.add(row.split("\t", 1)[1])
+    return out
 
 
 def git_tree(root: Path, sha: str, dest: Path) -> Tree:
@@ -543,6 +562,57 @@ def js_facts(tree: Tree, files: list[str], names: set[str]) -> dict[str, JsFacts
     return out
 
 
+_ALIAS_RULES = """id: a.import
+language: LANG
+rule: { kind: import_statement }
+---
+id: a.promisify
+language: LANG
+rule:
+  any:
+    - pattern: const $N = promisify($X)
+    - pattern: const $N = util.promisify($X)
+---
+id: a.require
+language: LANG
+rule: { pattern: "const { $$$P } = require($S)" }
+"""
+
+
+def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
+    """file -> local names bound to a child-process launcher: an aliased named import (`spawnSync as run`), a
+    destructured require (`const { exec: x } = require("child_process")`), or a promisify() of either. Treating a
+    name as a child process RAISES its floor (60 s -> 120 s), so this resolution can only add findings."""
+    out = {f: set() for f in files}
+    by_lang = {}
+    for f in files:
+        by_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
+    promised = []
+    for lang, group in by_lang.items():
+        for m in sg_scan(tree.root, _ALIAS_RULES.replace("LANG", lang), group):
+            f, mv = m["file"], m.get("metaVariables", {})
+            if m["ruleId"] == "a.import":
+                src = re.search(r"(['\"])([^'\"\n]+)\1\s*;?\s*$", m["text"])
+                parsed = _parse_import(m["text"])
+                names = CHILD_PROCESS.get(src.group(2) if src else "", set())
+                for local, imported in (parsed or {}).items():
+                    if imported in names:
+                        out[f].add(local)
+            elif m["ruleId"] == "a.require":
+                if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
+                    for entry in mv.get("multi", {}).get("P", []):
+                        parts = [x.strip() for x in entry["text"].split(":")]
+                        if parts[0] in SUBPROCESS_NAMES and NAME.match(parts[-1]):
+                            out[f].add(parts[-1])
+            elif m["ruleId"] == "a.promisify":
+                promised.append((f, mv["single"]["X"]["text"], mv["single"]["N"]["text"]))
+    for _ in range(2):  # promisify of an alias
+        for f, x, n in promised:
+            if x in SUBPROCESS_NAMES or x in out[f]:
+                out[f].add(n)
+    return out
+
+
 def _binding(fx: JsFacts, name: str, exported: bool) -> tuple[str, object] | tuple[None, str]:
     """The one binding of `name` in a file: ("const", value text) or ("import", (source, imported)), or (None, why)."""
     defs, spans = [], set()
@@ -674,7 +744,7 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         # An empty file has no root node to match, and nothing in it to judge.
         if parsed[f] != 1 and (tree.root / f).read_bytes().strip():
             unparsable.setdefault((f, 0), f"ast-grep parsed it {parsed[f]} time(s), not once: the scan cannot vouch "
-                                          "for it (non-UTF-8 bytes, or a configuration that hides the file)")
+                                          "for it (non-UTF-8 bytes, a file over ast-grep's size limit, or a configuration that hides the file)")
     launcher_hits = {}
     for m in matches:
         if m["ruleId"].startswith("launcher."):
@@ -690,6 +760,11 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     for (f, _), la in launcher_hits.items():
         need.setdefault(f, set()).add(la["name"])
     resolved = _resolve_all(tree, need)
+    # A condition-kind `timeout` option whose callee is an identifier may be an aliased child process (#60 delta L1).
+    alias_files = sorted({m["file"] for m in bounds if m["ruleId"] == RULE + ".option.condition"
+                          and NAME.match(m["metaVariables"]["single"].get("F", {}).get("text", ""))
+                          and LANGUAGE_OF[posixpath.splitext(m["file"])[1]] in JS_LANGS})
+    aliases = child_process_aliases(tree, alias_files) if alias_files else {}
     findings, marks = {}, []
     for (f, ln), why in sorted(marks_raw.items()):
         marks.append({"file": f, "line": ln, "reason": why})
@@ -698,6 +773,9 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         _, position, kind = m["ruleId"].split(".")
         lang = LANGUAGE_OF[posixpath.splitext(f)[1]]
         v = m["metaVariables"]["single"]["V"]
+        callee = m["metaVariables"]["single"].get("F", {}).get("text", "")
+        if position == "option" and kind == "condition" and callee in aliases.get(f, set()):
+            kind = "subprocess"  # an aliased child process, resolved by binding
         text = v["text"].strip()
         floor = FLOORS_S[kind] * UNIT[lang]
         rec = {"line": _line(v["range"]), "rule": RULE, "position": position, "kind": kind,
@@ -1133,40 +1211,74 @@ def self_test(verbose: bool = False) -> list[str]:
 
 # --- the run -----------------------------------------------------------------------------------------------------
 
-BASE_EVENTS = {"pull_request": ("pull_request", "base", "sha"), "pull_request_target": ("pull_request", "base", "sha"),
-               "merge_group": ("merge_group", "base_sha")}
+# The events a run may judge, and where each one's base comes from (root's #60 R4 B3 and its delta, 11-01). Every
+# event whose payload carries a pull request (pull_request, pull_request_target and the review events, which GitHub
+# runs from the PR's merge ref with the PR's own workflow) takes that PR's base; merge_group takes the group's base.
+PR_PAYLOAD_EVENTS = ("pull_request", "pull_request_target", "pull_request_review", "pull_request_review_comment")
+BASE_EVENTS = {**{e: ("pull_request", "base", "sha") for e in PR_PAYLOAD_EVENTS}, "merge_group": ("merge_group", "base_sha")}
+ZERO = re.compile(r"0{40}")
 
 
-def resolve_base(arg: str, event: str, env: dict, head: str, worktree: bool = False) -> str | None:
-    """The base commit a run is judged against (root's #60 R4 B3).
+def in_actions_env(env: dict) -> bool:
+    """Any trace of a runner means CI (root's #64 R4 LOW): a step that blanks one variable cannot unlock local modes."""
+    return env.get("GITHUB_ACTIONS") == "true" or bool(env.get("GITHUB_EVENT_PATH")) or bool(env.get("RUNNER_TEMP"))
 
-    On pull_request and merge_group it is the EVENT's base, read from $GITHUB_EVENT_PATH, which the runner writes and
-    a workflow cannot override. The workflow's `base` input must name that same commit: an empty input, a different
-    one, or the head itself is refused, so an edit to the candidate workflow cannot switch off the touched-file,
-    raise and narrowing checks. Only push, workflow_dispatch and local runs take the input as given (empty or zeros:
-    no base)."""
+
+def _payload(env: dict, event: str) -> dict:
+    try:
+        return json.loads(Path(env.get("GITHUB_EVENT_PATH", "")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise Refusal(f"a {event} run must read its base from GITHUB_EVENT_PATH, which is missing or malformed")
+
+
+def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = False,
+                 worktree: bool = False) -> str | None:
+    """The base commit a run is judged against.
+
+    In Actions the base is the EVENT's, from $GITHUB_EVENT_PATH (the runner writes it; a workflow cannot override
+    GITHUB_*), so an edit to the candidate workflow cannot switch off the touched-file, raise and narrowing checks:
+      - an event carrying a pull request (PR_PAYLOAD_EVENTS) takes pull_request.base.sha, and merge_group takes
+        merge_group.base_sha; a `base` input that names any other commit is refused, and so is a base equal to the
+        head;
+      - push takes the payload's `before` and ignores the input; all zeros (a branch's first push) is no base, and
+        the run says so;
+      - workflow_dispatch alone takes the input as given;
+      - every other event is refused.
+    Outside Actions (a local or tool run) the input is taken as given, except that a PR or merge-group --event needs
+    the event file, as in CI. Empty or zeros: no base. With `worktree` (scripts/open-pr-trial.py; never in CI) the
+    input is the commit the trial merge was made onto, so it is taken as given and may be HEAD."""
     given = (arg or "").strip()
-    if event in BASE_EVENTS and not worktree:  # --worktree is local by construction (refused in Actions)
-        path = env.get("GITHUB_EVENT_PATH", "")
-        try:
-            payload = json.loads(Path(path).read_text(encoding="utf-8"))
-            want = payload
-            for key in BASE_EVENTS[event]:
-                want = want[key]
-        except (OSError, ValueError, KeyError, TypeError):
-            raise Refusal(f"a {event} run must read its base from GITHUB_EVENT_PATH, which is missing or malformed")
-        if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{40}", want)):
-            raise Refusal(f"the {event} event carries no base commit")
-        if given != want:
-            raise Refusal(f"the base input {given or '(empty)'} is not the {event} event's base {want}: on this event "
-                          "the base is the event's, so the touched-file, raise and narrowing checks cannot be switched "
-                          "off")
-        if want == head:
-            raise Refusal(f"the {event} event's base is the head itself")
-        return want
-    if not given or re.fullmatch(r"0+", given):
+    if worktree:
+        if in_actions:
+            raise Refusal("--worktree judges an uncommitted tree; a CI run judges its commit")
+        return None if not given or ZERO.fullmatch(given) else given
+    if in_actions or event in BASE_EVENTS:
+        if event in BASE_EVENTS:
+            want = _payload(env, event)
+            try:
+                for key in BASE_EVENTS[event]:
+                    want = want[key]
+            except (KeyError, TypeError):
+                raise Refusal(f"the {event} event carries no base commit")
+            if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{40}", want)):
+                raise Refusal(f"the {event} event carries no base commit")
+            if given and given != want:
+                raise Refusal(f"the base input {given} is not the {event} event's base {want}: on this event the base "
+                              "is the event's, so the touched-file, raise and narrowing checks cannot be switched off")
+            if want == head:
+                raise Refusal(f"the {event} event's base is the head itself")
+            return want
+        if event == "push":
+            before = _payload(env, event).get("before", "")
+            if not (isinstance(before, str) and re.fullmatch(r"[0-9a-f]{40}", before)):
+                raise Refusal("the push event carries no `before` commit")
+            return None if ZERO.fullmatch(before) else before
+        if event != "workflow_dispatch":
+            raise Refusal(f"event {event or '(none)'} is not one this check judges in CI (pull_request and its review "
+                          "events, pull_request_target, merge_group, push, workflow_dispatch)")
+    if not given or ZERO.fullmatch(given) or re.fullmatch(r"0+", given):
         return None
-    if given == head and not worktree:
+    if given == head:
         raise Refusal("the base input is the head itself, which judges nothing")
     return given
 
@@ -1201,12 +1313,15 @@ def run(root: Path, base: str | None, event: str, tmp: Path, worktree: bool = Fa
     cfg = load_head_config(root)
     files = tracked_files(root)
     scope = Scope(cfg)
-    scanned = [f for f in files if scope.scanned(f)]
+    links = tracked_symlinks(root)
+    scanned = [f for f in files if scope.scanned(f) and f not in links]
     res = census(Tree(root, files), scanned, cfg["launchers"])
     found = counts_of(res["findings"])
     problems, notices = [], []
     problems += [f"{f}{':' + str(ln) if ln else ''}: unparsable ({why}): the check cannot judge it"
                  for f, ln, why in res["unparsable"]]
+    problems += [f"{f}: a symlink in the trees is not scanned; judge its target by its own path (list the target in a "
+                 "tree, or exclude the link)" for f in sorted(links) if scope.scanned(f)]
     problems += tree_floors(cfg, scanned)
     change = pr_change(root, base, cfg, tmp, worktree) if base else None
     if change and change["base_cfg"] is not None:
@@ -1319,18 +1434,19 @@ def main(argv: list[str]) -> int:
             print(f"self-test: {'ok' if not failures else str(len(failures)) + ' failure(s)'}")
             return 1 if failures else 0
         root = repo_root(args.root)
-        in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+        in_actions = in_actions_env(os.environ)
         # In Actions the event is the runner's, never a flag a workflow passes.
         event = os.environ.get("GITHUB_EVENT_NAME", "") if in_actions else args.event.strip()
         if in_actions and args.event.strip() and args.event.strip() != event:
             raise Refusal(f"--event {args.event.strip()} is not this run's event {event}")
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
         worktree = getattr(args, "worktree", False)
-        if worktree and in_actions:
-            raise Refusal("--worktree judges an uncommitted tree; a CI run judges its commit")
         if worktree and not args.base.strip():
             raise Refusal("--worktree needs --base: the commit the trial merge was made onto")
-        base = resolve_base(args.base, event, dict(os.environ), head, worktree)
+        base = resolve_base(args.base, event, dict(os.environ), head, in_actions, worktree)
+        if base is None and in_actions and event == "push":
+            print("notice: a push with no `before` commit (a branch's first push): judged on the committed baseline "
+                  "only; the pull request's own run is what gates it")
         if base:
             ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:

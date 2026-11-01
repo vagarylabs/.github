@@ -13,6 +13,9 @@
   },
   "u2028.test.ts": {
    "finding": 1
+  },
+  "test_bom.py": {
+   "finding": 1
   }
  },
  "unparsable": [

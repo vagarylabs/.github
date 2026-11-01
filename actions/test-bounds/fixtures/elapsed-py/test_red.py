@@ -61,3 +61,51 @@ class Red(unittest.TestCase):
     def test_chained_with_a_lower_bound(self):
         t0 = time.monotonic()
         assert 0 <= time.monotonic() - t0 <= 3
+
+
+class Box:
+    def run(self):
+        t0 = time.monotonic()
+        work()
+        return "ok", time.monotonic() - t0
+
+    def timed(self):
+        t0 = time.monotonic()
+        return time.monotonic() - t0
+
+
+class Helpers(unittest.TestCase):
+    def test_one_hop_into_a_same_file_helper(self):
+        b = Box()
+        r, took = b.run()
+        self.assertLess(took, 3.5)
+        elapsed = b.timed()
+        assert elapsed < 2
+
+        async def go():
+            t0 = loop.time()
+            await work()
+            return loop.time() - t0
+
+        e2 = asyncio.run(go())
+        assert e2 < 0.3
+
+
+def test_a_nested_helper_per_test_one():
+    async def timed_once():
+        t0 = time.monotonic()
+        await work()
+        return time.monotonic() - t0
+
+    elapsed = asyncio.run(timed_once())
+    assert elapsed < 0.3
+
+
+def test_a_nested_helper_per_test_two():
+    async def timed_once():
+        t0 = time.monotonic()
+        await work()
+        return time.monotonic() - t0
+
+    elapsed = asyncio.run(timed_once())
+    assert elapsed < 0.4

@@ -55,3 +55,16 @@ it("setSystemTime fakes Date", () => {
   vi.setSystemTime(new Date(2026, 0, 1));
   expect(Date.now() - t0).toBeLessThan(10);
 });
+
+function twice() { return Date.now() - t0; }
+function twice() { return 0; }
+const [hole] = [0];
+
+it("an ambiguous helper, and an array hole, are not read", async () => {
+  const x = twice();
+  expect(x).toBeLessThan(5);
+  const [, gap] = await pair();
+  expect(gap).toBeLessThan(5);
+});
+
+async function pair() { return [Date.now() - t0, 1]; }

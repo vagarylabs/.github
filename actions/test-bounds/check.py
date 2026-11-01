@@ -121,17 +121,17 @@ COVERED = {
                  "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
                  ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
                  "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
-                 "bound name, or scaled",
+                 "bound name, scaled, or returned by a same-file helper (one hop)",
     "py": "subprocess timeouts (`timeout=` of run/check_output/check_call/call/Popen/communicate/wait, wait(N), "
           "communicate(input, N), a `timeout` parameter default); asyncio.wait_for and asyncio.timeout; thread and "
           "process join(timeout); PostgreSQL client timeouts; HTTP client timeout= (urlopen, requests, httpx); "
           "pytest.mark.timeout; elapsed-time asserts: an UPPER bound (assertLess[Equal](A, V), assertGreater[Equal]"
           "(V, A), `A < V` and chained `LO < A < V` in assert/assertTrue) on a time, monotonic, perf_counter (and "
-          "_ns), loop.time() or datetime difference, direct, through a bound name, or scaled",
+          "_ns), loop.time() or datetime difference, direct, through a bound name, scaled, or returned by a same-file "
+          "helper (one hop)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, tox.ini, setup.cfg and "
                      "pyproject.toml (when a tree covers the file)",
-    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows, an elapsed "
-                            "difference computed in a helper and returned",
+    "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -813,6 +813,7 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     elapsed = [m for m in matches if m["ruleId"].startswith(ELAPSED + ".")]
     faked = {(m["file"], m["ruleId"].split(".", 1)[1], _span(m["range"])) for m in matches
              if m["ruleId"].startswith("fake-clock.")}
+    defined = Counter((m["file"], m["text"]) for m in matches if m["ruleId"] == "helper-def")
     # Names to resolve, and the files that read them.
     need = {}
     for m in bounds + elapsed:
@@ -870,6 +871,9 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
     seen = set()
     for m in sorted(elapsed, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"], m["ruleId"])):
         f, span = m["file"], _span(m["range"])
+        helper = m["metaVariables"]["single"].get("FN", {}).get("text")
+        if helper is not None and defined[(f, helper)] != 1:
+            continue  # a helper read needs exactly one definition of that name in the file, or the call is unproven
         if (f, span) in seen:
             continue  # one assert is one record, even when its difference mixes two clock families
         seen.add((f, span))

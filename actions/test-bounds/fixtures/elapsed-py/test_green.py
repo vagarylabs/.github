@@ -62,3 +62,28 @@ def test_freezer(freezer):
 def test_monkeypatched(monkeypatch):
     monkeypatch.setattr(time, "perf_counter", lambda: 0.0)
     assert time.perf_counter() - 0.0 < 1
+
+
+def measure():
+    t0 = time.monotonic()
+    return time.monotonic() - t0
+
+
+def measure():  # noqa: F811  a second definition: which one runs is not proven
+    return 0
+
+
+def test_an_ambiguous_helper_is_not_read():
+    m = measure()
+    assert m < 1
+
+
+class Pair:
+    def run(self):
+        t0 = time.monotonic()
+        return time.monotonic() - t0, "label"
+
+
+def test_the_bound_name_is_not_the_elapsed_position():
+    label_len, name = Pair().run()
+    assert name < 5

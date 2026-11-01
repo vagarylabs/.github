@@ -81,7 +81,7 @@ value. The rules are in `rules/`.
 
 Elapsed-time asserts are the `elapsed-assert` rules, below. Only these positions are read. Every run prints them
 (`covered (...)`), so absence elsewhere is never a pass. Not yet covered, and due in K2 step 2C: fixed flushes,
-sleep-as-wait, poll budgets, read and absence windows, and an elapsed difference computed in a helper and returned.
+sleep-as-wait, poll budgets, and read and absence windows.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -131,15 +131,20 @@ one per clock family (each `clock-<family>` util, with its unit in check.py's `E
   comparisons, or a chained `LO < A < V`, as an `assert`'s test or `assertTrue`'s first argument.
 - **The measured side A.** (1) `clock - x`; (2) `name - x`, with `name` bound to the clock; (3) a name bound to a
   measured side; (4) `(d) / K`, `(d) * K` or `K * (d)`, which scales the unit by an exact K (an inexact K is a
-  finding). A binding counts when it sits in a statement that precedes the assert's statement, in the same block or
+  finding); (5) a name bound to a call of a same-file helper, one hop, whose return gives a measured side. The return
+  can be the whole value or sit at the binding's tuple or array position (1-4, no holes). Examples: vps
+  `test_uplink_probe.py:55` `return r, time.monotonic() - t0`, and vagary-core `security-events.mjs:318`. The call
+  may be awaited, or run by `asyncio.run` or `run_until_complete`. The helper is resolved first in the nearest
+  enclosing function, as a definition that is a direct statement of its body. Otherwise it is resolved in the file,
+  which must hold exactly ONE definition of that name, or the read is not proven. A binding counts when it sits in a statement that precedes the assert's statement, in the same block or
   an enclosing one. The search goes down to, never into, another function. A preceding function or class
   declaration is not searched, so a sibling test's binding never counts. tree-sitter-typescript parses
   `a - b!.c()` as `(a - b)!.c()`, and the check reads it as the difference it is.
 - **Not matched.** A lower bound. A remaining time (`deadline - now`), which a slow machine only shrinks. A value
   the test did not read from a clock, such as a logged duration or an injected clock. A clock call wrapped in another
-  call (`Math.round(...)`, `round(...)`). A difference computed in a helper and returned (vagary-core
-  `test_ci_test_pg.py:646`, vagary-platform `test_rate_limiter.py:88`), which is due in step 2C with the same-file
-  helpers.
+  call (`Math.round(...)`, `round(...)`). A helper that returns another helper's call, which is two hops (vps
+  `test_disk_floor_reclaim.py:472`, through `hook()` to `run()`). Object destructuring of a helper's return
+  (`const { took } = await f()`).
 - **Fake clocks clear only on positive proof, per family.**
   - ts/js: a statement that precedes the assert, in its block or an enclosing one, either makes the faking call
     itself or is a beforeEach/beforeAll hook that makes it. No `useRealTimers()`, `clock.uninstall()` or

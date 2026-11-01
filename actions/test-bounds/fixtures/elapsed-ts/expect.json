@@ -9,7 +9,7 @@
  },
  "files": {
   "red.test.ts": {
-   "finding": 22
+   "finding": 27
   },
   "green.test.ts": {
    "cleared": 9

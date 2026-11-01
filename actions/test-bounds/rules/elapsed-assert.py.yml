@@ -100,7 +100,86 @@ utils:
       - all:
           - kind: identifier
           - inside: { stopBy: end, follows: { stopBy: end, not: { matches: def-boundary }, has: { stopBy: { matches: fn-boundary }, matches: bind-A-CLOCK } } }
-  bind-A-CLOCK: { kind: assignment, all: [{ has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }] }
+  # A name bound to a call of a same-file helper (one hop; vps test_uplink_probe.py:55 `return r, time.monotonic() -
+  # t0`): $FN is the helper's name, and a return in its body (never a nested function's) gives the measured side, at
+  # the binding's tuple position (1-4) or as the whole value. The helper is resolved first in the nearest enclosing
+  # function (a def that is a direct statement of its body, captured as $FNL), then in the file, where check.py
+  # requires exactly ONE definition named $FN, or the read is not proven. The call may be awaited, or run by
+  # asyncio.run / run_until_complete. A helper that returns another helper's call (two hops) is not read.
+  run-call: { kind: call, has: { field: function, regex: "^(?:asyncio\\.run|(?:[\\w.]+\\.)?run_until_complete)$" } }
+  helper-call:
+    any:
+      - all: [{ kind: call }, { not: { matches: run-call } }, { has: { field: function, any: [{ kind: identifier, pattern: $FN }, { kind: attribute, has: { field: attribute, pattern: $FN } }] } }]
+      - all: [{ kind: await }, { has: { matches: helper-call } }]
+      - all: [{ matches: run-call }, { has: { field: arguments, has: { nthChild: 1, matches: helper-call } } }]
+  helper-CLOCK-0:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-CLOCK-1:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-2:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-3:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-CLOCK-4:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FN }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-call-local:
+    any:
+      - all: [{ kind: call }, { not: { matches: run-call } }, { has: { field: function, any: [{ kind: identifier, pattern: $FNL }, { kind: attribute, has: { field: attribute, pattern: $FNL } }] } }]
+      - all: [{ kind: await }, { has: { matches: helper-call-local } }]
+      - all: [{ matches: run-call }, { has: { field: arguments, has: { nthChild: 1, matches: helper-call-local } } }]
+  helper-local-CLOCK-0:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { pattern: $BV, matches: elapsed-CLOCK } } }
+  helper-local-CLOCK-1:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 1, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-2:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 2, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-3:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 3, pattern: $BV, matches: elapsed-CLOCK } } } }
+  helper-local-CLOCK-4:
+    kind: function_definition
+    all:
+      - has: { field: name, pattern: $FNL }
+      - has: { field: body, has: { stopBy: { matches: fn-boundary }, kind: return_statement, has: { kind: expression_list, has: { nthChild: 4, pattern: $BV, matches: elapsed-CLOCK } } } }
+  bind-A-CLOCK:
+    any:
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, pattern: $BV, matches: elapsed-CLOCK } }]
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-0 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 1, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-1 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 2, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-2 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 3, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-3 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 4, pattern: $A } } }, { has: { field: right, matches: helper-call-local } }, { inside: { stopBy: { matches: fn-boundary }, kind: function_definition, has: { field: body, has: { matches: helper-local-CLOCK-4 } } } }]
+      - all: [{ kind: assignment }, { has: { field: left, pattern: $A } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-0 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 1, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-1 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 2, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-2 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 3, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-3 } } }]
+      - all: [{ kind: assignment }, { has: { field: left, any: [{ kind: pattern_list }, { kind: tuple_pattern }], has: { nthChild: 4, pattern: $A } } }, { has: { field: right, matches: helper-call } }, { inside: { stopBy: end, kind: module, has: { stopBy: end, matches: helper-CLOCK-4 } } }]
   # Fake clocks, proven positively: freezegun's freeze_time (decorator, `with`, a chained `.start()`, pytest's
   # `freezer` fixture or freeze_time marker) without tick=True fakes every clock here (loop.time() reads
   # time.monotonic); a mock.patch / patch.object / monkeypatch.setattr of the exact `time` function fakes that one.
@@ -138,6 +217,11 @@ utils:
 id: elapsed-assert.CLOCK.condition
 language: python
 rule: { matches: upper-CLOCK }
+---
+# Every function name defined in the file: check.py counts them for the helper read's one-definition guard.
+id: helper-def
+language: python
+rule: { kind: identifier, inside: { kind: function_definition, field: name } }
 ---
 id: fake-clock.CLOCK
 language: python

@@ -83,3 +83,32 @@ it("no-argument fake timers do not prove performance", () => {
   vi.useFakeTimers();
   expect(performance.now() - t0).toBeLessThan(50);
 });
+
+const timeIt = async (fn) => { const t0 = Date.now(); await fn(); return Date.now() - t0; };
+async function measure() {
+  const t0 = performance.now();
+  await work();
+  return [true, performance.now() - t0];
+}
+const fast = () => Date.now() - t0;
+
+it("one hop into a same-file helper", async () => {
+  const ms = await timeIt(() => work());
+  expect(ms).toBeLessThan(500);
+  const [ok, took] = await measure();
+  expect(took).toBeLessThan(300);
+  const e = fast();
+  expect(e).toBeLessThan(5);
+});
+
+it("a nested helper per test, one", async () => {
+  const run = async () => { const t0 = Date.now(); await work(); return Date.now() - t0; };
+  const ms = await run();
+  expect(ms).toBeLessThan(100);
+});
+
+it("a nested helper per test, two", async () => {
+  const run = async () => { const t0 = Date.now(); await work(); return Date.now() - t0; };
+  const ms = await run();
+  expect(ms).toBeLessThan(200);
+});

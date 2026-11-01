@@ -97,6 +97,20 @@ utils:
       - { kind: identifier, matches: subprocess-name }
       - { kind: member_expression, has: { field: property, matches: subprocess-name } }
   bound-name: { kind: identifier, regex: "(?i)timeout|deadline|budget" }
+  # Matchers that compare an expected VALUE (`expect(x).toEqual({ timeout: 12_345 })`): an object passed to one is
+  # data, never a bound (the vagaris hardening branch, f2961a44f). Playwright's web-first assertions (toBeVisible,
+  # toHaveURL, toPass) take a real bound and are not on this list.
+  equality-matcher: { regex: "^(?:toEqual|toStrictEqual|toMatchObject|toContainEqual|toHaveBeenCalledWith|toHaveBeenLastCalledWith|toHaveBeenNthCalledWith|toHaveProperty|toBe)$" }
+  # A registrar call carries its body (a function, or a name or member for one) beside the bound: `describeExit("wsl",
+  # 4)` names a describe-like helper but registers nothing (f2961a44f).
+  registrar-body:
+    all:
+      - any:
+          - { kind: arrow_function }
+          - { kind: function_expression }
+          - { kind: identifier }
+          - { kind: member_expression }
+      - not: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } } }
   # Poll loops (K2 step 2C, B): a loop that re-checks a condition between fixed sleeps is judged by its BUDGET, never
   # by its step. A counted loop (`for (let i = 0; i < N; i++)`) whose body awaits one fixed sleep ($V ms) and can exit
   # early (break or return) has the budget N x V. A deadline loop's budget is D, from `now - start < D`, or from
@@ -233,9 +247,11 @@ rule:
       # $F: the callee, so check.py can resolve an aliased child process (`spawnSync as run`, promisify(execFile))
       has: { field: function, pattern: $F }
       not:
-        has:
-          field: function
-          any: [{ matches: case-callee }, { matches: hook-callee }, { matches: subprocess-callee }]
+        any:
+          - has:
+              field: function
+              any: [{ matches: case-callee }, { matches: hook-callee }, { matches: subprocess-callee }]
+          - has: { field: function, kind: member_expression, has: { field: property, matches: equality-matcher } }
 ---
 # The LAST argument of it/test/bench/describe*: any bound value with 3+ arguments (name, fn, timeout), only a literal
 # with 2 (the ratchet's rule; a 2-argument call's last argument is otherwise its body).
@@ -248,6 +264,7 @@ rule:
     - has:
         field: arguments
         has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has: { field: arguments, has: { matches: registrar-body } }
     - has:
         field: arguments
         any:
@@ -266,6 +283,7 @@ rule:
     - has:
         field: arguments
         has: { nthChild: { position: 1, reverse: true, ofRule: { matches: nc } }, pattern: $V, matches: bound-value }
+    - has: { field: arguments, has: { matches: registrar-body } }
     - has:
         field: arguments
         has: { nthChild: { position: 2, ofRule: { matches: nc } } }

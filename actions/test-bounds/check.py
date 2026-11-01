@@ -105,6 +105,9 @@ RULE_FILES = {"typescript": JS_RULE_FILES, "tsx": JS_RULE_FILES, "javascript": J
 SMALL_MATCH = {"option", "default", "config", "keyword"}
 # A poll loop's mark may sit on the loop's own first line, as well as on its budget's line.
 SMALL_MATCH |= {"poll"}
+# Option positions whose LITERAL zero means a count or "none" (the vagaris hardening branch, f2961a44f). A named zero is
+# still judged: a name that resolves to 0 is a bound someone chose.
+ZERO_IS_NONE = {"option"}
 MARK = re.compile(r"timeout under test:[ \t]*(?P<why>[^\n]*)")
 # A mark clears only with a reason: at least one word of three letters ("..." or "x" is not a reason).
 REASON = re.compile(r"[A-Za-z]{3,}")
@@ -120,7 +123,8 @@ COVERED = {
                  "the last argument of it/test/bench/describe* and of hooks; "
                  "vi.waitFor/vi.waitUntil; a parameter default named timeout/deadline/budget; testTimeout, "
                  "hookTimeout and teardownTimeout properties; PostgreSQL client options (connectionTimeoutMillis, "
-                 "statement_timeout, query_timeout); elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
+                 "statement_timeout, query_timeout); never a literal-zero option, an object passed to an "
+                 "equality matcher, or a registrar-named call without a body; elapsed-time asserts: an UPPER bound (toBeLessThan[OrEqual], "
                  ".not.toBeGreaterThan[OrEqual], chai below/lt/lte/at.most, assert.isBelow/isAtMost, `A < V` in assert/"
                  "assert.ok/expect(..).toBe(true)) on a Date, performance or hrtime.bigint difference, direct, through a "
                  "bound name, scaled, or returned by a same-file helper (one hop)",
@@ -859,6 +863,8 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        if position in ZERO_IS_NONE and value == 0 and not NAME.match(text):
+            continue  # `timeout: 0` is a count or "none", never a bound a loaded runner reaches (f2961a44f)
         count = m["metaVariables"]["single"].get("N")
         if count is not None:  # a counted poll loop: its budget is iterations x interval
             n_text = count["text"].strip()

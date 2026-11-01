@@ -84,6 +84,15 @@ Elapsed-time asserts are the `elapsed-assert` rules, below. Only these positions
 (`covered (...)`), so absence elsewhere is never a pass. Not yet covered, and due in K2 step 2C: fixed flushes,
 sleep-as-wait, poll budgets, and read and absence windows.
 
+Not bounds, so not captured (the vagaris hardening branch, f2961a44f, 14 false findings on vagaris):
+- an option whose value is a LITERAL zero (`timeout: 0`, `end({ timeout: 0 })`), which is a count
+  or "none". A NAME resolving to 0 is still judged, because someone chose that bound;
+- an object passed to an equality matcher (toEqual, toStrictEqual, toMatchObject, toContainEqual,
+  toHaveBeenCalledWith and its Last/Nth forms, toHaveProperty, toBe), which is an expected VALUE. Playwright's
+  web-first assertions (`toBeVisible({ timeout })`, toHaveURL, toPass) take a real bound and stay counted;
+- a registrar-named call with no body beside its bound (`describeExit("wsl", 4)` registers nothing). The body is a
+  function, or a name or member for one, so `it(name, handler, N)` still counts.
+
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
 - **an exact value**: numeric literals (with `_`), unary minus, and `+ - *` of those. Division, `**`, templates,

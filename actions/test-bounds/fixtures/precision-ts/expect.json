@@ -1,0 +1,19 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 2
+   }
+  ]
+ },
+ "files": {
+  "green.test.ts": {
+   "cleared": 1
+  },
+  "red.test.ts": {
+   "finding": 4,
+   "cleared": 1
+  }
+ }
+}

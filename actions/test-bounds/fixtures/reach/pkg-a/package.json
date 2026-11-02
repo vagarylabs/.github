@@ -1,0 +1,1 @@
+{ "name": "@fx/pkg-a", "exports": { ".": "./src/index.ts", "./*": "./src/*.ts" } }

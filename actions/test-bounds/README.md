@@ -295,12 +295,73 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
   - a launcher added or lowered;
   - a scanned test file renamed out of the trees.
 - A widened tree is seeded from what the base held.
+- Turning `reach` off, once the base has it on, is red.
+
+## Reach: the modules the tests load
+
+A literal bound in a module that a test imports can red the test under load, just as one in the test file can.
+vagaris main 17464b2f went red on server-b with `spawnSync ps ETIMEDOUT`. The cause was a literal 2 s `ps` timeout in
+`packages/adapter-utils/src/ssh-fixture-process.ts`. `environment-runtime-driver-contract.test.ts` loads that file
+through `@vagarylabs/adapter-utils/ssh`.
+
+With `"reach": "tests"` in the configuration, the check also scans every tracked module in the import closure of the
+scanned test files.
+
+How the closure is built:
+- **JS/TS edges.** These are followed:
+  - static `import` and `export … from`;
+  - `import()` and `require()` of a literal.
+
+  `import type` and `export type` are not followed: they never load anything. `vi.mock` and `require.resolve` are
+  not loads either.
+- **JS/TS resolution.** A specifier resolves in one of these ways:
+  - a relative path, with the `.js` to `.ts` twin;
+  - a workspace package's name, through its `exports` (including one-`*` patterns), `main`, or `index`. Built `dist/`
+    maps to its `src/` twin;
+  - the nearest `tsconfig.json`'s `paths`, through its `extends` chain.
+- **Python.** Relative imports are followed. So are absolute ones that resolve from the importer's directory or an
+  ancestor.
+- **What is listed, what is not.** An external package is not listed. These are listed UNRESOLVED: a specifier that
+  names no tracked file, a template with a substitution, and an absolute path. UNRESOLVED is visible but not red.
+
+How a reached module is judged:
+- **Test support.** A reached module that imports a test framework is test code wherever it lives. The frameworks are
+  vitest, jest, playwright, mocha, chai, `node:test`, `bun:test`, pytest and unittest. Such a module is judged
+  exactly like a test file.
+- **Product code.** Any other reached module is product code that a test drives. Only the families that a loaded
+  runner trips in such code are judged there:
+  - TS/JS: a child process and a database client;
+  - Python: subprocess, network and database clients.
+
+  A forwarded bound there, meaning a parameter or a computed value, is its caller's. It is listed NOT COVERED, not
+  counted. A named constant below the floor is a finding.
+
+These are not read in product code:
+- a call's generic `timeout` option;
+- a `timeout`-named parameter default;
+- Python asyncio waits;
+- a TS network client's own timeout, because TS has no network-client family yet.
+
+On vagaris these positions held mostly postgres.js `end({ timeout: 5 })` (in seconds), subprocess wrappers and data
+properties. Product bounds that no test reaches stay out of scope: the import graph decides.
+
+Failing closed:
+- **Unparsable module.** A reached Python module that CPython cannot parse is red, because its imports cannot be
+  followed.
+- **Empty closure.** If `reach` is on but the tests reach no module beyond themselves, that is red. A suspiciously
+  total result indicts the reader, not the tree.
+
+Baseline:
+- Reached modules join the same shrink-only per-file counts.
+- A reached module that a change touches is judged by its group.
+- A reached module that the base's counts do not hold (newly reached, or the adoption) is seeded from its base blob.
+  So only a new bound is new, and `write-baseline` records the rest.
 
 ## UNSCANNED
 
 The summary and the findings JSON list two kinds of file:
 - tree files in a language this check does not read;
-- test-like files outside every tree.
+- test-like files outside every tree that no test loads (with `reach` on, one a test loads is scanned).
 
 ## Self-test
 

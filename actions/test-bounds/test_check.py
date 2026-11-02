@@ -676,6 +676,93 @@ class Baseline(unittest.TestCase):
         self.assertTrue(has(v["problems"], f"{x}: 3 finding(s), the base had 2: a new one"), v["problems"])
 
 
+def reach_baseline(counts: dict, reach="tests") -> str:
+    cfg = {"schema": 1, "check": C.CHECK_ID, "trees": TREES, "check_digest": C.check_digest(),
+           "counts": {f: {C.RULE: n} for f, n in counts.items() if n}}
+    if reach:
+        cfg["reach"] = reach
+    return json.dumps(cfg, indent=2) + "\n"
+
+
+PKG = '{"name": "fx", "private": true, "devDependencies": {"vitest": "3.2.4"}}\n'
+PS = 'import { execFileSync } from "node:child_process";\nexport const ps = () => execFileSync("ps", [], { timeout: 2_000 });\n'
+PS2 = PS + 'export const ps2 = () => execFileSync("ps", ["-e"], { timeout: 3_000 });\n'
+
+
+def loader(spec: str) -> str:
+    return f'import {{ it }} from "vitest";\nimport {{ ps }} from "{spec}";\nit("drives it", () => {{ ps(); }}, 200_000);\n'
+
+
+class Reach(unittest.TestCase):
+    """reach: "tests" (root, 11-02): the modules the tests load are judged, through the real run()."""
+
+    A, LIB, OLD = "s/__tests__/a.test.ts", "lib/ps.ts", "lib/old.ts"
+
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def test_a_helper_a_test_loads_is_judged_and_one_no_test_loads_is_not(self):
+        self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS, self.OLD: PS,
+                          BL: reach_baseline({})})
+        v = self.repo.verdict(None)
+        self.assertTrue(has(v["problems"], f"{self.LIB}: 1 finding(s), the baseline allows 0"), v["problems"])
+        self.assertFalse(has(v["problems"], self.OLD), v["problems"])
+        self.assertEqual((v["reach"]["mode"], v["reach"]["reached_files"]), ("tests", 1))
+        self.repo.commit({BL: reach_baseline({}, reach=None)})
+        self.assertEqual(self.repo.verdict(None)["problems"], [], "reach off: only the trees are scanned")
+
+    def test_the_adoption_is_seeded_from_the_base_and_needs_only_write_baseline(self):
+        base = self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS,
+                                 BL: reach_baseline({}, reach=None)})
+        self.repo.commit({BL: reach_baseline({})})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"{self.LIB}"), v["problems"])
+        counts, why = C.baseline_write(C.per_rule(v["counts"], C.RULE), {}, False, set(v["_allow"][C.RULE]))
+        self.assertEqual(counts, {self.LIB: 1}, why)
+        self.repo.commit({BL: reach_baseline({self.LIB: 1})})
+        self.assertEqual(self.repo.verdict(base)["problems"], [])
+
+    def test_a_new_bound_in_a_reached_module_is_new(self):
+        base = self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS,
+                                 BL: reach_baseline({self.LIB: 1})})
+        self.repo.commit({self.LIB: PS2, BL: reach_baseline({self.LIB: 2})})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"{self.LIB}: 2 finding(s), the base had 1: a new one"), v["problems"])
+
+    def test_a_module_a_change_newly_loads_is_seeded_from_its_base_blob(self):
+        base = self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS, self.OLD: PS,
+                                 BL: reach_baseline({self.LIB: 1})})
+        b = "s/__tests__/b.test.ts"
+        self.repo.commit({b: loader("../../lib/old.js"), BL: reach_baseline({self.LIB: 1, self.OLD: 1})})
+        v = self.repo.verdict(base)
+        self.assertEqual(v["problems"], [], "lib/old.ts held its bound before any test loaded it: not a new one")
+        self.repo.commit({self.OLD: PS2, BL: reach_baseline({self.LIB: 1, self.OLD: 2})})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"{self.OLD}: 2 finding(s), the base had 1: a new one"), v["problems"])
+
+    def test_turning_reach_off_is_a_narrowing(self):
+        base = self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS,
+                                 BL: reach_baseline({self.LIB: 1})})
+        self.repo.commit({BL: reach_baseline({}, reach=None)})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], "`reach` is turned off"), v["problems"])
+
+    def test_a_product_module_forwarding_its_bound_is_not_covered_not_counted(self):
+        fwd = 'import { execFileSync } from "node:child_process";\nexport const ps = (t: number) => execFileSync("ps", [], { timeout: t });\n'
+        self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: fwd, BL: reach_baseline({})})
+        v = self.repo.verdict(None)
+        self.assertEqual(v["problems"], [])
+        self.assertTrue(has([f"{f}:{ln} {why}" for f, ln, why in v["not_covered"]], f"{self.LIB}:2 a forwarded bound `t`"),
+                        v["not_covered"])
+
+    def test_an_unknown_reach_mode_is_refused(self):
+        with self.assertRaises(C.Refusal):
+            C.load_config(json.dumps({"schema": 1, "trees": TREES, "reach": "everything"}), "x")
+
+
 class Configuration(unittest.TestCase):
     """Condition 4: the configuration is judged from the base. A change can widen what is scanned, never narrow it."""
 

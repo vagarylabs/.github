@@ -163,6 +163,21 @@ COVERED = {
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",
     "not yet (K2 step 2C)": "fixed flushes, sleep-as-wait, poll budgets, read and absence windows",
+    "reach (`reach: tests`)": "every tracked module in the import closure of the scanned test files (static import, "
+                              "export-from, import() and require() of a literal; workspace packages by name through "
+                              "their exports, main or index, built dist/ mapped to its src/ twin; the nearest "
+                              "tsconfig.json `paths`; Python relative imports, and absolute ones that resolve from the "
+                              "importer's directory or an ancestor). A reached module that imports a test framework "
+                              "(vitest, jest, playwright, mocha, chai, node:test, bun:test; pytest, unittest) is test "
+                              "code and is judged by every rule above. Any other reached module is product code: only "
+                              "a child process and a database client (TS/JS), and Python's subprocess, network and "
+                              "database clients, are judged there; a forwarded bound (a parameter, a computed value) "
+                              "is listed NOT COVERED, being its caller's. Not followed: `import type` / `export type` "
+                              "(never loaded), vi.mock, require.resolve. A specifier that names no tracked file, a "
+                              "template with a substitution, and an absolute path are listed UNRESOLVED; an external "
+                              "package is not listed. Not read in a product module: a TS network client's own timeout "
+                              "(TS has no network-client family), a call's generic `timeout` option, a `timeout`-named "
+                              "parameter default, Python asyncio waits.",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -664,10 +679,15 @@ def load_config(text: str, where: str) -> dict:
     digest = cfg.get("check_digest")
     if digest is not None and not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
         raise Refusal(f"{where}: `check_digest` must be the 64-hex digest write-baseline records")
-    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts", "check_digest"}
+    reach = cfg.get("reach")
+    if reach is not None and reach not in REACH_MODES:
+        raise Refusal(f"{where}: `reach` is one of {list(REACH_MODES)} (the import closure of the test files), "
+                      f"got {reach!r}")
+    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts", "check_digest", "reach"}
     if unknown:
         raise Refusal(f"{where}: unknown keys {sorted(unknown)}")
-    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts, "check_digest": digest}
+    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts, "check_digest": digest,
+            "reach": reach}
 
 
 class Scope:
@@ -768,6 +788,368 @@ def resolve_module(tree: Tree, importer: str, spec: str) -> tuple[str | None, st
     if len(hits) != 1:
         return None, f"`{spec}` resolves to {len(hits)} files{(': ' + ', '.join(hits)) if hits else ''}"
     return hits[0], ""
+
+
+# --- REACH: the modules a test loads (root, 2026-11-02) ----------------------------------------------------------
+# A literal bound in a src/ helper that a test imports reds that test under load exactly as one in the test file does:
+# vagaris main 17464b2f went red on server-b with `spawnSync ps ETIMEDOUT` from a literal 2 s ps timeout in
+# packages/adapter-utils/src/ssh-fixture-process.ts, which environment-runtime-driver-contract.test.ts loads through
+# `@vagarylabs/adapter-utils/ssh`. With `reach: "tests"` in the configuration, every tracked module in the import
+# closure of the scanned test files is scanned too. A reached module that imports a test framework (TEST_FRAMEWORKS) is
+# test code wherever it lives, a shared suite or a fixture helper, and is judged exactly as a test file. Any other
+# reached module is PRODUCT code a test drives, judged by REACH_PRODUCT_RULES only: a child process and a database
+# client (TS/JS), plus Python's subprocess, network and database clients. A forwarded bound there (a parameter, a
+# computed value) is its caller's: it is listed NOT COVERED, never a finding; a named constant below the floor is one.
+# Product bounds no test reaches stay out: the graph decides. Measured on vagaris (11-02, 2 323 reached modules): a
+# call's generic `timeout` option in product code was postgres.js `end({ timeout: 5 })` (seconds), subprocess wrappers
+# and data properties, with two network calls in 46; `describe\w*` read `describeStaleness(...)` as a test registrar.
+# TS has no network-client family yet, so a TS network timeout in a product module is not read.
+REACH_MODES = ("tests",)
+REACH_PRODUCT_RULES = {
+    **{lang: frozenset({f"{RULE}.option.subprocess", f"{RULE}.client.fixture"}) for lang in JS_LANGS},
+    "python": frozenset({f"{RULE}.keyword.subprocess", f"{RULE}.positional.subprocess", f"{RULE}.join.subprocess",
+                         f"{RULE}.http.condition", f"{RULE}.http-tuple.condition", f"{RULE}.client.fixture"}),
+}
+# A module that imports one of these is test code (by the specifier's package, or Python's top-level module).
+TEST_FRAMEWORKS = frozenset({"vitest", "@vitest/runner", "@jest/globals", "jest", "@playwright/test", "playwright",
+                             "mocha", "chai", "node:test", "bun:test"})
+PY_TEST_FRAMEWORKS = frozenset({"pytest", "_pytest", "unittest"})
+NODE_BUILTINS = frozenset((
+    "assert async_hooks buffer child_process cluster console constants crypto dgram diagnostics_channel dns domain "
+    "events fs http http2 https inspector module net os path perf_hooks process punycode querystring readline repl "
+    "sqlite stream string_decoder sys test timers tls trace_events tty url util v8 vm wasi worker_threads zlib").split())
+# The export conditions a test runner resolves, in its order; "types" names a declaration file, never loaded code.
+EXPORT_CONDITIONS = ("development", "import", "node", "default", "require")
+_TYPE_ONLY = re.compile(r"^\s*(?:import|export)\s+type\s+(?!from\b)[\w${*]")
+
+
+def _reach_rules(lang: str) -> str:
+    """Every module a JS/TS file loads: static import/export-from (the source string), import() and require() of a
+    string or a template (a template with a substitution is listed UNRESOLVED). vi.mock("x") and require.resolve are not
+    loads (their callee is a member expression), and a comment is never a statement."""
+    return (f"id: reach.static\nlanguage: {lang}\nrule:\n  any:\n"
+            "    - { kind: import_statement, has: { field: source, kind: string, pattern: $S } }\n"
+            "    - { kind: export_statement, has: { field: source, kind: string, pattern: $S } }\n---\n"
+            f"id: reach.call\nlanguage: {lang}\nrule:\n  kind: call_expression\n  all:\n"
+            "    - has: { field: function, any: [ { kind: import }, { kind: identifier, regex: \"^require$\" } ] }\n"
+            "    - has: { field: arguments, has: { nthChild: 1, any: [ { kind: string }, { kind: template_string } ], "
+            "pattern: $S } }\n")
+
+
+def _export_target(value) -> str | None:
+    """The runtime file an `exports` value names (a string, a condition object in EXPORT_CONDITIONS order, or a
+    fallback array), or None when it names only types or nothing."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return next((t for t in map(_export_target, value) if t), None)
+    if isinstance(value, dict):
+        return next((t for c in EXPORT_CONDITIONS if c in value for t in [_export_target(value[c])] if t), None)
+    return None
+
+
+def _jsonc(text: str) -> str:
+    """JSON with comments and trailing commas (tsconfig's dialect) as plain JSON; strings are kept verbatim."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(c)
+            i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+class Workspace:
+    """The tree's own packages (every tracked package.json with a `name`) and every dependency any of them declares,
+    so a bare specifier resolves to a workspace file, is an external package, or is UNRESOLVED (never silently gone)."""
+
+    def __init__(self, tree: Tree):
+        self.tree, self.packages, self.deps, self._tsc = tree, {}, set(), {}
+        manifests = [f for f in tree.files if posixpath.basename(f) == "package.json"]
+        tree.ensure(manifests)
+        for f in manifests:
+            try:
+                man = json.loads(tree.read(f))
+            except ValueError:
+                continue  # its name is unknown: an import of it lands in UNRESOLVED, by name
+            if not isinstance(man, dict):
+                continue
+            for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+                if isinstance(man.get(key), dict):
+                    self.deps.update(man[key])
+            if isinstance(man.get("name"), str):
+                self.packages.setdefault(man["name"], (posixpath.dirname(f), man))
+
+    def files_at(self, target: str) -> list[str]:
+        """The tracked files a resolved path loads: the path, its TS twin, an extension, an index; built output under
+        dist/ maps to its src/ twin (the tree tracks sources, never builds)."""
+        target = posixpath.normpath(target)
+        if target in self.tree.fileset and posixpath.splitext(target)[1] not in LANGUAGE_OF:
+            return [target]  # an asset (a .json, a .css): loaded, never code, so never followed (the caller drops it)
+        for t in (target, re.sub(r"(^|/)dist/", r"\1src/", target, count=1)):
+            stem, ext = posixpath.splitext(t)
+            if ext in JS_EXTS or ext == ".py":
+                cands = [t] + [stem + x for x in JS_TWIN.get(ext, ())]
+            else:
+                cands = [t + e for e in JS_EXTS] + [t + "/index" + e for e in JS_EXTS]
+            hits = [c for c in cands if c in self.tree.fileset]
+            if hits:
+                return hits
+        return []
+
+    def package_files(self, d: str, man: dict, sub: str) -> tuple[list[str], str]:
+        key = "./" + sub if sub else "."
+        exp = man.get("exports")
+        if exp is not None:
+            if not (isinstance(exp, dict) and any(k.startswith(".") for k in exp)):
+                exp = {".": exp}
+            target = _export_target(exp[key]) if key in exp else None
+            if key not in exp:
+                best = None  # Node's rule: the pattern with the longest prefix before its one "*" wins
+                for k, v in exp.items():
+                    pre, star, post = k.partition("*")
+                    if star and key.startswith(pre) and key.endswith(post) and len(key) >= len(pre) + len(post):
+                        if best is None or len(pre) > len(best[0]):
+                            best = (pre, post, v)
+                if best:
+                    t = _export_target(best[2])
+                    target = t.replace("*", key[len(best[0]):len(key) - len(best[1])]) if t else None
+            if target is None:
+                return [], f"`{man.get('name')}` exports no runtime target for `{key}`"
+            hits = self.files_at(posixpath.join(d, target))
+            return hits, "" if hits else f"`{man.get('name')}` exports `{target}` for `{key}`, which is not tracked"
+        hits = self.files_at(posixpath.join(d, sub or man.get("main") or "index"))
+        return hits, "" if hits else f"`{man.get('name')}{('/' + sub) if sub else ''}` names no tracked file"
+
+    def _tsconfig(self, path: str, depth: int = 0) -> dict:
+        """compilerOptions {baseUrl, paths} of a tsconfig, through its relative `extends` chain (JSON with comments)."""
+        if path in self._tsc:
+            return self._tsc[path]
+        self._tsc[path] = {}
+        self.tree.ensure([path])
+        try:
+            doc = json.loads(_jsonc(self.tree.read(path)))
+        except (ValueError, OSError):
+            return {}
+        if not isinstance(doc, dict):
+            return {}
+        out = {}
+        ext = doc.get("extends")
+        if isinstance(ext, str) and ext.startswith(".") and depth < 8:
+            parent = posixpath.normpath(posixpath.join(posixpath.dirname(path), ext))
+            parent = parent if parent.endswith(".json") else parent + ".json"
+            if parent in self.tree.fileset:
+                out = dict(self._tsconfig(parent, depth + 1))
+        co = doc.get("compilerOptions") if isinstance(doc.get("compilerOptions"), dict) else {}
+        if isinstance(co.get("baseUrl"), str):
+            out["baseUrl"] = posixpath.normpath(posixpath.join(posixpath.dirname(path), co["baseUrl"]))
+        if isinstance(co.get("paths"), dict):
+            out["paths"] = co["paths"]
+            out["paths_dir"] = out.get("baseUrl") or posixpath.dirname(path)
+        self._tsc[path] = out
+        return out
+
+    def ts_paths(self, importer: str, spec: str) -> tuple[list[str], str | None] | None:
+        """The nearest tsconfig.json's `paths` mapping for spec (exact key, or one `*`), or None when none maps it."""
+        d = posixpath.dirname(importer)
+        while True:
+            cfg = posixpath.join(d, "tsconfig.json") if d else "tsconfig.json"
+            if cfg in self.tree.fileset:
+                opts = self._tsconfig(cfg)
+                if "paths" in opts:
+                    break
+            if not d:
+                return None
+            d = posixpath.dirname(d)
+        best = None
+        for key, targets in opts["paths"].items():
+            pre, star, post = key.partition("*")
+            if (not star and spec == key) or (star and spec.startswith(pre) and spec.endswith(post)
+                                              and len(spec) >= len(pre) + len(post)):
+                if best is None or len(pre) > len(best[0]):
+                    best = (pre, post, star, targets)
+        if best is None or not isinstance(best[3], list):
+            return None
+        pre, post, star, targets = best
+        middle = spec[len(pre):len(spec) - len(post)] if star else ""
+        for t in targets:
+            if not isinstance(t, str):
+                continue
+            target = posixpath.normpath(posixpath.join(opts["paths_dir"], t.replace("*", middle)))
+            if "node_modules/" in target + "/":
+                return [], ""  # mapped to an installed package: external
+            hits = self.files_at(target)
+            if hits:
+                return hits, None
+        return [], f"`{spec}` matches tsconfig paths `{pre}{star}{post}` in {cfg}, but no target is a tracked file"
+
+    def resolve(self, importer: str, spec: str) -> tuple[list[str], str | None]:
+        """(the tracked files `spec` loads, None) or ([], why) for UNRESOLVED; ([], "") for an external package."""
+        if spec.startswith(("./", "../")) or spec in (".", ".."):
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
+            if target.startswith("../") or target == "..":
+                return [], f"`{spec}` leaves the repository"
+            if target + "/package.json" in self.tree.fileset:
+                man = next((m for d, m in self.packages.values() if d == target), None)
+                if man is None:
+                    return [], f"`{spec}` is a package directory whose package.json has no name this check can read"
+                return self.package_files(target, man, "")
+            hits = self.files_at(target)
+            return hits, None if hits else f"`{spec}` names no tracked file"
+        if spec.startswith("/"):
+            return [], f"`{spec}` is an absolute path: what it loads depends on the machine, not on this tree"
+        if spec.startswith("node:") or spec.split("/")[0] in NODE_BUILTINS:
+            return [], ""
+        aliased = self.ts_paths(importer, spec)
+        if aliased is not None:
+            return aliased
+        parts = spec.split("/")
+        name, sub = ("/".join(parts[:2]), "/".join(parts[2:])) if spec.startswith("@") else (parts[0], "/".join(parts[1:]))
+        if name in self.packages:
+            d, man = self.packages[name]
+            hits, why = self.package_files(d, man, sub)
+            return hits, None if hits else why
+        if name in self.deps:
+            return [], ""
+        return [], f"`{spec}` is neither a workspace package nor a dependency any package.json declares"
+
+
+def _py_imports(text: str) -> list[tuple[int, int, str, list[str]]]:
+    """(line, level, module, names) of every import statement CPython reads (a `from` import lists its names)."""
+    module = _parse_py(text)
+    if module is None:
+        return []
+    out = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            out += [(node.lineno, 0, a.name, []) for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            out.append((node.lineno, node.level, node.module or "", [a.name for a in node.names]))
+    return out
+
+
+def py_reach(tree: Tree, importer: str, level: int, module: str, names: list[str],
+             dirs: frozenset = frozenset()) -> tuple[list[str], str | None]:
+    """The tracked files a Python import loads: relative imports from the importer's package; absolute ones from the
+    importer's directory or any ancestor (pytest's rootdir insertion), each a `.py` or a package `__init__.py`. A
+    standard-library or third-party module is external; a top-level name the tree holds that does not resolve deeper
+    is UNRESOLVED."""
+    def hit(base: str, dotted: str) -> list[str]:
+        p = posixpath.join(base, *dotted.split(".")) if dotted else base
+        return [c for c in (p + ".py", posixpath.join(p, "__init__.py")) if posixpath.normpath(c) in tree.fileset]
+
+    if level:
+        base = posixpath.dirname(importer)
+        for _ in range(level - 1):
+            base = posixpath.dirname(base)
+        found = hit(base, module) + [x for n in names for x in hit(base, (module + "." if module else "") + n)]
+        return sorted({posixpath.normpath(x) for x in found}), None if found else f"`{'.' * level}{module}` names no tracked file"
+    top = module.split(".")[0]
+    if top in sys.stdlib_module_names:
+        return [], ""
+    d, bases = posixpath.dirname(importer), []
+    while True:
+        bases.append(d)
+        if not d:
+            break
+        d = posixpath.dirname(d)
+    for base in bases:
+        found = hit(base, module) + [x for n in names for x in hit(base, module + "." + n)]
+        if found:
+            return sorted({posixpath.normpath(x) for x in found}), None
+    if any(hit(base, top) or posixpath.join(base, top) in dirs for base in bases):
+        return [], f"`{module}` is a module this tree holds, but it resolves to no tracked file"
+    return [], ""
+
+
+def _ancestors(path: str):
+    d = posixpath.dirname(path)
+    while d:
+        yield d
+        d = posixpath.dirname(d)
+
+
+def reach_closure(tree: Tree, roots: list[str], scope: "Scope", links: set[str] = frozenset()) -> dict:
+    """The import closure of `roots` (the scanned test files): {"reached": sorted modules a test loads, excluding the
+    roots, the excluded globs and symlinks; "unresolved": [(file, line, spec, why)]; "unparsable": [(file, why)]}.
+    Type-only imports are not loads and are not followed. An excluded or symlinked module is never scanned, but its own
+    imports are still followed, so an exclusion cannot hide what it loads."""
+    ws, seen, reached, unresolved, unparsable, support = Workspace(tree), set(roots), set(), [], [], set()
+    dirs = frozenset(d for f in tree.files for d in _ancestors(f))
+    frontier = sorted(f for f in roots if posixpath.splitext(f)[1] in LANGUAGE_OF)
+    while frontier:
+        tree.ensure(frontier)
+        loads = []  # (file, line, spec)
+        for lang in JS_LANGS:
+            group = [f for f in frontier if LANGUAGE_OF[posixpath.splitext(f)[1]] == lang]
+            for m in sg_scan(tree.root, _reach_rules(lang), group):
+                if m["ruleId"] == "reach.static" and _TYPE_ONLY.match(m["text"]):
+                    continue
+                s = m["metaVariables"]["single"]["S"]["text"]
+                ln = _line(m["range"])
+                if s[:1] == "`" and "${" in s:
+                    unresolved.append((m["file"], ln, s, "a template with a substitution: the module is computed"))
+                    continue
+                loads.append((m["file"], ln, s[1:-1]))
+        nxt = []
+        for f, ln, spec in loads:
+            pkg = "/".join(spec.split("/")[:2]) if spec.startswith("@") else spec.split("/")[0]
+            if pkg in TEST_FRAMEWORKS or spec in TEST_FRAMEWORKS:
+                support.add(f)
+            hits, why = ws.resolve(f, spec)
+            if why:
+                unresolved.append((f, ln, spec, why))
+            nxt += hits
+        for f in frontier:
+            if posixpath.splitext(f)[1] != ".py":
+                continue
+            text = tree.read(f)
+            if _parse_py(text) is None:
+                unparsable.append((f, "CPython cannot parse it, so the modules it imports cannot be followed"))
+                continue
+            for ln, level, module, names in _py_imports(text):
+                if not level and module.split(".")[0] in PY_TEST_FRAMEWORKS:
+                    support.add(f)
+                hits, why = py_reach(tree, f, level, module, names, dirs)
+                if why:
+                    unresolved.append((f, ln, "." * level + module, why))
+                nxt += hits
+        frontier = []
+        for t in sorted(set(nxt)):
+            if t in seen or posixpath.splitext(t)[1] not in LANGUAGE_OF:
+                continue
+            seen.add(t)
+            frontier.append(t)
+            if t not in links and not any(rx.match(t) for rx in scope.exclude) and not scope.scanned(t):
+                reached.add(t)
+    return {"reached": sorted(reached), "support": sorted(support & reached), "unresolved": sorted(set(unresolved)),
+            "unparsable": sorted(set(unparsable))}
+
+
+def reach_of(tree: Tree, cfg: dict, scanned: list[str], scope: "Scope", links: set[str] = frozenset()) -> dict:
+    """The reach a configuration asks for, as run() and the self-test both use it: {"reached", "unresolved",
+    "problems"}. Off: nothing. On: a module the import graph cannot parse is red, and so is a closure that reaches no
+    module beyond the tests (a suspiciously total result indicts the reader, never the tree)."""
+    if not cfg.get("reach"):
+        return {"reached": [], "support": [], "unresolved": [], "problems": []}
+    cl = reach_closure(tree, scanned, scope, links)
+    problems = [f"{f}: unparsable ({why}): `reach` cannot follow what it loads" for f, why in cl["unparsable"]]
+    if scanned and not cl["reached"]:
+        problems.append(f"`reach` is on, but the import graph of {len(scanned)} test file(s) reaches no module beyond "
+                        "them: the reader, not the tree, is the likelier fault")
+    return {"reached": cl["reached"], "support": cl["support"], "unresolved": cl["unresolved"], "problems": problems}
 
 
 class JsFacts:
@@ -990,8 +1372,11 @@ def _parse_py(text: str):
         return None
 
 
-def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
+def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozenset = frozenset(),
+           support: frozenset = frozenset()) -> dict:
     """Scan `files` (scanned paths of `tree`): {"findings": {file: [record]}, "marks": [...], "unparsable": [...]}.
+    A file in `reached` but not `support` (a product module a test loads) keeps REACH_PRODUCT_RULES records only, and a
+    forwarded bound there (no value read) is listed NOT COVERED instead of counted.
 
     A record: {line, rule, position, kind, value, status, reason, mark}. status "finding" counts against the
     baseline; "cleared" carries the proof in reason; "marked" carries the mark's reason."""
@@ -1106,6 +1491,7 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        rec["read"] = value is not None
         if (m.get("zero_is_none") or (lang != "python" and position in ZERO_IS_NONE)) and value == 0 \
                 and not NAME.match(text):
             continue  # a literal 0 is "no limit" here
@@ -1198,6 +1584,23 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
             unparsable.setdefault((f, 0), why)
         if recs:
             findings.setdefault(f, []).extend(recs)
+    for f in sorted(reached - support):
+        if f not in findings:
+            continue
+        keep = REACH_PRODUCT_RULES[LANGUAGE_OF[posixpath.splitext(f)[1]]]
+        kept = []
+        for r in findings[f]:
+            if f"{r['rule']}.{r['position']}.{r['kind']}" not in keep:
+                continue
+            if r["status"] == "finding" and not r.get("read", True):
+                not_covered.append((f, r["line"], f"a forwarded bound `{r['value']}` in a module the tests load: its "
+                                                  "value is its caller's, so it is judged where a test sets it"))
+                continue
+            kept.append(r)
+        if kept:
+            findings[f] = kept
+        else:
+            del findings[f]
     bad = {f for f, _ in unparsable}
     return {"findings": findings, "marks": marks, "not_covered": sorted(not_covered),
             "unparsable": sorted((f, ln, why) for (f, ln), why in unparsable.items()),
@@ -2140,6 +2543,9 @@ def per_rule(counts: dict, rule: str) -> dict:
 def narrowing(base_cfg: dict, head_cfg: dict, files: list[str]) -> list[str]:
     """What the candidate's configuration no longer scans or judges, decided from the base's (condition 4)."""
     problems = []
+    if base_cfg.get("reach") and head_cfg.get("reach") != base_cfg["reach"]:
+        problems.append(f"`reach` is turned off (the base scans the modules its tests load, `{base_cfg['reach']}`): "
+                        "a change cannot narrow what is scanned")
     bs, hs = Scope(base_cfg), Scope(head_cfg)
     lost = [f for f in files if bs.scanned(f) and not hs.scanned(f)]
     if lost:
@@ -2173,10 +2579,10 @@ def tree_floors(cfg: dict, scanned: list[str]) -> list[str]:
     return problems
 
 
-def unscanned(cfg: dict, files: list[str]) -> dict:
+def unscanned(cfg: dict, files: list[str], reached: frozenset = frozenset()) -> dict:
     sc = Scope(cfg)
     return {"language": [f for f in files if sc.covers(f) and not sc.scanned(f)],
-            "outside_trees": [f for f in files if TEST_LIKE.search(f) and not sc.covers(f)]}
+            "outside_trees": [f for f in files if TEST_LIKE.search(f) and not sc.covers(f) and f not in reached]}
 
 
 def read_base_config(root: Path, sha: str) -> dict | None:
@@ -2196,9 +2602,13 @@ def read_base_config(root: Path, sha: str) -> dict | None:
     return load_config(p.stdout, f"{BASELINE_PATH} at the base {sha[:12]}")
 
 
-def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
+def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path, reached: frozenset = frozenset(),
+              found_files: frozenset = frozenset(), support: frozenset = frozenset()) -> dict:
     """The change against base `sha`: groups, the base's ACTUAL findings in every old path (scanned from its blobs
-    under the candidate's rules), its committed counts and configuration, and the marks it held."""
+    under the candidate's rules), its committed counts and configuration, and the marks it held. A module the HEAD's
+    tests reach is judged like a test file, under the reach rules: a touched one by its group, and one the base's
+    counts do not hold (newly reached, or the adoption) seeded from its base blob, so only a NEW bound is new. Only a
+    reached file with findings at HEAD is seeded: one with none cannot exceed what its base held."""
     base_cfg = read_base_config(root, sha)
     d = subprocess.run(["git", "diff", "--name-status", "-z", f"-M{SIMILARITY}", f"-C{SIMILARITY}", sha, "HEAD"],
                        cwd=root, capture_output=True)
@@ -2206,18 +2616,23 @@ def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
         raise Refusal(f"git diff {sha} HEAD exited {d.returncode}: {d.stderr.decode(errors='replace').strip()[:300]}")
     scope = Scope(head_cfg)
     changes = parse_name_status(d.stdout.decode("utf-8", "surrogateescape"))
-    groups = change_groups(changes, scope.scanned)
+    groups = change_groups(changes, lambda f: scope.scanned(f) or f in reached)
     # A file the base's configuration did not scan, but the candidate's does, is judged like a touched file: against
     # what the base held, so a widened tree is seeded from the base's findings and never against an allowance.
     base_tree = git_tree(root, sha, tmp / "base")
     if base_cfg is not None:
         bscope = Scope(base_cfg)
         touched = {f for g in groups for f in g["old"] + g["now"]}
+        held = base_cfg["counts"]
         for f in tracked_files(root):
-            if scope.scanned(f) and not bscope.scanned(f) and f not in touched:
+            if f in touched:
+                continue
+            if (scope.scanned(f) and not bscope.scanned(f)) or (f in reached and f in found_files and f not in held):
                 groups.append({"old": [f] if f in base_tree.fileset else [], "now": [f]})
     old_paths = sorted({f for g in groups for f in g["old"] if f in base_tree.fileset})
-    res = census(base_tree, old_paths, head_cfg["launchers"])
+    base_reached = frozenset(o for g in groups if any(n in reached for n in g["now"]) for o in g["old"])
+    base_support = frozenset(o for g in groups if any(n in support for n in g["now"]) for o in g["old"])
+    res = census(base_tree, old_paths, head_cfg["launchers"], base_reached, base_support)
     renamed_out = [(frm, to) for status, frm, to in changes
                    if status[:1] == "R" and scope.scanned(frm) and not scope.scanned(to)]
     return {"sha": sha, "groups": groups, "base_cfg": base_cfg, "base_tree": base_tree,
@@ -2260,7 +2675,9 @@ def self_test(verbose: bool = False) -> list[str]:
             cfg = load_config(json.dumps({"schema": SCHEMA, "counts": {}, **spec["config"]}), f"{case.name}/expect.json")
             files = sorted(str(p.relative_to(case)) for p in case.rglob("*") if p.is_file() and p.name != "expect.json")
             scanned = [f for f in files if Scope(cfg).scanned(f)]
-            res = census(Tree(case, files), scanned, cfg["launchers"])
+            reach = reach_of(Tree(case, files), cfg, scanned, Scope(cfg))
+            res = census(Tree(case, files), scanned + reach["reached"], cfg["launchers"], frozenset(reach["reached"]),
+                         frozenset(reach["support"]))
         except (Refusal, OSError, ValueError, KeyError) as e:
             failures.append(f"{case.name}: {e}")
             continue
@@ -2274,6 +2691,14 @@ def self_test(verbose: bool = False) -> list[str]:
         if got != want:
             failures.append(f"{case.name}: findings {json.dumps(got, sort_keys=True)}, expected "
                             f"{json.dumps(want, sort_keys=True)}")
+        if cfg["reach"]:
+            if reach["reached"] != sorted(spec.get("reached", [])):
+                failures.append(f"{case.name}: reached {reach['reached']}, expected {sorted(spec.get('reached', []))}")
+            have = sorted(f"{f}:{ln} {spec_}" for f, ln, spec_, _ in reach["unresolved"])
+            if have != sorted(spec.get("unresolved", [])):
+                failures.append(f"{case.name}: unresolved {have}, expected {sorted(spec.get('unresolved', []))}")
+            if reach["problems"] != spec.get("reach_problems", []):
+                failures.append(f"{case.name}: reach problems {reach['problems']}, expected {spec.get('reach_problems', [])}")
         for key in ("unparsable", "recovered", "not_covered"):
             # NOT COVERED is one entry per row (a dropped listing in a file with others still fails); the others per file.
             have = sorted(row[0] for row in res[key]) if key == "not_covered" else sorted({row[0] for row in res[key]})
@@ -2403,15 +2828,17 @@ def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str,
     scope = Scope(cfg)
     links = tracked_symlinks(root)
     scanned = [f for f in files if scope.scanned(f) and f not in links]
-    res = census(Tree(root, files), scanned, cfg["launchers"])
+    reach = reach_of(Tree(root, files), cfg, scanned, scope, links)
+    reached, support = frozenset(reach["reached"]), frozenset(reach["support"])
+    res = census(Tree(root, files), scanned + reach["reached"], cfg["launchers"], reached, frozenset(reach["support"]))
     found = counts_of(res["findings"])
-    problems, notices = [], []
+    problems, notices = list(reach["problems"]), []
     problems += [f"{f}{':' + str(ln) if ln else ''}: unparsable ({why}): the check cannot judge it"
                  for f, ln, why in res["unparsable"]]
     problems += [f"{f}: a symlink in the trees is not scanned; judge its target by its own path (list the target in a "
                  "tree, or exclude the link)" for f in sorted(links) if scope.scanned(f)]
     problems += tree_floors(cfg, scanned)
-    change = pr_change(root, base, cfg, tmp) if base else None
+    change = pr_change(root, base, cfg, tmp, reached, frozenset(found), support) if base else None
     if change and change["base_cfg"] is not None:
         problems += narrowing(change["base_cfg"], cfg, files)
     if change:
@@ -2438,7 +2865,8 @@ def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str,
                                    for r in set(found.get(f, {})) | set(cfg["counts"].get(f, {}))))
         if detection_changed and candidates:
             # The base tree, under the BASE's own configuration (its launchers and their floors), with this check.
-            base_res = census(change["base_tree"], candidates, change["base_cfg"]["launchers"])["findings"]
+            base_res = census(change["base_tree"], candidates, change["base_cfg"]["launchers"],
+                              frozenset(c for c in candidates if c in reached), support)["findings"]
             base_tree_found_all = counts_of(base_res)
             base_ids = finding_ids(base_res)
     allow, locked_in = {}, []
@@ -2462,8 +2890,9 @@ def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str,
     marks = res["marks"]
     added = new_marks(res["findings"], change)
     return {"schema": SCHEMA, "check": CHECK_ID, "base": base, "event": event, "scanned_files": len(scanned),
+            "reach": {"mode": cfg["reach"], "reached_files": len(reached), "unresolved": reach["unresolved"]},
             "counts": found, "findings": res["findings"], "marks": marks, "new_marks": added,
-            "recovered": res["recovered"], "not_covered": res["not_covered"], "unscanned": unscanned(cfg, files),
+            "recovered": res["recovered"], "not_covered": res["not_covered"], "unscanned": unscanned(cfg, files, reached),
             "covered": COVERED, "locked_in": locked_in, "check_digest": digest, "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
 
@@ -2512,6 +2941,9 @@ def summary_md(out: dict) -> str:
     lines = ["### test-bounds (K2)", "",
              f"{out['scanned_files']} file(s) scanned; {total['finding']} finding(s), {total['cleared']} cleared by "
              f"value, {total['marked']} marked. Base: {out['base'] or 'none'}; event: {out['event'] or 'none'}.", "",
+             (f"REACH (`{out['reach']['mode']}`): {out['reach']['reached_files']} module(s) the tests load, scanned "
+              f"too; {len(out['reach']['unresolved'])} UNRESOLVED specifier(s) (listed, not red)."
+              if out["reach"]["mode"] else "REACH: off (only the trees are scanned)."), "",
              "**Covered positions** (a bound anywhere else is not judged, so its absence here is not a pass):", ""]
     lines += [f"- {k}: {v}" for k, v in out["covered"].items()] + [""]
     if out["problems"]:
@@ -2535,6 +2967,9 @@ def summary_md(out: dict) -> str:
     lines += ["", f"NOT COVERED calls (a covered call this check cannot read the bound of; listed, not red): "
                   f"{len(out['not_covered'])}", ""]
     lines += [f"- {f}:{ln} {why}" for f, ln, why in out["not_covered"][:30]]
+    if out["reach"]["unresolved"]:
+        lines += ["", f"UNRESOLVED (reach): {len(out['reach']['unresolved'])}", ""]
+        lines += [f"- {f}:{ln} {why}" for f, ln, _, why in out["reach"]["unresolved"][:30]]
     return "\n".join(lines) + "\n"
 
 
@@ -2557,8 +2992,12 @@ def emit(out: dict, findings_path: str | None) -> None:
           f"{len(u['outside_trees'])} test-like file(s) outside every tree; RECOVERED parses: {len(out['recovered'])}")
     for f, ln, why in out["not_covered"]:
         print(f"NOT COVERED: {f}:{ln} {why}")
+    for f, ln, _, why in out["reach"]["unresolved"]:
+        print(f"UNRESOLVED (reach): {f}:{ln} {why}")
     total = sum(sum(c.values()) for c in out["counts"].values())
-    print(f"test-bounds: {out['scanned_files']} file(s) scanned, {total} finding(s) counted, "
+    print(f"test-bounds: {out['scanned_files']} file(s) scanned"
+          + (f" and {out['reach']['reached_files']} module(s) they load" if out["reach"]["mode"] else "")
+          + f", {total} finding(s) counted, "
           f"{len(out['marks'])} mark(s) ({len(out['new_marks'])} new), {len(out['problems'])} problem(s)")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

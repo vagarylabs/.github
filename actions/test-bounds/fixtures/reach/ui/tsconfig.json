@@ -1,0 +1,4 @@
+{
+  // the alias the app's tests use
+  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"], }, },
+}

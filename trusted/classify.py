@@ -316,8 +316,71 @@ def empty_tree():
     return tree
 
 
+# UNREADABLE ATTRIBUTES FAIL CLOSED (the D2 precondition, root's delta4 review of .github #69): `git --attr-source=<X>`
+# looks each .gitattributes up in X's tree, and an object it cannot read (X itself, its root tree, a subtree, a
+# .gitattributes blob) reads as NO ATTRIBUTES: check-attr reports `unspecified` and merge-tree merges attribute-free,
+# both with exit 0 (git 2.43.0 and 2.50.1 alike). With one .gitattributes blob deleted from the store, the judge passed
+# in both modes. So every attribute source, for merge-tree and for check-attr alike, must first be read POSITIVELY: its
+# tree and every subtree (`git ls-tree -r`), and every .gitattributes entry in it at any directory level, which must be
+# in the store: a blob entry (symlinks, mode 120000, included: tree reads honour them) as a blob, and a gitlink as any
+# object, because git's reader takes the object an entry names whatever its mode and keeps it if it is a blob (a
+# gitlink naming a present blob sets merge=binary; naming an absent one, nothing). Anything else fails closed (exit 2),
+# naming the source.
+# LAZY FETCH: in a partial clone, reading an absent object can fetch it from the promisor remote. GIT_NO_LAZY_FETCH=1
+# keeps these reads local where git honours it (2.50.1 does, and prints `missing`; the upstream 2.43.0 build probed
+# here ignores it). Nothing relies on it: a fetched object is the real object (git checks it against its name) and is
+# then local for the reads that follow, and a fetch that fails exits non-zero or prints `missing`, both fail closed.
+# The job's full clone (fetch-depth 0, no filter, in _shas.yml.in) is what keeps the state readable.
+ATTRIBUTES_FILE = b".gitattributes"
+
+
+def require_readable_attributes(source, label):
+    """IntegrityError (fail closed) unless git can read the attribute source: its tree, every subtree, and the object
+    of every .gitattributes entry in it (a blob entry's as a blob)."""
+    env = dict(os.environ, GIT_NO_LAZY_FETCH="1")
+    unreadable = "the attributes from %s (`%s`) cannot be read: %s. git reads an unreadable attribute source as no " \
+                 "attributes at all, so the judge fails closed (it needs the job's full clone: fetch-depth 0, no filter)"
+    r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", source + "^{tree}"], capture_output=True,
+                       text=True, env=env)
+    tree = r.stdout.strip()
+    if r.returncode != 0 or not SHA_RE.match(tree):
+        raise IntegrityError(unreadable % (label, source, "it names no tree in this checkout's object store"))
+    r = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", tree], capture_output=True, env=env)
+    if r.returncode != 0:
+        raise IntegrityError(unreadable % (label, source, "git ls-tree -r %s failed (exit %d): %s" % (
+            tree, r.returncode, r.stderr.decode("utf-8", "replace").strip() or "no message")))
+    wanted = []
+    for record in r.stdout.split(b"\0"):
+        if not record:
+            continue
+        meta, tab, path = record.partition(b"\t")
+        fields = meta.split(b" ")
+        if not tab or len(fields) != 3:
+            raise IntegrityError(unreadable % (label, source, "git ls-tree -r %s printed a record it cannot parse: %r"
+                                               % (tree, record[:200])))
+        if path == ATTRIBUTES_FILE or path.endswith(b"/" + ATTRIBUTES_FILE):
+            wanted.append((path.decode("utf-8", "replace"), fields[1].decode("ascii", "replace"),
+                           fields[2].decode("ascii", "replace")))
+    if not wanted:
+        return
+    r = subprocess.run(["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"], capture_output=True,
+                       text=True, env=env, input="".join(oid + "\n" for _, _, oid in wanted))
+    lines = r.stdout.split("\n")
+    if r.returncode != 0 or len(lines) != len(wanted) + 1 or lines[-1]:
+        raise IntegrityError(unreadable % (label, source, "git cat-file --batch-check of its %d .gitattributes "
+                                           "entries exited %d with %d lines: %s"
+                                           % (len(wanted), r.returncode, len(lines) - 1,
+                                              r.stderr.strip() or "no message")))
+    for (path, kind, oid), line in zip(wanted, lines):
+        found = line[len(oid) + 1:] if line.startswith(oid + " ") else None
+        if found not in (("blob",) if kind == "blob" else ("blob", "tree", "commit", "tag")):
+            raise IntegrityError(unreadable % (label, source, "`%s` (%s %s) reads as `%s`"
+                                               % (_shown(path), _shown(kind), oid, _shown(line))))
+
+
 def merge_tree(base, head, attr_source, label):
     """The tree `git merge-tree --write-tree` writes for head into base, with .gitattributes read from attr_source."""
+    require_readable_attributes(attr_source, label)
     r = subprocess.run(["git", "--attr-source=" + attr_source, "merge-tree", "--write-tree", "-z", "--name-only",
                         "--no-messages", base, head], capture_output=True, text=True)
     fields = r.stdout.split("\0")
@@ -361,6 +424,7 @@ def blocking_merge_attributes(entry, sources):
     require_attr_source_git()
     found = []
     for label, source in sources:
+        require_readable_attributes(source, label)
         r = subprocess.run(["git", "--attr-source=" + source, "check-attr", "-z", "merge", "--"] + paths,
                            capture_output=True, text=True)
         if r.returncode != 0:

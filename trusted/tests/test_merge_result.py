@@ -1020,6 +1020,105 @@ class UnreadableAttributeTests(Fixture):
         self.assertIn("no protected class touched", out)
 
 
+@contextlib.contextmanager
+def check_attr_rewritten(rewrite):
+    """Every `git check-attr` the judge runs really runs; rewrite(result) is what the judge then sees."""
+    real = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        r = real(argv, *args, **kwargs)
+        return rewrite(r) if "check-attr" in argv else r
+    with mock.patch.object(classify.subprocess, "run", run):
+        yield
+
+
+class CheckAttrOutputTests(Fixture):
+    """The D2 precondition (root's delta4 review of .github #69): the judge reads check-attr's verdict only from a run
+    that exited 0 and printed exactly one `merge` record for each blocking path asked about. Each case keeps the real
+    output's shape everywhere else, so the one check under test is the only thing that can refuse it."""
+    MALFORMED = "did not return exactly one `merge` record for each of the %d blocking paths asked about"
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        self.r.branch("pr", self.base)
+        self.head = self.r.commit("pr", {"README.md": "r1\n"})
+        self.r.branch("gh-readonly-queue/main/pr-1", self.base)
+        self.group = self.r.merge(self.head, "Merge pull request #1")
+        self.paths = sorted(p for p in classify.BLOCKING_PATHS
+                            if classify.BLOCKING_CLASS in classify.classes_for(self.entry(), p))
+        self.assertGreater(len(self.paths), 2)
+        self.seen = []
+
+    def entry(self):
+        return classify.repo_entry(classify.validate_manifest(json.loads(MANIFEST.read_text())), REPO)
+
+    def run_both(self, rewrite):
+        """(mode, exit code, stdout) for pull_request and merge_group with every check-attr result rewritten."""
+        def keep(r):
+            self.seen.append(r)
+            return rewrite(r)
+        out = []
+        for mode, args in (("pull_request", (self.base, self.head)),
+                           ("merge_group", (self.base, self.group))):
+            with check_attr_rewritten(keep):
+                if mode == "pull_request":
+                    code, text = judge(self.r.d, *args)
+                else:
+                    code, text = judge(self.r.d, *args, event="merge_group", base_ref=None, live=None)
+            out.append((mode, code, text))
+        # precondition: every real check-attr run exited 0 with one unspecified merge record per blocking path, so
+        # without the rewrite nothing would be refused
+        self.assertTrue(self.seen)
+        want = "".join("%s\0merge\0unspecified\0" % p for p in self.paths)
+        for r in self.seen:
+            self.assertEqual((r.returncode, r.stdout), (0, want))
+        return out
+
+    def test_the_intact_runs_are_green(self):
+        for mode, code, out in self.run_both(lambda r: r):
+            with self.subTest(mode=mode):
+                self.assertEqual(code, 0, out)
+                self.assertIn("no protected class touched", out)
+
+    def test_a_check_attr_that_fails_fails_closed(self):
+        # the run fails but its output reads as clean: only the exit code check refuses it (a mutant that ignores the
+        # code survived before this test)
+        def failing(r):
+            return subprocess.CompletedProcess(r.args, 128, r.stdout, "fatal: check-attr failed here\n")
+        for mode, code, out in self.run_both(failing):
+            with self.subTest(mode=mode):
+                self.assertEqual(code, 2, out)
+                self.assertIn("::error title=trusted protected-paths::git check-attr merge (attributes from the base) "
+                              "failed (exit 128): fatal: check-attr failed here; the judge fails closed", out)
+
+    def test_anything_but_one_merge_record_per_path_fails_closed(self):
+        def records(r):
+            fields = r.stdout.split("\0")
+            return [fields[i:i + 3] for i in range(0, len(fields) - 1, 3)]
+
+        def joined(recs, tail=""):
+            return "".join("\0".join(rec) + "\0" for rec in recs) + tail
+        variants = {
+            "a record missing": lambda recs: joined(recs[:-1]),
+            "a record repeated": lambda recs: joined(recs + recs[:1]),
+            "one path twice, another not at all": lambda recs: joined([recs[0], recs[0]] + recs[2:]),
+            "a path not asked about": lambda recs: joined([["README.md"] + recs[0][1:]] + recs[1:]),
+            "another attribute": lambda recs: joined([[recs[0][0], "diff", "unspecified"]] + recs[1:]),
+            "a partial record": lambda recs: joined(recs)[:-len("unspecified\0")],
+            "bytes after the last record": lambda recs: joined(recs, "trailing"),
+            "no output at all": lambda recs: "",
+        }
+        for name, make in variants.items():
+            with self.subTest(variant=name):
+                def rewrite(r, _make=make):
+                    return subprocess.CompletedProcess(r.args, 0, _make(records(r)), r.stderr)
+                for mode, code, out in self.run_both(rewrite):
+                    self.assertEqual(code, 2, "%s: %s" % (mode, out))
+                    self.assertIn("::error title=trusted protected-paths::git check-attr merge (attributes from the "
+                                  "base) " + self.MALFORMED % len(self.paths), out)
+
+
 class RealCommitTests(unittest.TestCase):
     """The reviewer's case on the real .github history: base = main at fa7d4abc (#62 merged after #60), head = a merge of
     #60's head bb329839 and #62's head 56828234, minus sign-image.yml and its tests, plus a README line. The head is

@@ -430,10 +430,18 @@ def blocking_merge_attributes(entry, sources):
         if r.returncode != 0:
             raise IntegrityError("git check-attr merge (attributes from %s) failed (exit %d): %s; the judge fails "
                                  "closed" % (label, r.returncode, r.stderr.strip() or "no message"))
+        # ONE RECORD PER PATH (the D2 precondition, root's delta4 review of #69): `-z` prints path NUL attr NUL value NUL
+        # for each path asked about, in order. Exactly one `merge` record for each requested path, the same paths as a
+        # multiset, nothing before, between or after: anything else fails closed by name rather than reading as clean.
         fields = r.stdout.split("\0")
-        for i in range(0, len(fields) - 2, 3):
-            path, attr, value = fields[i:i + 3]
-            if attr == "merge" and value != "unspecified":
+        records = [fields[i:i + 3] for i in range(0, len(fields) - 1, 3)]
+        if (len(fields) != 3 * len(paths) + 1 or fields[-1] or any(attr != "merge" for _, attr, _ in records)
+                or sorted(path for path, _, _ in records) != paths):
+            raise IntegrityError("git check-attr merge (attributes from %s) did not return exactly one `merge` record "
+                                 "for each of the %d blocking paths asked about (it printed %d fields: `%s`); the judge "
+                                 "fails closed" % (label, len(paths), len(fields) - 1, _shown(r.stdout[:400])))
+        for path, _, value in records:
+            if value != "unspecified":
                 found.append((label, path, value))
     return found
 

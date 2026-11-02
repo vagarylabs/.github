@@ -492,6 +492,9 @@ jobs:
           # plus the runner's own attribute files), FAILS CLOSED by name. How a protected path merges must not be chosen in an
           # unprotected file. Only paths the repository's profile makes blocking are checked, so other repositories are
           # unaffected.
+          # THE LANDED TREE TOO (LOW, root's delta4 review of #69): on pull_request the tree the merge lands is a third source. A
+          # macro split (main applies `m` to the signer while `m` is undefined; the PR adds `[attr]m binary`) sets merge on the
+          # signer in neither the base nor the head, only in what lands, which then fails every later .github PR ("in the base").
           def blocking_merge_attributes(entry, sources):
               """[(source label, path, value)] for each blocking path whose `merge` attribute is not unspecified."""
               paths = sorted(p for p in BLOCKING_PATHS if BLOCKING_CLASS in classes_for(entry, p))
@@ -2372,7 +2375,7 @@ jobs:
               if event == "pull_request":
                   judged = live_base(base, base_ref)
                   tree = landing_tree(judged, head)
-                  refuse_blocking_merge_attributes(entry, (("the base", judged), ("the head", head)))
+                  refuse_blocking_merge_attributes(entry, (("the base", judged), ("the head", head), ("the landed tree", tree)))
                   bases = len(git("merge-base", "--all", judged, head).split())
                   what = ("Judged: the live tip `%s` of `%s` (the event's base `%s` is its ancestor) against tree `%s`, what "
                           "merging head `%s` into it lands (git merge-tree --write-tree; %d merge base%s)."
@@ -2382,6 +2385,8 @@ jobs:
                       raise IntegrityError("merge group: the base %s is not an ancestor of the group commit %s; the queue lands "
                                            "that commit, so the judge fails closed" % (base, head))
                   judged, tree = base, head
+                  # The group commit IS the landed tree (main fast-forwards to it), so reading its attributes reads the landed
+                  # ones: a macro split between the base and a PR is caught here with no third source.
                   refuse_blocking_merge_attributes(entry, (("the base", base), ("the group commit", head)))
                   what = ("Judged: the merge-group base `%s` against the group commit `%s`'s own tree, what the queue lands (no "
                           "merge computed)." % (base, head))

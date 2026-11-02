@@ -775,6 +775,42 @@ class BlockingMergeAttributeTests(Fixture):
         self.assertIn(self.REFUSED, out)
         self.assertIn("in the group commit", out)
 
+    def test_a_macro_split_between_base_and_head_is_red_in_the_landed_tree(self):
+        # LOW (root's delta4 review of .github #69): main applies `m` to the signer while `m` is undefined (harmless);
+        # the PR only defines `[attr]m binary`. Neither side sets merge on the signer; the landed .gitattributes does.
+        # Read from the base and the head alone, the PR was green, and once it landed every later .github PR exited 2.
+        r = self.r
+        pad = "".join("# pad %d\n" % i for i in range(7))  # keeps the two edits apart, so the merge is clean
+        c0 = self.base_with({".gitattributes": pad})
+        r.branch("pr", c0)
+        head = r.commit("pr: define the macro", {".gitattributes": "[attr]m binary\n" + pad, "README.md": "r1\n"})
+        r.branch("main", c0)
+        base = r.commit("main: use it while it is undefined", {".gitattributes": pad + "%s m\n" % SIGNER})
+
+        def merge_attr(source):
+            return r.git("--attr-source=" + source, "check-attr", "merge", "--", SIGNER).split(": ")[-1]
+        r.branch("gh-readonly-queue/main/pr-1", base)
+        landed = r.merge(head, "Merge pull request #1")  # the real merge: what lands, and a group commit's shape
+        # preconditions: unspecified on each side, unset in what lands, and the merge does not depend on attributes
+        self.assertEqual((merge_attr(base), merge_attr(head), merge_attr(landed)), ("unspecified", "unspecified",
+                                                                                   "unset"))
+        self.assertEqual(in_repo(r.d, classify.landing_tree, base, head), r.rev(landed + "^{tree}"))
+        r.git("checkout", "-q", "--detach", head)
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 2, out)
+        self.assertIn("::error title=trusted protected-paths::%s (`%s` merge=unset in the landed tree)"
+                      % (self.REFUSED, SIGNER), out)
+        # merge_group reads the group commit, which IS the landed tree: no third source needed there
+        code, out = judge(r.d, base, landed, event="merge_group", base_ref=None, live=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn("(`%s` merge=unset in the group commit)" % SIGNER, out)
+        # the availability loss it prevents: on the landed main, an ordinary PR is refused for the base's attribute
+        r.branch("next", landed)
+        following = r.commit("next: README", {"README.md": "r2\n"})
+        code, out = self.judge(landed, following)
+        self.assertEqual(code, 2, out)
+        self.assertIn("(`%s` merge=unset in the base;" % SIGNER, out)
+
 
 class MergeGroupTests(Fixture):
     """Root's D2 direction: the binding judge runs in a merge queue. On merge_group the group commit IS what lands, so

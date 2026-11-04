@@ -47,7 +47,9 @@ jobs:
     # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
     if: github.repository != 'vagarylabs/.github'
     # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
-    runs-on: [self-hosted, Linux, X64, vl-light]
+    # merge_group takes the bridge merge-queue pool (vl-mq), so a queue candidate's trusted checks never wait
+    # behind PR light traffic; every other event stays on vl-light. Both lists are LITERALS: no variable can move it.
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64","vl-mq"]') || fromJSON('["self-hosted","Linux","X64","vl-light"]') }}
     timeout-minutes: 10
     steps:
       # The PR is DATA: exact SHAs come from the event payload, never from the PR's files.

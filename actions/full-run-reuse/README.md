@@ -39,6 +39,14 @@ Pull-request runs are not evidence: they tested the PR merged onto an older main
   green on the push. A default branch with no required_status_checks rule never reuses.
 - **`workflow_call`.** `github.workflow_ref` names the CALLING workflow, so a reusable workflow binds to its caller's
   file and runs. The receipt must be written by the caller's verdict job.
+- **Every job behind the reader carries a status function.** The reuse job is skipped on every `pull_request` and
+  `merge_group` run. A job's implicit `success()` is false when ANY ancestor was skipped, not only a direct need, so
+  a job further down with no status function in its `if:` is skipped on those runs too. A skipped required check
+  reads as passing. Voice #1147 run 41292198944 shows it: `build` succeeded and the five suites under it were
+  skipped. Give each such job `!cancelled()` and bind each direct need (`needs.<id>.result == 'success'`, or an output
+  compared equal to a non-empty literal). `!= '[]'` is not a binding: a failed need's empty output passes it. The
+  aggregate verdict job uses `always()`. Consumers enforce this: voice `scripts/ci/check-event-conditional-steps.py`
+  and platform `scripts/ci/tests/test_merge_group_readiness.py`.
 
 ## Fail-closed
 
@@ -69,6 +77,9 @@ merge-group-reuse:
 heavy-job:
   needs: [merge-group-reuse]
   if: ${{ !cancelled() && needs.merge-group-reuse.outputs.reused_run == '' }}
+later-job:   # behind the reader through heavy-job: it needs its own status function
+  needs: heavy-job
+  if: ${{ !cancelled() && needs.heavy-job.result == 'success' }}
 build:   # the verdict job, also on merge_group
   steps:
     # ...its checks; on a push with reused_run set it cites the run instead of re-judging skipped jobs...

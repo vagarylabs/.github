@@ -1,6 +1,7 @@
 # sibling-repo-read
 
-The one way a vagarylabs workflow reads a sibling repository with a freshly minted GitHub App installation token.
+The one way a vagarylabs workflow reads a sibling repository with a fresh read-only installation token: one it mints
+from a GitHub App, or broker-source-read's (`token-dir`, no App key).
 
 **Why.** A new installation token is not visible everywhere at once. A clone made about a second after minting can be
 answered `remote: Repository not found` (exit 128) with nothing wrong. vagaris #825 ("Supply vagary-core objects",
@@ -44,6 +45,33 @@ objects: its own design.
 The `token` output is for a later read the action does not cover. A later sibling clone or checkout should use the
 action itself; `trusted-workflow-integrity` refuses a raw `create-github-app-token` followed by a sibling read.
 
+**Broker tokens (`token-dir`).** Root's ruling of 2026-10-29 (core sibling-read path (a)): one shared action, broker
+backed, by composition. broker-source-read is the only broker client: it mints into its `token-dir` (a 0700
+directory strictly inside `$RUNNER_TEMP`, one 0600 file `<owner>__<name>` per repository), masks each token, waits for
+readiness, and revokes in its `mode: revoke` step. This action reads those files and nothing else:
+- exactly one token source per call: `token-dir`, or `app-id` with `private-key`, decided before anything is minted;
+- no readiness wait of its own, no mint, and `packages` refused (the broker purpose fixes the permissions);
+- each repository's git calls get that repository's token only;
+- a directory or file that is a symlink, not the runner user's, open to group or others, outside `$RUNNER_TEMP`,
+  missing for a listed repository, or not exactly one credential is refused, naming the file, before any clone;
+- it never prints, re-masks, moves or deletes a token.
+
+The App-key mode stays until C4 has landed on every consumer, then retires (check_no_source_read_app_key.py).
+
+**Sparse reads (`trees`, then `sparse`).** Two calls with the consumer's derive between them, so this action never
+runs repository code:
+1. `trees: repo:dir`: main's commit at job start with its trees and no blob (a depth-1, `--filter=blob:none` partial
+   clone, no checkout). A server that sends blobs anyway is refused. The NUL-separated path listing, the commit and
+   the directory are recorded under `$RUNNER_TEMP/sibling-repo-read/`; output `trees` is `{repo: {dir, tree, sha}}`.
+2. The consumer writes its patterns from the listing (vagary-core: `scripts/sibling_sparse.py derive --tree`).
+3. `sparse: repo:dir:patterns-file`: `sparse-checkout set --no-cone` with exactly those patterns and a checkout of
+   EXACTLY the recorded commit (main is never re-resolved between the phases). Then the promisor remote is removed, so
+   a later read outside the set is a git error, never a lazy fetch. Output `sparse-ok` lists each repository that
+   completed. An empty pattern set, a directory the tree phase did not prepare, and both phases in one call are refused.
+
+To fall back (the consumer's derive refused), remove the directory and ask for `checkouts:`; it is never in
+`sparse-ok`. Put `sparse:` in its own call when a fallback should also follow a failure.
+
 ## Use
 ```yaml
 - uses: vagarylabs/.github/actions/sibling-repo-read@<commit sha>   # pin a SHA, never @main
@@ -55,6 +83,30 @@ action itself; `trusted-workflow-integrity` refuses a raw `create-github-app-tok
     checkouts: |
       vagary-voice:${{ runner.temp }}/siblings/vagary-voice
     packages: read          # optional: only for a GHCR pull of the listed repositories' packages
+```
+
+Broker-backed and sparse (no App key; the job needs `id-token: write` for broker-source-read):
+```yaml
+- uses: vagarylabs/.github/actions/broker-source-read@<commit sha>
+  with: {purpose: build_checkout, repository: vagarylabs/vagary-platform, provider: ..., service_account: ...,
+         audience: ..., token-dir: "${{ runner.temp }}/broker-tokens"}
+- id: tree
+  uses: vagarylabs/.github/actions/sibling-repo-read@<commit sha>
+  with:
+    token-dir: ${{ runner.temp }}/broker-tokens
+    repositories: vagary-platform
+    trees: vagary-platform:${{ runner.temp }}/siblings/vagary-platform
+- run: python3 scripts/sibling_sparse.py derive --tree "$TREE" > "$RUNNER_TEMP/platform-patterns.txt"
+  env: {TREE: "${{ fromJSON(steps.tree.outputs.trees)['vagary-platform'].tree }}"}
+- id: sparse
+  uses: vagarylabs/.github/actions/sibling-repo-read@<commit sha>
+  with:
+    token-dir: ${{ runner.temp }}/broker-tokens
+    repositories: vagary-platform
+    sparse: vagary-platform:${{ runner.temp }}/siblings/vagary-platform:${{ runner.temp }}/platform-patterns.txt
+- if: ${{ always() }}
+  uses: vagarylabs/.github/actions/broker-source-read@<same sha>
+  with: {mode: revoke, purpose: build_checkout, token-dir: "${{ runner.temp }}/broker-tokens"}
 ```
 
 ## Tests
@@ -73,3 +125,12 @@ Local bare remotes cover the bare and pinned modes, the scope check, and a missi
 - read.py's git ignores a PATH entry a step can prepend;
 - a non-empty destination refuses;
 - a checkout not at main's commit fails.
+
+Token directory: a clone with no App token, each repository's git calls getting only its own token, the helper never
+inheriting one, and each refusal (missing file, group-readable file, open directory, a line break or space, an empty
+token, a symlinked file or directory, outside or without `$RUNNER_TEMP`, an App token as well) with nothing cloned and
+no token printed; the source check for every combination; the read step through its own shell with no App key.
+Sparse: exactly the patterns materialized, the outside blob never in the object store then or after (no promisor),
+the tree phase's commit kept when main moves, both phases through the read step's shell, a filter-ignoring server
+refused, the token-dir composition, the fallback, and each refusal. ci.yml also runs the token-dir and sparse paths on a
+real runner against the public vagarylabs/bulk with a fake credential.

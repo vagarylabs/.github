@@ -1,8 +1,11 @@
 # sign-image: the ONE shared keyless image signer for Vagary Labs (cosign retirement program, G3).
 #
-# A reusable workflow, not a composite action: GitHub evaluates the job-level `if:` below before it schedules
-# anything, a caller cannot edit it, and the certificate's identity (the SAN) is THIS file on main of
-# vagarylabs/.github, whichever product called it. Design: SHARED-SIGNING-CAPABILITY.md (cc:ui lane), 2.2-2.6.
+# A reusable workflow, not a composite action: a caller cannot edit this file, and the certificate's identity (the
+# SAN) is THIS file on main of vagarylabs/.github, whichever product called it. The job-level `if:` below is only a
+# coarse early filter: GitHub expressions compare strings CASE-INSENSITIVELY, so it can admit a caller ref that differs
+# from a listed one in case. The exact gate is the BINDING lookup in step 2 (the namespace table keyed by the caller's
+# workflow_ref): an exact, case-sensitive Python dict lookup that runs before any OIDC use and refuses an unlisted
+# caller. Design: SHARED-SIGNING-CAPABILITY.md (cc:ui lane), 2.2-2.6.
 #
 # CALLER (one job; the permissions are exactly these two, nothing else):
 #
@@ -70,9 +73,14 @@ permissions: {}
 
 jobs:
   sign:
-    # ADMISSION. GitHub evaluates this before it schedules the job, and a caller cannot edit it. A job-level `if:`
-    # sees only the github, needs, vars and inputs contexts, so every term is a documented `github` field. In a
-    # called workflow `github.*` is the CALLER's: workflow_ref is the caller's file, ref and sha are the caller's run.
+    # ADMISSION, a coarse early filter and NOT the gate: GitHub evaluates this before it schedules the job and a
+    # caller cannot edit it, but `==` and `contains()` compare case-insensitively here, so only the BINDING lookup in
+    # step 2 (exact, case-sensitive) decides who may sign what. A job-level `if:` sees only the github, needs, vars and
+    # inputs contexts, so every term is a documented `github` field. In a called workflow `github.*` is the CALLER's:
+    # workflow_ref is the caller's file, ref and sha are the caller's run.
+    # EVENTS. push and workflow_dispatch for every caller; workflow_run for vagary-voice's caller file only (the one
+    # product whose signing is triggered by a workflow_run), so a workflow_run-triggered call from any other caller
+    # is refused here and, with the BINDING, nowhere else admitted.
     # Owner 328526494 = vagarylabs. Repository ids, in order: vagary-platform, vagary-voice, vagaris, vagary-core,
     # vagary-earnings. The seven caller files, one signing workflow per product (vagaris has three).
     if: >-
@@ -87,7 +95,9 @@ jobs:
       "vagarylabs/vagary-earnings/.github/workflows/cosign-sign-image.yml@refs/heads/main"]'), github.workflow_ref)
       && github.ref == 'refs/heads/main'
       && github.ref_type == 'branch'
-      && contains(fromJSON('["push","workflow_dispatch","workflow_run"]'), github.event_name)
+      && (contains(fromJSON('["push","workflow_dispatch"]'), github.event_name)
+      || (github.event_name == 'workflow_run'
+      && github.workflow_ref == 'vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main'))
     runs-on: [self-hosted, vl-builder]
     timeout-minutes: 15
     permissions:
@@ -98,7 +108,7 @@ jobs:
       record: ${{ steps.finish.outputs.record }}
     steps:
       # 1. MISROUTING GUARD ONLY. The marker proves the job landed on the disposable builder class; it is not an
-      # authorization (the admission `if:` and the runner group are). The marker function is vagary-voice
+      # authorization (the BINDING lookup in step 2 and the runner group are). The marker function is vagary-voice
       # scripts/deploy/build-publish-image.sh:11-22, unchanged: the marker and every ancestor directory must be
       # root-owned, not group/other-writable and not a symlink, so no non-root user can plant it.
       - name: Builder-class preflight

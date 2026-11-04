@@ -2,6 +2,9 @@
 name: ci
 on:
   pull_request:
+  # Root's D2 direction: the binding protected-paths judge runs in a merge queue on this repository, and a queue
+  # waits for every required check on its group commit. Inert until root enables the queue.
+  merge_group:
   push:
     branches: [main]
 permissions:
@@ -182,11 +185,11 @@ jobs:
         run: bash actions/secret-scan-scope/test_scope.sh
 
   timeout-floor-self-scan:
-    # The floor's own repo. The org ruleset's trusted timeout-floor job skips vagarylabs/.github (this public repo has
-    # no bridge runner), so without this job the rule would never see the one repo that defines it. Same classify.py
-    # mode and manifest, on this repo's HEAD tree, in the manifest's mode (report today: fails only on an integrity
-    # error, exactly as in every other repo). Like the ruleset job it reads the head tree only: the head commit alone
-    # (fetch-depth 1; the PR head, not the default merge commit), and no base.
+    # The floor's own repo. The org ruleset's trusted-workflow-integrity job, whose timeout-floor step this mirrors, skips
+    # vagarylabs/.github (this public repo has no bridge runner), so without this job the rule would never see the one
+    # repo that defines it. Same classify.py mode and manifest, on this repo's HEAD tree, in the manifest's mode (report
+    # today: fails only on an integrity error, exactly as in every other repo). Like the ruleset step it reads the head
+    # tree only, here the head commit alone (fetch-depth 1; the PR head, not the default merge commit), and no base.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -209,8 +212,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Full history: test_merge_result.RealCommitTests replays the B1 case on this repository's own commits
+          # (fa7d4abc, bb329839, 56828234), and TRUSTED_REQUIRE_REAL_COMMITS below makes their absence a failure.
+          fetch-depth: 0
           persist-credentials: false
       - name: trusted ruleset workflows (manifest, classifier, render drift, invariants)
+        env:
+          TRUSTED_REQUIRE_REAL_COMMITS: "1"
         run: python3 -m unittest discover -s trusted/tests -p 'test_*.py' -v
 
   no-hosted-runners-guard:

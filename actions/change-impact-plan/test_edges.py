@@ -1746,14 +1746,58 @@ class ImportAttributionTest(unittest.TestCase):
         # F18 (root, 2026-10-29): census part 2 of #33 round 4 timed the directory pass out on vagary-core, and the
         # TimeoutExpired escaped `check` uncaught. Any pass's timeout is now a refusal (FULL), named as one.
         self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        real, greps = subprocess.run, []
+        def slow_grep(*a, **k):
+            if "grep" in a[0]:
+                greps.append(k.get("timeout"))
+                raise subprocess.TimeoutExpired(a[0], k.get("timeout", 0))
+            return real(*a, **k)
+        with patch.object(E.subprocess, "run", slow_grep):
+            with self.assertRaisesRegex(ValueError, r"reader scan timed out: `git grep` ran over its 15 s limit on both "
+                                                    r"attempts; reader closure unproven"):
+                E.scan(self.repo, reviewed_cfg(IMPORT_CFG))
+        self.assertEqual(greps, [15, 15], "1.7.3: one retry after a timeout, at the unscaled ceiling")
+
+    def test_a_git_call_that_times_out_once_is_retried(self):
+        """1.7.3 (spine, core #936): a loaded runner's one slow `git grep` no longer costs the reduced plan."""
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        want = E.scan(self.repo, reviewed_cfg(IMPORT_CFG))
+        real, greps = subprocess.run, []
+        def slow_once(*a, **k):
+            if "grep" in a[0]:
+                greps.append(list(a[0]))
+                if len(greps) == 1:
+                    raise subprocess.TimeoutExpired(a[0], k.get("timeout", 0))
+            return real(*a, **k)
+        with patch.object(E.subprocess, "run", slow_once):
+            self.assertEqual(E.scan(self.repo, reviewed_cfg(IMPORT_CFG)), want)
+        self.assertEqual(greps[0], greps[1], "the timed-out `git grep` is retried once, then the scan goes on")
+
+    def test_check_exits_3_on_a_reader_timeout(self):
+        """A reader-scan timeout is its own exit, so the action names it ("reader scan timed out") instead of folding it
+        into "reader closure unproven"; any other refusal is unchanged."""
+        self.files(**{"services__a__t.mjs": 'import "../../scripts/x.mjs";\n', "scripts__x.mjs": "export {};\n"})
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/ci-plan.json").write_text(json.dumps(reviewed_cfg(IMPORT_CFG)))
         real = subprocess.run
         def slow_grep(*a, **k):
             if "grep" in a[0]:
                 raise subprocess.TimeoutExpired(a[0], k.get("timeout", 0))
             return real(*a, **k)
-        with patch.object(E.subprocess, "run", slow_grep):
-            with self.assertRaisesRegex(ValueError, r"reader closure unproven: timeout: `git grep` ran over its \d+ s limit"):
-                E.scan(self.repo, reviewed_cfg(IMPORT_CFG))
+        buf = io.StringIO()
+        with patch.object(E.subprocess, "run", slow_grep), redirect_stdout(buf):
+            rc = E.main(["check", "--config", ".github/ci-plan.json", "--repo", str(self.repo)])
+        self.assertEqual(rc, 3)
+        self.assertIn("FAIL unresolved (reader scan timed out: `git grep`", buf.getvalue())
+
+    def test_the_action_names_a_reader_timeout(self):
+        text = (Path(__file__).with_name("action.yml")).read_text()
+        step = text.split("id: readers", 1)[1].split("    - name:", 1)[0]
+        self.assertIn('if [ "$rc" -eq 3 ]; then', step)
+        self.assertIn('reason="reader scan timed out; full validation required"', step)
+        self.assertIn('elif [ "$rc" -ne 0 ]; then\n            reason="reader closure unproven; full validation required"', step)
+        self.assertEqual(text.count("CHANGE_IMPACT_GIT_TIMEOUT_SCALE: ${{ inputs.git-timeout-scale }}"), 4,
+                         "every step that runs plan.py or edges.py gets the scale")
 
     def test_the_action_judges_the_candidate_with_the_base_config_only(self):
         # A PR cannot use its own new registry entries: action.yml runs `check` with the BASE copy of the config and the

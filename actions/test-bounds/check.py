@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import posixpath
@@ -125,6 +126,142 @@ CHILD_PROCESS = {"child_process": {"spawn", "spawnSync", "exec", "execSync", "ex
 CHILD_PROCESS["node:child_process"] = CHILD_PROCESS["child_process"]
 SUBPROCESS_NAMES = set().union(*CHILD_PROCESS.values())
 SG_BATCH = 400
+
+
+def check_digest() -> str:
+    """The digest of what this check DETECTS: check.py, its rules, and the glob semantics it scopes by. A baseline
+    records the digest it was written under (K2 D8, guard 1): a raise is only ever allowed in a change whose check
+    detects differently from the one the base's baseline was written by."""
+    h = hashlib.sha256()
+    for path in [HERE / "check.py", *sorted((HERE / "rules").glob("*.yml")), HERE.parent / "change-impact-plan" / "plan.py"]:
+        h.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    lock = HERE.parent.parent / "release-assets.lock"  # the ast-grep binary the action runs is part of the detection
+    if lock.exists():
+        pins = [line for line in lock.read_text(encoding="utf-8").splitlines() if line.startswith("ast-grep ")]
+        h.update(b"ast-grep\0" + "\n".join(pins).encode() + b"\0")
+    return h.hexdigest()
+
+
+ACTION_PIN = re.compile(r"^vagarylabs/\.github/actions/test-bounds@([0-9a-f]{40})$")
+
+
+def job_action_pins(text: str, job: str | None) -> list[str]:
+    """The refs this check is pinned at by the step `uses:` of one job (or of every job, when `job` is None) in a
+    workflow's text: only a step's own `uses:` key counts, never a comment, a `run:` body or a block scalar (D8 guard
+    1, root's #68 delta B2'). A form this reader does not parse yields no pin, so the guard fails SAFE: no lock-in,
+    and the pin bump is red until its findings are fixed."""
+    pins, in_jobs, job_indent, cur_job, steps_indent, step_prop, block = [], False, None, None, None, None, None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if indent > block:
+                continue  # block scalar content
+            block = None
+        if indent == 0:
+            in_jobs, cur_job, steps_indent, step_prop = stripped == "jobs:", None, None, None
+            continue
+        if not in_jobs:
+            continue
+        if job_indent is None and re.fullmatch(r"[A-Za-z_][\w-]*:\s*", stripped):
+            job_indent = indent
+        if indent == job_indent and re.match(r"[A-Za-z_][\w-]*:", stripped):
+            cur_job, steps_indent, step_prop = stripped.split(":", 1)[0], None, None
+            continue
+        if cur_job is None or (job is not None and cur_job != job):
+            continue
+        if stripped == "steps:":
+            steps_indent, step_prop = indent, None
+            continue
+        if steps_indent is None or indent <= steps_indent:
+            continue
+        key_text = stripped
+        if stripped.startswith("- "):
+            step_prop = indent + 2
+            key_text = stripped[2:].lstrip()
+        elif indent != step_prop:
+            m = re.match(r"([A-Za-z_][\w-]*):\s*[|>][-+0-9]*\s*$", stripped)
+            if m:
+                block = indent
+            continue
+        m = re.match(r"([A-Za-z_][\w-]*):\s*(.*)$", key_text)
+        if not m:
+            continue
+        value = re.sub(r"\s+#.*$", "", m.group(2)).strip().strip("'\"")
+        if re.match(r"[|>][-+0-9]*$", value):
+            block = step_prop
+            continue
+        if m.group(1) == "uses":
+            pm = ACTION_PIN.match(value)
+            if pm:
+                pins.append(pm.group(1))
+    return pins
+
+
+def running_context(env: dict, here: Path = HERE) -> tuple[str, str, str] | None:
+    """(workflow path, job id, this action's ref) of the Actions run executing this check, or None. The ref is read
+    from where the runner put this action (`_actions/vagarylabs/.github/<ref>/...`), and the workflow and job from
+    GITHUB_WORKFLOW_REF and GITHUB_JOB, which GitHub documents a step cannot overwrite through $GITHUB_ENV. They must
+    equal TB_CTX_WORKFLOW_REF and TB_CTX_JOB, which action.yml sets from the `github` context (an expression no step
+    can write): a write to either source makes the context unreadable, so no debt is locked in (#68 delta 2 LOW)."""
+    parts = here.parts
+    if "_actions" not in parts:
+        return None
+    i = parts.index("_actions")
+    if parts[i + 1:i + 3] != ("vagarylabs", ".github") or not re.fullmatch(r"[0-9a-f]{40}", parts[i + 3] if len(parts) > i + 3 else ""):
+        return None
+    wref, job = env.get("GITHUB_WORKFLOW_REF", ""), env.get("GITHUB_JOB", "")
+    if (wref, job) != (env.get("TB_CTX_WORKFLOW_REF", ""), env.get("TB_CTX_JOB", "")):
+        return None
+    m = re.fullmatch(r"[^/]+/[^/]+/(\.github/workflows/[^@]+)@.+", wref)
+    if not (m and job):
+        return None
+    return m.group(1), job, parts[i + 3]
+
+
+PIN_NOT_MOVED = "this change does not move the check's pin, so there is no new debt to lock in"
+
+
+def lock_in_refusal(root: Path, change: dict | None, running: tuple[str, str, str] | None, in_actions: bool,
+                    digest: str) -> str | None:
+    """D8 guard 1 (root's #68 rulings): None when this change is a DETECTION change, which may lock debt in; else why
+    it is not. Both must hold (root's tightening, delta 2): (a) the running job's pin moved, and (b) the base
+    baseline's recorded check_digest is not the running check's. A base baseline with no digest was written by a check
+    from before digests, so it differs. In Actions an unreadable running context locks nothing in (B1'')."""
+    if not change or change["base_cfg"] is None:
+        return PIN_NOT_MOVED
+    if in_actions and running is None:
+        return ("the running check's context is unreadable (an action run from a workspace checkout or pinned by a "
+                "tag, a reusable workflow, or GITHUB_WORKFLOW_REF / GITHUB_JOB missing or not the github context's), "
+                "so no pin move is proven and no debt is locked in")
+    if not pin_moved(root, change["sha"], running):
+        return PIN_NOT_MOVED
+    if change["base_cfg"].get("check_digest") == digest:
+        return ("this change moves the pin to a check that detects identically (the base baseline's check_digest is "
+                "the running check's), so there is no new debt to lock in")
+    return None
+
+
+def pin_moved(root: Path, base: str, running: tuple[str, str, str] | None) -> bool:
+    """D8 guard 1: this change moves the check's pin. In Actions: the running job's one test-bounds step pins the
+    running action's ref at the head, and pinned another ref at the base. Outside Actions (write-baseline, a local
+    check): the pins of every job differ between base and head; CI then judges the strict form."""
+    def at_base(path: str) -> str:
+        r = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root, capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+    if running is not None:
+        wf, job, ref = running
+        head_text = (root / wf).read_text(encoding="utf-8") if (root / wf).is_file() else ""
+        head_pins, base_pins = job_action_pins(head_text, job), job_action_pins(at_base(wf), job)
+        return head_pins == [ref] and len(base_pins) == 1 and base_pins[0] != ref
+    head, before = set(), set()
+    for f in tracked_files(root):
+        if f.startswith(".github/workflows/") and f.endswith((".yml", ".yaml")):
+            head |= set(job_action_pins((root / f).read_text(encoding="utf-8"), None))
+            before |= set(job_action_pins(at_base(f), None))
+    return bool(head) and head != before
 
 
 class Refusal(Exception):
@@ -423,10 +560,13 @@ def load_config(text: str, where: str) -> dict:
                                              and all(isinstance(r, str) and isinstance(n, int) and n >= 1
                                                      for r, n in v.items()) for f, v in counts.items())):
         raise Refusal(f"{where}: `counts` must map path -> {{rule: count >= 1}}")
-    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts"}
+    digest = cfg.get("check_digest")
+    if digest is not None and not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise Refusal(f"{where}: `check_digest` must be the 64-hex digest write-baseline records")
+    unknown = set(cfg) - {"schema", "check", "trees", "exclude", "launchers", "counts", "check_digest"}
     if unknown:
         raise Refusal(f"{where}: unknown keys {sorted(unknown)}")
-    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts}
+    return {"trees": trees, "exclude": exclude, "launchers": launchers, "counts": counts, "check_digest": digest}
 
 
 class Scope:
@@ -572,11 +712,38 @@ rule:
   any:
     - pattern: const $N = promisify($X)
     - pattern: const $N = util.promisify($X)
+    - pattern: let $N = promisify($X)
+    - pattern: let $N = util.promisify($X)
+    - pattern: var $N = promisify($X)
+    - pattern: var $N = util.promisify($X)
 ---
 id: a.require
 language: LANG
-rule: { pattern: "const { $$$P } = require($S)" }
+rule:
+  any:
+    - pattern: "const { $$$P } = require($S)"
+    - pattern: "let { $$$P } = require($S)"
+    - pattern: "var { $$$P } = require($S)"
+---
+id: a.module
+language: LANG
+rule:
+  any:
+    - pattern: const $N = require($S)
+    - pattern: let $N = require($S)
+    - pattern: var $N = require($S)
+---
+id: a.member
+language: LANG
+rule:
+  any:
+    - pattern: const $N = $M.$P
+    - pattern: let $N = $M.$P
+    - pattern: var $N = $M.$P
 """
+# The forms of an import of a child-process module: a default or namespace binding (the module object) and named
+# specifiers, in any combination (`import cp, { execFile as ef } from "node:child_process"`).
+_IMPORT_FORMS = re.compile(r"\Aimport\s+(?!type\b)(?P<clause>[^'\"]+?)\s+from\s*(?P<q>['\"])(?P<src>[^'\"\n]+)(?P=q)\s*;?\s*\Z", re.S)
 
 
 def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
@@ -584,20 +751,38 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
     destructured require (`const { exec: x } = require("child_process")`), or a promisify() of either. Treating a
     name as a child process RAISES its floor (60 s -> 120 s), so this resolution can only add findings."""
     out = {f: set() for f in files}
+    mods = {f: set() for f in files}  # local names bound to a child-process MODULE object
     by_lang = {}
     for f in files:
         by_lang.setdefault(LANGUAGE_OF[posixpath.splitext(f)[1]], []).append(f)
-    promised = []
+    promised, members = [], []
     for lang, group in by_lang.items():
         for m in sg_scan(tree.root, _ALIAS_RULES.replace("LANG", lang), group):
             f, mv = m["file"], m.get("metaVariables", {})
             if m["ruleId"] == "a.import":
-                src = re.search(r"(['\"])([^'\"\n]+)\1\s*;?\s*$", m["text"])
-                parsed = _parse_import(m["text"])
-                names = CHILD_PROCESS.get(src.group(2) if src else "", set())
-                for local, imported in (parsed or {}).items():
-                    if imported in names:
-                        out[f].add(local)
+                im = _IMPORT_FORMS.match(m["text"].strip())
+                names = CHILD_PROCESS.get(im.group("src") if im else "", set())
+                if not names:
+                    continue
+                clause = im.group("clause")
+                named = re.search(r"\{(?P<specs>[^{}]*)\}", clause)
+                for spec in (named.group("specs").split(",") if named else []):
+                    s2 = _SPEC.match(spec.strip())
+                    if s2 and s2.group("imp") in names:
+                        out[f].add(s2.group("local") or s2.group("imp"))
+                head = re.sub(r"\{[^{}]*\}", "", clause)
+                for part in head.split(","):
+                    part = part.strip()
+                    ns = re.fullmatch(r"\*\s+as\s+([A-Za-z_$][\w$]*)", part)
+                    if ns:
+                        mods[f].add(ns.group(1))
+                    elif NAME.match(part):
+                        mods[f].add(part)
+            elif m["ruleId"] == "a.module":
+                if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
+                    mods[f].add(mv["single"]["N"]["text"])
+            elif m["ruleId"] == "a.member":
+                members.append((f, mv["single"]["M"]["text"], mv["single"]["P"]["text"], mv["single"]["N"]["text"]))
             elif m["ruleId"] == "a.require":
                 if mv.get("single", {}).get("S", {}).get("text", "").strip("'\"") in CHILD_PROCESS:
                     for entry in mv.get("multi", {}).get("P", []):
@@ -606,9 +791,13 @@ def child_process_aliases(tree: Tree, files: list[str]) -> dict[str, set[str]]:
                             out[f].add(parts[-1])
             elif m["ruleId"] == "a.promisify":
                 promised.append((f, mv["single"]["X"]["text"], mv["single"]["N"]["text"]))
-    for _ in range(2):  # promisify of an alias
+    for f, mod, prop, n in members:  # const run = cp.spawnSync
+        if mod in mods[f] and prop in SUBPROCESS_NAMES:
+            out[f].add(n)
+    for _ in range(2):  # promisify of an alias, or of a module member (promisify(cp.execFile))
         for f, x, n in promised:
-            if x in SUBPROCESS_NAMES or x in out[f]:
+            mm = re.fullmatch(r"([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)", x)
+            if x in SUBPROCESS_NAMES or x in out[f] or (mm and mm.group(1) in mods[f] and mm.group(2) in SUBPROCESS_NAMES):
                 out[f].add(n)
     return out
 
@@ -745,11 +934,14 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         if parsed[f] != 1 and (tree.root / f).read_bytes().strip():
             unparsable.setdefault((f, 0), f"ast-grep parsed it {parsed[f]} time(s), not once: the scan cannot vouch "
                                           "for it (non-UTF-8 bytes, a file over ast-grep's size limit, or a configuration that hides the file)")
+    # (file, span) -> EVERY declared launcher whose rule matched that hook. Two launchers may share a name in different
+    # modules (vagaris: server's and packages/db's startEmbeddedPostgresTestDatabase); the hook's own import binding
+    # picks between them below, never the order the rules happened to match in.
     launcher_hits = {}
     for m in matches:
         if m["ruleId"].startswith("launcher."):
             v = m["metaVariables"]["single"]["V"]
-            launcher_hits[(m["file"], _span(v["range"]))] = launchers[int(m["ruleId"].split(".")[1])]
+            launcher_hits.setdefault((m["file"], _span(v["range"])), []).append(launchers[int(m["ruleId"].split(".")[1])])
     bounds = [m for m in matches if m["ruleId"].startswith(RULE + ".")]
     # Names to resolve, and the files that read them.
     need = {}
@@ -757,8 +949,8 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         text = m["metaVariables"]["single"]["V"]["text"].strip()
         if NAME.match(text):
             need.setdefault(m["file"], set()).add(text)
-    for (f, _), la in launcher_hits.items():
-        need.setdefault(f, set()).add(la["name"])
+    for (f, _), las in launcher_hits.items():
+        need.setdefault(f, set()).update(la["name"] for la in las)
     resolved = _resolve_all(tree, need)
     # A condition-kind `timeout` option whose callee is an identifier may be an aliased child process (#60 delta L1).
     alias_files = sorted({m["file"] for m in bounds if m["ruleId"] == RULE + ".option.condition"
@@ -780,14 +972,16 @@ def census(tree: Tree, files: list[str], launchers: list[dict]) -> dict:
         floor = FLOORS_S[kind] * UNIT[lang]
         rec = {"line": _line(v["range"]), "rule": RULE, "position": position, "kind": kind,
                "value": re.sub(r"\s+", " ", text)[:120], "floor": floor, "status": "finding", "reason": "", "mark": None}
-        la = launcher_hits.get((f, _span(v["range"]))) if kind == "hook" else None
-        if la is not None:
-            ok, why = resolved.get((f, la["name"]), (None, "not resolved"))
-            if isinstance(ok, tuple) and ok == ("module", la["module"], la["name"]):
+        las = launcher_hits.get((f, _span(v["range"]))) if kind == "hook" else None
+        if las:
+            proven = [la for la in las if resolved.get((f, la["name"]), (None, ""))[0] == ("module", la["module"], la["name"])]
+            if proven:  # a hook calling two launchers must outlive the slower: the highest floor
+                la = max(proven, key=lambda x: x["hook_floor_ms"])
                 floor = la["hook_floor_ms"]
                 rec["floor"], rec["reason"] = floor, f"launcher {la['name']} ({la['module']}): floor {floor}"
             else:
-                rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
+                la = las[0]
+                rec["reason"] = f"launcher {la['name']} not proven by binding: {resolved.get((f, la['name']), (None, 'not resolved'))[1]}"
         value, why = _value_of(text, lang, f, resolved)
         if value is not None and value >= floor:
             rec["status"], rec["reason"] = "cleared", (rec["reason"] + "; " if rec["reason"] else "") + why
@@ -988,26 +1182,75 @@ def judge(found: dict, allowed: dict) -> tuple[list[str], list[str]]:
     return problems, notices
 
 
-def base_raises(committed: dict, base: dict) -> list[str]:
-    return [f"{f}: the committed baseline allows {n}, the base allowed {base.get(f, 0)}: a raise of the baseline itself"
-            for f, n in sorted(committed.items()) if n > base.get(f, 0)]
+def base_raises(committed: dict, base: dict, found: dict, detection_changed: bool, identical: set,
+                base_tree_found: dict, same_debt: set | None = None,
+                refusal: str = PIN_NOT_MOVED) -> tuple[list[str], list[str], list[tuple[str, int, int]]]:
+    """(problems, notices, locked) for the committed counts of UNTOUCHED files against the base's (K2 D8). A raise is
+    refused unless all of root's guards hold (11-01, and the #68 RC):
+      1. the change is a detection change (`detection_changed`, lock_in_refusal): the running job's PIN of this check
+         moved, read from its workflows at the base and at the head, never from a field the baseline declares, and
+         the base baseline was written by a check that detects differently (`refusal` says why not);
+      2. the file is byte-identical at the base (`identical`), and the BASE TREE, censused under the running check,
+         already holds the same findings (`base_tree_found`, and by identity `same_debt`: the same line, position,
+         kind and value, so a swap of which bound is short cannot keep the count), censused under the BASE's own
+         configuration (its launchers): so a change elsewhere, such as a lowered constant an untouched file imports
+         or a removed launcher, can never pass its new findings off as old debt;
+      3. the raise goes to EXACTLY that count: committed = base tree = head;
+      4. every raised file is returned in `locked`, for the summary."""
+    problems, notices, locked = [], [], []
+    for f, n in sorted(committed.items()):
+        b, held, was = base.get(f, 0), found.get(f, 0), base_tree_found.get(f, 0)
+        if n <= b:
+            continue
+        why = None
+        if not detection_changed:
+            why = refusal
+        elif f not in identical:
+            why = "the file is not byte-identical at the base"
+        elif was != held:
+            why = (f"the base tree holds {was} finding(s) in it under this check, the head {held}: a change elsewhere "
+                   "(an imported constant, a launcher) added them, so they are new, not old debt")
+        elif same_debt is not None and f not in same_debt:
+            why = ("the base tree holds the same count but not the same findings (line, position, value): a change "
+                   "elsewhere swapped which bound is short")
+        elif n != held:
+            why = f"a detection change may lock in exactly the {held} finding(s) the file holds, not {n}"
+        if why:
+            problems.append(f"{f}: the committed baseline allows {n}, the base allowed {b}: a raise of the baseline "
+                            f"itself ({why})")
+        else:
+            locked.append((f, b, n))
+            notices.append(f"{f}: debt locked in by a detection change: {b} -> {n} (byte-identical at the base, and the "
+                           "base tree holds the same findings under this check)")
+    return problems, notices, locked
 
 
-def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tuple[list[str], list[str], set]:
-    """One rule's judgement: (problems, notices, allow_raise). `found`/`committed` map file -> count; `change` is
-    pr_change()'s result for this rule, or None without a base."""
+def analyze(found: dict, committed: dict, change: dict | None, event: str, detection_changed: bool = False,
+            identical: frozenset = frozenset(), base_tree_found: dict | None = None,
+            same_debt: set | None = None, refusal: str = PIN_NOT_MOVED) -> tuple[list[str], list[str], set, list]:
+    """One rule's judgement: (problems, notices, allow_raise, locked). `found`/`committed` map file -> count; `change`
+    is pr_change()'s result for this rule, or None without a base. `locked` lists the untouched files whose debt a
+    detection change locks in (base_raises)."""
     if change is None:
         problems, notices = judge(found, committed)
         return problems, notices + ["no base commit given: every file is judged against the committed baseline; the "
-                                    "touched-file, raise and narrowing checks need --base"], set()
+                                    "touched-file, raise and narrowing checks need --base"], set(), []
     touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
     keep = lambda d: {f: n for f, n in d.items() if f not in touched}  # noqa: E731
     problems, notices = judge(keep(found), keep(committed))
+    locked = []
     if change["base_counts"] is not None:
-        problems += base_raises(keep(committed), change["base_counts"])
+        p, n, locked = base_raises(keep(committed), change["base_counts"], keep(found), detection_changed, identical,
+                                   base_tree_found or {}, same_debt, refusal)
+        problems += p
+        notices += n
     else:
         notices.append(f"the base {change['sha'][:12]} has no baseline: this change introduces it")
-    allow = set()
+    # Under a detection change, write-baseline --base may lock in an untouched, byte-identical file's findings (the
+    # debt the base tree held); otherwise nothing untouched may rise.
+    allow = ({f for f, n in keep(found).items() if n > keep(committed).get(f, 0) and f in identical
+              and (base_tree_found or {}).get(f, 0) == n and (same_debt is None or f in same_debt)}
+             if detection_changed else set())
     for g in change["groups"]:
         head = sum(found.get(f, 0) for f in g["now"])
         was = sum(change["base_found"].get(f, 0) for f in g["old"])
@@ -1036,7 +1279,7 @@ def analyze(found: dict, committed: dict, change: dict | None, event: str) -> tu
                 else:
                     notices.append(f"{f}: {n} finding(s), the baseline lists {listed}: a gain; write-baseline locks "
                                    "it in")
-    return problems, notices, allow
+    return problems, notices, allow, locked
 
 
 def baseline_write(found: dict, old: dict, seed: bool, allow: set) -> tuple[dict | None, str]:
@@ -1138,7 +1381,7 @@ def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
     res = census(base_tree, old_paths, head_cfg["launchers"])
     renamed_out = [(frm, to) for status, frm, to in changes
                    if status[:1] == "R" and scope.scanned(frm) and not scope.scanned(to)]
-    return {"sha": sha, "groups": groups, "base_cfg": base_cfg,
+    return {"sha": sha, "groups": groups, "base_cfg": base_cfg, "base_tree": base_tree,
             "base_counts_all": base_cfg["counts"] if base_cfg else None, "base_found_all": counts_of(res["findings"]),
             "base_marked": [{"file": f, "line": r["line"], "reason": r["mark"]} for f, recs in res["findings"].items()
                             for r in recs if r["status"] == "marked"],
@@ -1237,7 +1480,7 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
         merge_group.base_sha; a `base` input that names any other commit is refused, and so is a base equal to the
         head;
       - push takes the payload's `before` and ignores the input; all zeros (a branch's first push) is no base, and
-        the run says so;
+        the run says so; a push outside the default branch is refused (#60 delta2 LOW);
       - workflow_dispatch alone takes the input as given;
       - every other event is refused.
     Outside Actions (a local or tool run) the input is taken as given, except that a PR or merge-group --event needs
@@ -1260,7 +1503,15 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
                 raise Refusal(f"the {event} event's base is the head itself")
             return want
         if event == "push":
-            before = _payload(env, event).get("before", "")
+            payload = _payload(env, event)
+            ref, default = payload.get("ref"), (payload.get("repository") or {}).get("default_branch")
+            if not (isinstance(ref, str) and isinstance(default, str) and default):
+                raise Refusal("the push event carries no ref or default branch")
+            if ref != f"refs/heads/{default}":
+                raise Refusal(f"a push to {ref} is not a push to the default branch {default}: this check's verdicts "
+                              "come from pull_request, merge_group, default-branch push and workflow_dispatch runs "
+                              "(a feature branch's first push has no base, so it would pass unjudged)")
+            before = payload.get("before", "")
             if not (isinstance(before, str) and re.fullmatch(r"[0-9a-f]{40}", before)):
                 raise Refusal("the push event carries no `before` commit")
             return None if ZERO.fullmatch(before) else before
@@ -1300,7 +1551,8 @@ def load_head_config(root: Path) -> dict:
     return load_config(path.read_text(encoding="utf-8"), BASELINE_PATH)
 
 
-def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
+def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str, str, str] | None = None,
+        in_actions: bool = False) -> dict:
     cfg = load_head_config(root)
     files = tracked_files(root)
     scope = Scope(cfg)
@@ -1320,17 +1572,46 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     if change:
         problems += [f"{frm} is renamed to {to}, outside the scanned trees: a test file that leaves the trees is a "
                      "narrowing (move it back, or widen the trees in the same change)" for frm, to in change["renamed_out"]]
-    allow = {}
+    digest = check_digest()
+    if cfg.get("check_digest") is None:
+        problems.append("[check_digest] the baseline does not record the check version that wrote it: run "
+                        "write-baseline with this check")
+    elif cfg["check_digest"] != digest:
+        problems.append(f"[check_digest] the baseline names check {cfg['check_digest'][:12]}, not this check ({digest[:12]}): "
+                        "a baseline names the check that wrote it, so run write-baseline with this check")
+    refusal = lock_in_refusal(root, change, running, in_actions, digest)
+    detection_changed = refusal is None
+    identical, base_tree_found_all, base_ids = frozenset(), {}, {}
+    if change:
+        touched = {f for g in change["groups"] for f in g["old"] + g["now"]}
+        identical = frozenset(f for f in byte_identical(root, change["sha"], sorted(set(found) | set(cfg["counts"])))
+                              if f not in touched)
+        base_counts_all = change["base_counts_all"] or {}
+        candidates = sorted(f for f in identical
+                            if any(max(found.get(f, {}).get(r, 0), cfg["counts"].get(f, {}).get(r, 0))
+                                   > base_counts_all.get(f, {}).get(r, 0)
+                                   for r in set(found.get(f, {})) | set(cfg["counts"].get(f, {}))))
+        if detection_changed and candidates:
+            # The base tree, under the BASE's own configuration (its launchers and their floors), with this check.
+            base_res = census(change["base_tree"], candidates, change["base_cfg"]["launchers"])["findings"]
+            base_tree_found_all = counts_of(base_res)
+            base_ids = finding_ids(base_res)
+    allow, locked_in = {}, []
     for rule in sorted({r for c in list(found.values()) + list(cfg["counts"].values()) for r in c} | {RULE}):
         sub = None
         if change:
             sub = {"sha": change["sha"], "groups": change["groups"],
                    "base_counts": per_rule(change["base_counts_all"], rule) if change["base_counts_all"] is not None
                    else None, "base_found": per_rule(change["base_found_all"], rule)}
-        p, n, a = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event)
+        head_ids = finding_ids({f: res["findings"].get(f, []) for f in base_ids})
+        same = {f for f in base_ids if base_ids[f].get(rule) == head_ids.get(f, {}).get(rule)}
+        p, n, a, lk = analyze(per_rule(found, rule), per_rule(cfg["counts"], rule), sub, event, detection_changed,
+                              identical, per_rule(base_tree_found_all, rule), same, refusal or PIN_NOT_MOVED)
         problems += [f"[{rule}] {x}" for x in p]
         notices += [f"[{rule}] {x}" for x in n]
         allow[rule] = sorted(a)
+        locked_in += [{"rule": rule, "file": f, "base": b, "now": now} for f, b, now in lk]
+
     if change and change["skipped"]:
         notices.append("git skipped inexact rename detection on this diff, so a rename or split may read as new files")
     marks = res["marks"]
@@ -1338,8 +1619,47 @@ def run(root: Path, base: str | None, event: str, tmp: Path) -> dict:
     return {"schema": SCHEMA, "check": CHECK_ID, "base": base, "event": event, "scanned_files": len(scanned),
             "counts": found, "findings": res["findings"], "marks": marks, "new_marks": added,
             "recovered": res["recovered"], "unscanned": unscanned(cfg, files), "covered": COVERED,
-            "problems": problems,
+            "locked_in": locked_in, "check_digest": digest, "problems": problems,
             "notices": notices, "_allow": allow, "_cfg": cfg}
+
+
+def finding_ids(findings: dict) -> dict:
+    """file -> rule -> the multiset of its findings' identities (line, position, kind, value), so a lock-in compares
+    WHICH bounds are short, not only how many."""
+    out = {}
+    for f, recs in findings.items():
+        for r in recs:
+            if r["status"] == "finding":
+                out.setdefault(f, {}).setdefault(r["rule"], Counter())[(r["line"], r["position"], r["kind"], r["value"])] += 1
+    return out
+
+
+def byte_identical(root: Path, base: str, paths: list[str]) -> set[str]:
+    """The paths whose blob at `base` is the blob the census read (D8 guard 2: judged from the base TREE). The head
+    side is the working tree, hashed with git, because that is what the census scanned (one source)."""
+    if not paths:
+        return set()
+
+    def blobs(rev: str) -> dict:
+        r = subprocess.run(["git", "ls-tree", "-r", "-z", rev, "--", *paths], cwd=root, capture_output=True)
+        if r.returncode:
+            raise Refusal(f"git ls-tree {rev} exited {r.returncode}: the byte-identity check cannot run")
+        out = {}
+        for entry in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
+            if "\t" in entry:
+                meta, path = entry.split("\t", 1)
+                out[path] = meta.split()[2]
+        return out
+
+    at_base = blobs(base)
+    present = [f for f in paths if f in at_base and (root / f).is_file()]
+    if not present:
+        return set()
+    r = subprocess.run(["git", "hash-object", "--stdin-paths"], cwd=root, input="\n".join(present) + "\n",
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise Refusal(f"git hash-object exited {r.returncode}: the byte-identity check cannot run")
+    return {f for f, h in zip(present, r.stdout.split()) if at_base[f] == h}
 
 
 def summary_md(out: dict) -> str:
@@ -1351,6 +1671,12 @@ def summary_md(out: dict) -> str:
     lines += [f"- {k}: {v}" for k, v in out["covered"].items()] + [""]
     if out["problems"]:
         lines += [f"**{len(out['problems'])} problem(s)**", ""] + [f"- {p}" for p in out["problems"][:60]] + [""]
+    lk = out.get("locked_in", [])
+    lines += [f"**Debt locked in by a detection change: {len(lk)} (file, rule) raise(s)**", ""]
+    lines += [f"- [{x['rule']}] {x['file']}: {x['base']} -> {x['now']}" for x in lk[:60]]
+    if len(lk) > 60:
+        lines.append(f"- ... and {len(lk) - 60} more: every one is in the log (DEBT LOCKED IN) and the findings JSON")
+    lines.append("")
     lines += [f"**New `timeout under test:` marks: {len(out['new_marks'])}**", ""]
     lines += [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}" for m in out["new_marks"][:50]] + [""]
     lines += [f"All marks: {len(out['marks'])}", ""] + [f"- {m['file']}:{m['line']} {m['reason'] or '(no reason)'}"
@@ -1374,6 +1700,8 @@ def emit(out: dict, findings_path: str | None) -> None:
         print(f"notice: {n}")
     for m in out["new_marks"]:
         print(f"NEW MARK: {m['file']}:{m['line']} timeout under test: {m['reason'] or '(no reason)'}")
+    for x in out.get("locked_in", []):
+        print(f"DEBT LOCKED IN: [{x['rule']}] {x['file']}: {x['base']} -> {x['now']} (a detection change)")
     for k, v in out["covered"].items():
         print(f"covered ({k}): {v}")
     u = out["unscanned"]
@@ -1398,6 +1726,7 @@ def write_baseline_file(root: Path, cfg: dict, counts: dict) -> None:
     raw = json.loads(text)
     raw["counts"] = {f: counts[f] for f in sorted(counts)}
     raw.setdefault("check", CHECK_ID)
+    raw["check_digest"] = check_digest()
     (root / BASELINE_PATH).write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1436,7 +1765,7 @@ def main(argv: list[str]) -> int:
         if base:
             ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:
-            out = run(root, base, event, Path(tmp))
+            out = run(root, base, event, Path(tmp), running_context(os.environ) if in_actions else None, in_actions)
         out["problems"] = [f"the check's own self-test failed: {f}" for f in failures] + out["problems"]
         if args.cmd == "check":
             emit(out, args.findings)

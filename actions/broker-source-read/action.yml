@@ -37,6 +37,10 @@
 # The `cached` output and log line repeat the broker's word on whether the token came from its cache: true, false,
 # or unknown when the reply does not say (today it never does).
 #
+# With strict-per-job=true, cached=false and revocable=true must be explicit JSON booleans before readiness or
+# delivery. Missing/malformed/shared lifecycle replies fail without revoking a potentially shared token. Strict
+# mode forbids token outputs; revoke requires the recorded true lifecycle and reports invalid records as failures.
+#
 # Revoke reads the token from its file and removes the file. Whether it calls DELETE /installation/token follows the
 # broker: when the mint reply carried a boolean `revocable`, mint recorded it under $RUNNER_TEMP and revoke deletes iff
 # it was true (a non-boolean `revocable` fails the mint, token revoked). Only for an older broker whose reply has no
@@ -84,6 +88,10 @@ inputs:
     description: mint only, build_checkout only. `true` also sets the step output `token` (masked; one repository). A revocable purpose must use a file, and so must a token the broker marks revocable (with no token-file or token-dir that mint fails and revokes the token).
     required: false
     default: "false"
+  strict-per-job:
+    description: Require explicit cached=false and revocable=true before readiness or delivery; refuse legacy/shared responses without blindly revoking them. Use in both mint and revoke modes. Default preserves legacy consumers.
+    required: false
+    default: "false"
   readiness-seconds:
     description: mint only. The bound, in seconds, for the token to see every repository (GET /repos/<owner>/<name> answers 200).
     required: false
@@ -103,10 +111,15 @@ runs:
       env:
         BSR_MODE: ${{ inputs.mode }}
         BSR_OUTPUT: ${{ inputs.output }}
+        BSR_STRICT: ${{ inputs.strict-per-job }}
       run: |
         case "$BSR_MODE" in
           mint|revoke) ;;
           *) echo "::error::broker-source-read: mode must be mint or revoke, not '$BSR_MODE'"; exit 1 ;;
+        esac
+        case "$BSR_STRICT" in
+          true|false) ;;
+          *) echo "::error::broker-source-read: strict-per-job must be true or false"; exit 1 ;;
         esac
         case "$BSR_OUTPUT" in
           true|false) ;;
@@ -124,6 +137,7 @@ runs:
         BSR_TOKEN_FILE: ${{ inputs.token-file }}
         BSR_TOKEN_DIR: ${{ inputs.token-dir }}
         BSR_OUTPUT: ${{ inputs.output }}
+        BSR_STRICT: ${{ inputs.strict-per-job }}
         BSR_READINESS: ${{ inputs.readiness-seconds }}
       run: |
         set -euo pipefail
@@ -132,12 +146,14 @@ runs:
         if [ -n "$BSR_TOKEN_FILE" ]; then args+=(--token-file "$BSR_TOKEN_FILE"); fi
         if [ -n "$BSR_TOKEN_DIR" ]; then args+=(--token-dir "$BSR_TOKEN_DIR"); fi
         if [ "$BSR_OUTPUT" = true ]; then args+=(--github-output token); fi
+        if [ "$BSR_STRICT" = true ]; then args+=(--strict-per-job); fi
         python3 -I "$GITHUB_ACTION_PATH/client.py" "${args[@]}"
     - id: revoke
       if: ${{ inputs.mode == 'revoke' }}
       shell: bash
       env:
         BSR_PURPOSE: ${{ inputs.purpose }}
+        BSR_STRICT: ${{ inputs.strict-per-job }}
         BSR_TOKEN_FILE: ${{ inputs.token-file }}
         BSR_TOKEN_DIR: ${{ inputs.token-dir }}
       run: |
@@ -145,4 +161,5 @@ runs:
         args=(revoke --purpose "$BSR_PURPOSE")
         if [ -n "$BSR_TOKEN_FILE" ]; then args+=(--token-file "$BSR_TOKEN_FILE"); fi
         if [ -n "$BSR_TOKEN_DIR" ]; then args+=(--token-dir "$BSR_TOKEN_DIR"); fi
+        if [ "$BSR_STRICT" = true ]; then args+=(--strict-per-job); fi
         python3 -I "$GITHUB_ACTION_PATH/client.py" "${args[@]}"

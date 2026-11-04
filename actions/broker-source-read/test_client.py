@@ -1203,7 +1203,7 @@ class ActionTests(unittest.TestCase):
         block = self.text.split("\ninputs:\n", 1)[1].split("\noutputs:\n", 1)[0]
         names = re.findall(r"^  ([a-z_-]+):$", block, re.M)
         self.assertEqual(names, ["mode", "purpose", "repository", "provider", "service_account", "audience",
-                                 "token-file", "token-dir", "output", "readiness-seconds"])
+                                 "token-file", "token-dir", "output", "strict-per-job", "readiness-seconds"])
 
     def test_outputs(self):
         block = self.text.split("\noutputs:\n", 1)[1].split("\nruns:\n", 1)[0]
@@ -1231,6 +1231,110 @@ class ActionTests(unittest.TestCase):
         self.assertNotIn("SOURCE_READ_APP", code)
         self.assertNotIn("private-key", code)
 
+
+
+class StrictPerJobTests(unittest.TestCase):
+    repo = "vagarylabs/vagary-core"
+
+    def test_strict_positive_delivers_private_file_then_revokes(self):
+        with tmpdir() as td:
+            path = pathlib.Path(td) / "token"
+            fake = Fake(echo={self.repo: {"cached": False, "revocable": True}})
+            rc, out, err, _ = run(mint_args(token_file=path) + ["--strict-per-job"], fake)
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(client.revocable_record(path, ENV).read_text(), "per-job")
+            rc, out2, err2, _ = run(["revoke", "--purpose", "build_checkout", "--token-file", str(path),
+                                    "--strict-per-job"], fake)
+            self.assertEqual(rc, 0, err2)
+            self.assertEqual(len(fake.deletes()), 1)
+            self.assertFalse(path.exists())
+            self.assertFalse(client.revocable_record(path, ENV).exists())
+            self.assertEqual(leaked(out + err + out2 + err2, ALL_SECRETS), [])
+
+    def test_strict_rejects_every_unknown_or_shared_lifecycle_without_using_or_revoking(self):
+        values = [None, NULL, True, False, 0, 1, "true", "false", {}, []]
+        for cached in values:
+            for revocable in values:
+                if cached is False and revocable is True:
+                    continue
+                with self.subTest(cached=cached, revocable=revocable), tmpdir() as td:
+                    path = pathlib.Path(td) / "token"
+                    fake = Fake(echo={self.repo: {"cached": cached, "revocable": revocable}})
+                    rc, out, err, _ = run(mint_args(token_file=path) + ["--strict-per-job"], fake)
+                    self.assertEqual(rc, 1)
+                    self.assertFalse(path.exists())
+                    self.assertFalse(client.revocable_record(path, ENV).exists())
+                    self.assertEqual(fake.deletes(), [])
+                    self.assertFalse(any(c[1].startswith(API + "/repos/") for c in fake.calls))
+                    self.assertIn("strict per-job", err)
+                    self.assertEqual(leaked(out + err, ALL_SECRETS), [])
+
+    def test_strict_echo_mismatch_revokes_only_proven_isolated_token(self):
+        for echo in [{"repository": "vagarylabs/wrong"}, {"permissions": {"contents": "write"}},
+                     {"permissions": None}, {"schema": "wrong"}]:
+            with self.subTest(echo=echo), tmpdir() as td:
+                path = pathlib.Path(td) / "token"
+                fake = Fake(echo={self.repo: {"cached": False, "revocable": True, **echo}})
+                rc, _, err, _ = run(mint_args(token_file=path) + ["--strict-per-job"], fake)
+                self.assertEqual(rc, 1, err)
+                self.assertEqual(len(fake.deletes()), 1)
+                self.assertFalse(path.exists())
+
+    def test_strict_revoke_refuses_legacy_or_corrupt_records_without_blind_delete(self):
+        for value in [None, "true", "false", "garbled"]:
+            with self.subTest(value=value), tmpdir() as td:
+                path = pathlib.Path(td) / "token"
+                client._write_secret(path, install_token(self.repo))
+                record = client.revocable_record(path, ENV)
+                if value is not None:
+                    client._write_secret(record, value)
+                fake = Fake()
+                rc, _, err, _ = run(["revoke", "--purpose", "build_checkout", "--token-file", str(path),
+                                    "--strict-per-job"], fake)
+                self.assertEqual(rc, 1, err)
+                self.assertEqual(fake.deletes(), [])
+                self.assertFalse(path.exists())
+                self.assertFalse(record.exists())
+
+    def test_strict_missing_token_cannot_claim_revocation(self):
+        with tmpdir() as td:
+            fake = Fake()
+            rc, _, err, _ = run(["revoke", "--purpose", "build_checkout", "--token-file", td + "/absent",
+                                "--strict-per-job"], fake)
+            self.assertEqual(rc, 1, err)
+            self.assertIn("revocation is unproven", err)
+            self.assertEqual(fake.calls, [])
+
+    def test_strict_output_is_refused_before_network(self):
+        fake = Fake()
+        rc, _, _, _ = run(mint_args(github_output="token") + ["--strict-per-job"], fake)
+        self.assertEqual(rc, 2)
+        self.assertEqual(fake.calls, [])
+
+    def test_strict_revoke_failure_is_failure_and_removes_material(self):
+        with tmpdir() as td:
+            path = pathlib.Path(td) / "token"
+            fake = Fake(echo={self.repo: {"cached": False, "revocable": True}}, delete=[500] * 6)
+            self.assertEqual(run(mint_args(token_file=path) + ["--strict-per-job"], fake)[0], 0)
+            rc, _, err, _ = run(["revoke", "--purpose", "build_checkout", "--token-file", str(path),
+                                "--strict-per-job"], fake)
+            self.assertEqual(rc, 1, err)
+            self.assertFalse(path.exists())
+            self.assertFalse(client.revocable_record(path, ENV).exists())
+
+    def test_concurrent_paths_cleanup_does_not_remove_other_job_material(self):
+        with tmpdir() as a, tmpdir() as b:
+            paths = [pathlib.Path(a) / "token", pathlib.Path(b) / "token"]
+            fake = Fake(echo={self.repo: {"cached": False, "revocable": True}})
+            for path in paths:
+                self.assertEqual(run(mint_args(token_file=path) + ["--strict-per-job"], fake)[0], 0)
+            self.assertEqual(run(["revoke", "--purpose", "build_checkout", "--token-file", str(paths[0]),
+                                  "--strict-per-job"], fake)[0], 0)
+            self.assertTrue(paths[1].is_file())
+            self.assertTrue(client.revocable_record(paths[1], ENV).is_file())
+            self.assertEqual(run(["revoke", "--purpose", "build_checkout", "--token-file", str(paths[1]),
+                                  "--strict-per-job"], fake)[0], 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -292,23 +292,26 @@ def revocable_record(token_path: str | pathlib.Path, env: dict) -> pathlib.Path:
     """Where mint records the broker's `revocable` for one token file, so revoke mode follows the broker:
     <RUNNER_TEMP>/.broker-source-read-revocable/<sha256 of the token file's realpath>, holding `true` or `false`.
     Outside the token file (a consumer reads that as the raw token) and outside token-dir (one file per repository).
-    Written only when the reply carried a boolean; no record means the purpose's rule. Mint and revoke run in one job,
-    and the runner empties RUNNER_TEMP only at job start and end."""
+    Written only when the reply carried a boolean; strict mint writes `per-job` only after explicit uncached and
+    revocable booleans. Legacy revoke accepts that as true; strict revoke requires it and never infers isolation
+    from a legacy true record. No record means the purpose's rule only in legacy mode."""
     key = hashlib.sha256(os.path.realpath(token_path).encode("utf-8", "surrogateescape")).hexdigest()
     return pathlib.Path(env["RUNNER_TEMP"]) / REVOCABLE_RECORDS / key
 
 
-def _recorded_revocable(record: pathlib.Path) -> tuple[bool | None, str]:
+def _recorded_revocable(record: pathlib.Path, strict_per_job: bool = False) -> tuple[bool | None, str]:
     """(the recorded `revocable`, a problem). (None, '') with no record. An unreadable or malformed record is (True,
-    problem): what is unclear is revoked, then that file fails."""
+    problem): legacy mode revokes unclear records; strict mode refuses them without a blind revoke."""
     try:
         text = record.read_text(encoding="ascii").strip()
     except FileNotFoundError:
         return None, ""
     except (OSError, ValueError) as err:
         return True, f"its revocable record cannot be read ({type(err).__name__})"
-    if text in ("true", "false"):
-        return text == "true", ""
+    if strict_per_job and text != "per-job":
+        return False, "no strict per-job mint record"
+    if text in ("true", "false", "per-job"):
+        return text != "false", ""
     return True, "its revocable record is malformed"
 
 
@@ -369,7 +372,7 @@ def wait_ready(tokens: dict[str, str], api: str, bound: float, http: Callable, s
 def mint(purpose: str, repositories: list[str], resource: str, service_account: str, audience: str, api: str,
          readiness: float, env: dict, http: Callable, sleep: Callable, clock: Callable, out,
          deliver: Callable[[dict[str, str], dict[str, str], dict[str, bool | None]], None]
-         = lambda tokens, cached, said: None) -> dict[str, str]:
+         = lambda tokens, cached, said: None, *, strict_per_job: bool = False) -> dict[str, str]:
     """{repository: token}, every one echo-checked, visible and handed to `deliver` (which writes them) with
     {repository: cached_echo} and {repository: revocable_said}; or the failure.
 
@@ -400,6 +403,12 @@ def mint(purpose: str, repositories: list[str], resource: str, service_account: 
                             {"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
                             json.dumps({"repository": repo, "purpose": purpose}).encode(), http, sleep)
             obtained[repo] = mask(body.get("token"), leg, out)
+            # Strict consumers cannot use or revoke a possibly shared legacy token. Check BEFORE readiness,
+            # delivery, or the legacy echo handler (which may revoke malformed lifecycle metadata).
+            if strict_per_job and not (body.get("cached") is False and body.get("revocable") is True):
+                obtained.pop(repo)
+                raise LegFailed(f"{leg}: strict per-job requires cached=false and revocable=true JSON booleans; "
+                                "token withheld and not revoked because isolated ownership is unproven")
             revocable[repo], said[repo] = revocable_echo(body, purpose), revocable_said(body)
             problems = echo_problems(body, repo, purpose)
             if problems:
@@ -481,6 +490,8 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
         raise Usage("token-file and token-dir are exclusive")
     if (a.token_file or a.github_output) and len(repos) != 1:
         raise Usage("token-file and github-output take exactly one repository; use token-dir for several")
+    if a.strict_per_job and (a.github_output or not (a.token_file or a.token_dir)):
+        raise Usage("strict-per-job requires a token file or directory and forbids token outputs")
     if PURPOSES[purpose]["revocable"] and (a.github_output or not (a.token_file or a.token_dir)):
         raise Usage(f"{purpose} tokens are revoked after use, which reads them from a file: give token-file or "
                     "token-dir, and no github-output")
@@ -517,7 +528,7 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
         def write(path: pathlib.Path, repo: str) -> None:
             if said[repo] is not None:
                 written.append(revocable_record(path, env))
-                _write_secret(written[-1], "true" if said[repo] else "false")
+                _write_secret(written[-1], "per-job" if a.strict_per_job else "true" if said[repo] else "false")
             written.append(path)
             _write_secret(path, tokens[repo])
         try:
@@ -555,7 +566,7 @@ def run_mint(a, env: dict, http: Callable, sleep: Callable, clock: Callable, out
                   "checked; visible", file=sys.stderr)
 
     mint(purpose, repos, resource, a.service_account.strip(), audience, api, a.readiness_seconds, env, http, sleep,
-         clock, out, deliver)
+         clock, out, deliver, strict_per_job=a.strict_per_job)
     return 0
 
 
@@ -595,6 +606,8 @@ def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
     failed: list[str] = []
     present = [p for p in files if _present(p)]
     if not present:
+        if a.strict_per_job:
+            raise LegFailed("revoke: strict per-job token file is absent; revocation is unproven")
         print("broker-source-read: no token file, so nothing to revoke (the mint did not write one)", file=sys.stderr)
     for path in present:
         record = revocable_record(path, env)
@@ -602,7 +615,10 @@ def run_revoke(a, env: dict, http: Callable, sleep: Callable, out) -> int:
             if path.is_symlink() or not path.is_file():
                 raise LegFailed(f"revoke {path.name}: not a regular file")
             token = mask(path.read_text(encoding="utf-8").strip(), f"revoke {path.name}", out)
-            recorded, problem = _recorded_revocable(record)
+            recorded, problem = _recorded_revocable(record, a.strict_per_job)
+            if a.strict_per_job and (recorded is not True or problem):
+                raise LegFailed(f"revoke {path.name}: strict per-job revocable record is absent or invalid; "
+                                "token NOT revoked because isolated ownership is unproven")
             if recorded if recorded is not None else PURPOSES[purpose]["revocable"]:
                 by = " (the broker said revocable)" if recorded is not None else ""
                 print(f"broker-source-read: {path.name}: {revoke_token(token, api, http, sleep)}{by}", file=sys.stderr)
@@ -659,10 +675,12 @@ def main(argv: list[str], env: dict | None = None, http: Callable = _http,
     m.add_argument("--token-dir", default="")
     m.add_argument("--github-output", default="", metavar="NAME")
     m.add_argument("--readiness-seconds", type=float, default=60.0)
+    m.add_argument("--strict-per-job", action="store_true")
     r = sub.add_parser("revoke")
     r.add_argument("--purpose", required=True)
     r.add_argument("--token-file", default="")
     r.add_argument("--token-dir", default="")
+    r.add_argument("--strict-per-job", action="store_true")
     try:
         a = p.parse_args(argv)
     except SystemExit as exc:

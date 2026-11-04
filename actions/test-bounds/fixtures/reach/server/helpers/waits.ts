@@ -1,4 +1,5 @@
-// Product-shaped bounds a reached module may hold: a call's generic timeout option, a timeout-named default, and a
+// Product-shaped bounds a reached module may hold: a call's generic timeout option (read), a timeout-named default
+// that feeds no bound (not read), and a
 // product function whose name a test registrar's pattern would read (`describe\w*`).
 declare function request(o: { timeout: number }): Promise<void>;
 declare function describeStaleness(a: number, b: number, c: number): string;

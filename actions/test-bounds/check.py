@@ -171,13 +171,16 @@ COVERED = {
                               "(vitest, jest, playwright, mocha, chai, node:test, bun:test; pytest, unittest) is test "
                               "code and is judged by every rule above. Any other reached module is product code: only "
                               "a child process and a database client (TS/JS), and Python's subprocess, network and "
-                              "database clients, are judged there; a forwarded bound (a parameter, a computed value) "
-                              "is listed NOT COVERED, being its caller's. Not followed: `import type` / `export type` "
-                              "(never loaded), vi.mock, require.resolve. A specifier that names no tracked file, a "
-                              "template with a substitution, and an absolute path are listed UNRESOLVED; an external "
-                              "package is not listed. Not read in a product module: a TS network client's own timeout "
-                              "(TS has no network-client family), a call's generic `timeout` option, a `timeout`-named "
-                              "parameter default, Python asyncio waits.",
+                              "database clients, are judged there (a call's generic `timeout` option included, "
+                              "except a callee ending in `.end`); a bound with no value the check can read (a "
+                              "parameter, a computed value) is listed NOT COVERED, being its caller's, and so is an "
+                              "ERROR node in a product module (test and support files stay red). A module that calls "
+                              "an exact test global or vi.* is test code. Not followed: `import type` / `export "
+                              "type` (never loaded), vi.mock, require.resolve. A specifier that names no tracked "
+                              "file, a computed one, a template with a substitution, an absolute path and a symlink "
+                              "loop or escape are listed UNRESOLVED; an external package is not listed. Not read in "
+                              "a product module: a TS network client's own timeout (TS has no network-client "
+                              "family), Python asyncio waits.",
 }
 
 JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -797,13 +800,15 @@ def resolve_module(tree: Tree, importer: str, spec: str) -> tuple[str | None, st
 # `@vagarylabs/adapter-utils/ssh`. With `reach: "tests"` in the configuration, every tracked module in the import
 # closure of the scanned test files is scanned too. A reached module that imports a test framework (TEST_FRAMEWORKS) is
 # test code wherever it lives, a shared suite or a fixture helper, and is judged exactly as a test file. Any other
-# reached module is PRODUCT code a test drives, judged by REACH_PRODUCT_RULES only: a child process and a database
-# client (TS/JS), plus Python's subprocess, network and database clients. A forwarded bound there (a parameter, a
+# reached module is PRODUCT code a test drives, judged by REACH_PRODUCT_RULES only: a child process, a call's generic
+# `timeout` option and a database client (TS/JS), plus Python's subprocess, network and database clients. A forwarded bound there (a parameter, a
 # computed value) is its caller's: it is listed NOT COVERED, never a finding; a named constant below the floor is one.
-# Product bounds no test reaches stay out: the graph decides. Measured on vagaris (11-02, 2 323 reached modules): a
-# call's generic `timeout` option in product code was postgres.js `end({ timeout: 5 })` (seconds), subprocess wrappers
-# and data properties, with two network calls in 46; `describe\w*` read `describeStaleness(...)` as a test registrar.
-# TS has no network-client family yet, so a TS network timeout in a product module is not read.
+# Product bounds no test reaches stay out: the graph decides. Measured on vagaris (11-02, 2 323 reached modules): of the
+# 46 `timeout` options the first filter dropped from product code, 20 were child processes, 19 were postgres.js
+# `end({ timeout: 5 })` (seconds), 2 were network calls and 5 were other; so the generic option is read again, `.end`
+# is excluded by callee, a same-file forwarder and promisify(<child process>)(...) are child-process callees, and a
+# literal default or `x ?? LIT` is judged by its literal. `describe\w*` read `describeStaleness(...)` as a test
+# registrar. TS has no network-client family yet, so a TS network timeout in a product module is not read.
 REACH_MODES = ("tests",)
 REACH_PRODUCT_RULES = {
     **{lang: frozenset({f"{RULE}.option.subprocess", f"{RULE}.option.condition", f"{RULE}.client.fixture"})

@@ -310,40 +310,63 @@ scanned test files.
 How the closure is built:
 - **JS/TS edges.** These are followed:
   - static `import` and `export … from`;
-  - `import()` and `require()` of a literal.
+  - `import x = require("y")`;
+  - `import()`, `require()`, `vi.importActual()` and `vi.importMock()` of a literal.
 
   `import type` and `export type` are not followed: they never load anything. `vi.mock` and `require.resolve` are
-  not loads either.
-- **JS/TS resolution.** A specifier resolves in one of these ways:
-  - a relative path, with the `.js` to `.ts` twin;
-  - a workspace package's name, through its `exports` (including one-`*` patterns), `main`, or `index`. Built `dist/`
-    maps to its `src/` twin;
-  - the nearest `tsconfig.json`'s `paths`, through its `extends` chain.
+  not loads either. `import(name)`, `require(name)` and the vi forms with a non-literal argument are listed UNRESOLVED
+  as "computed", like a template with a substitution.
+- **JS/TS resolution.** A specifier resolves in this order: `node:`-prefixed (external), the nearest `tsconfig.json`'s
+  `paths` (through its `extends` chain), a workspace package's name (through its `exports`, including one-`*`
+  patterns, `main`, or `index`; built `dist/` maps to its `src/` twin), then Node's builtin names. So a workspace
+  package or an alias named like a builtin (`events`) is the tree's own module, not external. A relative path takes
+  the `.js` to `.ts` twin.
 - **Python.** Relative imports are followed. So are absolute ones that resolve from the importer's directory or an
-  ancestor.
+  ancestor. An absolute import that does not (a test that runs `sys.path.insert(0, ".../app")` and then
+  `import store`) is looked up in a one-pass index of the tracked `.py` files: the nearest ancestor of the importer
+  holding `<base>/**/<top>.py` or `<base>/**/<top>/__init__.py` names the source root, and the full dotted module and
+  the `from` names resolve beneath it. Two source roots at that ancestor are UNRESOLVED (the count is named); no match
+  anywhere is a third-party package and is not listed.
+- **Symlinks.** A reached tracked symlink is followed to its target when the target is tracked. A loop, a link that
+  leaves the repository, and a link whose target nothing tracks are listed UNRESOLVED.
 - **What is listed, what is not.** An external package is not listed. These are listed UNRESOLVED: a specifier that
-  names no tracked file, a template with a substitution, and an absolute path. UNRESOLVED is visible but not red.
+  names no tracked file, a computed specifier, a template with a substitution, an absolute path, and the symlinks
+  above. UNRESOLVED is visible but not red.
+- **`exclude`.** An excluded file is not scanned, and a reached module is hidden by it with no trace. So while the base
+  has `reach` on, an `exclude` glob the base does not hold is red (it lands only in the change that turns reach on).
 
 How a reached module is judged:
 - **Test support.** A reached module that imports a test framework is test code wherever it lives. The frameworks are
-  vitest, jest, playwright, mocha, chai, `node:test`, `bun:test`, pytest and unittest. Such a module is judged
-  exactly like a test file.
+  vitest, jest, playwright, mocha, chai, `node:test`, `bun:test`, pytest and unittest. A module that imports none but
+  calls an exact test global (`describe`, `it`, `test`, `beforeAll`, `afterAll`, `beforeEach`, `afterEach`, or one
+  of their members such as `it.each`) or `vi.*` is test code too: a runner with `globals: true` injects them. The
+  identifiers are exact, so a product `describeStaleness(...)` stays product. Such a module is judged exactly like a
+  test file.
 - **Product code.** Any other reached module is product code that a test drives. Only the families that a loaded
   runner trips in such code are judged there:
-  - TS/JS: a child process and a database client;
+  - TS/JS: a child process, a database client, and a call's generic `timeout` option;
   - Python: subprocess, network and database clients.
 
-  A forwarded bound there, meaning a parameter or a computed value, is its caller's. It is listed NOT COVERED, not
-  counted. A named constant below the floor is a finding.
+  A call whose callee ends in `.end` is not read (postgres.js `end({ timeout: 5 })` is seconds). A same-file function
+  that forwards its options or a parameter to a child-process call is a child-process callee, and so is
+  `promisify(<child process>)(...)`. A bound written `x ?? LIT` or `x || LIT` is judged by the literal. A literal
+  parameter default that feeds a judged bound in the same function is judged as that bound, and the use it feeds is
+  then covered by it. Another `timeout`-named default stays out of product code.
+
+  A bound with no value this check can read (a parameter, a computed value) is its caller's. It is listed NOT COVERED,
+  not counted. A named constant below the floor is a finding.
+- **An unreadable product file.** A valid TSX file the parser cannot fully read (raw `&` in JSX text, for instance)
+  carries an ERROR node. In a test or support file that stays red. In a product module it is listed NOT COVERED, so
+  turning reach on does not red on code that cannot be baselined.
 
 These are not read in product code:
-- a call's generic `timeout` option;
-- a `timeout`-named parameter default;
 - Python asyncio waits;
 - a TS network client's own timeout, because TS has no network-client family yet.
 
-On vagaris these positions held mostly postgres.js `end({ timeout: 5 })` (in seconds), subprocess wrappers and data
-properties. Product bounds that no test reaches stay out of scope: the import graph decides.
+Measured on vagaris (11-02): of the 46 `timeout` options that the first filter dropped from product code, 20 were
+child processes, 19 were postgres.js `end(...)` (seconds), 2 were network calls and 5 were other. The child-process
+class was therefore the largest, which is why the generic option is read again and `.end` is excluded by callee.
+Product bounds that no test reaches stay out of scope: the import graph decides.
 
 Failing closed:
 - **Unparsable module.** A reached Python module that CPython cannot parse is red, because its imports cannot be

@@ -1,2 +1,2 @@
-declare const vi: { waitFor(fn: () => unknown, o: { timeout: number }): Promise<unknown> };
-export const w = () => vi.waitFor(() => 1, { timeout: 2_000 });
+declare const vi: { waitFor(fn: () => unknown, ms: number): Promise<unknown> };
+export const w = () => vi.waitFor(() => 1, 2_000);

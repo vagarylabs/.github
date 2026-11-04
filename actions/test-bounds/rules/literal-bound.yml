@@ -262,3 +262,30 @@ rule:
         - has: { field: key, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout|\"(?:connectionTimeoutMillis|statement_timeout|query_timeout)\"|'(?:connectionTimeoutMillis|statement_timeout|query_timeout)')$" }
         - has: { field: value, pattern: $V, matches: bound-value }
     - { kind: shorthand_property_identifier, regex: "^(?:connectionTimeoutMillis|statement_timeout|query_timeout)$", pattern: $V }
+---
+# Not bounds: the functions of a file, for check.py's reading of a bound that a same-file function forwards (K2 R4 B3).
+# fn-def: a named function (a declaration, or a variable holding an arrow/function expression); $FV is the function node
+# (its span keys the parameters), $N its name. fn-params: a function's parameter list, $FN the function node.
+id: fn-def
+language: typescript
+rule:
+  any:
+    - kind: function_declaration
+      pattern: $FV
+      has: { field: name, pattern: $N }
+    - kind: variable_declarator
+      all:
+        - has: { field: name, kind: identifier, pattern: $N }
+        - has: { field: value, any: [{ kind: arrow_function }, { kind: function_expression }], pattern: $FV }
+---
+id: fn-params
+language: typescript
+rule:
+  kind: formal_parameters
+  inside:
+    pattern: $FN
+    any:
+      - { kind: function_declaration }
+      - { kind: arrow_function }
+      - { kind: function_expression }
+      - { kind: method_definition }

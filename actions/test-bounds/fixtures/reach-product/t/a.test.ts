@@ -1,0 +1,11 @@
+import { it } from "vitest";
+import { readPs } from "../lib/wrap";
+import { codex } from "../lib/prom";
+import { git } from "../lib/dflt";
+import { close } from "../lib/end";
+import { Page } from "../lib/page";
+import { stale } from "../lib/names";
+import { pool } from "../lib/pool";
+import { wire } from "../lib/globals";
+import { w } from "../lib/viuse";
+it("drives them", () => { readPs(); codex(); git([]); close(); Page(); stale(); wire(); w(); pool; }, 200_000);

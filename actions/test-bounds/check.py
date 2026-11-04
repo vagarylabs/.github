@@ -806,7 +806,8 @@ def resolve_module(tree: Tree, importer: str, spec: str) -> tuple[str | None, st
 # TS has no network-client family yet, so a TS network timeout in a product module is not read.
 REACH_MODES = ("tests",)
 REACH_PRODUCT_RULES = {
-    **{lang: frozenset({f"{RULE}.option.subprocess", f"{RULE}.client.fixture"}) for lang in JS_LANGS},
+    **{lang: frozenset({f"{RULE}.option.subprocess", f"{RULE}.option.condition", f"{RULE}.client.fixture"})
+       for lang in JS_LANGS},
     "python": frozenset({f"{RULE}.keyword.subprocess", f"{RULE}.positional.subprocess", f"{RULE}.join.subprocess",
                          f"{RULE}.http.condition", f"{RULE}.http-tuple.condition", f"{RULE}.client.fixture"}),
 }
@@ -823,17 +824,37 @@ EXPORT_CONDITIONS = ("development", "import", "node", "default", "require")
 _TYPE_ONLY = re.compile(r"^\s*(?:import|export)\s+type\s+(?!from\b)[\w${*]")
 
 
+# The test runner's globals (vitest/jest `globals: true`): a module that calls one without importing a framework is test
+# code all the same. Exact identifiers only: a product `describeStaleness(...)` is not a registrar.
+TEST_GLOBALS = "^(?:describe|it|test|beforeAll|afterAll|beforeEach|afterEach)$"
+TEST_GLOBALS_OBJ = "^(?:describe|it|test|beforeAll|afterAll|beforeEach|afterEach|vi)$"
+
+
 def _reach_rules(lang: str) -> str:
     """Every module a JS/TS file loads: static import/export-from (the source string), import() and require() of a
     string or a template (a template with a substitution is listed UNRESOLVED). vi.mock("x") and require.resolve are not
     loads (their callee is a member expression), and a comment is never a statement."""
+    require = ("    - { kind: import_statement, has: { kind: import_require_clause, has: { field: source, kind: string, "
+               "pattern: $S } } }\n" if lang != "javascript" else "")  # `import x = require("y")`: TypeScript only
+    loader = ("any: [ { kind: import }, { kind: identifier, regex: \"^require$\" }, { kind: member_expression, all: [ "
+              "{ has: { field: object, kind: identifier, regex: \"^vi$\" } }, "
+              "{ has: { field: property, regex: \"^(?:importActual|importMock)$\" } } ] } ]")
     return (f"id: reach.static\nlanguage: {lang}\nrule:\n  any:\n"
             "    - { kind: import_statement, has: { field: source, kind: string, pattern: $S } }\n"
-            "    - { kind: export_statement, has: { field: source, kind: string, pattern: $S } }\n---\n"
+            "    - { kind: export_statement, has: { field: source, kind: string, pattern: $S } }\n"
+            f"{require}---\n"
             f"id: reach.call\nlanguage: {lang}\nrule:\n  kind: call_expression\n  all:\n"
-            "    - has: { field: function, any: [ { kind: import }, { kind: identifier, regex: \"^require$\" } ] }\n"
+            f"    - has: {{ field: function, {loader} }}\n"
             "    - has: { field: arguments, has: { nthChild: 1, any: [ { kind: string }, { kind: template_string } ], "
-            "pattern: $S } }\n")
+            "pattern: $S } }\n"
+            f"---\nid: reach.computed\nlanguage: {lang}\nrule:\n  kind: call_expression\n  all:\n"
+            f"    - has: {{ field: function, {loader} }}\n"
+            "    - has: { field: arguments, has: { nthChild: 1, not: { any: [ { kind: string }, { kind: template_string } ] }, "
+            "pattern: $S } }\n"
+            f"---\nid: reach.testapi\nlanguage: {lang}\nrule:\n  kind: call_expression\n  has:\n    field: function\n"
+            "    any:\n"
+            f"      - {{ kind: identifier, regex: \"{TEST_GLOBALS}\" }}\n"
+            f"      - {{ kind: member_expression, has: {{ field: object, kind: identifier, regex: \"{TEST_GLOBALS_OBJ}\" }} }}\n")
 
 
 def _export_target(value) -> str | None:
@@ -1010,7 +1031,7 @@ class Workspace:
             return hits, None if hits else f"`{spec}` names no tracked file"
         if spec.startswith("/"):
             return [], f"`{spec}` is an absolute path: what it loads depends on the machine, not on this tree"
-        if spec.startswith("node:") or spec.split("/")[0] in NODE_BUILTINS:
+        if spec.startswith("node:"):
             return [], ""
         aliased = self.ts_paths(importer, spec)
         if aliased is not None:
@@ -1021,6 +1042,8 @@ class Workspace:
             d, man = self.packages[name]
             hits, why = self.package_files(d, man, sub)
             return hits, None if hits else why
+        if name in NODE_BUILTINS:  # last of the three: a workspace or alias named `events` is the tree's, not node's
+            return [], ""
         if name in self.deps:
             return [], ""
         return [], f"`{spec}` is neither a workspace package nor a dependency any package.json declares"
@@ -1071,7 +1094,41 @@ def py_reach(tree: Tree, importer: str, level: int, module: str, names: list[str
             return sorted({posixpath.normpath(x) for x in found}), None
     if any(hit(base, top) or posixpath.join(base, top) in dirs for base in bases):
         return [], f"`{module}` is a module this tree holds, but it resolves to no tracked file"
+    # An absolute import from a directory the test put on sys.path (K2 R4 B2a: vagary-core's billing tests insert
+    # `app/`, then `import store`): the nearest ancestor holding `<base>/**/<top>.py` or `<base>/**/<top>/__init__.py`
+    # names the source root; two roots there are UNRESOLVED, none anywhere is a third-party package.
+    index = _py_index(tree)
+    for base in bases:
+        roots = sorted({r for r in index.get(top, ()) if not base or r == base or r.startswith(base + "/")})
+        if not roots:
+            continue
+        if len(roots) > 1:
+            return [], (f"`{module}` is a module {len(roots)} source roots under `{base or '.'}` hold "
+                        f"({', '.join(roots[:3])}{' ...' if len(roots) > 3 else ''}): which one the test puts on "
+                        "sys.path is not read")
+        found = hit(roots[0], module) + [x for n in names for x in hit(roots[0], module + "." + n)]
+        if found:
+            return sorted({posixpath.normpath(x) for x in found}), None
+        return [], f"`{module}` is a module `{roots[0]}` holds, but it resolves to no tracked file"
     return [], ""
+
+
+def _py_index(tree: Tree) -> dict:
+    """top-level name -> the directories holding a tracked `<name>.py` or `<name>/__init__.py`, built once per tree."""
+    index = getattr(tree, "_py_roots", None)
+    if index is None:
+        index = {}
+        for f in tree.files:
+            if not f.endswith(".py"):
+                continue
+            d, stem = posixpath.dirname(f), posixpath.basename(f)[:-3]
+            if stem == "__init__":
+                if d:
+                    index.setdefault(posixpath.basename(d), set()).add(posixpath.dirname(d))
+            else:
+                index.setdefault(stem, set()).add(d)
+        tree._py_roots = index
+    return index
 
 
 def _ancestors(path: str):
@@ -1088,6 +1145,37 @@ def reach_closure(tree: Tree, roots: list[str], scope: "Scope", links: set[str] 
     imports are still followed, so an exclusion cannot hide what it loads."""
     ws, seen, reached, unresolved, unparsable, support = Workspace(tree), set(roots), set(), [], [], set()
     dirs = frozenset(d for f in tree.files for d in _ancestors(f))
+
+    def follow(f: str, ln: int, spec: str, hits: list[str]) -> list[str]:
+        """A tracked symlink an import names is followed to its target (itself a link: onward); a loop, a link that
+        leaves the tree, or a target nothing tracks is UNRESOLVED, never silently gone."""
+        out = []
+        for h in hits:
+            seen_links, cur, why = set(), h, ""
+            while cur in links:
+                if cur in seen_links:
+                    why = f"the symlink `{h}` is a loop"
+                    break
+                seen_links.add(cur)
+                try:
+                    dest = os.readlink(tree.root / cur)
+                except OSError:
+                    why = f"the symlink `{h}` cannot be read"
+                    break
+                nxt_path = posixpath.normpath(posixpath.join(posixpath.dirname(cur), dest))
+                if dest.startswith("/") or nxt_path == ".." or nxt_path.startswith("../"):
+                    why = f"the symlink `{h}` leaves the repository"
+                    break
+                cur = nxt_path
+            else:
+                if cur not in tree.fileset:
+                    why = f"the symlink `{h}` points at `{cur}`, which no tracked file holds"
+            if why:
+                unresolved.append((f, ln, spec, why))
+            else:
+                out.append(cur)
+        return out
+
     frontier = sorted(f for f in roots if posixpath.splitext(f)[1] in LANGUAGE_OF)
     while frontier:
         tree.ensure(frontier)
@@ -1095,9 +1183,16 @@ def reach_closure(tree: Tree, roots: list[str], scope: "Scope", links: set[str] 
         for lang in JS_LANGS:
             group = [f for f in frontier if LANGUAGE_OF[posixpath.splitext(f)[1]] == lang]
             for m in sg_scan(tree.root, _reach_rules(lang), group):
+                if m["ruleId"] == "reach.testapi":
+                    support.add(m["file"])
+                    continue
                 if m["ruleId"] == "reach.static" and _TYPE_ONLY.match(m["text"]):
                     continue
                 s = m["metaVariables"]["single"]["S"]["text"]
+                if m["ruleId"] == "reach.computed":
+                    unresolved.append((m["file"], _line(m["range"]), s.strip()[:60],
+                                       "computed: the specifier is not a string, so the module is not known"))
+                    continue
                 ln = _line(m["range"])
                 if s[:1] == "`" and "${" in s:
                     unresolved.append((m["file"], ln, s, "a template with a substitution: the module is computed"))
@@ -1111,7 +1206,7 @@ def reach_closure(tree: Tree, roots: list[str], scope: "Scope", links: set[str] 
             hits, why = ws.resolve(f, spec)
             if why:
                 unresolved.append((f, ln, spec, why))
-            nxt += hits
+            nxt += follow(f, ln, spec, hits)
         for f in frontier:
             if posixpath.splitext(f)[1] != ".py":
                 continue
@@ -1125,7 +1220,7 @@ def reach_closure(tree: Tree, roots: list[str], scope: "Scope", links: set[str] 
                 hits, why = py_reach(tree, f, level, module, names, dirs)
                 if why:
                     unresolved.append((f, ln, "." * level + module, why))
-                nxt += hits
+                nxt += follow(f, ln, "." * level + module, hits)
         frontier = []
         for t in sorted(set(nxt)):
             if t in seen or posixpath.splitext(t)[1] not in LANGUAGE_OF:
@@ -1372,6 +1467,84 @@ def _parse_py(text: str):
         return None
 
 
+_PROMISIFIED = re.compile(r"^(?:[A-Za-z_$][\w$]*\.)?promisify\(\s*(?P<x>[A-Za-z_$][\w$.]*)\s*\)$")
+_END_CALLEE = re.compile(r"\.end$")  # postgres.js `sql.end({ timeout: 5 })`: seconds, a shutdown grace, not a child process
+
+
+def _top_level(text: str, ops: tuple[str, ...]) -> list[tuple[int, str]]:
+    """(index, operator) of each of `ops` at bracket depth 0 and outside a string."""
+    out, depth, i, quote = [], 0, 0, ""
+    while i < len(text):
+        c = text[i]
+        if quote:
+            i += 2 if c == "\\" else 1
+            quote = "" if c == quote else quote
+            continue
+        if c in "'\"`":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            op = next((o for o in ops if text.startswith(o, i)), None)
+            if op:
+                out.append((i, op))
+                i += len(op)
+                continue
+        i += 1
+    return out
+
+
+def _fallback_literal(text: str) -> Fraction | None:
+    """`x ?? LIT` or `x || LIT`: the literal the expression falls back to (K2 R4 B3: a bound written as an option
+    with a default is judged by that default, the value the code runs at when nothing is passed)."""
+    text = text.strip()
+    while text.startswith("(") and text.endswith(")") and not _top_level(text[1:-1], ("(",)) and \
+            text[1:-1].count("(") == text[1:-1].count(")"):
+        text = text[1:-1].strip()
+    ops = _top_level(text, ("??", "||"))
+    return evaluate_js(text[ops[-1][0] + 2:].strip()) if ops else None
+
+
+def _split_commas(s: str) -> list[str]:
+    segs, depth, cur, prev = [], 0, "", ""
+    for ch in s:
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}" or (ch == ">" and prev != "="):
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            segs.append(cur)
+            cur = ""
+        else:
+            cur += ch
+        prev = ch
+    return segs + [cur]
+
+
+def _param_names(text: str) -> set[str]:
+    """The names a parameter list `(a: T, b = 1, { c, d: e }: O, ...rest)` binds."""
+    names = set()
+
+    def elements(seg: str, destructured: bool = False):
+        seg = seg.strip().lstrip(".").strip()
+        if seg[:1] in ("{", "["):
+            close = {"{": "}", "[": "]"}[seg[0]]
+            inner = seg[1:seg.rfind(close)] if close in seg else seg[1:]
+            for el in _split_commas(inner):
+                yield from elements(el, True)
+            return
+        head = re.split(r"[=?]", seg, maxsplit=1)[0]
+        parts = head.split(":", 1)
+        m = re.search(r"([A-Za-z_$][\w$]*)\s*$", parts[1] if destructured and len(parts) > 1 else parts[0])
+        if m:
+            yield m.group(1)
+    for seg in _split_commas(text.strip()[1:-1]):
+        names.update(elements(seg))
+    return names
+
+
 def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozenset = frozenset(),
            support: frozenset = frozenset()) -> dict:
     """Scan `files` (scanned paths of `tree`): {"findings": {file: [record]}, "marks": [...], "unparsable": [...]}.
@@ -1464,9 +1637,74 @@ def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozens
     resolved = _resolve_all(tree, need)
     # A condition-kind `timeout` option whose callee is an identifier may be an aliased child process (#60 delta L1).
     alias_files = sorted({m["file"] for m in bounds if m["ruleId"] == RULE + ".option.condition"
-                          and NAME.match(m["metaVariables"]["single"].get("F", {}).get("text", ""))
+                          and (NAME.match(m["metaVariables"]["single"].get("F", {}).get("text", ""))
+                               or _PROMISIFIED.match(m["metaVariables"]["single"].get("F", {}).get("text", "")))
                           and LANGUAGE_OF[posixpath.splitext(m["file"])[1]] in JS_LANGS})
     aliases = child_process_aliases(tree, alias_files) if alias_files else {}
+    # K2 R4 B3: the kind of every bound. An option.condition whose callee is a child process by alias,
+    # `promisify(<child process>)(...)`, or a same-file function that forwards its options or a parameter to a child
+    # process call is a child process: the floor rises, never falls.
+    def subprocess_callee(f: str, callee: str) -> bool:
+        pm = _PROMISIFIED.match(callee)
+        if pm:
+            return pm.group("x").rsplit(".", 1)[-1] in SUBPROCESS_NAMES or pm.group("x") in aliases.get(f, set())
+        return callee in aliases.get(f, set())
+
+    def contains(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
+        return outer[0] <= inner[0] and inner[1] <= outer[1]
+
+    fn_defs, fn_params = {}, {}
+    for m in matches:
+        if m["ruleId"] == "fn-def":
+            mv = m["metaVariables"]["single"]
+            fn_defs.setdefault(m["file"], []).append((_span(mv["FV"]["range"]), mv["N"]["text"]))
+        elif m["ruleId"] == "fn-params":
+            fn_params.setdefault(m["file"], []).append((_span(m["range"]), _span(m["metaVariables"]["single"]["FN"]["range"]),
+                                                       _param_names(m["text"])))
+    kinds = {}
+    for m in bounds:
+        _, position, kind = m["ruleId"].split(".")
+        if position == "option" and kind == "condition" and subprocess_callee(
+                m["file"], m["metaVariables"]["single"].get("F", {}).get("text", "")):
+            kind = "subprocess"
+        kinds[id(m)] = kind
+    forwarders = {}
+    for m in bounds:
+        f, position = m["file"], m["ruleId"].split(".")[1]
+        if position != "option" or kinds[id(m)] != "subprocess" or f not in fn_defs:
+            continue
+        v = m["metaVariables"]["single"]["V"]
+        words = set(re.findall(r"[A-Za-z_$][\w$]*", v["text"]))
+        enclosing = [d for d in fn_defs[f] if contains(d[0], _span(v["range"]))]
+        if not enclosing:
+            continue
+        span, name = min(enclosing, key=lambda d: d[0][1] - d[0][0])
+        if any(fn == span and words & names for _, fn, names in fn_params.get(f, ())):
+            forwarders.setdefault(f, set()).add(name)
+    for m in bounds:
+        callee = m["metaVariables"]["single"].get("F", {}).get("text", "")
+        if m["ruleId"] == RULE + ".option.condition" and callee in forwarders.get(m["file"], set()):
+            kinds[id(m)] = "subprocess"
+    # A literal parameter default that feeds a judged bound in the same function is judged as that bound.
+    by_file = {}
+    for m in bounds:
+        by_file.setdefault(m["file"], []).append(m)
+    fed, fed_by = {}, {}
+    for m in bounds:
+        if m["ruleId"] != RULE + ".default.condition" or LANGUAGE_OF[posixpath.splitext(m["file"])[1]] not in JS_LANGS:
+            continue
+        f, name = m["file"], re.match(r"\s*([A-Za-z_$][\w$]*)", m["text"])
+        enclosing = [fn for sp, fn, _ in fn_params.get(f, ()) if contains(sp, _span(m["range"]))]
+        if not name or not enclosing:
+            continue
+        fn = min(enclosing, key=lambda sp: sp[1] - sp[0])
+        feeds = [b for b in by_file[f] if b is not m and b["ruleId"].split(".")[1] != "default"
+                 and b["metaVariables"]["single"]["V"]["text"].strip() == name.group(1)
+                 and contains(fn, _span(b["metaVariables"]["single"]["V"]["range"]))]
+        if feeds:
+            top = max(feeds, key=lambda b: FLOORS_S[kinds[id(b)]])
+            fed[id(m)], fed_by[id(m)] = kinds[id(top)], feeds
+    rec_of = {}
     findings, marks = {}, []
     for (f, ln), why in sorted(marks_raw.items()):
         marks.append({"file": f, "line": ln, "reason": why})
@@ -1476,8 +1714,7 @@ def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozens
         lang = LANGUAGE_OF[posixpath.splitext(f)[1]]
         v = m["metaVariables"]["single"]["V"]
         callee = m["metaVariables"]["single"].get("F", {}).get("text", "")
-        if position == "option" and kind == "condition" and callee in aliases.get(f, set()):
-            kind = "subprocess"  # an aliased child process, resolved by binding
+        kind = fed.get(id(m), kinds[id(m)])
         text = v["text"].strip()
         floor = FLOORS_S[kind] * UNIT[lang]
         rec = {"line": _line(v["range"]), "rule": RULE, "position": position, "kind": kind,
@@ -1491,7 +1728,14 @@ def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozens
             else:
                 rec["reason"] = f"launcher {la['name']} not proven by binding: {why}"
         value, why = _value_of(text, lang, f, resolved)
+        if value is None and lang in JS_LANGS and (fb := _fallback_literal(text)) is not None:
+            value, why = fb, f"`{text[:60]}` falls back to the literal {_fmt(fb)}, which is what runs when nothing is passed"
         rec["read"] = value is not None
+        if position == "option" and kind == "condition" and _END_CALLEE.search(callee):
+            rec["callee_end"] = True
+        if id(m) in fed:
+            rec["fed"] = True
+        rec_of[id(m)] = rec
         if (m.get("zero_is_none") or (lang != "python" and position in ZERO_IS_NONE)) and value == 0 \
                 and not NAME.match(text):
             continue  # a literal 0 is "no limit" here
@@ -1584,17 +1828,30 @@ def census(tree: Tree, files: list[str], launchers: list[dict], reached: frozens
             unparsable.setdefault((f, 0), why)
         if recs:
             findings.setdefault(f, []).extend(recs)
+    for mid, feeds in fed_by.items():  # the forwarded use is judged at the default that feeds it
+        if rec_of.get(mid) is not None and rec_of[mid]["read"]:
+            for b in feeds:
+                if id(b) in rec_of:
+                    rec_of[id(b)]["fed_by_default"] = True
+    for key, why in sorted(unparsable.items()):
+        if key[0] in reached and key[0] not in support and why.startswith("an ERROR node that could hide a bound"):
+            not_covered.append((key[0], key[1], f"{why}, in a module the tests load (valid TSX the parser cannot fully "
+                                                "read): a test or support file would be red, product code is listed"))
+            del unparsable[key]
     for f in sorted(reached - support):
         if f not in findings:
             continue
         keep = REACH_PRODUCT_RULES[LANGUAGE_OF[posixpath.splitext(f)[1]]]
         kept = []
         for r in findings[f]:
-            if f"{r['rule']}.{r['position']}.{r['kind']}" not in keep:
+            if r.get("callee_end") or (f"{r['rule']}.{r['position']}.{r['kind']}" not in keep and not r.get("fed")):
                 continue
             if r["status"] == "finding" and not r.get("read", True):
-                not_covered.append((f, r["line"], f"a forwarded bound `{r['value']}` in a module the tests load: its "
-                                                  "value is its caller's, so it is judged where a test sets it"))
+                if r.get("fed_by_default"):
+                    continue  # its literal default is judged where it is written
+                not_covered.append((f, r["line"], f"a bound with no value this check can read (`{r['value']}`: a "
+                                                  "parameter or a computed value) in a module the tests load: it is "
+                                                  "its caller's, so it is judged where a test sets it"))
                 continue
             kept.append(r)
         if kept:
@@ -2673,7 +2930,7 @@ def new_marks(head_findings: dict, change: dict | None) -> list[dict]:
 
 def self_test(verbose: bool = False) -> list[str]:
     """Run every fixtures/<case>/ through the real scan; return the failures (empty = the check is intact)."""
-    failures, covered = [], set()
+    failures, covered, product = [], set(), set()
     cases = sorted(p for p in (HERE / "fixtures").iterdir() if p.is_dir())
     if not cases:
         return ["no fixtures: the self-test cannot run"]
@@ -2681,9 +2938,11 @@ def self_test(verbose: bool = False) -> list[str]:
         try:
             spec = json.loads((case / "expect.json").read_text(encoding="utf-8"))
             cfg = load_config(json.dumps({"schema": SCHEMA, "counts": {}, **spec["config"]}), f"{case.name}/expect.json")
-            files = sorted(str(p.relative_to(case)) for p in case.rglob("*") if p.is_file() and p.name != "expect.json")
-            scanned = [f for f in files if Scope(cfg).scanned(f)]
-            reach = reach_of(Tree(case, files), cfg, scanned, Scope(cfg))
+            files = sorted(str(p.relative_to(case)) for p in case.rglob("*")
+                           if (p.is_file() or p.is_symlink()) and p.name != "expect.json")
+            links = {f for f in files if (case / f).is_symlink()}
+            scanned = [f for f in files if Scope(cfg).scanned(f) and f not in links]
+            reach = reach_of(Tree(case, files), cfg, scanned, Scope(cfg), links)
             res = census(Tree(case, files), scanned + reach["reached"], cfg["launchers"], frozenset(reach["reached"]),
                          frozenset(reach["support"]))
         except (Refusal, OSError, ValueError, KeyError) as e:
@@ -2695,6 +2954,9 @@ def self_test(verbose: bool = False) -> list[str]:
             got[f] = {k: c[k] for k in ("finding", "cleared", "marked") if c[k]}
             covered.update((LANGUAGE_OF.get(posixpath.splitext(f)[1], "config"), f"{r['rule']}.{r['position']}.{r['kind']}")
                            for r in recs if r["status"] == "finding")
+            if f in reach["reached"] and f not in reach["support"]:
+                product.update((LANGUAGE_OF.get(posixpath.splitext(f)[1], "config"),
+                                f"{r['rule']}.{r['position']}.{r['kind']}") for r in recs if r["status"] == "finding")
         want = {f: {k: v for k, v in c.items() if v} for f, c in spec.get("files", {}).items()}
         if got != want:
             failures.append(f"{case.name}: findings {json.dumps(got, sort_keys=True)}, expected "
@@ -2724,6 +2986,13 @@ def self_test(verbose: bool = False) -> list[str]:
                 list(PY_BOUND_RULES) if lang == "python" else []) + ([f"{RULE}.default-hook.hook"] if lang == "typescript" else []):
             if (lang, rid) not in covered:
                 failures.append(f"rule {rid} ({lang}) has no planted RED finding in fixtures/")
+    # Every product rule of reach (REACH_PRODUCT_RULES) must be planted RED in a reached module that is not test support,
+    # for TypeScript and for Python, so a gutted family cannot pass (K2 R4 B4).
+    for lang in ("typescript", "python"):
+        for rid in sorted(REACH_PRODUCT_RULES[lang]):
+            if (lang, rid) not in product:
+                failures.append(f"reach product rule {rid} ({lang}) has no planted RED finding in a reached product "
+                                "module in fixtures/")
     return failures
 
 

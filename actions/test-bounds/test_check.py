@@ -676,9 +676,9 @@ class Baseline(unittest.TestCase):
         self.assertTrue(has(v["problems"], f"{x}: 3 finding(s), the base had 2: a new one"), v["problems"])
 
 
-def reach_baseline(counts: dict, reach="tests") -> str:
+def reach_baseline(counts: dict, reach="tests", **extra) -> str:
     cfg = {"schema": 1, "check": C.CHECK_ID, "trees": TREES, "check_digest": C.check_digest(),
-           "counts": {f: {C.RULE: n} for f, n in counts.items() if n}}
+           "counts": {f: {C.RULE: n} for f, n in counts.items() if n}, **extra}
     if reach:
         cfg["reach"] = reach
     return json.dumps(cfg, indent=2) + "\n"
@@ -757,6 +757,19 @@ class Reach(unittest.TestCase):
         self.assertEqual(v["problems"], [])
         self.assertTrue(has([f"{f}:{ln} {why}" for f, ln, why in v["not_covered"]], f"{self.LIB}:2 a forwarded bound `t`"),
                         v["not_covered"])
+
+    def test_an_exclude_cannot_hide_a_reached_module_while_the_base_has_reach_on(self):
+        base = self.repo.commit({"package.json": PKG, self.A: loader("../../lib/ps.js"), self.LIB: PS,
+                                 BL: reach_baseline({self.LIB: 1})})
+        self.repo.commit({self.LIB: PS2, BL: reach_baseline({}, exclude=[self.LIB])})
+        v = self.repo.verdict(base)
+        self.assertTrue(has(v["problems"], f"`exclude` gains `{self.LIB}`"), v["problems"])
+        self.repo.commit({BL: reach_baseline({self.LIB: 1}, exclude=[self.LIB])})
+        self.assertTrue(has(self.repo.verdict(base)["problems"], "`exclude` gains"), "a held count does not excuse it")
+        # an exclude the base already holds is not a change
+        b2 = self.repo.commit({BL: reach_baseline({self.LIB: 1}, exclude=["s/old/**"])})
+        self.repo.commit({BL: reach_baseline({self.LIB: 1}, exclude=["s/old/**"])})
+        self.assertFalse(has(self.repo.verdict(b2)["problems"], "`exclude` gains"))
 
     def test_an_unknown_reach_mode_is_refused(self):
         with self.assertRaises(C.Refusal):

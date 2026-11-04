@@ -2546,6 +2546,14 @@ def narrowing(base_cfg: dict, head_cfg: dict, files: list[str]) -> list[str]:
     if base_cfg.get("reach") and head_cfg.get("reach") != base_cfg["reach"]:
         problems.append(f"`reach` is turned off (the base scans the modules its tests load, `{base_cfg['reach']}`): "
                         "a change cannot narrow what is scanned")
+    if base_cfg.get("reach"):
+        # An exclude drops a reached module from the scan with no trace (K2 R4 B1): while the base reads what the tests
+        # load, a glob the base does not hold would let a new bound there pass clean.
+        held = set(base_cfg.get("exclude", []))
+        for g in head_cfg.get("exclude", []):
+            if g not in held:
+                problems.append(f"`exclude` gains `{g}` while the base has `reach` on: an exclude hides a module the "
+                                "tests load, so it lands only in a change that turns reach on, never after")
     bs, hs = Scope(base_cfg), Scope(head_cfg)
     lost = [f for f in files if bs.scanned(f) and not hs.scanned(f)]
     if lost:

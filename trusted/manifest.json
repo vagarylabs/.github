@@ -82,5 +82,8 @@
   },
   "workflow_lint": {
     "mode": "report"
+  },
+  "pin_audit": {
+    "exemptions": []
   }
 }

@@ -1,0 +1,137 @@
+# Reusable, report-only pin audit for ONE repository: the caller's own (U1; root's GO, 2026-10-29).
+# GENERATED from trusted/templates/pin-audit.yml.in by `python3 trusted/render.py`; edit the template.
+#
+# C1 admits exact pins only: every Dockerfile FROM by digest, every setup-node node-version an exact X.Y.Z. This audit
+# asks, weekly, whether each is still current: a FROM tag whose digest moved off its pin, or that is gone; a Node pin
+# behind its major's newest release, or on a major past its end of life (trusted/pin_audit.py holds the detail). It is
+# the backstop for the updaters (Renovate, Dependabot), never a replacement: a lagging pin in a repository whose caller
+# declares an updater is reported as that updater's miss.
+#
+# ROOT'S CONDITIONS (GO 2026-10-29, lanes/cli/STATE-2026-10-29-change-impact.md):
+# - INCOMPLETE is a FINDING, never a clean week: a run where any registry or Node fetch failed says so in the summary
+#   headline and lists an `audit_incomplete` finding with the failed fetches; the result says complete: false. The job
+#   stays green (report-only). A missing week is visible too: cli's weekly board line (scripts/pin_audit_runs.py, then
+#   `pin_audit.py record`) carries each repository's last COMPLETE run date and calls a repository with no run in 8
+#   days MISSING.
+# - Registry HEAD reads only, bounded (one deadline, a timeout per request, a byte cap per body, a cap on distinct
+#   tags), one HEAD per distinct tag across the repository's files; two Node GETs (dist index, release schedule).
+#   Anonymous throughout: no token is sent to any registry, and the caller's GITHUB_TOKEN is not used at all.
+# - The caller's own GITHUB_TOKEN with `contents: read` and nothing else; no secret; vl-light.
+# - Findings carry owner, file:line and current vs newest. Nothing is filed: the job summary and the `pin-audit`
+#   artifact belong to the caller's run, so a private repository's result stays private to it (U1 ruling a).
+# - The readers are C1's own (classify.from_images, classify.node_versions): the classifier, this script and the
+#   manifest are byte-identical inline copies of trusted/ (trusted/tests/test_pin_audit.py fails on drift), so the
+#   pinned workflow bytes are the whole trust root and nothing from the repository is executed.
+#
+# Example caller, weekly, in the repository being audited, at .github/workflows/pin-audit.yml (the weekly reader
+# looks for that file name):
+#
+#   name: pin-audit
+#   on:
+#     schedule:
+#       - cron: '23 4 * * 1'
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     pin-audit:
+#       permissions:
+#         contents: read
+#       uses: vagarylabs/.github/.github/workflows/pin-audit.yml@<40-hex> # .github #<PR> merge
+#       with:
+#         owner: cc:<lane>
+#         docker-updater: renovate   # or dependabot, or none
+#         node-updater: renovate
+#
+# RUNNER: the caller's `runner` input, default vl-light. A public repository passes a hosted label (public repositories
+# stay on GitHub-hosted runners). Measured on vagary-core's head 12da0170d5 from a workstation: 51 Dockerfiles, 21
+# workflow files, 65 image pins on 9 distinct tags and 48 Node pins in 21 requests and 43 s.
+name: Pin audit (reusable, report-only, the calling repository)
+
+on:
+  workflow_call:
+    inputs:
+      owner:
+        description: The lane that owns this repository's findings (for example cc:spine).
+        required: true
+        type: string
+      runner:
+        description: Runner label for the job. A private repository gives a self-hosted label.
+        required: false
+        type: string
+        default: vl-light
+      docker-updater:
+        description: The updater that refreshes this repository's FROM pins (renovate, dependabot or none).
+        required: false
+        type: string
+        default: none
+      node-updater:
+        description: The updater that refreshes this repository's node-version pins (renovate, dependabot or none).
+        required: false
+        type: string
+        default: none
+
+permissions:
+  contents: read
+
+jobs:
+  pin-audit:
+    name: pin-audit
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 12  # the audit's own deadline is 4 minutes; the step below has 8
+    permissions:
+      contents: read
+    steps:
+      - name: Check the inputs
+        env:
+          OWNER: ${{ inputs.owner }}
+          DOCKER_UPDATER: ${{ inputs.docker-updater }}
+          NODE_UPDATER: ${{ inputs.node-updater }}
+        run: |
+          set -euo pipefail
+          [[ "$OWNER" =~ ^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,63}$ ]] || { echo "::error::owner must be a lane name"; exit 1; }
+          for u in "$DOCKER_UPDATER" "$NODE_UPDATER"; do
+            case "$u" in none|renovate|dependabot) ;; *) echo "::error::updater must be none, renovate or dependabot"; exit 1 ;; esac
+          done
+      - name: Check out this repository's commit as data (depth 1, no credentials kept, nothing executed)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: head
+      - name: Audit every exact pin against its registry and Node's releases
+        # A step timeout FAILS the step; the job timeout would cancel the job, and the artifact below would not upload.
+        timeout-minutes: 8
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          OWNER: ${{ inputs.owner }}
+          DOCKER_UPDATER: ${{ inputs.docker-updater }}
+          NODE_UPDATER: ${{ inputs.node-updater }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/trusted"
+          mkdir -p "$d" "$RUNNER_TEMP/pin-audit"
+          cat > "$d/classify.py" <<'TRUSTED_CLASSIFY_PY'
+          {{INLINE:trusted/classify.py}}
+          TRUSTED_CLASSIFY_PY
+          cat > "$d/pin_audit.py" <<'TRUSTED_PIN_AUDIT_PY'
+          {{INLINE:trusted/pin_audit.py}}
+          TRUSTED_PIN_AUDIT_PY
+          cat > "$d/manifest.json" <<'TRUSTED_MANIFEST_JSON'
+          {{INLINE:trusted/manifest.json}}
+          TRUSTED_MANIFEST_JSON
+          cd head
+          # -I: isolated mode, so no PYTHON* variable and no working-directory module can reach the interpreter.
+          python3 -I "$d/pin_audit.py" audit --manifest "$d/manifest.json" --repo "$REPO" --head "$HEAD_SHA" \
+            --owner "$OWNER" --docker-updater "$DOCKER_UPDATER" --node-updater "$NODE_UPDATER" \
+            --json-out "$RUNNER_TEMP/pin-audit/pin-audit.json" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
+      - name: Keep the result as a job artifact (in this repository's run only; the weekly reader reads it)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pin-audit
+          path: ${{ runner.temp }}/pin-audit/pin-audit.json
+          retention-days: 35  # pin_audit.RETENTION_DAYS: the weekly reader looks back four runs
+          if-no-files-found: warn

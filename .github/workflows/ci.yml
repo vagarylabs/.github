@@ -42,16 +42,17 @@ jobs:
           [ "$negative_status" -eq 1 ] || { echo "Expected actionlint lint rejection, not a tool failure" >&2; exit 1; }
           grep -F 'property "proof_missing_step" is not defined' "$RUNNER_TEMP/actionlint-invalid.log"
           grep -F '[expression]' "$RUNNER_TEMP/actionlint-invalid.log"
-          # The two workflows that inline trusted/classify.py carry run scripts over 64 KiB. actionlint writes a script
+          # The three workflows that inline trusted/classify.py carry run scripts over 64 KiB. actionlint writes a script
           # to the stdin of its shellcheck process before starting that process, so a script larger than the pipe
           # buffer blocks it forever. That write is code the pinned 1.7.7 and 1.7.12 share: process.go,
           # cmdExecution.run calls io.WriteString on the stdin pipe, then cmd.Output() (read in both tags' source).
           # REPRODUCED on 1.7.12 only, on the ~93 KB run script: no shellcheck child is ever started and actionlint
           # never returns. On 1.7.7 the hang is INFERRED from that shared code, not run. Do NOT re-enable the shellcheck
-          # integration for these two. This required job still gates their run scripts on shellcheck: the step below
+          # integration for these. This required job still gates their run scripts on shellcheck: the step below
           # runs it on every one of them directly and fails when shellcheck is missing.
           shopt -s nullglob
-          inline=(.github/workflows/trusted-workflow-integrity.yml .github/workflows/trusted-protected-paths.yml)
+          inline=(.github/workflows/trusted-workflow-integrity.yml .github/workflows/trusted-protected-paths.yml
+            .github/workflows/pin-audit.yml)
           rest=()
           for f in .github/workflows/*.yml .github/workflows/*.yaml; do
             case " ${inline[*]} " in *" $f "*) ;; *) rest+=("$f") ;; esac

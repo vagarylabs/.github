@@ -8,3 +8,4 @@ vi.waitUntil(() => true, 1_000);
 async function helper(timeoutMs = 2_000) { return timeoutMs; }
 const config = { testTimeout: 3_000, hookTimeout: 4_000 };
 child_process.spawnSync("x", [], { timeout: 7_000 });
+const pool = new Pool({ connectionTimeoutMillis: 5_000 });

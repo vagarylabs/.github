@@ -22,6 +22,7 @@
   "broken.test.ts",
   "digit.test.ts",
   "latin1.test.ts",
+  "pytest.ini",
   "template-word.test.ts",
   "test_cpython.py"
  ],

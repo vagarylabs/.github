@@ -809,6 +809,39 @@ class TreesAndMarks(unittest.TestCase):
         self.assertEqual(v["problems"], [], "a mark clears its finding; it is listed as NEW, not failed")
 
 
+class Worktree(unittest.TestCase):
+    """--worktree (R3b): an uncommitted trial merge is judged against the commit it was made onto."""
+
+    def test_an_uncommitted_change_is_judged_against_the_base(self):
+        repo = Repo()
+        try:
+            a = "s/__tests__/a.test.ts"
+            base = repo.commit({a: file("a", 0, 2), BL: baseline({a: 2})})
+            (repo.dir / a).write_text(file("a", 0, 3), encoding="utf-8")
+            repo.git("add", a)
+            with tempfile.TemporaryDirectory() as tmp:
+                v = C.run(repo.dir, base, "pull_request", Path(tmp), worktree=True)
+            self.assertTrue(has(v["problems"], f"{a}: 3 finding(s), the base had 2: a new one"), v["problems"])
+            with tempfile.TemporaryDirectory() as tmp:
+                committed = C.run(repo.dir, base, "pull_request", Path(tmp))
+            self.assertEqual([p for p in committed["problems"] if "the base had" in p], [],
+                             "positive control: without --worktree the uncommitted change is not the change")
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--worktree", "--base", base,
+                                "--root", str(repo.dir)], capture_output=True, text=True, env=clean)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--worktree", "--root",
+                                str(repo.dir)], capture_output=True, text=True, env=clean)
+            self.assertEqual(r.returncode, 2, "--worktree needs --base")
+            r = subprocess.run([sys.executable, "-B", str(HERE / "check.py"), "check", "--worktree", "--base", base,
+                                "--root", str(repo.dir)], capture_output=True, text=True,
+                               env={**clean, "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push"})
+            self.assertEqual(r.returncode, 2, "never in CI")
+            self.assertIn("a CI run judges its commit", r.stdout)
+        finally:
+            repo.done()
+
+
 class Cli(unittest.TestCase):
     def cli_env(self):
         return {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}

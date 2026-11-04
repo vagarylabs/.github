@@ -1357,14 +1357,17 @@ def read_base_config(root: Path, sha: str) -> dict | None:
     return load_config(p.stdout, f"{BASELINE_PATH} at the base {sha[:12]}")
 
 
-def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path) -> dict:
+def pr_change(root: Path, sha: str, head_cfg: dict, tmp: Path, worktree: bool = False) -> dict:
     """The change against base `sha`: groups, the base's ACTUAL findings in every old path (scanned from its blobs
-    under the candidate's rules), its committed counts and configuration, and the marks it held."""
+    under the candidate's rules), its committed counts and configuration, and the marks it held. With `worktree`, the
+    change is the working tree and index against the base (an uncommitted trial merge), not HEAD."""
     base_cfg = read_base_config(root, sha)
-    d = subprocess.run(["git", "diff", "--name-status", "-z", f"-M{SIMILARITY}", f"-C{SIMILARITY}", sha, "HEAD"],
+    head = [] if worktree else ["HEAD"]
+    d = subprocess.run(["git", "diff", "--name-status", "-z", f"-M{SIMILARITY}", f"-C{SIMILARITY}", sha, *head],
                        cwd=root, capture_output=True)
     if d.returncode:
-        raise Refusal(f"git diff {sha} HEAD exited {d.returncode}: {d.stderr.decode(errors='replace').strip()[:300]}")
+        raise Refusal(f"git diff {sha} {' '.join(head) or '(the working tree)'} exited {d.returncode}: "
+                      f"{d.stderr.decode(errors='replace').strip()[:300]}")
     scope = Scope(head_cfg)
     changes = parse_name_status(d.stdout.decode("utf-8", "surrogateescape"))
     groups = change_groups(changes, scope.scanned)
@@ -1471,7 +1474,8 @@ def _payload(env: dict, event: str) -> dict:
         raise Refusal(f"a {event} run must read its base from GITHUB_EVENT_PATH, which is missing or malformed")
 
 
-def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = False) -> str | None:
+def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = False,
+                 worktree: bool = False) -> str | None:
     """The base commit a run is judged against.
 
     In Actions the base is the EVENT's, from $GITHUB_EVENT_PATH (the runner writes it; a workflow cannot override
@@ -1484,8 +1488,13 @@ def resolve_base(arg: str, event: str, env: dict, head: str, in_actions: bool = 
       - workflow_dispatch alone takes the input as given;
       - every other event is refused.
     Outside Actions (a local or tool run) the input is taken as given, except that a PR or merge-group --event needs
-    the event file, as in CI. Empty or zeros: no base."""
+    the event file, as in CI. Empty or zeros: no base. With `worktree` (scripts/open-pr-trial.py; never in CI) the
+    input is the commit the trial merge was made onto, so it is taken as given and may be HEAD."""
     given = (arg or "").strip()
+    if worktree:
+        if in_actions:
+            raise Refusal("--worktree judges an uncommitted tree; a CI run judges its commit")
+        return None if not given or ZERO.fullmatch(given) else given
     if in_actions or event in BASE_EVENTS:
         if event in BASE_EVENTS:
             want = _payload(env, event)
@@ -1552,7 +1561,7 @@ def load_head_config(root: Path) -> dict:
 
 
 def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str, str, str] | None = None,
-        in_actions: bool = False) -> dict:
+        in_actions: bool = False, worktree: bool = False) -> dict:
     cfg = load_head_config(root)
     files = tracked_files(root)
     scope = Scope(cfg)
@@ -1566,7 +1575,7 @@ def run(root: Path, base: str | None, event: str, tmp: Path, running: tuple[str,
     problems += [f"{f}: a symlink in the trees is not scanned; judge its target by its own path (list the target in a "
                  "tree, or exclude the link)" for f in sorted(links) if scope.scanned(f)]
     problems += tree_floors(cfg, scanned)
-    change = pr_change(root, base, cfg, tmp) if base else None
+    change = pr_change(root, base, cfg, tmp, worktree) if base else None
     if change and change["base_cfg"] is not None:
         problems += narrowing(change["base_cfg"], cfg, files)
     if change:
@@ -1740,6 +1749,8 @@ def main(argv: list[str]) -> int:
         p.add_argument("--event", default="")
         if name == "check":
             p.add_argument("--findings")
+            # Judge the uncommitted working tree against --base (scripts/open-pr-trial.py's trial merge). Never in CI.
+            p.add_argument("--worktree", action="store_true")
         else:
             p.add_argument("--seed", action="store_true")
     sub.add_parser("self-test")
@@ -1758,14 +1769,18 @@ def main(argv: list[str]) -> int:
         if in_actions and args.event.strip() and args.event.strip() != event:
             raise Refusal(f"--event {args.event.strip()} is not this run's event {event}")
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-        base = resolve_base(args.base, event, dict(os.environ), head, in_actions)
+        worktree = getattr(args, "worktree", False)
+        if worktree and not args.base.strip():
+            raise Refusal("--worktree needs --base: the commit the trial merge was made onto")
+        base = resolve_base(args.base, event, dict(os.environ), head, in_actions, worktree)
         if base is None and in_actions and event == "push":
             print("notice: a push with no `before` commit (a branch's first push): judged on the committed baseline "
                   "only; the pull request's own run is what gates it")
         if base:
             ensure_commit(root, base, in_actions)
         with tempfile.TemporaryDirectory() as tmp:
-            out = run(root, base, event, Path(tmp), running_context(os.environ) if in_actions else None, in_actions)
+            out = run(root, base, event, Path(tmp), running_context(os.environ) if in_actions else None, in_actions,
+                      worktree)
         out["problems"] = [f"the check's own self-test failed: {f}" for f in failures] + out["problems"]
         if args.cmd == "check":
             emit(out, args.findings)

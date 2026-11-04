@@ -77,4 +77,8 @@ runs:
         TEST_BOUNDS_SG: ${{ steps.tool.outputs.sg }}
         TB_BASE: ${{ inputs.base }}
         TB_FINDINGS: ${{ inputs.findings }}
+        # The running workflow and job, from the github context (no step can write it); check.py requires them to
+        # equal the runner's GITHUB_WORKFLOW_REF and GITHUB_JOB before a pin bump may lock debt in (K2 D8).
+        TB_CTX_WORKFLOW_REF: ${{ github.workflow_ref }}
+        TB_CTX_JOB: ${{ github.job }}
       run: python3 -I "$GITHUB_ACTION_PATH/check.py" check --base "$TB_BASE" --findings "$TB_FINDINGS"

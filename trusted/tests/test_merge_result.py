@@ -775,6 +775,42 @@ class BlockingMergeAttributeTests(Fixture):
         self.assertIn(self.REFUSED, out)
         self.assertIn("in the group commit", out)
 
+    def test_a_macro_split_between_base_and_head_is_red_in_the_landed_tree(self):
+        # LOW (root's delta4 review of .github #69): main applies `m` to the signer while `m` is undefined (harmless);
+        # the PR only defines `[attr]m binary`. Neither side sets merge on the signer; the landed .gitattributes does.
+        # Read from the base and the head alone, the PR was green, and once it landed every later .github PR exited 2.
+        r = self.r
+        pad = "".join("# pad %d\n" % i for i in range(7))  # keeps the two edits apart, so the merge is clean
+        c0 = self.base_with({".gitattributes": pad})
+        r.branch("pr", c0)
+        head = r.commit("pr: define the macro", {".gitattributes": "[attr]m binary\n" + pad, "README.md": "r1\n"})
+        r.branch("main", c0)
+        base = r.commit("main: use it while it is undefined", {".gitattributes": pad + "%s m\n" % SIGNER})
+
+        def merge_attr(source):
+            return r.git("--attr-source=" + source, "check-attr", "merge", "--", SIGNER).split(": ")[-1]
+        r.branch("gh-readonly-queue/main/pr-1", base)
+        landed = r.merge(head, "Merge pull request #1")  # the real merge: what lands, and a group commit's shape
+        # preconditions: unspecified on each side, unset in what lands, and the merge does not depend on attributes
+        self.assertEqual((merge_attr(base), merge_attr(head), merge_attr(landed)), ("unspecified", "unspecified",
+                                                                                   "unset"))
+        self.assertEqual(in_repo(r.d, classify.landing_tree, base, head), r.rev(landed + "^{tree}"))
+        r.git("checkout", "-q", "--detach", head)
+        code, out = self.judge(base, head)
+        self.assertEqual(code, 2, out)
+        self.assertIn("::error title=trusted protected-paths::%s (`%s` merge=unset in the landed tree)"
+                      % (self.REFUSED, SIGNER), out)
+        # merge_group reads the group commit, which IS the landed tree: no third source needed there
+        code, out = judge(r.d, base, landed, event="merge_group", base_ref=None, live=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn("(`%s` merge=unset in the group commit)" % SIGNER, out)
+        # the availability loss it prevents: on the landed main, an ordinary PR is refused for the base's attribute
+        r.branch("next", landed)
+        following = r.commit("next: README", {"README.md": "r2\n"})
+        code, out = self.judge(landed, following)
+        self.assertEqual(code, 2, out)
+        self.assertIn("(`%s` merge=unset in the base;" % SIGNER, out)
+
 
 class MergeGroupTests(Fixture):
     """Root's D2 direction: the binding judge runs in a merge queue. On merge_group the group commit IS what lands, so
@@ -836,6 +872,287 @@ class MergeGroupTests(Fixture):
         code, out = self.judge_group(other, group)
         self.assertEqual(code, 2, out)
         self.assertIn("merge group: the base %s is not an ancestor of the group commit %s" % (other, group), out)
+
+
+class UnreadableAttributeTests(Fixture):
+    """The D2 precondition (root's delta4 review of .github #69): git reads an attribute source it cannot read (a
+    missing .gitattributes blob, tree or commit) as NO attributes, with exit 0, in check-attr and merge-tree alike, so
+    with one .gitattributes blob deleted from the store the judge passed in both modes. Each source is now read
+    positively first, or the judge fails closed (exit 2) naming it. Every case proves the object is gone first (a packed
+    object would make it vacuous), and gets the normal verdict back once the object is restored (the positive control)."""
+    UNREADABLE = "cannot be read"
+    REFUSED = "a merge attribute is set on a blocking path"
+    # name: (base files, head files, the .gitattributes whose object goes missing, the commit holding it, the source
+    # named on pull_request, the source named on merge_group)
+    CASES = {
+        "the head's top-level .gitattributes": ({}, {".gitattributes": "%s merge=binary\n" % SIGNER}, ".gitattributes",
+                                                "head", "the head", "the group commit"),
+        "the head's nested .gitattributes": ({}, {".github/workflows/.gitattributes": "sign-image.yml binary\n"},
+                                             ".github/workflows/.gitattributes", "head", "the head",
+                                             "the group commit"),
+        "the base's .gitattributes": ({".gitattributes": "%s -merge\n" % SIGNER}, {}, ".gitattributes", "base",
+                                      "the base", "the base"),
+    }
+
+    def entry(self):
+        return classify.repo_entry(classify.validate_manifest(json.loads(MANIFEST.read_text())), REPO)
+
+    def build(self, in_base, in_head):
+        base = self.r.commit("C0", dict({SIGNER: "signer\n", "README.md": "r0\n"}, **in_base))
+        self.r.branch("pr", base)
+        head = self.r.commit("pr", dict({"README.md": "r1\n"}, **in_head))
+        self.r.branch("gh-readonly-queue/main/pr-1", base)
+        group = self.r.merge(head, "Merge pull request #1")
+        self.r.git("checkout", "-q", "--detach", head)
+        return base, head, group
+
+    @contextlib.contextmanager
+    def dropped(self, oid):
+        """oid's loose object out of the store for the block, then back."""
+        path = pathlib.Path(self.r.d, ".git", "objects", oid[:2], oid[2:])
+        self.assertTrue(path.is_file(), "precondition: %s is a loose object" % oid)
+        aside = pathlib.Path(self.r.d, ".git", "aside-" + oid)
+        path.rename(aside)
+        try:
+            r = subprocess.run(["git", "cat-file", "-e", oid], cwd=self.r.d, capture_output=True)
+            self.assertNotEqual(r.returncode, 0, "precondition: %s is unreadable" % oid)
+            yield
+        finally:
+            aside.rename(path)
+
+    def run_judge(self, mode, base, head, group):
+        if mode == "pull_request":
+            return judge(self.r.d, base, head)
+        return judge(self.r.d, base, group, event="merge_group", base_ref=None, live=None)
+
+    def test_a_missing_gitattributes_object_fails_closed_in_both_modes(self):
+        for name, (in_base, in_head, path, holder, pr_label, mg_label) in self.CASES.items():
+            for mode, label in (("pull_request", pr_label), ("merge_group", mg_label)):
+                with self.subTest(case=name, mode=mode):
+                    self.tearDown()
+                    self.setUp()
+                    base, head, group = self.build(in_base, in_head)
+                    blob = self.r.rev("%s:%s" % ({"base": base, "head": head}[holder], path))
+                    named = {"the base": base, "the head": head, "the group commit": group}[label]
+                    code, out = self.run_judge(mode, base, head, group)
+                    self.assertEqual(code, 2, out)  # intact: the attribute itself is refused by name
+                    self.assertIn(self.REFUSED, out)
+                    with self.dropped(blob):
+                        code, out = self.run_judge(mode, base, head, group)
+                    self.assertEqual(code, 2, out)  # exit 0 ("no protected class touched") before the precondition
+                    self.assertIn("::error title=trusted protected-paths::the attributes from %s (`%s`) %s"
+                                  % (label, named, self.UNREADABLE), out)
+                    self.assertIn("`%s` (blob %s) reads as `%s missing`" % (path, blob, blob), out)
+                    self.assertNotIn(self.REFUSED, out)
+                    code, out = self.run_judge(mode, base, head, group)
+                    self.assertEqual(code, 2, out)  # restored: the attribute refusal is back
+                    self.assertIn(self.REFUSED, out)
+
+    def test_the_three_way_merge_reads_each_attribute_source_positively(self):
+        # pull_request reads merge-tree's sources first, so a judge run cannot show this call site alone is pinned
+        for name, (in_base, in_head, path, holder, pr_label, _) in self.CASES.items():
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                base, head, _ = self.build(in_base, in_head)
+                commit = {"base": base, "head": head}[holder]
+                with self.dropped(self.r.rev("%s:%s" % (commit, path))):
+                    # precondition: git itself reads the source as no attributes, exit 0, and merges
+                    merged = self.r.git("--attr-source=" + commit, "merge-tree", "--write-tree", "--no-messages",
+                                        base, head)
+                    self.assertTrue(classify.SHA_RE.match(merged), merged)
+                    with self.assertRaises(classify.IntegrityError) as cm:
+                        in_repo(self.r.d, classify.landing_tree, base, head)
+                self.assertIn("the attributes from %s (`%s`) %s" % (pr_label, commit, self.UNREADABLE),
+                              str(cm.exception))
+
+    def test_check_attr_reads_each_attribute_source_positively(self):
+        for name, (in_base, in_head, path, holder, _, _) in self.CASES.items():
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                base, head, group = self.build(in_base, in_head)
+                commit = {"base": base, "head": head}[holder]
+                for label, source in (("the base", base), ("the head", head), ("the group commit", group)):
+                    if self.r.git("ls-tree", "-r", "--name-only", source, "--", path) != path:
+                        continue  # this source does not hold that .gitattributes
+                    with self.dropped(self.r.rev("%s:%s" % (commit, path))):
+                        # precondition: git itself reads the source as no attributes, exit 0
+                        self.assertEqual(self.r.git("--attr-source=" + source, "check-attr", "merge", "--", SIGNER),
+                                         "%s: merge: unspecified" % SIGNER)
+                        with self.assertRaises(classify.IntegrityError) as cm:
+                            in_repo(self.r.d, classify.blocking_merge_attributes, self.entry(), ((label, source),))
+                    self.assertIn("the attributes from %s (`%s`) %s" % (label, source, self.UNREADABLE),
+                                  str(cm.exception))
+
+    def test_a_source_git_cannot_read_at_all_fails_closed(self):
+        base, head, _ = self.build({}, {".github/workflows/.gitattributes": "sign-image.yml binary\n"})
+        subtree = self.r.rev(head + ":.github/workflows")
+        root = self.r.rev(head + "^{tree}")
+        readme = self.r.rev(head + ":README.md")
+
+        def refused(source, why):
+            for check in (lambda: classify.merge_tree(base, head, source, "the source"),
+                          lambda: classify.blocking_merge_attributes(self.entry(), (("the source", source),))):
+                with self.assertRaises(classify.IntegrityError) as cm:
+                    in_repo(self.r.d, check)
+                self.assertIn("the attributes from the source (`%s`) %s: %s" % (source, self.UNREADABLE, why),
+                              str(cm.exception))
+        refused("f" * 40, "it names no tree")  # git check-attr reads a sha it does not have as no attributes
+        refused(readme, "it names no tree")  # a blob
+        with self.dropped(root):
+            refused(head, "it names no tree")
+            refused(root, "it names no tree")
+        with self.dropped(subtree):
+            self.assertEqual(self.r.git("--attr-source=" + head, "check-attr", "merge", "--", SIGNER),
+                             "%s: merge: unspecified" % SIGNER)  # precondition: silent in git
+            refused(head, "git ls-tree -r %s failed (exit " % root)
+
+    def test_a_gitlink_named_gitattributes_needs_its_object(self):
+        # git's tree reader takes the object a .gitattributes entry names whatever its mode: a gitlink naming a present
+        # blob sets the attribute, naming an absent one sets nothing
+        r = self.r
+        base = r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        loose = pathlib.Path(r.d, ".git", "rules")
+        loose.write_text("%s merge=binary\n" % SIGNER)
+        rules = r.git("hash-object", "-w", str(loose))
+        loose.unlink()
+        r.git("update-index", "--add", "--cacheinfo", "160000,%s,.gitattributes" % rules)
+        r.git("commit", "-q", "-m", "a gitlink named .gitattributes")
+        head = r.rev("HEAD")
+        self.assertEqual(r.git("ls-tree", head, ".gitattributes"), "160000 commit %s\t.gitattributes" % rules)
+        self.assertEqual(r.git("--attr-source=" + head, "check-attr", "merge", "--", SIGNER),
+                         "%s: merge: binary" % SIGNER)
+        code, out = judge(r.d, base, head)
+        self.assertEqual(code, 2, out)
+        self.assertIn(self.REFUSED, out)
+        with self.dropped(rules):
+            self.assertEqual(r.git("--attr-source=" + head, "check-attr", "merge", "--", SIGNER),
+                             "%s: merge: unspecified" % SIGNER)
+            code, out = judge(r.d, base, head)
+        self.assertEqual(code, 2, out)
+        self.assertIn("the attributes from the head (`%s`) %s: `.gitattributes` (commit %s) reads as `%s missing`"
+                      % (head, self.UNREADABLE, rules, rules), out)
+        self.assertNotIn(self.REFUSED, out)
+
+    def test_an_intact_full_clone_reads_every_kind_of_gitattributes(self):
+        # the positive side: a symlink, a nested file and a gitlink naming a commit are all present, so nothing is
+        # refused for readability and the verdict is the normal one
+        r = self.r
+        base = r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n", "docs/.gitattributes": "*.md diff\n"})
+        r.branch("pr", base)
+        os.symlink("*.png binary", os.path.join(r.d, ".gitattributes"))
+        r.git("add", ".gitattributes")
+        r.git("update-index", "--add", "--cacheinfo", "160000,%s,lib/.gitattributes" % base)
+        head = r.commit("pr", {"README.md": "r1\n"})
+        kinds = sorted(line.split("\t")[0].split(" ")[1] for line in r.git("ls-tree", "-r", head).splitlines()
+                       if line.endswith(".gitattributes"))
+        self.assertEqual(kinds, ["blob", "blob", "commit"])
+        for read in (lambda: classify.landing_tree(base, head),
+                     lambda: classify.blocking_merge_attributes(self.entry(), (("the head", head),))):
+            in_repo(r.d, read)
+        code, out = judge(r.d, base, head)
+        self.assertEqual(code, 0, out)
+        self.assertIn("no protected class touched", out)
+
+
+@contextlib.contextmanager
+def check_attr_rewritten(rewrite):
+    """Every `git check-attr` the judge runs really runs; rewrite(result) is what the judge then sees."""
+    real = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        r = real(argv, *args, **kwargs)
+        return rewrite(r) if "check-attr" in argv else r
+    with mock.patch.object(classify.subprocess, "run", run):
+        yield
+
+
+class CheckAttrOutputTests(Fixture):
+    """The D2 precondition (root's delta4 review of .github #69): the judge reads check-attr's verdict only from a run
+    that exited 0 and printed exactly one `merge` record for each blocking path asked about. Each case keeps the real
+    output's shape everywhere else, so the one check under test is the only thing that can refuse it."""
+    MALFORMED = "did not return exactly one `merge` record for each of the %d blocking paths asked about"
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.r.commit("C0", {SIGNER: "signer\n", "README.md": "r0\n"})
+        self.r.branch("pr", self.base)
+        self.head = self.r.commit("pr", {"README.md": "r1\n"})
+        self.r.branch("gh-readonly-queue/main/pr-1", self.base)
+        self.group = self.r.merge(self.head, "Merge pull request #1")
+        self.paths = sorted(p for p in classify.BLOCKING_PATHS
+                            if classify.BLOCKING_CLASS in classify.classes_for(self.entry(), p))
+        self.assertGreater(len(self.paths), 2)
+        self.seen = []
+
+    def entry(self):
+        return classify.repo_entry(classify.validate_manifest(json.loads(MANIFEST.read_text())), REPO)
+
+    def run_both(self, rewrite):
+        """(mode, exit code, stdout) for pull_request and merge_group with every check-attr result rewritten."""
+        def keep(r):
+            self.seen.append(r)
+            return rewrite(r)
+        out = []
+        for mode, args in (("pull_request", (self.base, self.head)),
+                           ("merge_group", (self.base, self.group))):
+            with check_attr_rewritten(keep):
+                if mode == "pull_request":
+                    code, text = judge(self.r.d, *args)
+                else:
+                    code, text = judge(self.r.d, *args, event="merge_group", base_ref=None, live=None)
+            out.append((mode, code, text))
+        # precondition: every real check-attr run exited 0 with one unspecified merge record per blocking path, so
+        # without the rewrite nothing would be refused
+        self.assertTrue(self.seen)
+        want = "".join("%s\0merge\0unspecified\0" % p for p in self.paths)
+        for r in self.seen:
+            self.assertEqual((r.returncode, r.stdout), (0, want))
+        return out
+
+    def test_the_intact_runs_are_green(self):
+        for mode, code, out in self.run_both(lambda r: r):
+            with self.subTest(mode=mode):
+                self.assertEqual(code, 0, out)
+                self.assertIn("no protected class touched", out)
+
+    def test_a_check_attr_that_fails_fails_closed(self):
+        # the run fails but its output reads as clean: only the exit code check refuses it (a mutant that ignores the
+        # code survived before this test)
+        def failing(r):
+            return subprocess.CompletedProcess(r.args, 128, r.stdout, "fatal: check-attr failed here\n")
+        for mode, code, out in self.run_both(failing):
+            with self.subTest(mode=mode):
+                self.assertEqual(code, 2, out)
+                self.assertIn("::error title=trusted protected-paths::git check-attr merge (attributes from the base) "
+                              "failed (exit 128): fatal: check-attr failed here; the judge fails closed", out)
+
+    def test_anything_but_one_merge_record_per_path_fails_closed(self):
+        def records(r):
+            fields = r.stdout.split("\0")
+            return [fields[i:i + 3] for i in range(0, len(fields) - 1, 3)]
+
+        def joined(recs, tail=""):
+            return "".join("\0".join(rec) + "\0" for rec in recs) + tail
+        variants = {
+            "a record missing": lambda recs: joined(recs[:-1]),
+            "a record repeated": lambda recs: joined(recs + recs[:1]),
+            "one path twice, another not at all": lambda recs: joined([recs[0], recs[0]] + recs[2:]),
+            "a path not asked about": lambda recs: joined([["README.md"] + recs[0][1:]] + recs[1:]),
+            "another attribute": lambda recs: joined([[recs[0][0], "diff", "unspecified"]] + recs[1:]),
+            "a partial record": lambda recs: joined(recs)[:-len("unspecified\0")],
+            "bytes after the last record": lambda recs: joined(recs, "trailing"),
+            "no output at all": lambda recs: "",
+        }
+        for name, make in variants.items():
+            with self.subTest(variant=name):
+                def rewrite(r, _make=make):
+                    return subprocess.CompletedProcess(r.args, 0, _make(records(r)), r.stderr)
+                for mode, code, out in self.run_both(rewrite):
+                    self.assertEqual(code, 2, "%s: %s" % (mode, out))
+                    self.assertIn("::error title=trusted protected-paths::git check-attr merge (attributes from the "
+                                  "base) " + self.MALFORMED % len(self.paths), out)
 
 
 class RealCommitTests(unittest.TestCase):

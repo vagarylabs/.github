@@ -1,0 +1,11 @@
+import { it, vi } from "vitest";
+import "events";
+import fsx = require("../lib/req.js");
+import "../lib/linked";
+import "../lib/loop";
+import "../lib/outside";
+const a = await vi.importActual("../lib/actual.js");
+const b = await vi.importMock("../lib/mocked.js");
+const c = require(name);
+const d = await import(other);
+it("loads them", () => { fsx; a; b; c; d; }, 200_000);

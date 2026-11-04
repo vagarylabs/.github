@@ -1,0 +1,70 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*.test.ts",
+    "min_files": 2
+   },
+   {
+    "glob": "**/test_*.py",
+    "min_files": 1
+   }
+  ],
+  "reach": "tests"
+ },
+ "files": {
+  "pkg-a/src/ssh-fixture-process.ts": {
+   "finding": 1
+  },
+  "server/helpers/suite.ts": {
+   "finding": 1
+  },
+  "server/env.test.ts": {
+   "cleared": 1
+  },
+  "ui/app.test.ts": {
+   "cleared": 1
+  },
+  "ui/src/lib/run.ts": {
+   "finding": 2
+  },
+  "py/tool_helper.py": {
+   "finding": 1
+  },
+  "pkg-b/src/git.ts": {
+   "finding": 1
+  },
+  "py/pkgmod/rel.py": {
+   "finding": 1
+  },
+  "py/pkgmod/up.py": {
+   "finding": 1
+  },
+  "server/helpers/waits.ts": {
+   "finding": 1
+  }
+ },
+ "reached": [
+  "pkg-a/src/ssh-fixture-process.ts",
+  "pkg-a/src/ssh.ts",
+  "pkg-b/src/git.ts",
+  "py/pkgmod/__init__.py",
+  "py/pkgmod/rel.py",
+  "py/pkgmod/sub/__init__.py",
+  "py/pkgmod/sub/m.py",
+  "py/pkgmod/up.py",
+  "py/tool_defaults.py",
+  "py/tool_helper.py",
+  "server/helpers/suite.ts",
+  "server/helpers/waits.ts",
+  "ui/src/lib/run.ts"
+ ],
+ "unresolved": [
+  "server/env.test.ts:7 ./nope.js",
+  "server/env.test.ts:9 `./x-${n}.js`"
+ ],
+ "not_covered": [
+  "py/tool_defaults.py",
+  "ui/src/lib/run.ts"
+ ]
+}

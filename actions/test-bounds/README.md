@@ -295,12 +295,96 @@ The semantics are the vagaris ratchet's, which root R4'd on #849. Given a base:
   - a launcher added or lowered;
   - a scanned test file renamed out of the trees.
 - A widened tree is seeded from what the base held.
+- Turning `reach` off, once the base has it on, is red.
+
+## Reach: the modules the tests load
+
+A literal bound in a module that a test imports can red the test under load, just as one in the test file can.
+vagaris main 17464b2f went red on server-b with `spawnSync ps ETIMEDOUT`. The cause was a literal 2 s `ps` timeout in
+`packages/adapter-utils/src/ssh-fixture-process.ts`. `environment-runtime-driver-contract.test.ts` loads that file
+through `@vagarylabs/adapter-utils/ssh`.
+
+With `"reach": "tests"` in the configuration, the check also scans every tracked module in the import closure of the
+scanned test files.
+
+How the closure is built:
+- **JS/TS edges.** These are followed:
+  - static `import` and `export … from`;
+  - `import x = require("y")`;
+  - `import()`, `require()`, `vi.importActual()` and `vi.importMock()` of a literal.
+
+  `import type` and `export type` are not followed: they never load anything. `vi.mock` and `require.resolve` are
+  not loads either. `import(name)`, `require(name)` and the vi forms with a non-literal argument are listed UNRESOLVED
+  as "computed", like a template with a substitution.
+- **JS/TS resolution.** A specifier resolves in this order: `node:`-prefixed (external), the nearest `tsconfig.json`'s
+  `paths` (through its `extends` chain), a workspace package's name (through its `exports`, including one-`*`
+  patterns, `main`, or `index`; built `dist/` maps to its `src/` twin), then Node's builtin names. So a workspace
+  package or an alias named like a builtin (`events`) is the tree's own module, not external. A relative path takes
+  the `.js` to `.ts` twin.
+- **Python.** Relative imports are followed. So are absolute ones that resolve from the importer's directory or an
+  ancestor. An absolute import that does not (a test that runs `sys.path.insert(0, ".../app")` and then
+  `import store`) is looked up in a one-pass index of the tracked `.py` files: the nearest ancestor of the importer
+  holding `<base>/**/<top>.py` or `<base>/**/<top>/__init__.py` names the source root, and the full dotted module and
+  the `from` names resolve beneath it. Two source roots at that ancestor are UNRESOLVED (the count is named); no match
+  anywhere is a third-party package and is not listed.
+- **Symlinks.** A reached tracked symlink is followed to its target when the target is tracked. A loop, a link that
+  leaves the repository, and a link whose target nothing tracks are listed UNRESOLVED.
+- **What is listed, what is not.** An external package is not listed. These are listed UNRESOLVED: a specifier that
+  names no tracked file, a computed specifier, a template with a substitution, an absolute path, and the symlinks
+  above. UNRESOLVED is visible but not red.
+- **`exclude`.** An excluded file is not scanned, and a reached module is hidden by it with no trace. So while the base
+  has `reach` on, an `exclude` glob the base does not hold is red (it lands only in the change that turns reach on).
+
+How a reached module is judged:
+- **Test support.** A reached module that imports a test framework is test code wherever it lives. The frameworks are
+  vitest, jest, playwright, mocha, chai, `node:test`, `bun:test`, pytest and unittest. A module that imports none but
+  calls an exact test global (`describe`, `it`, `test`, `beforeAll`, `afterAll`, `beforeEach`, `afterEach`, or one
+  of their members such as `it.each`) or `vi.*` is test code too: a runner with `globals: true` injects them. The
+  identifiers are exact, so a product `describeStaleness(...)` stays product. Such a module is judged exactly like a
+  test file.
+- **Product code.** Any other reached module is product code that a test drives. Only the families that a loaded
+  runner trips in such code are judged there:
+  - TS/JS: a child process, a database client, and a call's generic `timeout` option;
+  - Python: subprocess, network and database clients.
+
+  A call whose callee ends in `.end` is not read (postgres.js `end({ timeout: 5 })` is seconds). A same-file function
+  that forwards its options or a parameter to a child-process call is a child-process callee, and so is
+  `promisify(<child process>)(...)`. A bound written `x ?? LIT` or `x || LIT` is judged by the literal. A literal
+  parameter default that feeds a judged bound in the same function is judged as that bound, and the use it feeds is
+  then covered by it. Another `timeout`-named default stays out of product code.
+
+  A bound with no value this check can read (a parameter, a computed value) is its caller's. It is listed NOT COVERED,
+  not counted. A named constant below the floor is a finding.
+- **An unreadable product file.** A valid TSX file the parser cannot fully read (raw `&` in JSX text, for instance)
+  carries an ERROR node. In a test or support file that stays red. In a product module it is listed NOT COVERED, so
+  turning reach on does not red on code that cannot be baselined.
+
+These are not read in product code:
+- Python asyncio waits;
+- a TS network client's own timeout, because TS has no network-client family yet.
+
+Measured on vagaris (11-02): of the 46 `timeout` options that the first filter dropped from product code, 20 were
+child processes, 19 were postgres.js `end(...)` (seconds), 2 were network calls and 5 were other. The child-process
+class was therefore the largest, which is why the generic option is read again and `.end` is excluded by callee.
+Product bounds that no test reaches stay out of scope: the import graph decides.
+
+Failing closed:
+- **Unparsable module.** A reached Python module that CPython cannot parse is red, because its imports cannot be
+  followed.
+- **Empty closure.** If `reach` is on but the tests reach no module beyond themselves, that is red. A suspiciously
+  total result indicts the reader, not the tree.
+
+Baseline:
+- Reached modules join the same shrink-only per-file counts.
+- A reached module that a change touches is judged by its group.
+- A reached module that the base's counts do not hold (newly reached, or the adoption) is seeded from its base blob.
+  So only a new bound is new, and `write-baseline` records the rest.
 
 ## UNSCANNED
 
 The summary and the findings JSON list two kinds of file:
 - tree files in a language this check does not read;
-- test-like files outside every tree.
+- test-like files outside every tree that no test loads (with `reach` on, one a test loads is scanned).
 
 ## Self-test
 

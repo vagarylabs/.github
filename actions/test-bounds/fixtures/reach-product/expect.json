@@ -1,0 +1,58 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*.test.ts",
+    "min_files": 1
+   },
+   {
+    "glob": "**/test_*.py",
+    "min_files": 1
+   }
+  ],
+  "reach": "tests"
+ },
+ "files": {
+  "lib/dflt.ts": {
+   "finding": 1
+  },
+  "lib/globals.ts": {
+   "finding": 1
+  },
+  "lib/page.tsx": {
+   "finding": 1
+  },
+  "lib/prom.ts": {
+   "finding": 1
+  },
+  "lib/viuse.ts": {
+   "finding": 1
+  },
+  "lib/wrap.ts": {
+   "finding": 2
+  },
+  "t/a.test.ts": {
+   "cleared": 1
+  },
+  "lib/pool.ts": {
+   "finding": 1
+  }
+ },
+ "reached": [
+  "lib/dflt.ts",
+  "lib/end.ts",
+  "lib/globals.ts",
+  "lib/names.ts",
+  "lib/page.tsx",
+  "lib/pool.ts",
+  "lib/prom.ts",
+  "lib/viuse.ts",
+  "lib/wrap.ts"
+ ],
+ "not_covered": [
+  "lib/page.tsx"
+ ],
+ "recovered": [
+  "lib/page.tsx"
+ ]
+}

@@ -1,0 +1,48 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*.test.ts",
+    "min_files": 1
+   },
+   {
+    "glob": "**/test_*.py",
+    "min_files": 1
+   }
+  ],
+  "reach": "tests"
+ },
+ "files": {
+  "lib/actual.ts": {
+   "finding": 1
+  },
+  "lib/events.ts": {
+   "finding": 1
+  },
+  "lib/mocked.ts": {
+   "finding": 1
+  },
+  "lib/req.ts": {
+   "finding": 1
+  },
+  "real/target.ts": {
+   "finding": 1
+  },
+  "t/a.test.ts": {
+   "cleared": 1
+  }
+ },
+ "reached": [
+  "lib/actual.ts",
+  "lib/events.ts",
+  "lib/mocked.ts",
+  "lib/req.ts",
+  "real/target.ts"
+ ],
+ "unresolved": [
+  "t/a.test.ts:10 other",
+  "t/a.test.ts:5 ../lib/loop",
+  "t/a.test.ts:6 ../lib/outside",
+  "t/a.test.ts:9 name"
+ ]
+}

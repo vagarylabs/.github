@@ -1,0 +1,11 @@
+import { it } from "vitest";
+import { owner } from "@fx/pkg-a/ssh";
+import { head } from "@fx/pkg-b/git";
+import type { Shape } from "../types-only/helper";
+import { settle } from "./helpers/waits";
+import { suite } from "./helpers/suite";
+import { gone } from "./nope.js";
+const n = 1;
+const late = await import(`./x-${n}.js`);
+suite();
+it("drives the helpers", () => { owner(1); settle(); }, 200_000);

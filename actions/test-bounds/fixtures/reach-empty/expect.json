@@ -1,0 +1,6 @@
+{
+ "config": {"trees": [{"glob": "**/*.test.ts", "min_files": 1}], "reach": "tests"},
+ "files": {"lone.test.ts": {"cleared": 1}},
+ "reached": [],
+ "reach_problems": ["`reach` is on, but the import graph of 1 test file(s) reaches no module beyond them: the reader, not the tree, is the likelier fault"]
+}

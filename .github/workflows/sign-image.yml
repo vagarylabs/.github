@@ -78,9 +78,9 @@ jobs:
     # step 2 (exact, case-sensitive) decides who may sign what. A job-level `if:` sees only the github, needs, vars and
     # inputs contexts, so every term is a documented `github` field. In a called workflow `github.*` is the CALLER's:
     # workflow_ref is the caller's file, ref and sha are the caller's run.
-    # EVENTS. push and workflow_dispatch for every caller; workflow_run for vagary-voice's caller file only (the one
-    # product whose signing is triggered by a workflow_run), so a workflow_run-triggered call from any other caller
-    # is refused here and, with the BINDING, nowhere else admitted.
+    # EVENT. workflow_dispatch only, the one event the release verifier accepts for a shared product (vps-ansible
+    # roles/release_policy, SHARED_TRIGGER), so the two rules cannot disagree. A caller triggered by anything else
+    # needs a reviewed widening of both, in one change.
     # Owner 328526494 = vagarylabs. Repository ids, in order: vagary-platform, vagary-voice, vagaris, vagary-core,
     # vagary-earnings. The seven caller files, one signing workflow per product (vagaris has three).
     if: >-
@@ -95,9 +95,7 @@ jobs:
       "vagarylabs/vagary-earnings/.github/workflows/cosign-sign-image.yml@refs/heads/main"]'), github.workflow_ref)
       && github.ref == 'refs/heads/main'
       && github.ref_type == 'branch'
-      && (contains(fromJSON('["push","workflow_dispatch"]'), github.event_name)
-      || (github.event_name == 'workflow_run'
-      && github.workflow_ref == 'vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main'))
+      && github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, vl-builder]
     timeout-minutes: 15
     permissions:

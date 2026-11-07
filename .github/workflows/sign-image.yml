@@ -1,0 +1,470 @@
+# sign-image: the ONE shared keyless image signer for Vagary Labs (cosign retirement program, G3).
+#
+# A reusable workflow, not a composite action: a caller cannot edit this file, and the certificate's identity (the
+# SAN) is THIS file on main of vagarylabs/.github, whichever product called it. The job-level `if:` below is only a
+# coarse early filter: GitHub expressions compare strings CASE-INSENSITIVELY, so it can admit a caller ref that differs
+# from a listed one in case. The exact gate is the BINDING lookup in step 2 (the namespace table keyed by the caller's
+# workflow_ref): an exact, case-sensitive Python dict lookup that runs before any OIDC use and refuses an unlisted
+# caller. Design: SHARED-SIGNING-CAPABILITY.md (cc:ui lane), 2.2-2.6.
+#
+# CALLER (one job; the permissions are exactly these two, nothing else):
+#
+#   sign:
+#     needs: build            # build's output is the pushed digest, never a tag
+#     permissions:
+#       id-token: write
+#       packages: write
+#     uses: vagarylabs/.github/.github/workflows/sign-image.yml@main
+#     with:
+#       artifacts: ghcr.io/vagarylabs/<package>@${{ needs.build.outputs.digest }}
+#
+#   A release step then requires `needs.sign.outputs.signed == 'true'`: a skipped job outputs the empty string, so a
+#   refusal never reads as success.
+#
+# INPUT. `artifacts` only: newline-separated digest references ghcr.io/vagarylabs/<package>@sha256:<64 hex>, 1 to 64.
+# No source, ref, tag, key, secret or approval input exists. The workflow checks out nothing.
+# OUTPUTS. `signed`: 'true' only when every artifact is signed, attested and self-verified.
+#          `record`: JSON [{"ref", "sig_log_index", "att_log_index"}], one object per artifact, in input order.
+#
+# WHAT IT DOES NOT DO. It never approves a release: it writes no deployment, marker or approval and holds no deploy
+# credential. A signature says "this workflow, run from main of repository R at commit C in run N, signed digest D
+# after D's revision label matched C". Release authority stays with each product's own gate.
+#
+# HOW A CONSUMER VERIFIES (all of it is mandatory; the repository flag is the one that matters, because this
+# repository is public and any repository could call a copy of this file):
+#
+#   cosign verify ghcr.io/vagarylabs/<package>@sha256:<64 hex> \
+#     --certificate-identity https://github.com/vagarylabs/.github/.github/workflows/sign-image.yml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-github-workflow-repository vagarylabs/<product repo> \
+#     --certificate-github-workflow-ref refs/heads/main \
+#     --certificate-github-workflow-sha <40-hex commit == the image's org.opencontainers.image.revision>
+#
+# plus `cosign verify-attestation --type https://vagarylabs.github.io/attestations/signing-run/v1` with the same
+# flags (its statement binds the digest to the run), and an exact package pin, never any ghcr.io repository.
+#
+# ADDING A CALLER. Three places, all by PR or operator action: the repository id and the caller's workflow_ref in the
+# `if:` below (and the namespace table in the "Validate the artifacts" step), runner group 7's selected workflows and
+# repositories (a called workflow reaches a self-hosted runner only through the caller's repository), and the
+# consumer's verify registry. trusted/tests/test_sign_image.py pins the lists.
+#
+# KEYLESS: Sigstore public-good + GitHub OIDC. No key, no secret, no paid service. cosign 3.0.6 is installed from the
+# sha256-pinned entry in release-assets.lock; no third-party action sits in the signing path.
+name: sign-image
+
+on:
+  workflow_call:
+    inputs:
+      artifacts:
+        description: >-
+          Newline-separated digest references ghcr.io/vagarylabs/<package>@sha256:<64 hex>, at most 64. Nothing else
+          is accepted.
+        type: string
+        required: true
+    outputs:
+      signed:
+        description: "'true' only when every artifact is signed, attested and self-verified; empty when the job was skipped."
+        value: ${{ jobs.sign.outputs.signed }}
+      record:
+        description: 'JSON [{"ref", "sig_log_index", "att_log_index"}], one object per signed artifact.'
+        value: ${{ jobs.sign.outputs.record }}
+
+permissions: {}
+
+jobs:
+  sign:
+    # ADMISSION, a coarse early filter and NOT the gate: GitHub evaluates this before it schedules the job and a
+    # caller cannot edit it, but `==` and `contains()` compare case-insensitively here, so only the BINDING lookup in
+    # step 2 (exact, case-sensitive) decides who may sign what. A job-level `if:` sees only the github, needs, vars and
+    # inputs contexts, so every term is a documented `github` field. In a called workflow `github.*` is the CALLER's:
+    # workflow_ref is the caller's file, ref and sha are the caller's run.
+    # EVENTS. push and workflow_dispatch for every caller; workflow_run for vagary-voice's caller file only (the one
+    # product whose signing is triggered by a workflow_run), so a workflow_run-triggered call from any other caller
+    # is refused here and, with the BINDING, nowhere else admitted.
+    # Owner 328526494 = vagarylabs. Repository ids, in order: vagary-platform, vagary-voice, vagaris, vagary-core,
+    # vagary-earnings. The seven caller files, one signing workflow per product (vagaris has three).
+    if: >-
+      github.repository_owner_id == '328526494'
+      && contains(fromJSON('["1034277250","1089791523","1280724433","1290498250","1215614271"]'), github.repository_id)
+      && contains(fromJSON('["vagarylabs/vagary-platform/.github/workflows/cosign-sign-image.yml@refs/heads/main",
+      "vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main",
+      "vagarylabs/vagaris/.github/workflows/docs-image.yml@refs/heads/main",
+      "vagarylabs/vagaris/.github/workflows/server-image.yml@refs/heads/main",
+      "vagarylabs/vagaris/.github/workflows/cognitive-executor-image.yml@refs/heads/main",
+      "vagarylabs/vagary-core/.github/workflows/publish-images.yml@refs/heads/main",
+      "vagarylabs/vagary-earnings/.github/workflows/cosign-sign-image.yml@refs/heads/main"]'), github.workflow_ref)
+      && github.ref == 'refs/heads/main'
+      && github.ref_type == 'branch'
+      && (contains(fromJSON('["push","workflow_dispatch"]'), github.event_name)
+      || (github.event_name == 'workflow_run'
+      && github.workflow_ref == 'vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main'))
+    runs-on: [self-hosted, vl-builder]
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      packages: write
+    outputs:
+      signed: ${{ steps.finish.outputs.signed }}
+      record: ${{ steps.finish.outputs.record }}
+    steps:
+      # 1. MISROUTING GUARD ONLY. The marker proves the job landed on the disposable builder class; it is not an
+      # authorization (the BINDING lookup in step 2 and the runner group are). The marker function is vagary-voice
+      # scripts/deploy/build-publish-image.sh:11-22, unchanged: the marker and every ancestor directory must be
+      # root-owned, not group/other-writable and not a symlink, so no non-root user can plant it.
+      - name: Builder-class preflight
+        run: |
+          set -euo pipefail
+          builder_class_marker() {
+            local marker=/etc/vagary/builder-class path=/etc/vagary/builder-class owner
+            while :; do
+              [[ ! -L "$path" ]] && owner="$(stat -c '%u %a' -- "$path" 2>/dev/null)" &&
+                [[ "$owner" =~ ^0\ ([0-7]{3,4})$ ]] && (( (8#${BASH_REMATCH[1]} & 8#022) == 0 )) || return 1
+              [[ "$path" != / ]] || break
+              path="${path%/*}"; path="${path:-/}"
+            done
+            # Byte-exact: command substitution would drop NULs and every trailing newline, cmp drops nothing.
+            [[ -f "$marker" ]] && { cmp -s -- "$marker" <(printf 'vagary-container-builder-linux-amd64\n') ||
+              cmp -s -- "$marker" <(printf 'vagary-container-builder-linux-amd64'); }
+          }
+          [[ "$(uname -s)/$(uname -m)" == Linux/x86_64 ]] || { echo "::error::sign-image runs on linux/amd64 only"; exit 1; }
+          [[ "${RUNNER_ENVIRONMENT:-}" == self-hosted ]] || { echo "::error::sign-image runs on a self-hosted builder only"; exit 1; }
+          builder_class_marker || { echo "::error::this runner does not carry the root-owned builder-class marker"; exit 1; }
+          # One private directory per run. HOME, DOCKER_CONFIG and TUF_ROOT live under it, so no registry login or TUF
+          # cache is shared with another job on this host.
+          d="$RUNNER_TEMP/sign-image"
+          rm -rf -- "$d"
+          mkdir -m 700 -- "$d" "$d/home" "$d/docker" "$d/tuf" "$d/work" "$d/bin"
+          {
+            echo "SIGN_DIR=$d"
+            echo "HOME=$d/home"
+            echo "DOCKER_CONFIG=$d/docker"
+            echo "TUF_ROOT=$d/tuf"
+            echo "COSIGN=$d/bin/cosign"
+          } >> "$GITHUB_ENV"
+
+      # 2. NAMESPACE BINDING, keyed by the caller's workflow file: a product signs only its own packages, so one
+      # product names exactly one signing workflow and product A cannot sign product B's package. The input is
+      # data: it reaches the script through the environment, never through the script text.
+      - name: Validate the artifacts and bind the namespace to the caller
+        env:
+          ARTIFACTS: ${{ inputs.artifacts }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          python3 -I - <<'PY'
+          import os
+          import re
+          import sys
+
+          NAME = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
+          REF = re.compile(r"ghcr\.io/vagarylabs/(" + NAME + r"(?:/" + NAME + r")*)@(sha256:[0-9a-f]{64})")
+          # caller workflow_ref -> the package names it may sign (fullmatch). "x/*" is exactly one segment.
+          BINDING = {
+              "vagarylabs/vagary-platform/.github/workflows/cosign-sign-image.yml@refs/heads/main": r"vagary-platform",
+              "vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main": r"vagary-voice/" + NAME,
+              "vagarylabs/vagaris/.github/workflows/docs-image.yml@refs/heads/main": r"vagaris-docs-site",
+              "vagarylabs/vagaris/.github/workflows/server-image.yml@refs/heads/main": r"vagaris-server",
+              "vagarylabs/vagaris/.github/workflows/cognitive-executor-image.yml@refs/heads/main": r"vagaris-cognitive-executor",
+              "vagarylabs/vagary-core/.github/workflows/publish-images.yml@refs/heads/main": r"vagary-core-" + NAME,
+              "vagarylabs/vagary-earnings/.github/workflows/cosign-sign-image.yml@refs/heads/main": r"vagary-earnings",
+          }
+
+
+          def bind(artifacts, workflow_ref):
+              if workflow_ref not in BINDING:
+                  raise SystemExit("::error::caller workflow has no namespace binding: " + workflow_ref)
+              allowed = re.compile(BINDING[workflow_ref])
+              refs = [line.strip() for line in artifacts.splitlines() if line.strip()]
+              if not 1 <= len(refs) <= 64:
+                  raise SystemExit("::error::artifacts must hold 1 to 64 digest references, got %d" % len(refs))
+              if len(set(refs)) != len(refs):
+                  raise SystemExit("::error::artifacts lists a digest reference twice")
+              for ref in refs:
+                  m = REF.fullmatch(ref)
+                  if not m:
+                      raise SystemExit("::error::not a ghcr.io/vagarylabs/<package>@sha256:<64 hex> reference: " + ref[:200])
+                  if not allowed.fullmatch(m.group(1)):
+                      raise SystemExit("::error::package %s is outside the namespace of %s" % (m.group(1), workflow_ref))
+              return refs
+
+
+          if __name__ == "__main__":
+              out = bind(os.environ["ARTIFACTS"], os.environ["WORKFLOW_REF"])
+              with open(os.path.join(os.environ["SIGN_DIR"], "work", "artifacts.txt"), "w") as fh:
+                  fh.write("\n".join(out) + "\n")
+              print("%d artifact(s) bound to %s" % (len(out), os.environ["WORKFLOW_REF"]))
+          PY
+
+      # 3. cosign 3.0.6 from the sha256-pinned release-assets.lock entry, through the runner's shared tool cache.
+      # The action is pinned by commit (the commit that merged #40; the action's files are identical at every pin).
+      - name: Fetch the pinned cosign
+        uses: vagarylabs/.github/actions/fetch-release-asset@85ac97443b6e2fb23570ccda190934f150973aef # .github #40 merge
+        timeout-minutes: 5
+        with:
+          tool: cosign
+          version: 3.0.6
+          url: https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64
+          sha256: c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+          dest: ${{ runner.temp }}/sign-image/cosign.download
+      - name: Install cosign and log in to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          install -m 0755 "$SIGN_DIR/cosign.download" "$COSIGN"
+          "$COSIGN" version | grep -E '^GitVersion:[[:space:]]+v3\.0\.6$'
+          # The token goes in on stdin: never in argv, which another user on this shared builder can read.
+          printf '%s' "$REGISTRY_TOKEN" | "$COSIGN" login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      # 4. REVISION BINDING. Refuse any digest whose org.opencontainers.image.revision label is not the caller's
+      # commit, so an old image cannot be re-signed under a newer commit. The manifest and config are read from the
+      # registry by digest and hashed; nothing is pulled. A single image manifest is read directly. An image index
+      # is accepted only as buildx pushes a single-arch build with provenance: exactly one linux/amd64 image plus
+      # entries annotated as attestation manifests. Any other index (multi-arch, a second image) is refused.
+      - name: Bind each digest to the caller's commit
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python3 -I - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+
+          LABEL = "org.opencontainers.image.revision"
+          DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+          ACCEPT = ", ".join([
+              "application/vnd.oci.image.manifest.v1+json",
+              "application/vnd.docker.distribution.manifest.v2+json",
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+          ])
+
+
+          class _NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+
+
+          _OPEN = urllib.request.build_opener(_NoRedirect).open
+
+
+          def http_get(url, headers):
+              """GET with a few retries. A redirect is followed WITHOUT our Authorization header (blobs redirect to a
+              different host)."""
+              last = None
+              for attempt in range(3):
+                  try:
+                      try:
+                          with _OPEN(urllib.request.Request(url, headers=headers), timeout=30) as resp:
+                              return resp.read()
+                      except urllib.error.HTTPError as err:
+                          if err.code in (301, 302, 303, 307, 308):
+                              target = err.headers.get("Location", "")
+                              if not target.startswith("https://"):
+                                  raise SystemExit("::error::registry redirected to a non-https location")
+                              with urllib.request.urlopen(urllib.request.Request(target), timeout=60) as resp:
+                                  return resp.read()
+                          if err.code < 500:
+                              raise SystemExit("::error::registry answered HTTP %d for %s" % (err.code, url.split("?")[0]))
+                          last = err
+                  except urllib.error.URLError as err:
+                      last = err
+                  time.sleep(2 * (attempt + 1))
+              raise SystemExit("::error::registry unreachable: %s" % (last,))
+
+
+          def revision_of(get, digest):
+              """get(kind, digest) returns the bytes of a manifest or blob, already hashed against digest."""
+              manifest = json.loads(get("manifests", digest))
+              if "manifests" in manifest:
+                  images = [e for e in manifest["manifests"]
+                            if (e.get("annotations") or {}).get("vnd.docker.reference.type") != "attestation-manifest"]
+                  if len(images) != 1:
+                      raise SystemExit("::error::index %s holds %d image manifests; exactly one linux/amd64 image is accepted"
+                                       % (digest, len(images)))
+                  platform = images[0].get("platform") or {}
+                  if platform.get("os") != "linux" or platform.get("architecture") != "amd64":
+                      raise SystemExit("::error::index %s holds a %s/%s image; only linux/amd64 is accepted"
+                                       % (digest, platform.get("os"), platform.get("architecture")))
+                  child = images[0].get("digest", "")
+                  if not DIGEST.fullmatch(child):
+                      raise SystemExit("::error::index %s names a malformed child digest" % digest)
+                  manifest = json.loads(get("manifests", child))
+                  if "config" not in manifest:
+                      raise SystemExit("::error::index %s child is not an image manifest" % digest)
+              if "config" not in manifest:
+                  raise SystemExit("::error::%s is not an image manifest or index" % digest)
+              cfg = (manifest["config"] or {}).get("digest", "")
+              if not DIGEST.fullmatch(cfg):
+                  raise SystemExit("::error::%s names a malformed config digest" % digest)
+              labels = (json.loads(get("blobs", cfg)).get("config") or {}).get("Labels") or {}
+              return labels.get(LABEL)
+
+
+          def main():
+              user, token = os.environ["REGISTRY_USER"], os.environ["REGISTRY_TOKEN"]
+              want = os.environ["RELEASE_SHA"]
+              if not re.fullmatch(r"[0-9a-f]{40}", want):
+                  raise SystemExit("::error::github.sha is not a 40-hex commit")
+              basic = base64.b64encode(("%s:%s" % (user, token)).encode()).decode()
+              with open(os.path.join(os.environ["SIGN_DIR"], "work", "artifacts.txt")) as fh:
+                  refs = [line.strip() for line in fh if line.strip()]
+              for ref in refs:
+                  package, digest = ref[len("ghcr.io/"):].split("@")
+                  scope = "https://ghcr.io/token?service=ghcr.io&scope=repository:%s:pull" % package
+                  bearer = json.loads(http_get(scope, {"Authorization": "Basic " + basic}))["token"]
+                  headers = {"Authorization": "Bearer " + bearer, "Accept": ACCEPT}
+
+                  def get(kind, dig, package=package, headers=headers):
+                      body = http_get("https://ghcr.io/v2/%s/%s/%s" % (package, kind, dig), headers)
+                      if "sha256:" + hashlib.sha256(body).hexdigest() != dig:
+                          raise SystemExit("::error::registry returned bytes that do not hash to %s" % dig)
+                      return body
+
+                  got = revision_of(get, digest)
+                  if got != want:
+                      raise SystemExit("::error::%s carries revision %r, not the caller's commit %s" % (ref, got, want))
+                  print("revision bound: %s == %s" % (ref, want))
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+
+      # 5. SIGN, then ATTEST the run. `cosign sign` signs the digest keyless (Fulcio certificate from the job's OIDC
+      # token, entry in the Rekor public-good log). The attestation is a signed in-toto statement whose subject is the
+      # digest and whose predicate is built from the github context, never from caller input, under the SAME keyless
+      # identity: it is what binds the digest to THIS run. --bundle keeps each bundle so the Rekor log indexes can be
+      # read back. Nothing here prints a token or a certificate.
+      - name: Sign and attest each digest
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS= read -r ref; do
+            n=$((n + 1))
+            b="$SIGN_DIR/work/$n"
+            ARTIFACT="$ref" python3 -I -c '
+          import json, os, sys
+          keys = ("run_id", "run_attempt", "repository", "workflow_ref", "sha", "artifact")
+          src = ("RUN_ID", "RUN_ATTEMPT", "GH_REPOSITORY", "WORKFLOW_REF", "RELEASE_SHA", "ARTIFACT")
+          with open(sys.argv[1], "w") as fh:
+              json.dump({k: os.environ[s] for k, s in zip(keys, src)}, fh, sort_keys=True)
+          ' "$b.predicate.json"
+            "$COSIGN" sign --yes --bundle "$b.sig.json" "$ref"
+            "$COSIGN" attest --yes --type https://vagarylabs.github.io/attestations/signing-run/v1 \
+              --predicate "$b.predicate.json" --bundle "$b.att.json" "$ref"
+          done < "$SIGN_DIR/work/artifacts.txt"
+
+      # 6. SELF-VERIFY BOTH with the exact flags every consumer uses (see the header). The identity and the ref are
+      # literals on purpose: this is what proves that a call by @main yields a certificate for @refs/heads/main.
+      - name: Self-verify the signature and the attestation
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          flags=(
+            --certificate-identity https://github.com/vagarylabs/.github/.github/workflows/sign-image.yml@refs/heads/main
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+            --certificate-github-workflow-repository "$GH_REPOSITORY"
+            --certificate-github-workflow-ref refs/heads/main
+            --certificate-github-workflow-sha "$RELEASE_SHA"
+          )
+          n=0
+          while IFS= read -r ref; do
+            n=$((n + 1))
+            b="$SIGN_DIR/work/$n"
+            "$COSIGN" verify "$ref" "${flags[@]}" > "$b.verify.json"
+            "$COSIGN" verify-attestation --type https://vagarylabs.github.io/attestations/signing-run/v1 \
+              "${flags[@]}" "$ref" > "$b.verify-att.json"
+          done < "$SIGN_DIR/work/artifacts.txt"
+
+      # 7. FINISH. Read the Rekor log index of each signature and attestation from its bundle, and decode the
+      # verified attestation statement: its subject must be the digest and its predicate this run. Only when all of
+      # that holds for every artifact does `signed` become 'true'.
+      - id: finish
+        name: Confirm the run binding and publish the outputs
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python3 -I - <<'PY'
+          import base64
+          import json
+          import os
+
+          ATT_TYPE = "https://vagarylabs.github.io/attestations/signing-run/v1"
+
+
+          def log_index(path):
+              with open(path) as fh:
+                  bundle = json.load(fh)
+              entries = (bundle.get("verificationMaterial") or {}).get("tlogEntries") or []
+              if not entries:
+                  raise SystemExit("::error::%s carries no transparency-log entry" % os.path.basename(path))
+              return int(entries[0]["logIndex"])
+
+
+          def statements(text):
+              """Every DSSE payload in cosign's verify-attestation output (a JSON stream, or an array)."""
+              dec, pos, text = json.JSONDecoder(), 0, text.strip()
+              while pos < len(text):
+                  obj, end = dec.raw_decode(text, pos)
+                  pos = end
+                  while pos < len(text) and text[pos].isspace():
+                      pos += 1
+                  for item in (obj if isinstance(obj, list) else [obj]):
+                      if isinstance(item, dict) and "payload" in item:
+                          yield json.loads(base64.b64decode(item["payload"]))
+
+
+          def binds_run(statement, ref, env):
+              want = {"run_id": env["RUN_ID"], "run_attempt": env["RUN_ATTEMPT"], "repository": env["GH_REPOSITORY"],
+                      "workflow_ref": env["WORKFLOW_REF"], "sha": env["RELEASE_SHA"], "artifact": ref}
+              digest = ref.split("@sha256:")[1]
+              subject_ok = any((s.get("digest") or {}).get("sha256") == digest for s in statement.get("subject") or [])
+              return statement.get("predicateType") == ATT_TYPE and subject_ok and statement.get("predicate") == want
+
+
+          def main():
+              work = os.path.join(os.environ["SIGN_DIR"], "work")
+              with open(os.path.join(work, "artifacts.txt")) as fh:
+                  refs = [line.strip() for line in fh if line.strip()]
+              record = []
+              for n, ref in enumerate(refs, 1):
+                  b = os.path.join(work, str(n))
+                  with open(b + ".verify-att.json") as fh:
+                      found = [s for s in statements(fh.read()) if binds_run(s, ref, os.environ)]
+                  if not found:
+                      raise SystemExit("::error::no verified attestation binds %s to run %s" % (ref, os.environ["RUN_ID"]))
+                  record.append({"ref": ref, "sig_log_index": log_index(b + ".sig.json"),
+                                 "att_log_index": log_index(b + ".att.json")})
+              compact = json.dumps(record, separators=(",", ":"))
+              with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+                  fh.write("signed=true\nrecord=%s\n" % compact)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+                  fh.write("### sign-image: %d artifact(s) signed, attested and self-verified\n\n" % len(record))
+                  fh.write("| artifact | signature log index | attestation log index |\n|---|---|---|\n")
+                  for r in record:
+                      fh.write("| `%s` | %d | %d |\n" % (r["ref"], r["sig_log_index"], r["att_log_index"]))
+
+
+          if __name__ == "__main__":
+              main()
+          PY

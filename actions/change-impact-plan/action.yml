@@ -60,6 +60,14 @@ inputs:
       malformed or disagreeing answer forces full; a complete agreeing answer changes nothing. It never narrows.
     required: false
     default: "off"
+  git-timeout-scale:
+    description: >-
+      An integer 1-8 that multiplies every git subprocess ceiling (the reader scan's 15 s `git grep` among them).
+      Each git call also gets one retry after a timeout. A call that still times out plans full under its own
+      reason ("reader scan timed out", "canonical target lookup timed out"), never a narrower plan. Anything
+      other than 1-8 reads as 1.
+    required: false
+    default: "1"
 outputs:
   mode:
     description: full | reduced
@@ -79,6 +87,13 @@ outputs:
   tested:
     description: JSON identity of the tested tree (tree, lockfile and workflow hashes, planner version).
     value: ${{ steps.plan.outputs.tested }}
+  source_dir:
+    description: >-
+      The absolute directory on the runner that this step ran plan.py, edges.py and action.yml from
+      (GITHUB_ACTION_PATH). A locator, never authority: a consumer hashes the files it reads there and must match
+      both plan.validity's planner/reader/action source hashes and its own pinned copies, refusing on any
+      mismatch or absence (1.7.2).
+    value: ${{ steps.plan.outputs.source_dir }}
 runs:
   using: composite
   steps:
@@ -103,6 +118,7 @@ runs:
         EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
         CANDIDATE: ${{ github.sha }}
         STATE: ${{ steps.state.outputs.directory }}
+        CHANGE_IMPACT_GIT_TIMEOUT_SCALE: ${{ inputs.git-timeout-scale }}
       run: |
         set -euo pipefail
         python3 -I "$GITHUB_ACTION_PATH/plan.py" --resolve-target --config .github/ci-plan.json --root "$STATE/base" \
@@ -123,6 +139,7 @@ runs:
         CANDIDATE_ROOT: ${{ inputs.candidate-root }}
         CANDIDATE: ${{ github.sha }}
         POLICY_REF: ${{ steps.target.outputs.policy_ref }}
+        CHANGE_IMPACT_GIT_TIMEOUT_SCALE: ${{ inputs.git-timeout-scale }}
       run: |
         set -euo pipefail
         python3 -I "$GITHUB_ACTION_PATH/edges.py" base-paths --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" \
@@ -177,6 +194,7 @@ runs:
         EDGE_CHECK: ${{ inputs.edge-check }}
         POLICY_OUTCOME: ${{ steps.policy.outcome }}
         POLICY_REF: ${{ steps.target.outputs.policy_ref }}
+        CHANGE_IMPACT_GIT_TIMEOUT_SCALE: ${{ inputs.git-timeout-scale }}
       run: |
         set -euo pipefail
         reason=""
@@ -186,10 +204,16 @@ runs:
           reason="reader closure check disabled"
         elif [ ! -f "$STATE/base/$CONFIG" ]; then
           reason="no base policy; caller full roster required"
-        elif ! python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
-          --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE" \
-          --base-revision "$POLICY_REF" --base-repo "$STATE/base" --out-json "$STATE/readers.json"; then
-          reason="reader closure unproven; full validation required"
+        else
+          rc=0
+          python3 -I "$GITHUB_ACTION_PATH/edges.py" check --config "$STATE/base/$CONFIG" \
+            --manifest-root "$STATE/base" --repo "$GITHUB_WORKSPACE/$CANDIDATE_ROOT" --revision "$CANDIDATE" \
+            --base-revision "$POLICY_REF" --base-repo "$STATE/base" --out-json "$STATE/readers.json" || rc=$?
+          if [ "$rc" -eq 3 ]; then  # a git call timed out on both attempts: its own reason, still full (1.7.3)
+            reason="reader scan timed out; full validation required"
+          elif [ "$rc" -ne 0 ]; then
+            reason="reader closure unproven; full validation required"
+          fi
         fi
         echo "force_full_reason=$reason" >> "$GITHUB_OUTPUT"
     - name: Plan
@@ -214,6 +238,7 @@ runs:
         REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
         SOURCE_QUERY: ${{ inputs.source-query }}
         API_URL: ${{ github.api_url }}
+        CHANGE_IMPACT_GIT_TIMEOUT_SCALE: ${{ inputs.git-timeout-scale }}
       run: |
         set -euo pipefail
         python3 -I "$GITHUB_ACTION_PATH/plan.py" \
@@ -229,7 +254,9 @@ runs:
           --event "$EVENT" --base "$BASE" --head "$HEAD" \
           --out-json "$STATE/plan.json" \
           --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
-        python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
+        python3 -c 'import json,sys; sys.stdout.reconfigure(errors="backslashreplace"); r=json.load(open(sys.argv[1])); print("plan", r["plan_id"] + ":", r["mode"], "-", r["reason"])' "$STATE/plan.json"
+        # The directory the hashed sources ran from (1.7.2): only after the plan is published, so a refused plan has none.
+        printf 'source_dir=%s\n' "$GITHUB_ACTION_PATH" >> "$GITHUB_OUTPUT"
     - name: Remove attempt-local inputs
       if: ${{ always() && steps.state.outputs.directory != '' }}
       shell: bash

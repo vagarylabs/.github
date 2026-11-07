@@ -1,5 +1,6 @@
-# Self-hosted runner labels used by the trusted ruleset workflows (bridge runners on the mini-PC).
+# Self-hosted runner labels used by the org workflows (vl-light and vl-bridge: bridge runners on the mini-PC; vl-builder: the builder class).
 self-hosted-runner:
   labels:
     - vl-light
     - vl-bridge
+    - vl-builder

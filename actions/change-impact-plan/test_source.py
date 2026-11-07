@@ -41,12 +41,13 @@ class SourceFixture(unittest.TestCase):
         self.cfg = {"schema": 1, "workspace": {"type": "declared", "packages": {
             "server": {"dir": "server", "deps": []}, "ui": {"dir": "ui", "deps": []}}},
             "hub_packages": ["server"], "inert_globs": ["docs/**"],
-            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}},
+            "jobs": {"server_tests": "full_only", "ui_tests": {"packages": ["ui"]}}, "test_jobs": {"ui_tests": ["ui"]},
             "matrices": {"suite": [{"include": {"group": "ui"}, "rule": {"packages": ["ui"]}},
                                    {"include": {"group": "server"}, "rule": "full_only"}]}}
         for directory in ("server", "ui", "docs", ".github/workflows"):
             (self.root / directory).mkdir(parents=True)
-        files = {"server/a.py": "before\n", "ui/a.ts": "before\n", "docs/readme.md": "before\n",
+        # ui/a.test.ts: 1.7.0 refuses to narrow on an empty test inventory, so the fixture owns one test file.
+        files = {"server/a.py": "before\n", "ui/a.ts": "before\n", "ui/a.test.ts": "before\n", "docs/readme.md": "before\n",
                  "ui/package.json": '{"name": "ui"}\n', ".github/workflows/ci.yml": "name: ci\n"}
         for name, text in files.items():
             (self.root / name).write_text(text)
@@ -163,7 +164,7 @@ class SourceAnswerVectors(SourceFixture):
         self.assertIs(meta["selection_authority"], False)
         self.assertNotIn("authorization", envelope)
         self.assertEqual(envelope["analyzer"], {"id": "ci.change-impact-plan", "version": P.PLANNER_VERSION})
-        self.assertEqual(P.PLANNER_VERSION, "1.5.3")
+        self.assertEqual(P.PLANNER_VERSION, "1.7.3")
         self.assertEqual(envelope["revisions"], {"object_format": "sha1", "base_sha": self.base, "head_sha": self.candidate})
         self.assertEqual(envelope["repository"], {"provider": "github", "organization_id": "github-owner:202",
                                                   "repository_id": "101"})
@@ -496,7 +497,9 @@ class RealTransport(unittest.TestCase):
                         f"spec=importlib.util.spec_from_file_location('worker',{str(Path(P.__file__).resolve())!r}); "
                         "p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p); "
                         + injected_code + "; sys.exit(p._provider_http_worker())")
-                argv = [sys.executable, "-I", "-c", code]
+                # -B: loading plan.py from a file spec would write its bytecode into this source tree (the action
+                # directory), which edges.py no longer reads but a test must not leave behind either.
+                argv = [sys.executable, "-I", "-B", "-c", code]
             worker = real(argv, **kwargs)
             workers.append(worker)
             return worker

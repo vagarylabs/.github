@@ -4,14 +4,16 @@
 This file is the single source of the classifier. trusted-workflow-integrity.yml and
 trusted-protected-paths.yml carry a byte-identical copy inline (a heredoc), because a ruleset
 workflow must not read anything from the repository it judges, and the pinned workflow bytes are
-the trust root. trusted/tests/test_classify.py fails if an inline copy drifts from this file.
+the trust root. trusted/tests/test_trusted.py (WorkflowTests, CI job trusted-tests) fails if an inline copy drifts
+from this file.
 
 The PR is DATA. Every file is read with `git show <sha>:<path>`; nothing from the PR is executed or
 imported. Ratchet constants are read with ast.parse, which parses and never runs the code.
 
 Integrity mode also REPORTS the FL-4 test-weakening predicates: content predicates over the +/- lines of
 the PR's diff (a test skip, a retry, continue-on-error, a swallowed test failure, a deleted test with no
-successor, a loosened budget or timeout). The report never changes the exit code; see weakening_report().
+successor, a loosened budget or timeout, a new `timeout under test:` exemption). The report never changes the exit
+code; see weakening_report().
 
 Timeout-floor mode checks every job's timeout-minutes in the head tree's workflows against the manifest's
 completion floor (timeout_floor); see the timeout floor section and run_timeout_floor().
@@ -42,6 +44,35 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 INTERIM_REPORT_ONLY = True
 
 
+# BLOCKING PATHS (D2, root 2026-11-01): the shared keyless signer is the signing trust root of the fleet, and the repo that
+# holds it is public, so a push ruleset cannot guard it and one account approves every PR. A change to exactly these
+# paths, when classified authority-binding, FAILS the check regardless of INTERIM_REPORT_ONLY, unless
+# verify_vagaris_approval() returns "verified" (the in-band door, not available yet). Every other class and path stays
+# under INTERIM_REPORT_ONLY. The legitimate door today is OUT-OF-BAND: root LIFTS the ruleset (sets it to evaluate or
+# re-pins it), the change merges with a root R4, root RESTORES (re-pins to the new main sha, after the re-pin R4 below)
+# and logs before and after.
+# THE JUDGE'S OWN FILES (root ruling B2a, R4 of .github #69): a judge whose bytes change without the door is not a
+# judge. Each RESTORE pins a newer main, so it would adopt, unseen, any change to the judge merged since the last pin.
+# So the workflow whose pinned bytes run, every file render.py builds it from (its template, the fragments that
+# template INCLUDEs, the classifier and manifest it INLINEs), render.py, and the drift tests that hold the inline copies
+# to their sources (test_trusted.py) block like the signer, as do the merge-result regression tests
+# (test_merge_result.py: B1, N1, N2, merge_group; delta R4 LOW (b)), so a green PR cannot delete them before the next
+# door change. test_trusted.py fails if a render input is missing here.
+# RE-PIN RULE (root ruling B2b, extended by the delta2 R4 of .github #69; a process rule no check here can see): every
+# re-pin of a ruleset that requires trusted-protected-paths or trusted-workflow-integrity (ruleset 25117498 pins both
+# at one sha, and both inline this classifier) is preceded by a root R4 of the judge diff between the old and the new
+# pinned sha for BOTH workflows, the rendered bytes that run, with the sources above, recorded in reviews/:
+#   git diff <old-pin> <new-pin> -- .github/workflows/trusted-protected-paths.yml \
+#     .github/workflows/trusted-workflow-integrity.yml
+SIGNER_PATHS = (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py")
+JUDGE_PATHS = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
+               "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
+               "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py",
+               "trusted/tests/test_merge_result.py")
+BLOCKING_PATHS = frozenset(SIGNER_PATHS + JUDGE_PATHS)
+BLOCKING_CLASS = "authority-binding"
+
+
 class IntegrityError(Exception):
     pass
 
@@ -55,6 +86,11 @@ def verify_vagaris_approval(repo, head_sha, classes):
     """
     del repo, head_sha, classes
     return "not-yet-available"
+
+
+def blocking_rows(rows):
+    """The (status, path, classes) rows that block unconditionally: a BLOCKING_PATHS path classified BLOCKING_CLASS."""
+    return [r for r in rows if r[1] in BLOCKING_PATHS and BLOCKING_CLASS in r[2]]
 
 
 def protected_decision(classes, verdict, interim=None):
@@ -229,12 +265,171 @@ def resolve_head(base, head):
     git("cat-file", "-e", "%s^{commit}" % head)
 
 
-def resolve(base, head):
+def check_commits(base, head):
     for label, sha in (("base", base), ("head", head)):
         if not SHA_RE.match(sha or ""):
             raise IntegrityError("%s is not an exact 40-hex SHA: %r" % (label, sha))
         git("cat-file", "-e", "%s^{commit}" % sha)
+
+
+def resolve(base, head):
+    check_commits(base, head)
     return git("merge-base", base, head).strip()
+
+
+# WHAT THE PROTECTED-PATHS JUDGE CLASSIFIES (B1, R4 of .github #69): the change the merge LANDS on the base, never
+# merge-base..head. `git merge-base` names ONE common ancestor; when base and head have two or more (a criss-cross,
+# e.g. a head that merges two PR heads main already merged), the diff from that one can miss what the merge does. On
+# real .github commits a head that merged #60's and #62's heads, deleted sign-image.yml and added a README line passed,
+# and merging it deleted the signer. `git merge-tree --write-tree` (merge-ort) writes the tree the merge of head into
+# base produces, criss-cross included (a virtual merge base); the judge diffs BASE against that tree.
+# An older git, a conflict, or any other merge-tree failure FAILS CLOSED (exit 2). There is no fallback to a merge-base
+# diff. This models a merge commit and a squash (the same tree); a rebase merge replays commits and can land something
+# else, so where this judge BLOCKS (vagarylabs/.github main) the ruleset must not allow rebase merges (root's setting).
+# ATTRIBUTES (N1, delta R4 of .github #69): git reads .gitattributes from the working tree, which in the job is the PR
+# head, so a PR could pick the merge driver (`merge=binary`, the `binary` macro, `-merge`, a nested .gitattributes):
+# with two merge bases `binary` resolves the inner merge to the common ancestor, and a head that reset the signer to
+# that ancestor's bytes looked unchanged while every attribute-free merge lands them. No single source is safe (main's
+# own attributes can be removed by the PR, and which ones GitHub's merge honours is not known), so the merge is computed
+# three times, with attributes from an empty tree, from the base and from the head (`git --attr-source=<tree>`, which
+# replaces the working tree's files), and the judge fails closed unless all three are clean and write the SAME tree.
+# GIT FLOOR 2.43: `git --attr-source` is new in 2.41.0, and "git merge-tree used to segfault when the --attr-source
+# option is used" is fixed in 2.43.0 (git's RelNotes 2.41.0 and 2.43.0; 2.42.1 and 2.42.2 do not list the fix).
+MERGE_TREE_MIN_GIT = (2, 43)
+
+
+def git_version():
+    out = git("version").strip()
+    m = re.match(r"git version (\d+)\.(\d+)", out)
+    if not m:
+        raise IntegrityError("cannot read the git version from %r: the protected-paths judge needs git >= %d.%d "
+                             "(`git --attr-source=<tree> merge-tree --write-tree`) and has no merge-base fallback"
+                             % ((out,) + MERGE_TREE_MIN_GIT))
+    return int(m.group(1)), int(m.group(2))
+
+
+def empty_tree():
+    r = subprocess.run(["git", "mktree"], input="", capture_output=True, text=True)
+    tree = r.stdout.strip()
+    if r.returncode != 0 or not SHA_RE.match(tree):
+        raise IntegrityError("git mktree (the empty tree) failed (exit %d): %s" % (r.returncode, r.stderr.strip()))
+    return tree
+
+
+def merge_tree(base, head, attr_source, label):
+    """The tree `git merge-tree --write-tree` writes for head into base, with .gitattributes read from attr_source."""
+    r = subprocess.run(["git", "--attr-source=" + attr_source, "merge-tree", "--write-tree", "-z", "--name-only",
+                        "--no-messages", base, head], capture_output=True, text=True)
+    fields = r.stdout.split("\0")
+    tree = fields[0]
+    # Exit 1 is a conflict only with a tree first; a ref merge-tree cannot read also exits 1, with no output.
+    if r.returncode == 1 and SHA_RE.match(tree):
+        conflicted = ", ".join(_shown(f) for f in sorted({f for f in fields[1:] if f})) or "no path named"
+        raise IntegrityError("merge CONFLICT (attributes from %s): head %s does not merge cleanly into base %s (%s). "
+                             "The judge classifies what the merge lands, and a conflicted merge lands nothing it can "
+                             "classify, so it fails closed: bring the PR up to date with its base and resolve the "
+                             "conflict" % (label, head, base, conflicted))
+    if r.returncode != 0 or not SHA_RE.match(tree):
+        raise IntegrityError("git merge-tree --write-tree %s %s (attributes from %s) failed (exit %d): %s; the judge "
+                             "fails closed and has no merge-base fallback"
+                             % (base, head, label, r.returncode, r.stderr.strip() or "no message"))
+    if git("cat-file", "-t", tree).strip() != "tree":
+        raise IntegrityError("git merge-tree --write-tree returned %s, which is not a tree" % tree)
+    return tree
+
+
+def require_attr_source_git():
+    """The version gate (major.minor; 2.43.0 is the floor, so no patch level matters) for `git --attr-source`."""
+    have = git_version()
+    if have < MERGE_TREE_MIN_GIT:
+        raise IntegrityError("git %d.%d cannot run `git --attr-source=<tree> merge-tree --write-tree` (needs >= "
+                             "%d.%d): the protected-paths judge cannot compute what the merge lands, and has no "
+                             "merge-base fallback" % (have + MERGE_TREE_MIN_GIT))
+
+
+# NO MERGE DRIVER ON A BLOCKING PATH (LOW-1, delta2 R4 of .github #69): agreement across the three attribute sources is
+# the guard above; on top, a `merge` attribute that is SET in any form (merge=<driver>, merge=union, the `binary` macro,
+# -merge, a bare `merge`) on a blocking path, read from the base's or the head's .gitattributes (any directory level,
+# plus the runner's own attribute files), FAILS CLOSED by name. How a protected path merges must not be chosen in an
+# unprotected file. Only paths the repository's profile makes blocking are checked, so other repositories are
+# unaffected.
+def blocking_merge_attributes(entry, sources):
+    """[(source label, path, value)] for each blocking path whose `merge` attribute is not unspecified."""
+    paths = sorted(p for p in BLOCKING_PATHS if BLOCKING_CLASS in classes_for(entry, p))
+    if not paths:
+        return []
+    require_attr_source_git()
+    found = []
+    for label, source in sources:
+        r = subprocess.run(["git", "--attr-source=" + source, "check-attr", "-z", "merge", "--"] + paths,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise IntegrityError("git check-attr merge (attributes from %s) failed (exit %d): %s; the judge fails "
+                                 "closed" % (label, r.returncode, r.stderr.strip() or "no message"))
+        fields = r.stdout.split("\0")
+        for i in range(0, len(fields) - 2, 3):
+            path, attr, value = fields[i:i + 3]
+            if attr == "merge" and value != "unspecified":
+                found.append((label, path, value))
+    return found
+
+
+def refuse_blocking_merge_attributes(entry, sources):
+    found = blocking_merge_attributes(entry, sources)
+    if found:
+        raise IntegrityError("a merge attribute is set on a blocking path (%s). How the signer and the judge's own "
+                             "files merge must not be chosen in .gitattributes, so the judge fails closed: remove the "
+                             "attribute (through the door, if the base carries it)"
+                             % "; ".join("`%s` merge=%s in %s" % (_shown(p), _shown(v), l) for l, p, v in found))
+
+
+def landing_tree(base, head):
+    """The tree merging head into base produces, the same under all three attribute sources; else IntegrityError."""
+    require_attr_source_git()
+    trees = [(label, merge_tree(base, head, source, label))
+             for label, source in (("an empty tree", empty_tree()), ("the base", base), ("the head", head))]
+    if len({tree for _, tree in trees}) != 1:
+        raise IntegrityError("the merge of head %s into base %s depends on .gitattributes: it writes %s. The judge "
+                             "cannot tell which GitHub lands, so it fails closed: drop the merge attributes (a merge "
+                             "driver such as merge=binary or union, the binary macro, -merge) that change this merge, "
+                             "or resolve the merge in the PR"
+                             % (head, base, "; ".join("%s with attributes from %s" % (t, l) for l, t in trees)))
+    return trees[0][1]
+
+
+# THE BASE IT JUDGES AGAINST (N2, delta R4 of .github #69): on pull_request, the base branch's LIVE tip, never the
+# event's pull_request.base.sha. That sha goes stale: on #69 a run judged fa7d4abc 47 minutes after main had moved to
+# 389813b, and a verdict at a stale base can roll back a door change main gained since (one merge base is enough).
+# The live tip is refs/remotes/origin/<base.ref> in the job's checkout (fetch-depth 0 fetches
+# +refs/heads/*:refs/remotes/origin/*), read when the judge runs; the event's base must be its ancestor, or the judge
+# fails closed. Strict "branch must be up to date" on the ruleset closes the window between this run and the merge.
+BRANCH_RE = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)(?!/)[A-Za-z0-9._/-]+(?<!/)(?<!\.lock)\Z")
+
+
+def live_base(payload_base, base_ref):
+    """The live tip of the PR's base branch, origin/<base_ref> in this checkout; IntegrityError (fail closed) when it is
+    missing, or when the event's base is not its ancestor."""
+    if not BRANCH_RE.match(base_ref or ""):
+        raise IntegrityError("pull_request needs the base branch name (--base-ref), a plain branch name; got %r"
+                             % (base_ref,))
+    ref = "refs/remotes/origin/%s" % base_ref
+    r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"], capture_output=True, text=True)
+    live = r.stdout.strip()
+    if r.returncode != 0 or not SHA_RE.match(live):
+        raise IntegrityError("the base branch's live tip %s is not in this checkout; the judge reads the base it "
+                             "judges against there and fails closed without it" % ref)
+    if not is_ancestor(payload_base, live):
+        raise IntegrityError("the event's base %s is not an ancestor of %s's live tip %s: the base branch moved in a "
+                             "way the judge cannot reconcile, so it fails closed" % (payload_base, base_ref, live))
+    return live
+
+
+def is_ancestor(older, newer):
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", older, newer], capture_output=True, text=True)
+    if r.returncode not in (0, 1):
+        raise IntegrityError("git merge-base --is-ancestor %s %s failed (exit %d): %s"
+                             % (older, newer, r.returncode, r.stderr.strip() or "no message"))
+    return r.returncode == 0
 
 
 def changed_paths(mb, head):
@@ -268,7 +463,7 @@ def changed_paths(mb, head):
 # (job/step level, inline references), each names at most WEAKENING_MAX_REFS references, and a head-side line over
 # WEAKENING_MAX_LINE is not read.
 
-WEAKENING_VERSION = "fl4-v1"
+WEAKENING_VERSION = "fl4-v2"
 WEAKENING_EFFECT = "ci-policy:test-weakening"
 WEAKENING_MAX_FILES = 3000
 WEAKENING_MAX_PATCH_BYTES = 2000000     # one file's diff; a larger one is dropped as it streams: INCOMPLETE
@@ -387,6 +582,15 @@ _SKIP_BATS = re.compile(r"^\s*(?P<tok>skip)\b")
 _FLAKY_PY = re.compile(r"(?P<tok>@pytest\.mark\.flaky)\b")
 _SLOW_JS = re.compile(r"(?<![\w$.])(?P<tok>test\.slow)\s*\(")
 _HAS_ASSERTIONS = re.compile(r"\b(?P<tok>expect\.hasAssertions)\s*\(")
+# The test-bounds (K2) exemption: a short wall-clock bound marked as the behaviour under test (root's K2 condition 3:
+# a mark is never silent). FL-4 lists EVERY added line that holds one, in any file and on any line, a comment-only
+# line included, with no netting against removed marks (root's #61 R4): a visibility rule must never under-report,
+# and listing a moved mark again is the safe direction. Case and spacing are loosened, so the exact token the F5
+# check honours (`timeout under test:`) is always matched. The F5 check's own output is never read: it is an
+# untrusted job. _BOUND_MARK_PICKAXE is the same pattern as a POSIX ERE, for git's -G file preselection.
+_BOUND_MARK = re.compile(r"timeout\s+under\s+test\s*:", re.I)
+_BOUND_MARK_PICKAXE = ("[Tt][Ii][Mm][Ee][Oo][Uu][Tt][[:space:]]+[Uu][Nn][Dd][Ee][Rr][[:space:]]+[Tt][Ee][Ss][Tt]"
+                       "[[:space:]]*:")
 _COE = re.compile(r"^\s*(?:-\s+)?continue-on-error\s*:\s*(?P<v>[^#]*?)\s*(?:#.*)?$")
 
 _SWALLOW = re.compile(r"\|\|\s*(?P<s>true\b|:(?=\s|$|[;)\"'])|exit\s+0\b|echo\b|printf\b)")
@@ -1142,6 +1346,64 @@ def scan_file(row, patch, incomplete, floor=None):
     return token_findings(path, scopes, added, removed) + numeric_findings(path, scopes, added, removed, first, floor)
 
 
+_MARK_DIFF = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "--no-renames", "--unified=0")
+
+
+def mark_findings(budget, mb, head, incomplete, room):
+    """`bound-exempted` for every added line of the diff that holds the test-bounds mark (see _BOUND_MARK). git's -G
+    preselects the files whose patch adds or removes such a line, and ONE combined diff of those files (per pathspec
+    batch, as scan_patches reads) is scanned: every added marked line is listed. A path git quotes is diffed on its
+    own. A stop or an over-cap diff is INCOMPLETE, never a clean pass."""
+    try:
+        raw = git_read(budget, _MARK_DIFF[:-1] + ("--name-only", "-z", "-G" + _BOUND_MARK_PICKAXE, mb, head),
+                       WEAKENING_MAX_CENSUS_BYTES)
+    except Exhausted as exc:
+        incomplete.append("%s while listing the files that add a `timeout under test:` mark; no mark is listed"
+                          % _stop_reason(exc.kind))
+        return []
+    paths = sorted(p for p in raw.decode("utf-8", "surrogateescape").split("\0") if p)
+    want = {"diff --git a/%s b/%s" % (p, p): p for p in paths}
+    out, done = [], set()
+
+    def scan(path, patch):
+        done.add(path)
+        if patch is None:
+            incomplete.append("%s: diff larger than %d bytes; its `timeout under test:` marks are not listed"
+                              % (md_code(path), WEAKENING_MAX_PATCH_BYTES))
+            return
+        for n, t in parse_patch(patch)[0]:
+            if _BOUND_MARK.search(t):
+                if len(out) >= room:
+                    raise Exhausted("findings")
+                out.append(_finding("bound-exempted", path, n, "adds `timeout under test:`"))
+    try:
+        for batch in pathspec_batches([(p, {p}) for p in paths]):
+            chunks = git_chunks(budget, _MARK_DIFF + (mb, head, "--")
+                                + tuple(":(literal)" + q for q in sorted(q for _, ps in batch for q in ps)))
+            try:
+                for header, patch in patch_sections(chunks, WEAKENING_MAX_PATCH_BYTES):
+                    path = want.get(header)
+                    if path is not None and path not in done:
+                        scan(path, patch)
+            finally:
+                chunks.close()
+        for path in paths:
+            if path in done:
+                continue
+            try:
+                patch = git_read(budget, _MARK_DIFF + (mb, head, "--", ":(literal)" + path),
+                                 WEAKENING_MAX_PATCH_BYTES).decode("utf-8", "replace")
+            except Exhausted as exc:
+                if exc.kind != "cap":
+                    raise
+                patch = None
+            scan(path, patch)
+    except Exhausted as exc:
+        incomplete.append("%s after %d of %d files that add a `timeout under test:` mark; the rest are not listed"
+                          % (_stop_reason(exc.kind), len(done), len(paths)))
+    return out
+
+
 def scan_patches(budget, mb, head, scoped, todo, results, incomplete, room, floor=None):
     """Fill results[i] for every i in todo; the stop kind, or None when every file was read. Once the files scanned hold
     room findings, the next file stops the scan ("findings"): a PR of `it.skip(` makes ~125k findings per MB of diff.
@@ -1231,6 +1493,7 @@ def weakening_scan(mb, head, floor=None):
                           % (_stop_reason(stop), len(results), in_scope))
     for i in sorted(results):
         findings += results[i]
+    findings += mark_findings(budget, mb, head, incomplete, WEAKENING_MAX_FINDINGS - len(findings))
     heads = {row[3]: row[6] for row in scoped if row[0] != "D"}
     floor_raises(budget, findings, heads, floor, incomplete)
     listed = findings[:WEAKENING_MAX_LISTED]
@@ -1248,6 +1511,21 @@ def md_code(text):
 
 def _cmd_data(text):
     return str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _shown(path):
+    """A PR-chosen path as the judge prints it: the backslash and every non-printable character (a newline could start
+    a workflow command such as ::stop-commands:: on stdout) escaped, everything else as is."""
+    out = []
+    for c in path:
+        if c == "\\":
+            out.append("\\\\")
+        elif c.isprintable():
+            out.append(c)
+        else:
+            out.append("\\x%02x" % ord(c) if ord(c) < 0x100 else "\\u%04x" % ord(c) if ord(c) < 0x10000
+                       else "\\U%08x" % ord(c))
+    return "".join(out)
 
 
 def _cmd_prop(text):
@@ -1890,8 +2168,9 @@ def run_sibling_read(m, repo, base, head):
              "%d workflow/action files read at head `%s` (manifest `sibling_read`, mode `%s`)." % (len(files), head, mode)]
     for path, job, line, what in rows:
         lines.append("- `%s` job `%s` line %d: %s. Use vagarylabs/.github/actions/sibling-repo-read, which waits until "
-                     "the token can see the repository." % (path, job, line, what))
-        print("::%s file=%s,line=%d,title=sibling read without readiness::%s" % (level, path, line, what))
+                     "the token can see the repository." % (_shown(path), job, line, what))
+        print("::%s file=%s,line=%d,title=sibling read without readiness::%s"
+              % (level, _cmd_prop(path), line, _cmd_data(what)))
     if not rows:
         lines.append("No raw create-github-app-token is followed by a sibling read.")
     elif mode == "report":
@@ -1907,8 +2186,9 @@ def run_integrity(m, repo, base, head):
     lines = ["## Trusted workflow integrity: %s" % repo,
              "Compared against base-side commit `%s` (merge-base of base `%s` and head `%s`)." % (mb, base, head)]
     for status, path, cls in rows:
-        lines.append("- PROTECTED-PATH CHANGE `%s` %s (%s)" % (path, status, ", ".join(cls)))
-        print("::notice title=protected-path change::%s %s (%s)" % (status, path, ", ".join(cls)))
+        lines.append("- PROTECTED-PATH CHANGE `%s` %s (%s)" % (_shown(path), status, ", ".join(cls)))
+        print("::notice title=protected-path change::%s" % _cmd_data("%s %s (%s)" % (status, _shown(path),
+                                                                                    ", ".join(cls))))
     for rf in entry["ratchet_files"]:
         b, h = blob(mb, rf), blob(head, rf)
         if b is None and h is None:
@@ -1931,19 +2211,51 @@ def run_integrity(m, repo, base, head):
     return 0
 
 
-def run_protected(m, repo, base, head):
+# THE BINDING INSTANCE (root's D2 direction, delta R4 of .github #69): once root enables a merge queue on
+# vagarylabs/.github (the D2 apply; there is none today, and until then the pull_request run binds), the judge that
+# binds runs on merge_group. There head_sha IS the commit the queue lands (main fast-forwards to it; GitHub behaviour,
+# inferred until root's queue drill), so the judge classifies the queue base against that commit's OWN tree and
+# computes no merge: neither .gitattributes nor a stale base can make the judged tree differ from the landed one. The
+# base must be an ancestor of the group commit, or the judge fails closed. The pull_request run computes the merge
+# (above) and is then the early warning.
+def run_protected(m, repo, base, head, event=None, base_ref=None):
     entry = repo_entry(m, repo)
-    mb = resolve(base, head)
-    rows = classify(entry, changed_paths(mb, head))
+    check_commits(base, head)
+    if event == "pull_request":
+        judged = live_base(base, base_ref)
+        tree = landing_tree(judged, head)
+        refuse_blocking_merge_attributes(entry, (("the base", judged), ("the head", head)))
+        bases = len(git("merge-base", "--all", judged, head).split())
+        what = ("Judged: the live tip `%s` of `%s` (the event's base `%s` is its ancestor) against tree `%s`, what "
+                "merging head `%s` into it lands (git merge-tree --write-tree; %d merge base%s)."
+                % (judged, base_ref, base, tree, head, bases, "" if bases == 1 else "s"))
+    elif event == "merge_group":
+        if not is_ancestor(base, head):
+            raise IntegrityError("merge group: the base %s is not an ancestor of the group commit %s; the queue lands "
+                                 "that commit, so the judge fails closed" % (base, head))
+        judged, tree = base, head
+        refuse_blocking_merge_attributes(entry, (("the base", base), ("the group commit", head)))
+        what = ("Judged: the merge-group base `%s` against the group commit `%s`'s own tree, what the queue lands (no "
+                "merge computed)." % (base, head))
+    else:
+        raise IntegrityError("protected-paths needs --event pull_request or merge_group; got %r" % (event,))
+    rows = classify(entry, changed_paths(judged, tree))
     classes = sorted({c for _, _, cls in rows for c in cls})
     verdict = verify_vagaris_approval(repo, head, classes) if classes else "not-required"
     code, msg = protected_decision(classes, verdict)
-    lines = ["## Protected paths: %s" % repo, msg]
-    lines += ["- `%s` %s (%s)" % (p, s, ", ".join(c)) for s, p, c in rows]
+    blocked = blocking_rows(rows)
+    if blocked and verdict != "verified":
+        code = 1
+        msg = ("BLOCKING: %s change the shared signer or the protected-paths judge itself (%s) and need a Vagaris "
+               "signed approval (verdict: %s); until it exists, root lifts the ruleset, merges with R4 and restores the "
+               "pin after an R4 of the judge diff between the pins"
+               % (", ".join(_shown(p) for _, p, _ in blocked), BLOCKING_CLASS, verdict))
+    lines = ["## Protected paths: %s" % repo, msg, what]
+    lines += ["- `%s` %s (%s)" % (_shown(p), s, ", ".join(c)) for s, p, c in rows]
     summary(lines)
     if classes:
         level = "error" if code else "notice"
-        print("::%s title=protected paths::%s" % (level, msg))
+        print("::%s title=protected paths::%s" % (level, _cmd_data(msg)))
     return code
 
 
@@ -2415,6 +2727,8 @@ def main(argv=None):
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", help="required, except in timeout-floor mode (which reads the head tree only)")
     ap.add_argument("--head", required=True)
+    ap.add_argument("--event", choices=("pull_request", "merge_group"), help="protected-paths: the triggering event")
+    ap.add_argument("--base-ref", help="protected-paths on pull_request: the base branch name (its live tip is judged)")
     ap.add_argument("--zizmor", help="workflow-lint: zizmor's JSON output")
     ap.add_argument("--zizmor-rc", type=int, help="workflow-lint: zizmor's exit code")
     ap.add_argument("--actionlint", help="workflow-lint: actionlint's JSON output")
@@ -2432,11 +2746,13 @@ def main(argv=None):
                 raise IntegrityError("workflow-lint needs --zizmor, --zizmor-rc, --actionlint and --actionlint-rc")
             return run_workflow_lint(m, a.repo, a.head, a.zizmor, a.zizmor_rc, a.actionlint, a.actionlint_rc,
                                      a.zizmor_fetch, a.actionlint_fetch)
-        fn = {"integrity": run_integrity, "protected-paths": run_protected, "timeout-floor": run_timeout_floor,
+        if a.mode == "protected-paths":
+            return run_protected(m, a.repo, a.base, a.head, a.event, a.base_ref)
+        fn = {"integrity": run_integrity, "timeout-floor": run_timeout_floor,
               "sibling-read": run_sibling_read, "pins": run_pins}[a.mode]
         return fn(m, a.repo, a.base, a.head)
     except (IntegrityError, OSError, ValueError) as exc:
-        print("::error title=trusted %s::%s" % (a.mode, exc))
+        print("::error title=trusted %s::%s" % (a.mode, _cmd_data(exc)))
         return 2
 
 

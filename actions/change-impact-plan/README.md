@@ -20,6 +20,13 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.3 makes a slow git call cost a retry, not the reduced plan (spine, from core #936: at Mac load 25-34 the reader scan's `git grep` ran past its 15 s ceiling on 2 of 4 runs). Every git subprocess gets ONE retry after a timeout, and every git ceiling scales by the new `git-timeout-scale` input (an integer 1-8, default 1). A call that times out on both attempts still plans full, under its own reason: `reader scan timed out; full validation required` (edges.py exits 3) or `canonical target lookup timed out` in the target observation. It is never folded into "unproven", and it never narrows a plan.
+
+Planner 1.7.2 adds the `source_dir` output: `GITHUB_ACTION_PATH`, the directory this step ran `plan.py`, `edges.py` and `action.yml` from. It is written only after the plan is published, so a refused plan has none, and no existing output changes.
+- It is a LOCATOR, never authority.
+- A consumer that reads those files (core's orphan gate, for one) hashes them and must match BOTH `plan.validity.{planner,reader,action}_source_sha256` AND its own policy-pinned copies.
+- Any other byte, or a missing file, is a refusal, never a fallback.
+
 - `source_answer` follows the SRC-01 source-context envelope (vagary-core `contracts/source/v1`, pinned in `plan.SOURCE_CONTRACT`). It covers repository identity (provider-stable `github.repository_id` and owner id), the pinned diff base and candidate SHAs, the analyzer (`ci.change-impact-plan` + version), how the candidate was materialized (history depth, clone filter and sparse patterns recorded independently, plus the policy files actually read), and completeness.
 - `authorization` is deliberately absent. A CI job token is not a source-access grant. Consumers must obtain the canonical `authorize()` result themselves and must not treat this envelope as authorized.
 - Completeness is derived, never asserted. Each of the following makes it partial or unknown, which makes the plan **FULL**:
@@ -372,7 +379,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        file the PR did not touch, is still a subject (root's condition).
      - **Nothing unread passes as unmentioned.** On git 2.50 `git grep` exits 1, its "no match" status, when it cannot
        read a blob, and prints `unable to read`; git 2.56 exits 128. Every grep of the scan refuses, typed, on either
-       signal (any exit but 0 or 1), and so does a pass that times out ("reader closure unproven: timeout"). Each one
+       signal (any exit but 0 or 1), and so does a pass whose git call times out on both attempts ("reader scan timed out", 1.7.3). Each one
        plans FULL.
 
      The backstop catches a runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`,
@@ -606,6 +613,122 @@ pinned, and the suite asserts it exactly, so a residual that reads less (or more
   file) reads beneath its literal prefix.
 
 These are bounded by the 10-22 ruling: main runs FULL after every merge, and a red main blocks landings.
+
+## Test inventory (1.7.0, S6)
+
+A narrowed plan skips the jobs a change does not select. Before 1.7.0 nothing checked that every test file still ran
+in SOME job a change to its owner selects, so a test missing from the configuration could silently disappear from
+every narrowed plan. 1.7.0 makes the config declare which packages' test files each unit (a job or a matrix entry)
+executes, and checks that declaration against the candidate's own test files.
+
+```json
+{
+  "jobs": {"policy": "always", "e2e": {"packages": ["@v/ui"]}},
+  "test_jobs": {"e2e": ["@v/ui"], "policy": ["path:scripts/**"]},
+  "matrices": {"general_tests": [
+    {"include": {"group": "server"}, "rule": "full_only", "tests": "*"},
+    {"include": {"group": "workspaces"}, "rule": {"packages": ["@v/ui", "@v/cli"]}, "tests": ["@v/ui", "@v/cli"]}
+  ]},
+  "test_globs": ["**/*.check.ts"]
+}
+```
+
+- **Declaration.**
+  - `test_jobs` maps a job to `"*"` or to a list; a matrix entry carries the same value as `tests`.
+  - A list holds package names and `path:<glob>` entries. A path entry covers test files outside every package.
+  - A path entry is allowed only on a unit whose rule is `always`, because such a file cannot be tied to an affected
+    package, so its unit must run on every narrowed plan.
+- **Inventory.**
+  - The candidate commit's tracked test files, read from its tree: `git ls-tree` in the scope root at the candidate,
+    never the trusted-base checkout.
+  - A test file is `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.py`, `*_test.go`, or code (js/ts family, Python, Go) under
+    `__tests__/`, `test/` or `tests/`, outside any `node_modules/` path segment. This is the union of the consumers'
+    runner gates (vagaris check-test-collection-parity, core check_orphan_test_files.py). `test_globs` may add to these
+    conventions, never remove from them.
+- **Coverage.**
+  - A test-owning package is covered when some unit declares it (or `"*"`) and the unit's rule selects the package's
+    reverse closure. `full_only` never counts.
+  - Selection rules are monotone in the affected set, so such a unit runs on every plan that affects the package.
+  - A package whose change reaches a hub is covered by the full plan it always gets.
+  - A test file outside every package is covered by an `always` unit whose `"*"` or `path:` entry matches it.
+- **Verdicts.**
+  - With a declaration, any uncovered package or file is an error (the step fails) on EVERY event, so a gap is never a
+    silently smaller suite. So is:
+    - a declaration naming an unknown job or package;
+    - a path entry on a unit a narrowed plan can skip;
+    - a test file inside a package that matches `inert_globs`, because a change to it would be classified inert and
+      select nothing.
+  - With no declaration, the plan is FULL with the reason `no test_jobs declaration`.
+  - An unreadable inventory, or an empty one while a declaration exists, is FULL (refused as unproven). These guards
+    read the candidate's tree with the BASE's `test_globs` only (1.7.1), so a glob a change adds cannot fill them.
+- **Record.** `plan.test_inventory = {schema, files, digest, packages: {P: {files, covered_by}}, unowned: {files,
+  uncovered}, gaps}` is bound into `plan_id`.
+- **Not claimed.** The planner cannot see which files a unit really executes. That binding is the consumer's runner
+  gate: vagaris `check-test-collection-parity`, core `check_orphan_test_files.py`. A unit declared `"*"` or a `path:`
+  entry that its job does not collect must be refused there. This check closes the config hole; those gates close the
+  runner hole.
+- **Adoption.**
+  - A consumer moving its pin to 1.7.0 gets FULL plans until it declares. A declaration must be complete from its first
+    commit.
+  - **Matrix gating precondition.** A matrix entry's `tests` count as coverage whenever the entry's rule selects it. The
+    planner cannot see whether the consumer's workflow actually runs the matrix's PARENT job. So the consumer must run
+    the parent job whenever any of its entries is included (vagaris builds its matrix from the plan, so it qualifies). A
+    parent job gated by something else makes the entry's coverage claim untrue.
+  - **Declaring in the same change (1.7.1).** Whether a change is red is decided by its OWN declaration (see Liveness
+    below), so a change can add a package, its tests and its declaration together, or fix its own gap. The BASE still
+    decides narrowing (a change cannot widen its own coverage), so such a change plans FULL rather than narrowed:
+    - first tests for a package the base does not cover are covered by the change's own declaration, and the base's
+      inventory has a gap, so the plan is FULL;
+    - a test file in a package directory the base's graph does not know is outside every package there, so the base
+      cannot narrow either.
+    - The change after it narrows as usual, because its base now holds the declaration.
+  - **Liveness: who decides RED (1.7.1, F29).** A gate that read its rules only from the base could wedge itself. A
+    change that removed a declaration entry, or broke a selection rule, passed against the old base and landed, and
+    then every change was red, including the fix (reproduced through `main()`, 2026-10-30; root's failure registry F29).
+    Since 1.7.1:
+    - the BASE config and graph still decide whether a plan may NARROW (F14: a change cannot widen its own selection);
+    - the CANDIDATE's own config and workspace graph, read from its commit's git objects (the checkout can be sparse),
+      decide whether the change is RED. Errors are:
+      - a config that does not parse (a JSON typo, nesting too deep) or is not a JSON object;
+      - a value of the wrong JSON type anywhere (a list where an object belongs, a string workspace), or an unknown
+        workspace type. Each is a message, never a traceback. This includes the fields only selection reads
+        (`full_globs`, `inert_globs`, `hub_packages`, `extra_edges`): a list `extra_edges` used to crash the next
+        plan, and a string `hub_packages` was read as its characters, so the hub never matched;
+      - invalid selection rules, an invalid declaration, or an inventory gap.
+    - One rule reads both configs, so a malformed BASE config is the base's error with the same message, not a crash.
+    - So a change that breaks the config is red BEFORE it lands, a syntax error included. A change that repairs a
+      broken base plans FULL (its `config_check` names the base's errors) and can land. When the base config cannot be
+      read at all, the FULL plan carries no job list, so the caller runs its complete roster. An unrelated change on a
+      broken base stays red: only a repair lands. A change that adds a package, its tests and its declaration together
+      is not red (the base cannot narrow it, so it plans FULL).
+    - The candidate's config can only move a plan between RED and FULL, never narrower. A narrower candidate config
+      (a dropped hub, a dropped rule) or graph (a dropped dependency edge) changes nothing about selection, at any
+      config path, including one no full trigger matches.
+    - A config at a schema other than 1 is refused the same way: RED as the candidate. As the base, a schema-1 repair
+      plans FULL ("plan config schema N is not 1") and an unrelated change still at that schema stays red. Where the
+      planner a change runs is the one its own workflow pins, a migration moves the pin and the schema in one change.
+      Where the pin is held outside the change (core's ruleset-pinned services lane, NATIVE_WORKFLOW_PIN), the planner
+      pin that reads the new schema lands first, and the schema follows.
+    - The candidate's tree is listed name by name: a name that is not UTF-8 (`docs/caf\xe9.txt`) is kept as bytes, so it
+      never makes the candidate unreadable, and a test file behind one is still inventoried (root's #57 RC2: one such
+      name made the base decide, and an invalid rule landed and wedged main).
+    - The candidate's config is read even when the SCOPE is unknown (a non-UTF-8 path in the diff, for one): it needs
+      only the candidate commit, never the diff, and it moves the plan between RED and FULL only. So a typo landing
+      beside such a path is red, and its repair lands with or without deleting the path.
+    - The base decides both only when git cannot produce the candidate's config, or when the candidate's
+      pnpm-workspace.yaml or a workspace manifest cannot be produced or does not parse. That is the tree's defect, not
+      the config's: pnpm install refuses it in the change's own CI, so the planner does not judge it (a manifest edit is
+      a builtin full trigger, so that change is FULL). Once it lands, the base's graph is unreadable and every plan is
+      FULL until it is fixed.
+    - Nothing of the candidate's own is validated when it has no config at that path (it removes it): a removal on a
+      broken base plans FULL and can land.
+    - The candidate's tree is read twice. With the BASE's `test_globs` for the base inventory and the narrowing guards;
+      with both configs' `test_globs` for the candidate's RED check only (an extra glob only adds obligations). So a
+      change that drops a glob is still bound by it: the files it matched need coverage in that change.
+    - In the action, a reader check that fails on a broken base config forces FULL. It never stops the plan, so the
+      candidate still decides RED.
+    - `plan.config_check = {red_decided_by, base_errors, candidate_errors}` is bound into `plan_id`.
+    - Each consumer's runner gate still validates the candidate's declaration in its own CI (root's prevention layer).
 
 ## Compatibility and validation
 

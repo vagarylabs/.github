@@ -60,8 +60,11 @@ jobs:
     name: trusted-workflow-integrity
     # Keeps the job off the public source repo (no bridge runner there); never false in a target repo.
     if: github.repository != 'vagarylabs/.github'
-    # Bridge only, never hosted (operator ruling: no GitHub budget); hard-coded, no variable, no fallback.
-    runs-on: [self-hosted, Linux, X64, vl-light]
+    # PLACEMENT (R1 L10, root 2026-11-09): a two-way switch, never a free label. The org variable TRUSTED_LIGHT_RUNNER set
+    # to exactly `hosted` puts the judge on GitHub's ubuntu-latest (the hosted trusted lane, inside the Actions ceiling);
+    # any other value or no variable keeps the bridge light label. A variable cannot name a third runner, so a repository
+    # admin cannot route the judge to a runner they control.
+    runs-on: ${{ fromJSON(vars.TRUSTED_LIGHT_RUNNER == 'hosted' && '"ubuntu-latest"' || '["self-hosted","Linux","X64","vl-light"]') }}
     # Covers every judge: the integrity and timeout-floor scans (120 s budgets each), sibling-read and pins, two tool
     # fetches at 5 minutes and the lint step at 6, with the completion floor on top.
     timeout-minutes: 30

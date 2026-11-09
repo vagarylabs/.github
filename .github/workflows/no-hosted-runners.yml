@@ -313,8 +313,8 @@ jobs:
           def self_test_exemption():
               """The hosted exception admits EXACTLY vagarylabs/.github + trusted-protected-paths.yml + job trusted-protected-paths."""
               import tempfile
-              line = ("    runs-on: \x24{{ fromJSON(github.repository == 'vagarylabs/.github' && '\"ubuntu-latest\"' || "
-                      "'[\"self-hosted\",\"Linux\",\"X64\",\"vl-light\"]') }}\n")
+              line = ("    runs-on: \x24{{ fromJSON((github.repository == 'vagarylabs/.github' || vars.TRUSTED_LIGHT_RUNNER == 'hosted') && "
+                      "'\"ubuntu-latest\"' || '[\"self-hosted\",\"Linux\",\"X64\",\"vl-light\"]') }}\n")
               flat = "    runs-on: ubuntu-latest\n"
 
               def run(repo, fname, job, runs_on):

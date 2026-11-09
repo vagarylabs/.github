@@ -600,7 +600,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(jobs, ["trusted-workflow-integrity"])
         job = text.split("\n  trusted-workflow-integrity:\n", 1)[1]
         self.assertIn("\n    if: github.repository != 'vagarylabs/.github'\n", job)
-        self.assertIn("\n    runs-on: [self-hosted, Linux, X64, vl-light]\n", job)
+        # R1 L10: the two-way placement switch; `hosted` selects ubuntu-latest, anything else keeps the bridge light label.
+        self.assertIn("\n    runs-on: ${{ fromJSON(vars.TRUSTED_LIGHT_RUNNER == 'hosted' && '\"ubuntu-latest\"' || "
+                      "'[\"self-hosted\",\"Linux\",\"X64\",\"vl-light\"]') }}\n", job)
         self.assertIn("persist-credentials: false", job)
         self.assertIn("PR_HEAD: ${{ github.event.pull_request.head.sha }}", job)
         self.assertNotIn("\n    permissions:", job)

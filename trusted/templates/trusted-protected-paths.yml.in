@@ -33,7 +33,11 @@
 # - ATTRIBUTE INDEPENDENCE (N1): the job's working tree is the PR head, whose .gitattributes could pick the merge
 #   driver. The merge is computed three times, attributes from an empty tree, the live base and the head (`git
 #   --attr-source`), and the judge fails closed unless all three are clean and write the same tree. On top, a `merge`
-#   attribute set in any form on a blocking path, in the base's or the head's .gitattributes, fails closed by name.
+#   attribute set in any form on a blocking path, in the base's, the head's or the landed tree's .gitattributes (a
+#   macro defined on one side and used on the other is set only in what lands), fails closed by name. Git reads an
+#   attribute source it cannot read (a missing tree or .gitattributes object) as NO attributes, with exit 0, so each
+#   source, for the merge and for that check alike, is first read positively (its tree, every subtree, the object of
+#   every .gitattributes entry), or the judge fails closed (the D2 precondition, root's delta4 review of #69).
 # - No rebase merges (above).
 #
 # BLOCKING (D2): a change to the shared signer (.github/workflows/sign-image.yml, trusted/tests/test_sign_image.py)

@@ -10,9 +10,9 @@ A READ, on a non-comment line of a non-Markdown tracked file that lives in ANOTH
   - a quoted root literal (`"services"`) classified by the source around it (RootLiteral, below): joined in a path,
     metadata only with positive evidence, a walker root list, or a REFUSAL (which plans FULL);
   - a relative path `../x/...` that, resolved from the file's directory, lands in another package
-    (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment is not
-a read; one in a docstring or a string IS counted (over-approximation only costs extra test runs, never a
-skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
+    (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment, or
+in a Python docstring (any bare string statement, 1.7.4), is not a read; one in any other string IS counted
+(over-approximation only costs extra test runs, never a skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
 the packages it reads; the config's job named by `edge_scan.reader_job` must list at least those.
 
 check FAILS on an UNDECLARED read (the plan could skip a suite the change reaches) and on a reader the
@@ -78,19 +78,33 @@ COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 #   2. READ, as a walker: a collection holding only the root, a loop over a collection holding it, or a method called on
 #      such a collection reads every package beneath the root; a sibling naming another package-owning top-level
 #      directory reads beneath that too.
+#      An argv element of an exec call (`run(["git", "ls-files", "services"])`, `git(root, "ls-files", "services")`)
+#      reads beneath the root as a command string does, and a string predicate on the root (`s.startswith("services/")`)
+#      is a comparison (H3.4) that reads beneath it (1.7.4, root 2026-11-10, core #936 reader closure).
 #   3. METADATA only with positive evidence: an object key or value (never a ternary branch), a subscript key, a
 #      comparison (`==`, `in`, `case`), a .sql file, or a list/tuple/set of literals that is ASSIGNED (`X = [...]`), an
 #      object value, compared, or nested in such a collection. Never a direct argument of a call: `make("services",
 #      v=1)` refuses (root, 2026-10-26).
 #   4. EVERYTHING ELSE REFUSES: a root not alone in a path argument, inside a computed string (f-string, template, SQL
-#      text, a docstring), a subscripted collection in a path call, an argv list of an exec call, a call argument, a
+#      text), a subscripted collection in a path call, an exec call that moves its working directory or holds a
+#      parent step, a call argument, a
 #      default parameter, a bare assignment, and any file whose language or bracket structure the tokenizer cannot
 #      trust.
 PY_EXT = frozenset({"py", "pyi"})
 JS_EXT = frozenset({"js", "mjs", "cjs", "ts", "tsx", "jsx", "mts", "cts"})
 STRUCTURED = PY_EXT | JS_EXT | {"json"}
 PATH_CALLS = frozenset({"join", "resolve", "joinpath", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
-EXEC_CALL = re.compile(r"(?:^|\.)(?:subprocess\.\w+|run|call|check_call|check_output|Popen|spawn\w*|exec\w*|fork)$")
+EXEC_CALL = re.compile(r"(?:^|\.)(?:subprocess\.\w+|run|call|check_call|check_output|Popen|spawn\w*|exec\w*|fork|git|gh)$")
+# A string predicate on a root literal (`service.startswith("services/")`, `p.endsWith("apps")`) is a comparison: it
+# selects a value that may become a path, so it is a walker read beneath the root (H3.4), never metadata and never a
+# refusal (root, 2026-11-10, #936 reader closure).
+STRING_PREDICATES = frozenset({"startswith", "endswith", "removeprefix", "removesuffix", "startsWith", "endsWith"})
+# A word that turns a docstring into data the file runs on: with one present no string statement is prose (1.7.4).
+DOC_CONSUMERS = frozenset({"__doc__", "docopt", "getdoc", "cleandoc", "doctest"})
+# An exec call's keyword that moves its working directory (`cwd=`, `{ cwd: }`): a root named anywhere in such a call
+# is read relative to somewhere the scanner cannot see, so the call refuses (the existing vector, kept).
+EXEC_CWD_WORDS = frozenset({"cwd", "chdir", "directory", "workdir", "working_dir", "workingDirectory"})
+
 LITERAL_WORDS = frozenset({"null", "undefined", "true", "false", "None", "True", "False", "NaN", "Infinity"})
 KEYWORDS = frozenset({"in", "for", "if", "elif", "while", "return", "and", "or", "not", "is", "yield", "await", "else",
                       "case", "of", "typeof", "with", "assert", "lambda", "switch", "catch", "throw", "delete", "void",
@@ -427,6 +441,29 @@ class Source:
             or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
                 and code[j - 1][3] in (".", "?."))]
         self.computed = []
+        # Prose (root, 2026-11-10, #936 reader closure): a Python string that is a statement of its own, a docstring or
+        # any bare string statement, runs nothing, so a root it names is prose and not a read. The positive evidence is
+        # the statement shape: an unprefixed string token outside every bracket, first on its line (no `\` continuation
+        # before it) and last on its line (or followed by `;`), in a file that never consumes a docstring (no `__doc__`,
+        # `docopt`, `getdoc`, `cleandoc` or `doctest` word: root's D01/D03/D04/D09/DT4 vectors read the docstring
+        # through those). A doctest (`>>>`) inside it is executed code and stays a string_reads refusal; a string with a
+        # prefix (f/b/r/u) or any other shape is read as before; an untrusted bracket structure has no prose (1.7.4).
+        self.docstrings: list[tuple[int, int]] = []
+        if self.py and self.ok and not any(tok[0] == "word" and tok[3] in DOC_CONSUMERS for tok in code):
+            for j, tok in enumerate(code):
+                if tok[0] != "str" or self.enclosing[j] or ">>>" in tok[3][0] or tok[3][2] != tok[1]:
+                    continue  # tok[3][2] is the quote's offset: a prefix (f/b/r/u) puts it after the token start
+                prev, nxt = (code[j - 1] if j else None), (code[j + 1] if j + 1 < len(code) else None)
+                first = prev is None or (self.line_of(prev[2] - 1) < self.line_of(tok[1]) and prev[3] != "\\")
+                last = nxt is None or self.line_of(nxt[1]) > self.line_of(tok[2] - 1) or nxt[3] == ";"
+                if first and last:
+                    self.docstrings.append((tok[1], tok[2]))
+        self.docstring_starts = [a for a, _ in self.docstrings]
+
+    def in_docstring(self, offset: int) -> bool:
+        """Offset lies inside a Python string statement (a docstring): prose, never a read."""
+        k = bisect.bisect_right(self.docstring_starts, offset) - 1
+        return k >= 0 and self.docstrings[k][0] <= offset < self.docstrings[k][1]
 
     def _in_getattr(self, j: int) -> bool:
         """Token j is an argument of `getattr(` (its innermost bracket is a call named getattr)."""
@@ -691,6 +728,34 @@ class RootLiteral:
         T = self.src.code
         return any(T[j][0] == "word" and T[j][3] in WALK_WORDS for j in range(max(a, 0), min(b, len(T))))
 
+    def argv_read(self, k: int, root: str) -> set:
+        """A root literal as an argv element of an exec call, alone (`git(root, "ls-files", "services")`) or in its
+        argv list (`run(["git", "ls-files", "services/"])`), never in its options object (`spawn(cmd, { args: [..] })`,
+        root's E06), is the command-string rule's list form (`run("pytest
+        services -q", shell=True)` in string_reads): the process reads beneath the root, a walker read of every
+        package there. As with a command string (H3.2) it still REFUSES when any argument of the call holds a parent
+        step (`..`, `.parent`, `dirname(`), or moves its working directory (`cwd=`), since the root may then be relative
+        to somewhere the scanner cannot see (root, 2026-11-10, #936 reader closure)."""
+        x, T = None, self.src.code
+        for y in reversed(self.src.enclosing[k]):
+            if self.block(y):
+                break
+            if self.kind(y) == "call" and EXEC_CALL.search(self.callee(y) or ""):
+                x = y
+                break
+            if T[y][3] == "{":  # inside the call's options object (`spawn(cmd, { args: [...] })`): its argv's context
+                break
+        if x is None:
+            self.refuse("an argv element of an exec call, or its options, is an")
+        end = self.src.match[x]
+        if self.parent_step(x + 1, end):
+            self.refuse("an argv element of an exec call holding a parent step is an unsupported")
+        if any(T[j][0] == "word" and T[j][3] in EXEC_CWD_WORDS and j + 1 < end and T[j + 1][3] in ("=", ":")
+               for j in range(x + 1, end)):
+            self.refuse("an exec call's working directory is its argv's context, not a path the scanner can bound; an")
+        self.after(k, k)
+        return self.resolve([root], dynamic=True)
+
     def in_exec(self, k: int) -> bool:
         T = self.src.code
         for x in reversed(self.src.enclosing[k]):
@@ -820,7 +885,7 @@ class RootLiteral:
         if outer_call in PATH_CALLS:
             self.refuse("a collection passed to a path call without a spread")
         if self.in_exec(e):
-            self.refuse("an argv list of an exec call")
+            return self.argv_read(e, root)
         if len(spans) == 1:
             return self.resolve([root], dynamic=True)  # ["services"], ("services",), {"services"}: a walker
         walked = self.iterated(e) or method
@@ -883,8 +948,12 @@ class RootLiteral:
             if spans[mine] != (k, k + 1):
                 self.refuse("a computed element holding a")
             return self.in_collection(e, spans, mine, root)
+        if kind == "call" and (self.callee(e) or "").rsplit(".", 1)[-1] in STRING_PREDICATES \
+                and self.elements(e)[0] == (k, k + 1):
+            self.after(k, k)  # a comparison (H3.4): a walker read beneath the root
+            return self.resolve([root], dynamic=True)
         if self.in_exec(k):
-            self.refuse("an argv element of an exec call")
+            return self.argv_read(k, root)
         if kind == "object" and self.object_entry(k, e):
             return set()
         if kind == "subscript" and self.elements(e) == [(k, k + 1)]:
@@ -911,7 +980,7 @@ class RootLiteral:
             return set()
         hits = []
         for m in self.quoted.finditer(src.text, a, b):
-            if src.in_comment(m.start()):
+            if src.in_comment(m.start()) or src.in_docstring(m.start()):
                 continue
             k = src.token_at(m.start())
             tok = src.code[k] if k is not None else None
@@ -928,7 +997,7 @@ class RootLiteral:
         k = src.token_at(a)
         k = k if k is not None else bisect.bisect_left(src.starts, a)
         while k < len(src.code) and src.code[k][1] < b:
-            if src.code[k][0] == "str" and k not in hits:
+            if src.code[k][0] == "str" and k not in hits and not src.in_docstring(src.code[k][1]):
                 self.current = k
                 reads |= self.string_reads(k, a, b)
             k += 1
@@ -3190,11 +3259,11 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                         classify.refuse(f"unresolved (rule 7: package.json script {name!r}: {why})")
                     targets |= classify.raw_reads(command, "sh")
             for m in lit.finditer(src.text, a, b):
-                if not src.in_comment(m.start()):
+                if not src.in_comment(m.start()) and not src.in_docstring(m.start()):
                     targets.add(literal_read(m.group(1)))
                     targets |= classify.literal_path(src, m.start(), m.group(1))
             for m in rel.finditer(src.text, a, b):
-                if not src.in_comment(m.start()):
+                if not src.in_comment(m.start()) and not src.in_docstring(m.start()):
                     targets |= relative_or_root(path, m.group(1), m.start())
         else:
             t = text.strip()

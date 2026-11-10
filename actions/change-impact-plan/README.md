@@ -20,6 +20,8 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.4 (root 2026-11-10, core #936 reader closure) narrows the reader where it read prose and refused evidence. A Python docstring, any bare string statement (an unprefixed string token outside every bracket that is first and last on its line) in a file that never consumes a docstring (no `__doc__`, `docopt`, `getdoc`, `cleandoc` or `doctest` word; root's D01/D03/D04/D09/DT4 vectors still read), runs nothing, so a root it names is no longer a read: on core #936's tree the vendored `services/*/app/no_redirect.py` docstring ("into services/*/app/") had made every service read every other (1,366 undeclared reads from 1,458; with the rule, 65 reads and 0 undeclared). A doctest (`>>>`) in a docstring is executed code and still refuses; a prefixed string (`f`/`b`/`r`/`u`) is read as before. Two refusals that were evidence become reads: an argv element of an exec call (`run(["git", "ls-files", "services"])`, `git(root, "ls-files", "services")`; the callee names `git` and `gh` now count as exec calls) reads beneath the root as a command string does, unless the call moves its working directory (`cwd=`) or holds a parent step, which still refuse; and a string predicate on the root (`s.startswith("services/")`, `p.startsWith('services/')`) is a comparison that reads beneath it. Rule 7 (lexical name taint) is untouched: core #936's six remaining refusals are all rule 7 and plan FULL as before.
+
 Planner 1.7.3 makes a slow git call cost a retry, not the reduced plan (spine, from core #936: at Mac load 25-34 the reader scan's `git grep` ran past its 15 s ceiling on 2 of 4 runs). Every git subprocess gets ONE retry after a timeout, and every git ceiling scales by the new `git-timeout-scale` input (an integer 1-8, default 1). A call that times out on both attempts still plans full, under its own reason: `reader scan timed out; full validation required` (edges.py exits 3) or `canonical target lookup timed out` in the target observation. It is never folded into "unproven", and it never narrows a plan.
 
 Planner 1.7.2 adds the `source_dir` output: `GITHUB_ACTION_PATH`, the directory this step ran `plan.py`, `edges.py` and `action.yml` from. It is written only after the plan is published, so a refused plan has none, and no existing output changes.
@@ -80,10 +82,14 @@ FULL.
    - a list, tuple or set of literals in an assignment, an object value or a comparison (rule 8: there is no
      list-literal exemption, since `parts = ["services", "billing"]` can flow into `join(ROOT, *parts)`). Its siblings
      that name a package (`("services", "b")`) are read too;
-   - a comparison (`==`, `===`, `in`, `not in`, `case`): `d == "services"` selects a value that may become a path.
+   - a comparison (`==`, `===`, `in`, `not in`, `case`, and since 1.7.4 a string predicate: `startswith`, `endswith`,
+     `removeprefix`, `removesuffix`, `startsWith`, `endsWith` with the root as its first argument): `d == "services"`
+     selects a value that may become a path.
 
    A root SEGMENT anywhere in a string reads every package beneath its literal prefix, whatever precedes it:
-   `backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`, a route, prose, a docstring, SQL text. That
+   `backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`, a route, prose, SQL text (a Python docstring,
+   any bare string statement, runs nothing and reads nothing since 1.7.4 unless the file consumes docstrings through
+   `__doc__`, `docopt`, `getdoc`, `cleandoc` or `doctest`; a doctest `>>>` inside one refuses). That
    covers an f-string, a template and a glob too: `f"{ROOT}/services/{x}"`, `"services/*/migrations"`. A backslash
    always separates. A segment inside a pure-literal `../` run (`'../app/api/x/services/route.ts'`) is a path relative to
    the file, which the `rel` rule reads exactly. A string REFUSES when:
@@ -191,7 +197,9 @@ FULL.
      as a literal or a named constant;
    - a keyword argument or default parameter;
    - a bare assignment (`kind = "services"`);
-   - an argv element of an exec call, or its options;
+   - an argv element of an exec call when the call moves its working directory (`cwd=`, `{ cwd: }`) or holds a parent
+     step, and anything in the call's options object (`spawn(cmd, { args: [...] })`); otherwise (1.7.4) a direct argv
+     element, alone or in a list, reads beneath the root as a command string does;
    - a root inside a regex literal;
    - any file whose brackets do not close.
 

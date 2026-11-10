@@ -364,11 +364,25 @@ class EdgesTest(unittest.TestCase):
         for src, ext in metadata:
             with self.subTest(metadata=src):
                 self.assertEqual(scan(src, ext), set(), src)
+        # 1.7.4 (root 2026-11-10, core #936 reader closure): a Python docstring, any bare string statement, runs
+        # nothing, so a root it names is prose. Until 1.7.4 it was read beneath the root (H3.6) and the vendored
+        # services/*/app/no_redirect.py docstring made every core service read every other (1,366 undeclared reads).
+        prose = (
+            '"services"',
+            '"""A sweep across all of `services/` for the SDK copies."""',
+            '"""Copies this primitive into services/*/app/ on every run."""',
+            'def f():\n    """Reads services/b."""\n    return 1',
+            'class C:\n    """services/b"""\n    x = 1',
+            'x = 1\n"services/b"',
+            'def f():\n    """services/b"""\n    return 1\nprint(__name__)',  # `__name__` is no docstring consumer
+        )
+        for src in prose:
+            with self.subTest(prose=src):
+                self.assertEqual(scan(src, "py"), set(), src)
         refused = (
             ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
             ('policy_ref = dict(policy_id="services", version="1")', "py"),
             ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
-            ('"services"', "py"),
             ('kind = "services"', "py"),
             ('def walk(root="services"):\n    pass', "py"),
             ("const p = web ? 'apps' : 'services';", "js"),
@@ -388,6 +402,10 @@ class EdgesTest(unittest.TestCase):
             ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
             ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
             ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
+            # 1.7.4: an exec call's argv reads beneath the root unless the call moves its cwd or holds a parent step.
+            ('subprocess.run(["git", "-C", "..", "ls-files", "services"])', "py"),
+            ('subprocess.run(["ls", "services"], cwd=base)', "py"),
+            ('s.replace("services", "apps")', "py"),  # a call argument that is no string predicate
         )
         for src, ext in refused:
             with self.subTest(refused=src):
@@ -417,7 +435,17 @@ class EdgesTest(unittest.TestCase):
             ("if (obligation === 'services') run();", "js"): {"b"},
             ('if part not in ("services", "docs"):\n    pass', "py"): {"b"},
             ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"): {"b"},
-            ('"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # docstrings are read (H3.6)
+            ('r"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # a prefixed string is no docstring
+            ('f"""{ROOT}/services/b"""', "py"): {"b"},
+            ('x = """services/b"""', "py"): {"b"},
+            ('"services/b" + suffix', "py"): {"b"},  # a string that starts a statement but is not the whole of it
+            ('"""services/b"""\nprint(__doc__)', "py"): {"b"},  # a consumed docstring is data (root's D01 class)
+            ('def f():\n    """services/b"""\nhelp_text = inspect.getdoc(f)', "py"): {"b"},
+            # 1.7.4: an exec call's argv, and a string predicate on the root, read beneath it.
+            ('subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "services/"], capture_output=True)', "py"): {"b"},
+            ('files = git(root, "ls-files", "services").splitlines()', "py"): {"b"},
+            ('t = root / s / "test" if s.startswith("services/") else root / s', "py"): {"b"},
+            ("if (p.startsWith('services/')) run(p);", "js"): {"b"},
             ("'use strict';\nconst url = '/:org/services/:service';", "js"): {"b"},  # any root segment (H3.5)
             ('NOTE = "copied from backend/services/ in vagary-platform"', "py"): {"b"},
             ("SRC = b'name: services\\non: push\\n'", "py"): {"b"},  # a backslash always separates (H3.7)

@@ -86,9 +86,11 @@ jobs:
     # RUNNER. vagarylabs/.github is PUBLIC: public repos stay GitHub-hosted and public code never runs on the bridge
     # (ratified 2026-10-21; every org runner group has allows_public_repositories=false, so a bridge label would queue
     # forever there). So hosted ubuntu-latest ONLY in that repository, and the bridge label in every other (private)
-    # target. This is the ONE hosted exception, named in scripts/no_hosted_runners.py (repo, workflow and job). No
-    # variable, no other fallback.
-    runs-on: ${{ fromJSON(github.repository == 'vagarylabs/.github' && '"ubuntu-latest"' || '["self-hosted","Linux","X64","vl-light"]') }}
+    # target. This is the ONE hosted exception, named in scripts/no_hosted_runners.py (repo, workflow and job).
+    # PLACEMENT (R1 L10, root 2026-11-09): in a private target the org variable TRUSTED_LIGHT_RUNNER set to exactly
+    # `hosted` also selects ubuntu-latest; any other value or no variable keeps the bridge light label. The switch has
+    # two outcomes and no free label, so a variable cannot route the judge to a third runner.
+    runs-on: ${{ fromJSON((github.repository == 'vagarylabs/.github' || vars.TRUSTED_LIGHT_RUNNER == 'hosted') && '"ubuntu-latest"' || '["self-hosted","Linux","X64","vl-light"]') }}
     timeout-minutes: 10
     steps:
       # The PR is DATA: exact SHAs come from the event payload, never from the PR's files.

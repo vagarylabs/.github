@@ -20,6 +20,8 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.4 bounds a plan config's nesting before it is parsed: a config deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is red with "the plan config nests too deeply to parse", as the candidate and as the base. Until 1.7.3 that refusal came only from `json.loads` raising `RecursionError`, which depends on the interpreter: CPython 3.13 raises at 100000 levels, 3.14 (the `ubuntu-26.04` runner image) parses them, and the 100000-level config then planned reduced. `RecursionError` stays a backstop.
+
 Planner 1.7.3 makes a slow git call cost a retry, not the reduced plan (spine, from core #936: at Mac load 25-34 the reader scan's `git grep` ran past its 15 s ceiling on 2 of 4 runs). Every git subprocess gets ONE retry after a timeout, and every git ceiling scales by the new `git-timeout-scale` input (an integer 1-8, default 1). A call that times out on both attempts still plans full, under its own reason: `reader scan timed out; full validation required` (edges.py exits 3) or `canonical target lookup timed out` in the target observation. It is never folded into "unproven", and it never narrows a plan.
 
 Planner 1.7.2 adds the `source_dir` output: `GITHUB_ACTION_PATH`, the directory this step ran `plan.py`, `edges.py` and `action.yml` from. It is written only after the plan is published, so a refused plan has none, and no existing output changes.

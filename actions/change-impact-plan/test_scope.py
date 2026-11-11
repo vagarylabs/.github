@@ -891,6 +891,38 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
                          (None, "the plan config holds a string that is not valid Unicode (a lone surrogate escape)"))
         self.assertEqual(P.parse_plan_config(b'{"schema":1}'), ({"schema": 1}, None))
 
+    def test_the_depth_bound_is_the_planners_own_never_the_interpreters(self):
+        # 1.7.4: CPython 3.14 (the ubuntu-26.04 image) parses the 100000-level config 3.13 refuses with RecursionError,
+        # and it planned reduced. The refusal is a bound read before json.loads, the same on every interpreter.
+        def nested(depth):  # the object itself is level 1
+            return '{"schema":1,"x":' + "[" * (depth - 1) + "]" * (depth - 1) + "}"
+        self.assertEqual(P.PLAN_CONFIG_MAX_DEPTH, 64)
+        cfg, problem = P.parse_plan_config(nested(P.PLAN_CONFIG_MAX_DEPTH).encode())
+        self.assertIsNone(problem)
+        self.assertEqual(cfg["schema"], 1)
+        self.assertEqual(P.parse_plan_config(nested(P.PLAN_CONFIG_MAX_DEPTH + 1).encode()),
+                         (None, "the plan config nests too deeply to parse"))
+        # Brackets inside a string, after an escaped quote too, are text, never nesting.
+        self.assertEqual(P.parse_plan_config(('{"schema":1,"x":"\\"' + "[" * 1000 + '"}').encode()),
+                         ({"schema": 1, "x": '"' + "[" * 1000}, None))
+        # The bound is read before json.loads, so json.loads never sees a config past it, on any interpreter ...
+        with patch.object(P.json, "loads", side_effect=AssertionError("json.loads reached past the bound")):
+            self.assertEqual(P.parse_plan_config(nested(100000).encode()),
+                             (None, "the plan config nests too deeply to parse"))
+        # ... and RecursionError, an interpreter whose own limit sits under the bound, keeps the same message.
+        with patch.object(P.json, "loads", side_effect=RecursionError):
+            self.assertEqual(P.parse_plan_config(b'{"schema":1}'), (None, "the plan config nests too deeply to parse"))
+        # End to end through main(): the candidate at the bound plans; one level past it is a ValueError, never a plan.
+        for depth, red in ((P.PLAN_CONFIG_MAX_DEPTH, None), (P.PLAN_CONFIG_MAX_DEPTH + 1, True)):
+            with self.subTest(depth=depth):
+                cfg = json.dumps(self.CFG)
+                self.fixture(self.CFG)
+                self.change({"ui/ci-plan.json": cfg[:-1] + ',"x":' + "[" * (depth - 1) + "]" * (depth - 1) + "}"})
+                if red:
+                    self.assert_red("the plan config nests too deeply to parse")
+                else:
+                    self.assert_mode("reduced", "affected: ui", ["ui_tests"])
+
     def test_a_config_at_another_schema_is_red_as_the_candidate_and_full_as_the_base(self):
         # Root's #57 RC 2 (a6): a schema this planner does not read is refused like a malformed config. As the candidate
         # it is red (it escapes no validation, at any config path); as the base, a schema-1 repair plans FULL and an

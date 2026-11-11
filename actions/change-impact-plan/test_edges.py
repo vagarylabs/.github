@@ -456,17 +456,29 @@ class EdgesTest(unittest.TestCase):
         except ValueError:
             return "REFUSE"
 
+    FIXTURE_DIRS = ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared", ".github")
+
     def vector_scan(self, repo, case, revision=False):
         """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
-        --revision`) through an immutable commit whose working tree has since changed."""
+        --revision`) through an immutable commit whose working tree has since changed. Root's A2 of the R-c vectors
+        (2026-11-12): a case's `files` {path: text} are written too (the second tracked file a vector needs: an excluded
+        hook, the sources a loader lands in) and removed after it, with the input, so no case reads another's files; its
+        `unit` names what is judged, the package that owns the caller (default `r`) or a reader directory's unit
+        (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander."""
         subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "services/r"], check=True)
         for f in sorted((repo / "services/r").rglob("*"), reverse=True):
             if f.is_file() and f.name != "keep.txt":
                 f.unlink()
         rel = case.get("file") or "services/r/x." + case["ext"]
-        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        extra = dict(case.get("files") or {})
+        self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
+        written = [rel, *sorted(extra)]
+        for path in written:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
         # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
         (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
+        for path, text in extra.items():
+            (repo / path).write_text(text)
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
         cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
         rev = None
@@ -476,9 +488,24 @@ class EdgesTest(unittest.TestCase):
             rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
             (repo / rel).write_text("# the working tree differs from the scanned revision\n")
         try:
-            return sorted(E.scan(repo, cfg, revision=rev)[0]["r"])
+            deps, readers = E.scan(repo, cfg, revision=rev)[:2]
+            unit = case.get("unit") or "r"
+            if unit.startswith("readers:"):
+                return sorted(readers.get(unit[len("readers:"):], ()))
+            return sorted(deps[unit])
         except ValueError:
             return "REFUSE"
+        finally:
+            # Per-case cleanup: the input and every `files` entry leave the index and the tree, and the directories they
+            # alone created go too, so the next case starts from the bare fixture.
+            subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "--", *written], check=True)
+            for path in written:
+                (repo / path).unlink(missing_ok=True)
+                parent = (repo / path).parent
+                while parent != repo and parent.relative_to(repo).as_posix() not in self.FIXTURE_DIRS and \
+                        not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
 
     def vector_repo(self, name):
         repo = Path(self._td.name) / name
@@ -497,6 +524,10 @@ class EdgesTest(unittest.TestCase):
             # reading even less (or more) fails here until the pin is re-derived on purpose.
             self.assertEqual(got, case["reads"], f"{label}: a residual's reading moved from its pin")
         else:
+            # Root's A1 of the R-c vectors (2026-11-12): an accept vector with an empty truth proves nothing (a reading
+            # of [] satisfies it), so one is admitted only as a declared precision control, which asserts the absence.
+            self.assertTrue(truth or case.get("control") is True,
+                            f"{label}: an accept vector with truth [] proves nothing; a precision control says `control: true`")
             self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
             if expect == "read":
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")

@@ -3377,7 +3377,9 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
-    named_tops = outside_tops | set(roots)  # what an unevaluated path may not name (rule 6)
+    # F1 (root, 2026-11-12): a PACKAGE top too (`packages/shared` holds a package but is not a scan root), else an
+    # unevaluable entry into another package's directory read as a residual while its module was imported from it.
+    named_tops = outside_tops | package_tops  # what an unevaluated path may not name (rule 6)
     # A trailing slash names a directory, exactly as git's pathspec reads `:!vendor/` (root's R4 of #33): strip it.
     patterns = [x[2:].rstrip("/") if not any(c in x for c in "*?[") else x[2:] for x in excludes if x.startswith(":!")]
 
@@ -3724,7 +3726,10 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         literals = re.findall(r"""["']([^"']*)["']""", expr)
         if PARENT_STEP.search(expr):
             return True
-        return not unowned_caller and any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
+        # The JS strip (parent_verdict): a leading "./", "/" (`str(x) + "/packages/shared"`) or a substitution
+        # (`f"{source}/packages/shared"`, `${x}/...`) before the top-level name (F1, all four forms).
+        return not unowned_caller and any(re.sub(r"^(?:\./|/|\{[^}]*\}/|\$\{[^}]*\}/)+", "", s).split("/")[0] in named_tops
+                                           for s in literals)
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
@@ -3968,7 +3973,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
     dot_routes: dict[str, set[str]] = {}
     listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                              r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
+                              r"(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@]|\$\{)", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
     for p in sorted(x[len(revision) + 1:] if revision else x

@@ -333,7 +333,8 @@
    "ext": "js",
    "note": "true metadata control",
    "src": "{ key: 'services', label: 'Capabilities' },\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "B01_computed_under_pkg_nested": {
    "expect": "read",
@@ -558,7 +559,8 @@
    "ext": "py",
    "note": "precision control",
    "src": "{d for d in ROOTS if d == \"services\"}\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "C09_dotdot_after_computed_to_root": {
    "expect": "sound",
@@ -698,7 +700,8 @@
    "ext": "js",
    "note": "precision control: nothing consumes it",
    "src": "const x = 1;\n'services/*/README.md';\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "DT1_doctest_glob_in_docstring": {
    "expect": "sound",
@@ -1006,7 +1009,8 @@
    "ext": "py",
    "note": "\\8 kept; services\\8x is unowned: precision only",
    "src": "p = ROOT + \"\\\\services\\8x\"\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "ES4_raw_backslash_u_control": {
    "cfg": {
@@ -1298,7 +1302,8 @@
    "ext": "sql",
    "note": "truly metadata; control",
    "src": "\\copy caps FROM 'services' WITH CSV;\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "N16_lint_paths_list": {
    "expect": "read",
@@ -1779,7 +1784,8 @@
    "file": "services/r/fixture.json",
    "note": "precision control",
    "src": "{\n  \"policy_id\": \"services\",\n  \"package\": \"b\",\n  \"version\": 1\n}\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "P01_format_string_root_prefix": {
    "expect": "read",
@@ -1905,7 +1911,8 @@
    "ext": "py",
    "note": "precision control (author's example)",
    "src": "p = os.path.join(BACKEND, \"backend/services/auth.py\")\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "P14_dot_slash_glob": {
    "expect": "read",
@@ -2050,13 +2057,15 @@
    "expect": "read",
    "ext": "js",
    "src": "const r = '/:org/services/:service';\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "SP07_escape_control": {
    "expect": "read",
    "ext": "py",
    "src": "SRC = b'name: services\\non: push\\n'\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "T01_jsx_two_apostrophes_swallow_join": {
    "expect": "sound",
@@ -2186,7 +2195,8 @@
    "ext": "py",
    "note": "prose; over expected",
    "src": "doc = \"\"\"He said \"services\" isn't 'apps'\"\"\"\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "T13_triple_fstring_nested_root_control": {
    "expect": "sound",
@@ -2217,7 +2227,8 @@
    "ext": "jsx",
    "note": "prose control",
    "src": "const P = () => <p>Use {'{'} services/{name} {'}'}</p>;\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "T16_leading_slash_concat": {
    "expect": "read",
@@ -2522,14 +2533,16 @@
    "ext": "ts",
    "note": "precision",
    "src": "type Root = 'services' | 'apps';\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "T45_py_enum_member": {
    "expect": "sound",
    "ext": "py",
    "note": "precision",
    "src": "class Root(Enum):\n    SERVICES = \"services\"\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "W01_escaped_backslash_nonraw": {
    "expect": "read",
@@ -2690,7 +2703,8 @@
    "ext": "py",
    "note": "precision: \\b is backspace, so no path",
    "src": "p = ROOT + \"\\services\\b\"\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "W08_root_plus_nonroot": {
    "expect": "read",
@@ -2740,7 +2754,8 @@
    "ext": "py",
    "note": "precision control: \\n is not a separator",
    "src": "msg = \"see\\nservices\\nfor details\"\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "W11_js_string_raw_plain": {
    "expect": "read",
@@ -4595,13 +4610,15 @@
    "ext": "yml",
    "src": "services:\n  app:\n    build: .\n",
    "truth": [],
-   "file": "services/r/docker-compose.yml"
+   "file": "services/r/docker-compose.yml",
+   "control": true
   },
   "R5R03_py_database_execute_not_a_command": {
    "expect": "read",
    "ext": "py",
    "src": "cur.execute(\"UPDATE services SET enabled = true WHERE id = %s\", (i,))\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "R5R04_py_def_default_cwd_not_a_process_cwd": {
    "expect": "read",
@@ -4817,7 +4834,8 @@
    "expect": "read",
    "ext": "py",
    "src": "cur.execute(\"SELECT * FROM services\")\n",
-   "truth": []
+   "truth": [],
+   "control": true
   },
   "R5V51_py_os_popen_control": {
    "expect": "read",
@@ -5651,7 +5669,8 @@
    "ext": "json",
    "src": "{\"scripts\": {\"group\": {\"test\": \"pytest services\"}}}\n",
    "truth": [],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "control": true
   },
   "R6V11_pkg_non_string_values": {
    "expect": "read",
@@ -5753,7 +5772,8 @@
    "ext": "json",
    "src": "{\"scripts\": {\"services\": \"echo hi\"}}\n",
    "truth": [],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "control": true
   },
   "R6V21_chdir_tainted_attribute": {
    "expect": "refuse",
@@ -5898,7 +5918,8 @@
    "ext": "toml",
    "src": "[tool]\nservices = 1\n[services]\nx = 1\nservices: y\n",
    "truth": [],
-   "file": "services/r/cfg.toml"
+   "file": "services/r/cfg.toml",
+   "control": true
   },
   "R7T01_pkg_scripts_null": {
    "expect": "refuse",
@@ -5959,35 +5980,40 @@
    "ext": "json",
    "src": "{\"name\": \"x\", \"description\": \"runs services\", \"files\": [\"services\"]}\n",
    "truth": [],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "control": true
   },
   "R7T09_pkg_empty_scripts": {
    "expect": "read",
    "ext": "json",
    "src": "{\"scripts\": {}, \"description\": \"services\"}\n",
    "truth": [],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "control": true
   },
   "R7T10_pkg_bom_no_scripts": {
    "expect": "read",
    "ext": "json",
    "src": "﻿{\"name\": \"x\", \"description\": \"services\"}\n",
    "truth": [],
-   "file": "services/r/package.json"
+   "file": "services/r/package.json",
+   "control": true
   },
   "R7T11_pkg_not_named_package_json": {
    "expect": "read",
    "ext": "json",
    "src": "{\"scripts\": \"pytest services\", \"x\": ,}\n",
    "truth": [],
-   "file": "services/r/other.json"
+   "file": "services/r/other.json",
+   "control": true
   },
   "R7T12_toml_colon_key_reads": {
    "expect": "read",
    "ext": "toml",
    "src": "[tool.x]\nservices: y\n",
    "truth": [],
-   "file": "services/r/cfg.toml"
+   "file": "services/r/cfg.toml",
+   "control": true
   },
   "R7T13_pkg_nan_is_not_json": {
    "expect": "refuse",
@@ -6235,6 +6261,156 @@
     "nest"
    ],
    "src": "{\"scripts\": {\"t\": \"pytest services -q\"}, \"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}\n"
+  },
+  "F4a_py_sys_path_literal_package_top": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "Root C 11-12: a cwd-relative or imported-ROOT package-top entry read [] against truth [shared] on main (package tops removed from named_tops, edges.py:3377-3380, fall to the residual at :3782). Proposed: refuse.",
+   "src": "import sys\nsys.path.insert(0, \"packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "F4b_py_sys_path_dot_slash_package_top": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "Root C 11-12: a cwd-relative or imported-ROOT package-top entry read [] against truth [shared] on main (package tops removed from named_tops, edges.py:3377-3380, fall to the residual at :3782). Proposed: refuse.",
+   "src": "import sys\nsys.path.insert(0, \"./packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "F4c_py_sys_path_cwd_div_package_top": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "Root C 11-12: a cwd-relative or imported-ROOT package-top entry read [] against truth [shared] on main (package tops removed from named_tops, edges.py:3377-3380, fall to the residual at :3782). Proposed: refuse.",
+   "src": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path.cwd() / \"packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "F4d_py_sys_path_abspath_package_top": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "Root C 11-12: a cwd-relative or imported-ROOT package-top entry read [] against truth [shared] on main (package tops removed from named_tops, edges.py:3377-3380, fall to the residual at :3782). Proposed: refuse.",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.abspath(\"packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "F4e_py_sys_path_imported_root_div_package_top": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "services/r/conf.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
+   },
+   "note": "Root C 11-12: a cwd-relative or imported-ROOT package-top entry read [] against truth [shared] on main (package tops removed from named_tops, edges.py:3377-3380, fall to the residual at :3782). Proposed: refuse.",
+   "src": "import sys\nfrom services.r.conf import ROOT\nsys.path.insert(0, str(ROOT / \"packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "RC1I_f1_fstring": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "F1 (root, 2026-11-12): rule 6 refused an unevaluable sys.path entry only when its literal named a scan root or an outside top directory; `packages` holds a package but is not a root, so this read [] for r while the entry landed in shared and shared_mod was imported from it. Package tops are named tops now, and the leading `./`, `/` or substitution is stripped before the top-level name is read, so all four forms refuse.",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source: Path) -> None:\n    sys.path.insert(0, f\"{source}/packages/shared\")\n\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "RC1I_f1_os_path_join": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "F1 (root, 2026-11-12): rule 6 refused an unevaluable sys.path entry only when its literal named a scan root or an outside top directory; `packages` holds a package but is not a root, so this read [] for r while the entry landed in shared and shared_mod was imported from it. Package tops are named tops now, and the leading `./`, `/` or substitution is stripped before the top-level name is read, so all four forms refuse.",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source: Path) -> None:\n    sys.path.insert(0, os.path.join(source, \"packages/shared\"))\n\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "RC1I_f1_str_concat": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "F1 (root, 2026-11-12): rule 6 refused an unevaluable sys.path entry only when its literal named a scan root or an outside top directory; `packages` holds a package but is not a root, so this read [] for r while the entry landed in shared and shared_mod was imported from it. Package tops are named tops now, and the leading `./`, `/` or substitution is stripped before the top-level name is read, so all four forms refuse.",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source: Path) -> None:\n    sys.path.insert(0, str(source) + \"/packages/shared\")\n\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "RC1I_f1_str_path_div": {
+   "expect": "refuse",
+   "ext": "py",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "note": "F1 (root, 2026-11-12): rule 6 refused an unevaluable sys.path entry only when its literal named a scan root or an outside top directory; `packages` holds a package but is not a root, so this read [] for r while the entry landed in shared and shared_mod was imported from it. Package tops are named tops now, and the leading `./`, `/` or substitution is stripped before the top-level name is read, so all four forms refuse.",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source: Path) -> None:\n    sys.path.insert(0, str(source / \"packages/shared\"))\n\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r"
+  },
+  "RC4G_f2_unreached_scripts_template_starts_no_unit": {
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "expect": "read",
+   "ext": "mjs",
+   "file": "scripts/x.mjs",
+   "note": "F2 (root, 2026-11-12): the dot-route grep needed a word character after `../`, so `../${p}` in an UNREACHED scripts/ file started no unit and readers read {} (READS-LESS). The template now starts the scripts unit; as a whole-checkout route it reads every package (no excluded code in this fixture, so no rule-3 refusal).",
+   "src": "import { readFileSync } from \"node:fs\";\nexport function sizes(list) {\n  return list.map((p) => readFileSync(new URL(`../${p}`, import.meta.url)).length);\n}\n",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "unit": "readers:scripts"
   }
  }
 }

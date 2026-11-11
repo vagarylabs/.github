@@ -121,7 +121,7 @@ file, not by spelling (`check.py` PY_CALLS).
   - chained assignment: `a = b = importlib.import_module("asyncio")`;
   - rebind: `m = importlib.import_module("asyncio")` and later `m = importlib.import_module("os")` (or any other
     value) in the same scope;
-  - non-literal argument: `importlib.import_module(name)`.
+  - non-literal argument: `importlib.import_module(name)`. Live on 2026-11-11: 30 non-literal sites in vagary-core (28 loops over literal OTel module tuples in observability.py, 2 test tables), none reaching a bound module; a reader is owed only when a bound module can reach the call.
 
   The rule: a live instance gets a reader, nothing else does. A live instance is one in a required repository (vagaris,
   vagary-core, vps-ansible, .github) that reaches a covered call with a bound; the grep that found none is in #65's

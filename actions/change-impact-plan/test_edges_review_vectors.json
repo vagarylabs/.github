@@ -6786,6 +6786,359 @@
    "expect": "refuse",
    "truth": [],
    "note": "F1: f\"{source}/packages/shared/lib\" in packages/shared/y.py names its own package top; unevaluable, so it refuses"
+  },
+  "R84_N01_decl_text_reach_external": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/shared_mod.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's F1 of #84's R4, a declared load into another package credits that package",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "F1: runpy.run_path(f\"{source}/packages/shared/shared_mod.py\") declared reach \"external\" credits shared, the package it lands in (read [] before)"
+  },
+  "R84_N02_decl_text_reach_fixture": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/shared_mod.py\"",
+       "reach": "fixture",
+       "reason": "R84 vector: root's F1 of #84's R4, a declared load into another package credits that package",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "F1: the same site declared reach \"fixture\" credits shared"
+  },
+  "R84_N03_decl_text_reach_package": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/shared_mod.py\"",
+       "reach": "package",
+       "reason": "R84 vector: root's F1 of #84's R4, a declared load into another package credits that package",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "F1: the same site declared reach \"package\" credits shared (the caller is inside a package, so the reach is admitted)"
+  },
+  "R84_N04_decl_text_reach_wrong_pkg": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n",
+    "services/a/m.py": "Y=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/shared_mod.py\"",
+       "reach": [
+        "services/a/m.py"
+       ],
+       "reason": "R84 vector: root's F1 of #84's R4, a declared load into another package credits that package",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "note": "F1: declared reach [services/a/m.py] reads a AND shared: the reach adds to the landing, never replaces it (read [a] before)"
+  },
+  "R84_N05_decl_prefix_twin_reach_external": {
+   "ext": "py",
+   "src": "import os, runpy\ndef f(name):\n    runpy.run_path(os.path.join(os.path.dirname(__file__), \"../../packages/shared\", name))\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(os.path.dirname(__file__), \"../../packages/shared\", name)",
+       "reach": "external",
+       "reason": "R84 vector: root's F1 of #84's R4, a declared load into another package credits that package",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "F1 twin: the evaluated-prefix form os.path.join(dirname(__file__), \"../../packages/shared\", name) credits shared whatever the reach says, as before"
+  },
+  "R84_S01_nested_fstring_quotes": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    sys.path.insert(0, f\"{d[f'{k}']}/packages/shared\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: f\"{d[f'{k}']}/packages/shared\": braces nest, every outermost {...} collapses to {} whatever its depth"
+  },
+  "R84_S02_augassign": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    p = source\n    p += \"/packages/shared\"\n    sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: p = source; p += \"/packages/shared\": an augmented assignment's text is the name's text too"
+  },
+  "R84_S03_two_level_chain": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    base = f\"{source}/packages\"\n    p = base + \"/shared\"\n    sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: base = f\"{source}/packages\"; p = base + \"/shared\": a name's text includes the texts of the names it reads, recursively"
+  },
+  "R84_S04_percent_width": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    sys.path.insert(0, \"%-10s/packages/shared\" % source)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: \"%-10s/packages/shared\" % source: a %-field with flags, width or precision is stripped"
+  },
+  "R84_S05_os_sep_fstring": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    sys.path.insert(0, f\"{source}{os.sep}packages{os.sep}shared\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: f\"{source}{os.sep}packages{os.sep}shared\": {os.sep} reads as /"
+  },
+  "R84_S07_two_assign_branch": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    if k:\n        p = f\"{source}/packages/shared\"\n    else:\n        p = f\"{source}/packages/shared\"\n    sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: a name assigned in two branches stands for both texts (any of them may be the entry)"
+  },
+  "R84_S11_tuple_unpack_assign": {
+   "ext": "py",
+   "src": "import os, sys\ndef prepare(source, d, k):\n    p, q = f\"{source}/packages/shared\", 1\n    sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 fixed: p, q = f\"{source}/packages/shared\", 1 binds p to its own element"
+  },
+  "R84_S08_param_shadow_other_assign": {
+   "ext": "py",
+   "src": "import os, sys\np = \"harmless\"\ndef prepare(p):\n    sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "expect": "residual",
+   "truth": [
+    "shared"
+   ],
+   "note": "K1 dated residual (review by 2026-12-10): p = \"harmless\" at module level, def prepare(p): sys.path.insert(0, p): a parameter shadows the module name, so the entry is a bare parameter, which names no parent step and no top-level directory (README residual); the module-level assignment is read beside it, never instead of it",
+   "reads": [],
+   "review_by": "2026-12-10"
+  },
+  "R84_G11_js_backtick_parent_concat": {
+   "ext": "mjs",
+   "file": "scripts/x.mjs",
+   "src": "import { readFileSync } from 'node:fs';\nexport const f = (p) => readFileSync(new URL(`../` + p, import.meta.url));\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "refuse",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "K1 fixed: `../` + p in an unreached scripts/ file: the dot-route grep lists a backtick-then-plus after the step; the route is `.`, refused"
+  },
+  "R84_G12_py_percent_parent": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import os\ndef f(p):\n    return open(os.path.join(os.path.dirname(__file__), \"../%s\" % p)).read()\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "read",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "K1 fixed: \"../%s\" % p in an unreached scripts/ file: listed (`%` after the step) and a %-field is a substitution, so the template reaches the checkout as f\"../{p}\" (G03) does"
+  },
+  "R84_G13_js_parent_concat_method": {
+   "ext": "mjs",
+   "file": "scripts/x.mjs",
+   "src": "import { readFileSync } from 'node:fs';\nexport const f = (p) => readFileSync(new URL('../'.concat(p), import.meta.url));\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "refuse",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "K1 fixed: '../'.concat(p) in an unreached scripts/ file: the grep lists quote-then-.concat( after the step; the route is `.`, refused"
   }
  }
 }

@@ -109,6 +109,8 @@ CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
+PERCENT_FIELD = r"%(?:\([^)]*\))?[-+ #0]*\d*(?:\.\d+)?[A-Za-z]"  # a %-format field, flags/width/precision included
+PERCENT_RE = re.compile(PERCENT_FIELD)
 # A parent step inside a substitution. A single `'.'` is a separator (`.split('.')`), never a step; dots build one only
 # as `..`, repeated (`'.' * 2`) or concatenated (`'.' + '.'`).
 SUB_PARENT = re.compile(r"(?<![.\w])\.\.(?![.\w])|\.parents?\b|\bpardir\b|\bdirname\s*\("
@@ -2606,11 +2608,34 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
     except (SyntaxError, ValueError) as error:
         raise ValueError(f"unresolved (a Python file the scan must read does not parse: {path}: {error})") from None
     assigned: dict[str, list] = {}
+    augmented: dict[str, list] = {}  # name -> its `name += ...` statements (root's S02 of #84, 2026-11-12)
+    opaque: set[str] = set()  # names bound by an unpacking the parse cannot pair (`p, q = f(x)`): never evaluated
+    shadowed: set[int] = set()  # id() of a Name read where a parameter of the enclosing function binds it (root's S08)
     for node in ast.walk(tree):
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            augmented.setdefault(node.target.id, []).append(node)
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs} | {x.arg for x in (a.vararg, a.kwarg) if x}
+            shadowed.update(id(n) for n in ast.walk(node) if isinstance(n, ast.Name) and n.id in params and
+                            isinstance(n.ctx, ast.Load))
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        value = getattr(node, "value", None)
         for t in targets:
-            if isinstance(t, ast.Name) and getattr(node, "value", None) is not None:
-                assigned.setdefault(t.id, []).append(node.value)
+            if isinstance(t, ast.Name) and value is not None:
+                assigned.setdefault(t.id, []).append(value)
+            elif isinstance(t, (ast.Tuple, ast.List)) and value is not None:
+                # Root's S11: `p, q = f"{source}/packages/shared", 1` binds each name to its own element. Unpacked from
+                # anything else (a call, a starred target), each name carries the whole right side as text and never
+                # evaluates.
+                pairwise = isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(t.elts) and \
+                    not any(isinstance(e, ast.Starred) for e in t.elts + value.elts)
+                for i, e in enumerate(t.elts):
+                    if isinstance(e, ast.Name):
+                        assigned.setdefault(e.id, []).append(value.elts[i] if pairwise else value)
+                        if not pairwise:
+                            opaque.add(e.id)
     here = posixpath.dirname(path)
     FILE, UNKNOWN = ("file",), None
 
@@ -2629,7 +2654,19 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
             if node.id == "__file__":
                 return FILE
             values = assigned.get(node.id, [])
-            return ev(values[0], depth + 1) if len(values) == 1 else UNKNOWN
+            if len(values) != 1 or node.id in opaque or id(node) in shadowed:
+                return UNKNOWN
+            value = ev(values[0], depth + 1)
+            # `p = dirname(__file__); p += "/../../packages/shared"` evaluates as the concatenation (root's S13 reads
+            # [shared] as before); an augmentation that is not `+= "<literal>"`, or that stands before the assignment,
+            # leaves the name unevaluated (root's S02: the text then carries every literal the augmentations add).
+            for aug in sorted(augmented.get(node.id, []), key=lambda n: (n.lineno, n.col_offset)):
+                if value is UNKNOWN or value is FILE or not isinstance(aug.op, ast.Add) or \
+                        not (isinstance(aug.value, ast.Constant) and isinstance(aug.value.value, str)) or \
+                        (aug.lineno, aug.col_offset) < (values[0].lineno, values[0].col_offset):
+                    return UNKNOWN
+                value = posixpath.normpath(value + aug.value.value)
+            return value
         if isinstance(node, ast.Call):
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
@@ -2717,13 +2754,24 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
 
     entries: list[tuple[str, str]] = []
 
+    def text_of(node, seen: frozenset = frozenset()) -> str:
+        """The text rule 6 reads for an unevaluable expression: its source, and the source of every assignment and
+        augmentation of each name it reads, recursively (`p = f"{source}/packages/shared"; sys.path.insert(0, p)`, root's
+        C1 of #84; `base = f"{source}/packages"; p = base + "/shared"`, S03; a name assigned in two branches stands for
+        both, S07; `p += "/packages/shared"`, S02). A name a parameter shadows keeps its own name beside the texts of
+        any module-level assignment (S08), so a reading never shrinks for the shadow; a cycle or depth 8 stops."""
+        parts = [source(node)]
+        if len(seen) < 8:
+            for name in sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name) and n.id not in seen}):
+                for value in assigned.get(name, []):
+                    parts.append(f"{name} = {text_of(value, seen | {name})}")
+                for aug in augmented.get(name, []):
+                    parts.append(f"{name} += {text_of(aug.value, seen | {name})}")
+        return "; ".join(parts)
+
     def entry(node):
         value = resolved(node)
-        if value is None and isinstance(node, ast.Name) and len(assigned.get(node.id, [])) == 1:
-            # An unevaluable name with one assignment stands for that assignment's text (`p = f"{source}/packages/shared";
-            # sys.path.insert(0, p)`, root's C1 of #84), so rule 6 reads the literal it carries, not the name.
-            node = assigned[node.id][0]
-        entries.append(("unknown", source(node)) if value is None else ("dir", value))
+        entries.append(("unknown", text_of(node)) if value is None else ("dir", value))
 
     def is_sys_path(node):
         return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
@@ -3635,7 +3683,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             for t in src.code:
                 if t[0] != "str" or not t[3][0].startswith(("./", "../")):
                     continue
-                if t[3][1] is True:
+                if t[3][1] is True and not (src.py and PERCENT_RE.search(t[3][0])):
                     named_one = posixpath.normpath(posixpath.join(here, t[3][0]))
                     if named_one == ".":
                         # 1.5.2, root's ruling (b): a root base joined only with literals stands for those literals.
@@ -3650,7 +3698,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # substitution is any name, so it is a glob. A parent step after a substitution, or a template that
                 # spells no tracked file, refuses.
                 text = t[3][0]
-                pattern = re.sub(r"\{[^{}]*\}", "*", text) if src.py else re.sub(r"\$\{[^{}]*\}", "*", text)
+                # A Python `"../%s" % p` is a template too (root's G12 of #84, 2026-11-12): a %-field is any name.
+                pattern = re.sub(r"\{[^{}]*\}|" + PERCENT_FIELD, "*", text) if src.py else re.sub(r"\$\{[^{}]*\}", "*", text)
                 if "*" not in pattern:
                     continue
                 if any(steps_up(x) for x in pattern[pattern.index("*"):].split("/")):
@@ -3726,18 +3775,36 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     # The JS strip (parent_verdict) for an unevaluable Python literal: what may stand before its top-level name, in
     # any number and order. "./", "/" (`str(x) + "/packages/shared"`), a substitution (`f"{source}/packages/shared"`,
-    # `${x}/`, `{{x}}/`), a %-format field (`"%s/packages/shared" % x`, `%(root)s/`) or a bare environment variable
-    # (`os.path.expandvars("$ROOT/packages/shared")`): F1's four forms and root's C1 of #84 (2026-11-12).
-    LEADING = re.compile(r"^(?:\./|/|\{+[^{}]*\}+/|\$\{[^}]*\}/|%(?:\([^)]*\))?[A-Za-z]/|\$[A-Za-z_]\w*/)+")
+    # `${x}/`, `{{x}}/`), a %-format field (`"%s/packages/shared" % x`, `%(root)s/`, with any flags, width or
+    # precision: `"%-10s/..."`, root's S04) or a bare environment variable (`os.path.expandvars("$ROOT/packages/shared")`):
+    # F1's four forms and root's C1 of #84 (2026-11-12).
+    LEADING = re.compile(r"^(?:\./|/|\{+[^{}]*\}+/|\$\{[^}]*\}/|" + PERCENT_FIELD + r"/|\$[A-Za-z_]\w*/)+")
     QUOTED = re.compile(r"""["']([^"']*)["']""")
+    SEP_SUBST = re.compile(r"\{(?:os\.|os\.path\.)?sep\}")  # `{os.sep}` in an f-string spells a separator (root's S05)
+
+    def collapse_braces(expr: str) -> str:
+        """`expr` with every outermost `{...}` collapsed to `{}`, however deep the braces nest: a regex pass collapses one
+        level, so `f"{d[f'{k}']}/packages/shared"` kept a quote inside the substitution (root's S01 of #84, 2026-11-12)."""
+        out, depth = [], 0
+        for ch in expr:
+            if ch == "{":
+                if depth == 0:
+                    out.append("{}")
+                depth += 1
+            elif ch == "}" and depth:
+                depth -= 1
+            elif depth == 0:
+                out.append(ch)
+        return "".join(out)
 
     def escape_tops(expr: str) -> tuple[bool, set[str]]:
         """Whether a parent step stands in the expression, and every literal of it that names a top-level directory
         (rule 6): read as written AND stripped of LEADING, since a tracked top literally named `{tpl}` or `${tpl}` is
         named only by the unstripped form (root's B1 of #84: the strip must not hide it). A substitution with quotes
         inside (`f"{d['root']}/packages/shared"`) splits the quote regex, so the literals of the expression with every
-        `{...}` collapsed to `{}` are read too and unioned."""
-        collapsed = re.sub(r"\{[^{}]*\}", "{}", expr)
+        `{...}` collapsed to `{}` (nested braces included) are read too and unioned; `{os.sep}` reads as `/`."""
+        expr = SEP_SUBST.sub("/", expr)
+        collapsed = collapse_braces(expr)
         literals = set(QUOTED.findall(expr)) | set(QUOTED.findall(collapsed))
         landings = {form for s in literals for form in (s, LEADING.sub("", s)) if form.split("/")[0] in named_tops}
         return PARENT_STEP.search(expr) is not None, landings
@@ -3782,6 +3849,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 if parent or (not unowned_caller and landings and not declarable):
                     raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                      "write it from __file__ with literal parts, which the scan maps")
+                # Root's F1 of #84's R4 (2026-11-12): the package a declarable text lands in is credited whatever the
+                # declaration's reach says (the reach ADDS to the landing, never replaces it), as the evaluated-prefix
+                # twin credits `other`. A reach of "external", "fixture" or "package" on such a site is not a way to read [].
+                landed = {owner(x) for x in landings} if declarable else set()
+            else:
+                landed = set()
             entry = by_site.get((path, expr))
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
@@ -3795,6 +3868,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             used.add((path, expr))
             if other is not None:
                 credit_package(path, owner(path), other)
+            for found in sorted(landed):
+                credit_package(path, owner(path), found)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reach_from(path, posixpath.normpath(target))
@@ -3998,7 +4073,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
     dot_routes: dict[str, set[str]] = {}
     listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                              r"""(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@{]|\$\{|['"] *\+)""", *([revision] if revision else []), "--", ".",
+                              r"""(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@{%]|\$\{|['"`] *(\+|\.concat\())""", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
     for p in sorted(x[len(revision) + 1:] if revision else x

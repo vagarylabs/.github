@@ -473,11 +473,13 @@ class EdgesTest(unittest.TestCase):
         extra = dict(case.get("files") or {})
         self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
         written = [rel, *sorted(extra)]
-        # Root's C2 of #84 (2026-11-12): every write sits inside the try, so a failed one still cleans up, and no path a
-        # vector writes may exist in the fixture (a `files` entry over a fixture keep.txt would be deleted with the case).
+        # No path a vector writes may exist in the fixture, checked BEFORE the try: inside it, the cleanup would delete
+        # the fixture file the guard refused to overwrite (root's K3 of #84's R4, 2026-11-12).
+        for path in written:
+            self.assertFalse((repo / path).exists(), f"{path}: a vector cannot write over a fixture path")
+        # Root's C2 of #84 (2026-11-12): every write sits inside the try, so a failed one still cleans up.
         try:
             for path in written:
-                self.assertFalse((repo / path).exists(), f"{path}: a vector cannot write over a fixture path")
                 (repo / path).parent.mkdir(parents=True, exist_ok=True)
             # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
             (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
@@ -588,7 +590,8 @@ class EdgesTest(unittest.TestCase):
                           "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
                           "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
-                          "R6V25_chdir_then_fstring_dotdot_end", "T19_partial_split_root",
+                          "R6V25_chdir_then_fstring_dotdot_end", "R84_S08_param_shadow_other_assign",
+                          "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])

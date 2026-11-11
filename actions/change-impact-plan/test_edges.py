@@ -402,10 +402,14 @@ class EdgesTest(unittest.TestCase):
             ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
             ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
             ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
-            # 1.7.6: an exec call's argv reads beneath the root unless the call moves its cwd or holds a parent step.
+            # 1.7.6: an exec call's argv reads beneath the root only in the strict form (argv_read); these refuse.
             ('subprocess.run(["git", "-C", "..", "ls-files", "services"])', "py"),
             ('subprocess.run(["ls", "services"], cwd=base)', "py"),
             ('s.replace("services", "apps")', "py"),  # a call argument that is no string predicate
+            # Root's R4 of 2026-11-11 (blockers 2-3): these two read on the 1.7.6 head and pinned the wrong reading;
+            # `-C str(root)` moves the work tree and `root` is an identifier argument, so both refuse, as on main.
+            ('subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "services/"], capture_output=True)', "py"),
+            ('files = git(root, "ls-files", "services").splitlines()', "py"),
         )
         for src, ext in refused:
             with self.subTest(refused=src):
@@ -441,9 +445,7 @@ class EdgesTest(unittest.TestCase):
             ('"services/b" + suffix', "py"): {"b"},  # a string that starts a statement but is not the whole of it
             ('"""services/b"""\nprint(__doc__)', "py"): {"b"},  # a consumed docstring is data (root's D01 class)
             ('def f():\n    """services/b"""\nhelp_text = inspect.getdoc(f)', "py"): {"b"},
-            # 1.7.6: an exec call's argv, and a string predicate on the root, read beneath it.
-            ('subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "services/"], capture_output=True)', "py"): {"b"},
-            ('files = git(root, "ls-files", "services").splitlines()', "py"): {"b"},
+            # 1.7.6: a string predicate on the root reads beneath it (the strict argv form's reads: ArgvAndProseFloor).
             ('t = root / s / "test" if s.startswith("services/") else root / s', "py"): {"b"},
             ("if (p.startsWith('services/')) run(p);", "js"): {"b"},
             ("'use strict';\nconst url = '/:org/services/:service';", "js"): {"b"},  # any root segment (H3.5)
@@ -2351,6 +2353,77 @@ class R4Vectors20261111(unittest.TestCase):
         for name, case in sorted(self.CASES.items()):
             with self.subTest(name):
                 self.assertEqual(self.read(case), case["expect"], name)
+
+
+class ArgvPredicateProseFloor(unittest.TestCase):
+    """Change 6 of root's record (reviews/dotgithub-79-1110.md): a FLOOR inside the suite, so the 1.7.6 rules cannot pass
+    vacuously. Every R4 argv vector expects REFUSE and both 1.7.6 positive argv vectors now refuse, so a refuse-everything
+    argv_read would pass every other test; these named positive controls must READ through the strict argv form, the
+    string predicate and the prose gate, and the consumed-docstring controls must still read as on main. R4's 27 negative
+    vectors (test_edges_r4_1111_vectors.json) are the other side."""
+
+    read = R4Vectors20261111.read
+    CFG = R4Vectors20261111.CFG
+    ALL = ["a", "b", "b2", "nest"]
+    FLOOR = 8  # named positive controls of the argv and predicate rules that must read
+    READS = {
+        "argv_py_list": ('subprocess.run(["git", "ls-files", "services"])', "py"),
+        "argv_py_keywords": ('subprocess.run(["ls", "services/"], capture_output=True, check=True, timeout=60)', "py"),
+        "argv_py_tuple": ('out = subprocess.check_output(("ls", "services"))', "py"),
+        "argv_bare_git_helper": ('out = git("ls-files", "services")', "py"),
+        "argv_js_execFileSync": ('const { execFileSync } = require("child_process");\nexecFileSync("ls", ["services"]);', "js"),
+        "predicate_py_startswith": ('mine = [s for s in names if s.startswith("services/")]', "py"),
+        "predicate_py_endswith": ('if p.endswith("services"):\n    pass', "py"),
+        "predicate_js_startsWith": ("if (p.startsWith('services/')) run(p);", "js"),
+    }
+    # Fail-closed forms beyond R4's set: an exec method on an object, an options object, any cwd keyword, a `-w` flag.
+    REFUSES = {
+        "argv_method_receiver": ('self.run(["ls", "services"])', "py"),
+        "argv_js_options_object": ('execFileSync("ls", ["services"], { stdio: "inherit" });', "js"),
+        "argv_cwd_none": ('subprocess.run(["ls", "services"], cwd=None)', "py"),
+        "argv_w_flag": ('subprocess.run(["ls", "-wx", "services"])', "py"),
+    }
+    PROSE = {  # string statements no consumer reaches: prose, read nothing
+        "prose_module_docstring": {"services/r/x.py": '"""Copies this primitive into services/*/app/ on every run."""\nx = 1'},
+        "prose_function_docstring": {"services/r/x.py": 'def f():\n    """Reads services/b."""\n    return 1'},
+        "prose_unrelated_consumer": {"services/r/x.py": '"""A sweep across services/."""\nx = 1',
+                                     "services/r/other.py": "print(__doc__)"},
+    }
+    CONSUMED = {  # a consumer reaches the docstring: read as on main
+        "consumed_same_file": {"services/r/x.py": '"""services/b/x.json"""\ncfg = open(__doc__.strip()).read()'},
+        "consumed_self_source": {"services/r/x.py": '"""services/b/x.json"""\n'
+                                                    'cfg = open(open(__file__).read().split(chr(34) * 3)[1]).read()'},
+        "consumed_cross_file_importer": {"services/r/usage.py": '"""services/b/x.json"""',
+                                         "services/r/main.py": "import usage\ncfg = open(usage.__doc__.strip()).read()"},
+        "consumed_dynamic_sys_modules": {"services/r/x.py": '"""services/b/x.json"""',
+                                         "services/r/main.py": "import sys\nfor m in list(sys.modules.values()):\n"
+                                                               "    print(m.__doc__)"},
+    }
+
+    def test_the_argv_and_predicate_rules_read_their_named_controls(self):
+        got = {name: self.read({"src": src, "ext": ext}) for name, (src, ext) in self.READS.items()}
+        nothing = sorted(name for name, reading in got.items() if reading in ([], "REFUSE"))
+        self.assertGreaterEqual(len(self.READS), self.FLOOR, "the floor's control list shrank")
+        self.assertEqual(nothing, [], f"the 1.7.6 argv/predicate rules matched nothing on named controls {nothing}: "
+                                      "a rule that refuses or reads nothing everywhere would pass every other vector")
+        self.assertGreaterEqual(sum(reading == self.ALL for reading in got.values()), self.FLOOR)
+        for name, reading in got.items():
+            with self.subTest(name):
+                self.assertEqual(reading, self.ALL, name)
+
+    def test_the_strict_argv_form_refuses_its_fail_closed_forms(self):
+        for name, (src, ext) in self.REFUSES.items():
+            with self.subTest(name):
+                self.assertEqual(self.read({"src": src, "ext": ext}), "REFUSE", name)
+
+    def test_prose_reads_nothing_and_a_reachable_docstring_still_reads(self):
+        prose = {name: self.read({"files": files}) for name, files in self.PROSE.items()}
+        self.assertEqual(len(prose), 3)
+        self.assertEqual(prose, dict.fromkeys(self.PROSE, []), "a string statement no consumer reaches is prose")
+        consumed = {name: self.read({"files": files}) for name, files in self.CONSUMED.items()}
+        nothing = sorted(name for name, reading in consumed.items() if reading in ([], "REFUSE"))
+        self.assertEqual(nothing, [], f"a reachable docstring matched nothing on named controls {nothing}")
+        self.assertEqual(consumed, dict.fromkeys(self.CONSUMED, ["b"]))
 
 
 def E_add(cfg, path, name):

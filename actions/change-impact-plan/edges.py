@@ -10,9 +10,10 @@ A READ, on a non-comment line of a non-Markdown tracked file that lives in ANOTH
   - a quoted root literal (`"services"`) classified by the source around it (RootLiteral, below): joined in a path,
     metadata only with positive evidence, a walker root list, or a REFUSAL (which plans FULL);
   - a relative path `../x/...` that, resolved from the file's directory, lands in another package
-    (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment, or
-in a Python docstring (any bare string statement, 1.7.6), is not a read; one in any other string IS counted
-(over-approximation only costs extra test runs, never a skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
+    (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment is not a
+read, nor (1.7.6) one in a Python docstring (any bare string statement) that the scan clears as prose: no docstring
+consumer, self-source read or dynamic import can reach it (DOC_CONSUMER, docstring_consumers; any doubt keeps it a
+read). One in any other string IS counted (over-approximation only costs extra test runs, never a skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
 the packages it reads; the config's job named by `edge_scan.reader_job` must list at least those.
 
 check FAILS on an UNDECLARED read (the plan could skip a suite the change reaches) and on a reader the
@@ -78,16 +79,19 @@ COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 #   2. READ, as a walker: a collection holding only the root, a loop over a collection holding it, or a method called on
 #      such a collection reads every package beneath the root; a sibling naming another package-owning top-level
 #      directory reads beneath that too.
-#      An argv element of an exec call (`run(["git", "ls-files", "services"])`, `git(root, "ls-files", "services")`)
-#      reads beneath the root as a command string does, and a string predicate on the root (`s.startswith("services/")`)
-#      is a comparison (H3.4) that reads beneath it (1.7.6, root 2026-11-10, core #936 reader closure).
+#      An argv element of an exec call reads beneath the root only in the STRICT form (argv_strict, 1.7.6, root's R4
+#      of 2026-11-11): every other token of the call a plain string, the argv list, or a `name=True/False/None/<number>`
+#      keyword, a `subprocess`/`os`/`child_process` or bare callee, no cwd flag (ARGV_CWD_FLAGS) and no cwd mover
+#      anywhere in the file (`run(["git", "ls-files", "services"])`); a word token (`git(root, ...)`) refuses. A string
+#      predicate on the root (`s.startswith("services/")`) is a comparison (H3.4) that reads beneath it (1.7.6, root
+#      2026-11-10, core #936 reader closure); an exec call is judged before the predicate.
 #   3. METADATA only with positive evidence: an object key or value (never a ternary branch), a subscript key, a
 #      comparison (`==`, `in`, `case`), a .sql file, or a list/tuple/set of literals that is ASSIGNED (`X = [...]`), an
 #      object value, compared, or nested in such a collection. Never a direct argument of a call: `make("services",
 #      v=1)` refuses (root, 2026-10-26).
 #   4. EVERYTHING ELSE REFUSES: a root not alone in a path argument, inside a computed string (f-string, template, SQL
-#      text), a subscripted collection in a path call, an exec call that moves its working directory or holds a
-#      parent step, a call argument, a
+#      text), a subscripted collection in a path call, an exec call outside the strict argv form or holding a parent
+#      step, a call argument, a
 #      default parameter, a bare assignment, and any file whose language or bracket structure the tokenizer cannot
 #      trust.
 PY_EXT = frozenset({"py", "pyi"})
@@ -99,11 +103,47 @@ EXEC_CALL = re.compile(r"(?:^|\.)(?:subprocess\.\w+|run|call|check_call|check_ou
 # selects a value that may become a path, so it is a walker read beneath the root (H3.4), never metadata and never a
 # refusal (root, 2026-11-10, #936 reader closure).
 STRING_PREDICATES = frozenset({"startswith", "endswith", "removeprefix", "removesuffix", "startsWith", "endsWith"})
-# A word that turns a docstring into data the file runs on: with one present no string statement is prose (1.7.6).
-DOC_CONSUMERS = frozenset({"__doc__", "docopt", "getdoc", "cleandoc", "doctest"})
-# An exec call's keyword that moves its working directory (`cwd=`, `{ cwd: }`): a root named anywhere in such a call
-# is read relative to somewhere the scanner cannot see, so the call refuses (the existing vector, kept).
-EXEC_CWD_WORDS = frozenset({"cwd", "chdir", "directory", "workdir", "working_dir", "workingDirectory"})
+# Docstring consumers (1.7.6, root's R4 of 2026-11-11, blocker 1). A Python string statement is prose only when NO
+# consumer can reach it, so these fail closed: any match keeps every string statement of the file a read (main's
+# reading). DOC_CONSUMER is matched on the RAW text (strings and comments included: `getattr(m, "__doc__")`,
+# `vars()["__doc__"]`) of the file itself and of every tracked file that names its module (docstring_consumers), since
+# each reaches a docstring through a module object: `__doc__`, docopt, getdoc, cleandoc, doctest, ast.get_docstring,
+# operator.attrgetter, globals(), vars(), inspect.getsource/getmembers, `__dict__`, pydoc/help(), and any `ast` or
+# `inspect` word (an alias fails closed). SELF_SOURCE with SOURCE_READ in the file itself is a file that reads its own
+# source text (`ast.parse(open(__file__).read())`, `open(sys.argv[0])`).
+DOC_CONSUMER = re.compile(r"__doc__|docopt|getdoc|cleandoc|doctest|get_docstring|attrgetter|\bglobals\s*\(|\bvars\s*\(|"
+                          r"getsource|getmembers|__dict__|\bast\b|\binspect\b|\bpydoc\b|\bhelp\s*\(")
+DOC_CONSUMER_GREP = (r"__doc__|docopt|getdoc|cleandoc|doctest|get_docstring|attrgetter|globals|vars|getsource|getmembers|"
+                     r"__dict__|ast|inspect|pydoc|help")  # git grep -E's superset of DOC_CONSUMER
+SELF_SOURCE = re.compile(r"__file__|__loader__|__spec__|__cached__|\bargv\s*\[\s*0\s*\]|\blinecache\b|\btokenize\b")
+SOURCE_READ = re.compile(r"\bopen\s*\(|read_text|read_bytes|\.read\s*\(|readlines|\blinecache\b|\btokenize\b|get_source|"
+                         r"get_data|getsource")
+# A consumer file whose imports the scanner cannot name reaches every module, so no string statement anywhere is prose:
+# importlib, __import__, runpy, pkgutil, entry points, a file loader, subclass or gc walks, exec of a file, and
+# `sys.modules` other than `sys.modules[__name__]` or `sys.modules["<literal>"]`; in JS a computed require()/import().
+DYNAMIC_IMPORT_PY = re.compile(
+    r"importlib|__import__|import_module|\brunpy\b|run_path|run_module|\bpkgutil\b|walk_packages|iter_modules|"
+    r"entry_points|SourceFileLoader|spec_from_file_location|__subclasses__|get_objects|\bexecfile\b|"
+    r"\bexec\s*\(\s*(?:open|compile|Path|pathlib)|sys\s*\.\s*modules(?!\s*\[\s*(?:__name__|[\"'][\w.]+[\"'])\s*\])")
+DYNAMIC_IMPORT_JS = re.compile(r"\bimport\s*\(\s*(?![\"'][^\"'`$]*[\"']\s*\))|\brequire\s*\(\s*(?![\"'][^\"'`$]*[\"']\s*\))")
+# Rule C's strict argv form (RootLiteral.argv_read, 1.7.6, root's R4 of 2026-11-11, blockers 2-3). An argument string
+# with one of these prefixes moves the process's working directory or work tree; FILE_CWD_MOVER anywhere in a file's raw
+# text (`os.chdir`, `process.chdir`, `contextlib.chdir`, `from os import chdir`, `pushd`, `cwd` in any spelling,
+# `pnpm --dir`, `tar -C`, `git --work-tree`) refuses every argv read in that file; only these receivers qualify a callee.
+ARGV_CWD_FLAGS = ("-C", "--work-tree", "--git-dir", "--dir", "--cwd", "--chdir", "--prefix", "--root", "--project-dir",
+                  "-w")
+FILE_CWD_MOVER = re.compile(r"chdir|pushd|cwd|work-?tree|git-dir|workdir|working_?dir|workingDirectory|--dir\b|"
+                            r"--prefix\b|--root\b|--project-dir|(?<![\w-])-C")
+ARGV_RECEIVERS = frozenset({"subprocess", "os", "child_process"})
+ARGV_NUMBER = re.compile(r"\d[\d_]*(?:\.\d*)?")
+# The calls that run a PROCESS from a command string (RootLiteral.in_process_exec, string_reads' bare root words:
+# `os.system("pytest services")`, `execSync("ls services")`): subprocess.*, os.system/popen/exec*/spawn*, Popen and
+# child_process's execSync/execFileSync/execFile/spawn*. Deliberately NOT a bare `run`, `git` or `gh` (unlike
+# EXEC_CALL, whose argv form is strict): a bare helper's command string is read nothing, as on main (R4's C5a
+# `git("ls-files services")` and C5b `run("pytest services", shell=True)` pin []), and a subprocess command string reads
+# whatever its cwd= (C5c pins main's read). Never a database `execute()`.
+PROCESS_EXEC = re.compile(r"(?:^|\.)(?:subprocess\.\w+|system|popen|Popen|check_call|check_output|spawn\w*|"
+                          r"execSync|execFileSync|execFile|exec(?:[lv]p?e?)?)$")
 
 LITERAL_WORDS = frozenset({"null", "undefined", "true", "false", "None", "True", "False", "NaN", "Infinity"})
 KEYWORDS = frozenset({"in", "for", "if", "elif", "while", "return", "and", "or", "not", "is", "yield", "await", "else",
@@ -441,15 +481,20 @@ class Source:
             or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
                 and code[j - 1][3] in (".", "?."))]
         self.computed = []
-        # Prose (root, 2026-11-10, #936 reader closure): a Python string that is a statement of its own, a docstring or
-        # any bare string statement, runs nothing, so a root it names is prose and not a read. The positive evidence is
-        # the statement shape: an unprefixed string token outside every bracket, first on its line (no `\` continuation
-        # before it) and last on its line (or followed by `;`), in a file that never consumes a docstring (no `__doc__`,
-        # `docopt`, `getdoc`, `cleandoc` or `doctest` word: root's D01/D03/D04/D09/DT4 vectors read the docstring
-        # through those). A doctest (`>>>`) inside it is executed code and stays a string_reads refusal; a string with a
-        # prefix (f/b/r/u) or any other shape is read as before; an untrusted bracket structure has no prose (1.7.6).
+        # Prose (root, 2026-11-10, #936 reader closure; fail-closed scope from root's R4 of 2026-11-11, blocker 1): a
+        # Python string that is a statement of its own, a docstring or any bare string statement, runs nothing, so a
+        # root it names is prose and not a read, but ONLY when no consumer can reach it. The shape is the positive
+        # evidence: an unprefixed string token outside every bracket, first on its line (no `\` continuation before
+        # it) and last on its line (or followed by `;`). The file must hold no DOC_CONSUMER and must not read its own
+        # source (SELF_SOURCE with SOURCE_READ); and the scan must then clear it (`prose`, set by _scan only when no
+        # tracked file that names this module consumes docstrings and none imports dynamically: docstring_consumers).
+        # Until _scan says so, `prose` is False and every string statement is read as on main. A doctest (`>>>`) inside
+        # one is executed code and stays a string_reads refusal; a prefixed string (f/b/r/u) or any other shape is read
+        # as before; an untrusted bracket structure has no prose (1.7.6).
         self.docstrings: list[tuple[int, int]] = []
-        if self.py and self.ok and not any(tok[0] == "word" and tok[3] in DOC_CONSUMERS for tok in code):
+        self.prose = False
+        if self.py and self.ok and not DOC_CONSUMER.search(text) and not (SELF_SOURCE.search(text)
+                                                                          and SOURCE_READ.search(text)):
             for j, tok in enumerate(code):
                 if tok[0] != "str" or self.enclosing[j] or ">>>" in tok[3][0] or tok[3][2] != tok[1]:
                     continue  # tok[3][2] is the quote's offset: a prefix (f/b/r/u) puts it after the token start
@@ -459,11 +504,20 @@ class Source:
                 if first and last:
                     self.docstrings.append((tok[1], tok[2]))
         self.docstring_starts = [a for a, _ in self.docstrings]
+        self._moves_cwd = None
 
     def in_docstring(self, offset: int) -> bool:
-        """Offset lies inside a Python string statement (a docstring): prose, never a read."""
+        """Offset lies inside a Python string statement that the scan cleared as prose (`prose`): never a read."""
+        if not self.prose:
+            return False
         k = bisect.bisect_right(self.docstring_starts, offset) - 1
         return k >= 0 and self.docstrings[k][0] <= offset < self.docstrings[k][1]
+
+    def moves_cwd(self) -> bool:
+        """The file's raw text moves or names a working directory anywhere (FILE_CWD_MOVER): no argv read in it."""
+        if self._moves_cwd is None:
+            self._moves_cwd = bool(FILE_CWD_MOVER.search(self.text))
+        return self._moves_cwd
 
     def _in_getattr(self, j: int) -> bool:
         """Token j is an argument of `getattr(` (its innermost bracket is a call named getattr)."""
@@ -729,13 +783,19 @@ class RootLiteral:
         return any(T[j][0] == "word" and T[j][3] in WALK_WORDS for j in range(max(a, 0), min(b, len(T))))
 
     def argv_read(self, k: int, root: str) -> set:
-        """A root literal as an argv element of an exec call, alone (`git(root, "ls-files", "services")`) or in its
-        argv list (`run(["git", "ls-files", "services/"])`), never in its options object (`spawn(cmd, { args: [..] })`,
-        root's E06), is the command-string rule's list form (`run("pytest
-        services -q", shell=True)` in string_reads): the process reads beneath the root, a walker read of every
-        package there. As with a command string (H3.2) it still REFUSES when any argument of the call holds a parent
-        step (`..`, `.parent`, `dirname(`), or moves its working directory (`cwd=`), since the root may then be relative
-        to somewhere the scanner cannot see (root, 2026-11-10, #936 reader closure)."""
+        """A root literal as an argv element of an exec call reads beneath the root, a walker read of every package
+        there, ONLY in the strict form (1.7.6, root's R4 of 2026-11-11, blockers 2-3); anything else REFUSES, as every
+        argv did before 1.7.6. The strict form (argv_strict): the root is a plain string literal standing alone, either a
+        direct argument of the call (`git("ls-files", "services")`) or an element of the one list or tuple that is
+        (`run(["git", "ls-files", "services/"])`); every other token of the call is a plain string literal, a comma, that
+        bracket pair, or a Python keyword argument whose value is a bool, None or a number (`capture_output=True`); the
+        callee is bare or qualified by `subprocess`, `os` or `child_process`; no argument string moves the working
+        directory (ARGV_CWD_FLAGS: `-C`, `--work-tree`, `--dir`, `--cwd`, `-w`, ...); and the FILE never moves or names
+        one (FILE_CWD_MOVER: `chdir` in any spelling, `cwd`, `-C`, `--dir`, ...). So an identifier, a nested call
+        (`str(root)`), an options object (`{ cwd }`, `{ ...opts }`, a variable), `**kw`, a positional Popen cwd, and any
+        composition (`+`, `%`, `.format`, an f-string or template literal) refuse, and so does a parent step anywhere in
+        the call. This is NOT the command-string rule's parity (string_reads reads a command string whatever its
+        cwd=; R4's C5c pins that main reading): the argv form reads only where the root's base is the scanner's own."""
         x, T = None, self.src.code
         for y in reversed(self.src.enclosing[k]):
             if self.block(y):
@@ -747,14 +807,53 @@ class RootLiteral:
                 break
         if x is None:
             self.refuse("an argv element of an exec call, or its options, is an")
-        end = self.src.match[x]
-        if self.parent_step(x + 1, end):
+        if self.parent_step(x + 1, self.src.match[x]):
             self.refuse("an argv element of an exec call holding a parent step is an unsupported")
-        if any(T[j][0] == "word" and T[j][3] in EXEC_CWD_WORDS and j + 1 < end and T[j + 1][3] in ("=", ":")
-               for j in range(x + 1, end)):
-            self.refuse("an exec call's working directory is its argv's context, not a path the scanner can bound; an")
+        why = self.argv_strict(x, k)
+        if why:
+            self.refuse(f"an argv element of an exec call outside the strict form ({why}) is an unsupported")
         self.after(k, k)
         return self.resolve([root], dynamic=True)
+
+    def argv_strict(self, x: int, at: int) -> str | None:
+        """Why the exec call at x is not the strict argv form for the root at token `at` (a str token, or the open
+        bracket of the list holding it), or None when it is. Fail closed: a token this does not know refuses."""
+        T, src = self.src.code, self.src
+        end = src.match[x]
+        argv = None
+        if T[at][0] == "open":
+            if not src.enclosing[at] or src.enclosing[at][-1] != x or self.kind(at) not in ("list", "group"):
+                return "an argv collection that is not a direct list or tuple argument"
+            argv = at
+        elif not src.enclosing[at] or src.enclosing[at][-1] != x:
+            return "a root inside a nested expression of the call"
+        callee = self.callee(x) or ""
+        if "." in callee and callee.rsplit(".", 1)[0] not in ARGV_RECEIVERS:
+            return "an exec method on an object, which may carry its own working directory"
+        if src.moves_cwd():
+            return "the file moves or names a working directory"
+        j = x + 1
+        while j < end:
+            tok = T[j]
+            if tok[0] == "comma" or (argv is not None and j in (argv, src.match[argv])):
+                j += 1
+                continue
+            if tok[0] == "str":
+                body, plain, quote = tok[3]
+                if not plain or quote != tok[1] or src.text[quote] == "`":
+                    return "a computed, prefixed or template string"
+                if body.startswith(ARGV_CWD_FLAGS):
+                    return f"an argument {body[:20]!r} that moves the working directory"
+                j += 1
+                continue
+            if (src.py and tok[0] == "word" and j + 2 < end and T[j + 1][0] == "op" and T[j + 1][3] == "="
+                    and T[j + 2][0] == "word" and (T[j + 2][3] in ("True", "False", "None") or ARGV_NUMBER.fullmatch(T[j + 2][3]))
+                    and (j + 3 == end or T[j + 3][0] == "comma")
+                    and not any(w in tok[3].lower() for w in ("cwd", "dir", "chdir", "path", "env", "executable"))):
+                j += 3  # a bool/None/number keyword argument (`capture_output=True`, `timeout=60`)
+                continue
+            return f"a {tok[0]} token {str(tok[3])[:20]!r} in the call"
+        return None
 
     def in_exec(self, k: int) -> bool:
         T = self.src.code
@@ -765,16 +864,13 @@ class RootLiteral:
                 return True
         return False
 
-    PROCESS_EXEC = re.compile(r"(?:^|\.)(?:subprocess\.\w+|system|popen|Popen|check_call|check_output|spawn\w*|"
-                              r"execSync|execFileSync|execFile|exec(?:[lv]p?e?)?)$")
-
     def in_process_exec(self, k: int) -> bool:
         """A string inside a call that runs a process (subprocess, os.system/popen, child_process), never a database
         `execute()`: its bare root words are command arguments."""
         for x in reversed(self.src.enclosing[k]):
             if self.block(x):
                 return False
-            if self.kind(x) == "call" and self.PROCESS_EXEC.search(self.callee(x) or ""):
+            if self.kind(x) == "call" and PROCESS_EXEC.search(self.callee(x) or ""):
                 return True
         return False
 
@@ -948,12 +1044,14 @@ class RootLiteral:
             if spans[mine] != (k, k + 1):
                 self.refuse("a computed element holding a")
             return self.in_collection(e, spans, mine, root)
+        # The exec check runs BEFORE the string predicate (root's blocker 4, R4 B4a/B4b): a predicate anywhere inside an
+        # exec call (its argv, or its cwd= expression) is judged by argv_read's strict form, which refuses it.
+        if self.in_exec(k):
+            return self.argv_read(k, root)
         if kind == "call" and (self.callee(e) or "").rsplit(".", 1)[-1] in STRING_PREDICATES \
                 and self.elements(e)[0] == (k, k + 1):
             self.after(k, k)  # a comparison (H3.4): a walker read beneath the root
             return self.resolve([root], dynamic=True)
-        if self.in_exec(k):
-            return self.argv_read(k, root)
         if kind == "object" and self.object_entry(k, e):
             return set()
         if kind == "subscript" and self.elements(e) == [(k, k + 1)]:
@@ -1015,7 +1113,7 @@ class RootLiteral:
           - a root segment, whatever precedes it (`backend/services/`, `./services/`, `{}/services/`, `/services`);
           - a backslash after a root, always (`services\\b`, an escape or not);
           - a quoted root inside the string (prose, SQL text);
-          - a docstring, read like any string.
+          - a docstring, read like any string unless the scan cleared the file's string statements as prose.
         It REFUSES on a doctest naming a root (executed code), on any `..` in the mention's path run, on a computed
         string that holds any `..` step (a quoted '..' included; an ellipsis is not a step), a parent word or nested
         code naming a root (its substitutions are opaque), and on a parent step applied to the string. A segment
@@ -2050,6 +2148,38 @@ IGNORE_LIST = re.compile(r"\.[A-Za-z0-9_-]*ignore")  # .gitignore, .dockerignore
 PACKAGE_METADATA = frozenset({"name", "version", "description", "keywords", "homepage", "bugs", "license", "author",
                               "contributors", "maintainers", "funding", "repository", "files", "directories",
                               "publishConfig", "private", "engines", "os", "cpu"})
+
+def docstring_consumers(repo: Path, revision: str | None, environment: dict) -> set[str] | None:
+    """Every word named by a tracked file that consumes docstrings (DOC_CONSUMER on its raw text; any non-Markdown file,
+    excluded directories included), or None when one of them imports dynamically (DYNAMIC_IMPORT_PY/_JS), which reaches
+    every module. A Python file's string statements are prose only when its module name is none of these words
+    (root's R4 of 2026-11-11, blocker 1: `docopt(sys.modules["usage"].__doc__)` in main.py, `exec(payload.__doc__)` in
+    runner.py consume a docstring of ANOTHER file). The words are a superset of the names the file imports (`import x`,
+    `from x import`, `require('./x')`, `import('./x')`, `sys.modules["x"]`), so a name it merely mentions fails closed."""
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-w", "-E",
+                   DOC_CONSUMER_GREP + "|getsourcelines", *([revision] if revision else []), "--", ".", ":!*.md"],
+                  capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    grep_read_everything(out, "the reader scan's docstring consumer listing")
+    names: set[str] = set()
+    for x in out.stdout.decode("utf-8", errors="replace").split("\0"):
+        if not x:
+            continue
+        path = x[len(revision) + 1:] if revision else x
+        text = read_source(repo, path, revision, environment)
+        if not DOC_CONSUMER.search(text):
+            continue
+        ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if DYNAMIC_IMPORT_PY.search(text) or (ext in JS_EXT and DYNAMIC_IMPORT_JS.search(text)):
+            return None
+        names |= set(re.findall(r"[A-Za-z_$][\w$]*", text))
+    return names
+
+
+def module_names(path: str) -> set[str]:
+    """The names a file's module is imported by: its stem, and its package directory for `__init__`/`__main__`."""
+    stem = posixpath.splitext(posixpath.basename(path))[0]
+    return {stem} | ({posixpath.basename(posixpath.dirname(path))} if stem in ("__init__", "__main__") else set())
+
 
 def grep_read_everything(out, what: str) -> None:
     """A pass that did not read every file it was asked to cannot vouch for what it did not see, so it refuses (FULL),
@@ -3094,6 +3224,8 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     globs = list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())
     classify = RootLiteral(roots, by_dir, owner, globs)
     sources: dict[str, Source] = {}
+    prose_judged: set[str] = set()
+    consumer_words: list = []  # [docstring_consumers(...)], computed on the first file with a string statement
     raw_parent: dict[str, bool] = {}
     scripts_read: set = set()
     deps: dict[str, set[str]] = {n: set() for n in pkgs}
@@ -3226,6 +3358,12 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
             src = sources.get(path)
             if src is None:
                 src = sources[path] = Source(read_source(repo, path, revision, environment), ext)
+            if src.docstrings and path not in prose_judged:
+                # Blocker 1 (root's R4 of 2026-11-11): string statements are prose only when no consumer reaches them.
+                prose_judged.add(path)
+                if not consumer_words:
+                    consumer_words.append(docstring_consumers(repo, revision, environment))
+                src.prose = consumer_words[0] is not None and not (module_names(path) & consumer_words[0])
             if not pending:
                 pending.append(path)
             line = int(number) - 1

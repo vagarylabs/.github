@@ -2315,6 +2315,44 @@ class RulingsOf152Test(VectorHarness, unittest.TestCase):
                        "C1", "C2", "C3", "C4", "C5", "C6"):
             self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 
+class R4Vectors20261111(unittest.TestCase):
+    """Root's R4 both-readings probe of .github #79 (2026-11-11, test_edges_r4_1111_vectors.json): main's reading is the
+    contract. Each case builds the probe's fixture repo and must read exactly `expect` (the sorted packages reader
+    package r reads, or REFUSE)."""
+
+    CASES = json.loads(Path(__file__).with_name("test_edges_r4_1111_vectors.json").read_text())["cases"]
+    CFG = {"schema": 1, "workspace": {"type": "declared", "packages": {
+        "r": {"dir": "services/r", "deps": []}, "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []}, "nest": {"dir": "services/b/worker", "deps": []},
+        "b2": {"dir": "services/b2", "deps": []}, "web": {"dir": "apps/web", "deps": []},
+        "shared": {"dir": "packages/shared", "deps": []}}},
+        "edge_scan": {"roots": ["services", "apps"], "reader_dirs": [], "reader_job": "root"},
+        "jobs": {"root": {"packages": []}}}
+
+    def read(self, case):
+        with tempfile.TemporaryDirectory(prefix="r4c-") as td:
+            repo = Path(td)
+            for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared"):
+                (repo / d).mkdir(parents=True, exist_ok=True)
+                (repo / d / "keep.txt").write_text("k\n")
+            files = case["files"] if "files" in case else {"services/r/x." + case["ext"]: case["src"]}
+            for rel, src in files.items():
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text(src + "\n")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            try:
+                return sorted(E.scan(repo, self.CFG)[0].get("r", []))
+            except ValueError:
+                return "REFUSE"
+
+    def test_every_r4_1111_vector_reads_as_main_does(self):
+        self.assertEqual(len(self.CASES), 39)
+        for name, case in sorted(self.CASES.items()):
+            with self.subTest(name):
+                self.assertEqual(self.read(case), case["expect"], name)
+
+
 def E_add(cfg, path, name):
     targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])
     return E_list_add(targets, name)

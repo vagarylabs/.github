@@ -2719,6 +2719,10 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
 
     def entry(node):
         value = resolved(node)
+        if value is None and isinstance(node, ast.Name) and len(assigned.get(node.id, [])) == 1:
+            # An unevaluable name with one assignment stands for that assignment's text (`p = f"{source}/packages/shared";
+            # sys.path.insert(0, p)`, root's C1 of #84), so rule 6 reads the literal it carries, not the name.
+            node = assigned[node.id][0]
         entries.append(("unknown", source(node)) if value is None else ("dir", value))
 
     def is_sys_path(node):
@@ -3720,16 +3724,29 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     def reach_from(path: str, target: str) -> None:
         credit_load(path, owner(path), target)  # the same credit as a JS loader's (fix 1 and fix 2)
 
+    # The JS strip (parent_verdict) for an unevaluable Python literal: what may stand before its top-level name, in
+    # any number and order. "./", "/" (`str(x) + "/packages/shared"`), a substitution (`f"{source}/packages/shared"`,
+    # `${x}/`, `{{x}}/`), a %-format field (`"%s/packages/shared" % x`, `%(root)s/`) or a bare environment variable
+    # (`os.path.expandvars("$ROOT/packages/shared")`): F1's four forms and root's C1 of #84 (2026-11-12).
+    LEADING = re.compile(r"^(?:\./|/|\{+[^{}]*\}+/|\$\{[^}]*\}/|%(?:\([^)]*\))?[A-Za-z]/|\$[A-Za-z_]\w*/)+")
+    QUOTED = re.compile(r"""["']([^"']*)["']""")
+
+    def escape_tops(expr: str) -> tuple[bool, set[str]]:
+        """Whether a parent step stands in the expression, and every literal of it that names a top-level directory
+        (rule 6): read as written AND stripped of LEADING, since a tracked top literally named `{tpl}` or `${tpl}` is
+        named only by the unstripped form (root's B1 of #84: the strip must not hide it). A substitution with quotes
+        inside (`f"{d['root']}/packages/shared"`) splits the quote regex, so the literals of the expression with every
+        `{...}` collapsed to `{}` are read too and unioned."""
+        collapsed = re.sub(r"\{[^{}]*\}", "{}", expr)
+        literals = set(QUOTED.findall(expr)) | set(QUOTED.findall(collapsed))
+        landings = {form for s in literals for form in (s, LEADING.sub("", s)) if form.split("/")[0] in named_tops}
+        return PARENT_STEP.search(expr) is not None, landings
+
     def escapes_by_text(expr: str, unowned_caller: bool = False) -> bool:
         """A parent step always escapes. A literal naming another top-level directory escapes a PACKAGE; a caller
         outside every package has no package to leave, so for it that is a load to declare, not an escape."""
-        literals = re.findall(r"""["']([^"']*)["']""", expr)
-        if PARENT_STEP.search(expr):
-            return True
-        # The JS strip (parent_verdict): a leading "./", "/" (`str(x) + "/packages/shared"`) or a substitution
-        # (`f"{source}/packages/shared"`, `${x}/...`) before the top-level name (F1, all four forms).
-        return not unowned_caller and any(re.sub(r"^(?:\./|/|\{[^}]*\}/|\$\{[^}]*\}/)+", "", s).split("/")[0] in named_tops
-                                           for s in literals)
+        parent, landings = escape_tops(expr)
+        return parent or (not unowned_caller and bool(landings))
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
@@ -3754,9 +3771,17 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if kind == "path" and prefix is not None and not inside and other is None and (prefix[1] or not unowned_caller or not free):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
-            if kind == "path" and prefix is None and escapes_by_text(expr, unowned_caller):
-                raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
-                                 "write it from __file__ with literal parts, which the scan maps")
+            if kind == "path" and prefix is None:
+                # Nothing evaluates, so the text decides. A parent step escapes; so does a literal naming a scan root
+                # or a top-level directory outside every package (as 1.7.5 refused). A literal landing INSIDE another
+                # package (`f"{source}/packages/shared/mod.py"`, F1) is rule 8's load into another package, declarable
+                # like an evaluated prefix there, so its declaration is honoured first (root's B3 of #84, 2026-11-12);
+                # undeclared, or landing in the caller's own package or on a package-free top, it refuses as before.
+                parent, landings = escape_tops(expr)
+                declarable = (path, expr) in by_site and all(owner(x) not in (None, owner(path)) for x in landings)
+                if parent or (not unowned_caller and landings and not declarable):
+                    raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
+                                     "write it from __file__ with literal parts, which the scan maps")
             entry = by_site.get((path, expr))
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
@@ -3973,7 +3998,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
     dot_routes: dict[str, set[str]] = {}
     listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                              r"(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@]|\$\{)", *([revision] if revision else []), "--", ".",
+                              r"""(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@{]|\$\{|['"] *\+)""", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
     for p in sorted(x[len(revision) + 1:] if revision else x

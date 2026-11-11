@@ -334,7 +334,8 @@
    "note": "true metadata control",
    "src": "{ key: 'services', label: 'Capabilities' },\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "B01_computed_under_pkg_nested": {
    "expect": "read",
@@ -560,7 +561,13 @@
    "note": "precision control",
    "src": "{d for d in ROOTS if d == \"services\"}\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "C09_dotdot_after_computed_to_root": {
    "expect": "sound",
@@ -701,7 +708,13 @@
    "note": "precision control: nothing consumes it",
    "src": "const x = 1;\n'services/*/README.md';\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "DT1_doctest_glob_in_docstring": {
    "expect": "sound",
@@ -1010,7 +1023,15 @@
    "note": "\\8 kept; services\\8x is unowned: precision only",
    "src": "p = ROOT + \"\\\\services\\8x\"\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "Nightly",
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "util"
+   ]
   },
   "ES4_raw_backslash_u_control": {
    "cfg": {
@@ -1303,7 +1324,8 @@
    "note": "truly metadata; control",
    "src": "\\copy caps FROM 'services' WITH CSV;\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "N16_lint_paths_list": {
    "expect": "read",
@@ -1785,7 +1807,8 @@
    "note": "precision control",
    "src": "{\n  \"policy_id\": \"services\",\n  \"package\": \"b\",\n  \"version\": 1\n}\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "P01_format_string_root_prefix": {
    "expect": "read",
@@ -1912,7 +1935,8 @@
    "note": "precision control (author's example)",
    "src": "p = os.path.join(BACKEND, \"backend/services/auth.py\")\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "P14_dot_slash_glob": {
    "expect": "read",
@@ -2058,14 +2082,26 @@
    "ext": "js",
    "src": "const r = '/:org/services/:service';\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "SP07_escape_control": {
    "expect": "read",
    "ext": "py",
    "src": "SRC = b'name: services\\non: push\\n'\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "T01_jsx_two_apostrophes_swallow_join": {
    "expect": "sound",
@@ -2196,7 +2232,14 @@
    "note": "prose; over expected",
    "src": "doc = \"\"\"He said \"services\" isn't 'apps'\"\"\"\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest",
+    "web"
+   ]
   },
   "T13_triple_fstring_nested_root_control": {
    "expect": "sound",
@@ -2228,7 +2271,8 @@
    "note": "prose control",
    "src": "const P = () => <p>Use {'{'} services/{name} {'}'}</p>;\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "T16_leading_slash_concat": {
    "expect": "read",
@@ -2534,7 +2578,8 @@
    "note": "precision",
    "src": "type Root = 'services' | 'apps';\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": "REFUSE"
   },
   "T45_py_enum_member": {
    "expect": "sound",
@@ -2542,7 +2587,8 @@
    "note": "precision",
    "src": "class Root(Enum):\n    SERVICES = \"services\"\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": "REFUSE"
   },
   "W01_escaped_backslash_nonraw": {
    "expect": "read",
@@ -2704,7 +2750,13 @@
    "note": "precision: \\b is backspace, so no path",
    "src": "p = ROOT + \"\\services\\b\"\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "W08_root_plus_nonroot": {
    "expect": "read",
@@ -2755,7 +2807,8 @@
    "note": "precision control: \\n is not a separator",
    "src": "msg = \"see\\nservices\\nfor details\"\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "W11_js_string_raw_plain": {
    "expect": "read",
@@ -4611,14 +4664,16 @@
    "src": "services:\n  app:\n    build: .\n",
    "truth": [],
    "file": "services/r/docker-compose.yml",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R5R03_py_database_execute_not_a_command": {
    "expect": "read",
    "ext": "py",
    "src": "cur.execute(\"UPDATE services SET enabled = true WHERE id = %s\", (i,))\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R5R04_py_def_default_cwd_not_a_process_cwd": {
    "expect": "read",
@@ -4835,7 +4890,8 @@
    "ext": "py",
    "src": "cur.execute(\"SELECT * FROM services\")\n",
    "truth": [],
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R5V51_py_os_popen_control": {
    "expect": "read",
@@ -5670,7 +5726,8 @@
    "src": "{\"scripts\": {\"group\": {\"test\": \"pytest services\"}}}\n",
    "truth": [],
    "file": "services/r/package.json",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R6V11_pkg_non_string_values": {
    "expect": "read",
@@ -5773,7 +5830,8 @@
    "src": "{\"scripts\": {\"services\": \"echo hi\"}}\n",
    "truth": [],
    "file": "services/r/package.json",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R6V21_chdir_tainted_attribute": {
    "expect": "refuse",
@@ -5919,7 +5977,13 @@
    "src": "[tool]\nservices = 1\n[services]\nx = 1\nservices: y\n",
    "truth": [],
    "file": "services/r/cfg.toml",
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7T01_pkg_scripts_null": {
    "expect": "refuse",
@@ -5981,7 +6045,13 @@
    "src": "{\"name\": \"x\", \"description\": \"runs services\", \"files\": [\"services\"]}\n",
    "truth": [],
    "file": "services/r/package.json",
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7T09_pkg_empty_scripts": {
    "expect": "read",
@@ -5989,7 +6059,8 @@
    "src": "{\"scripts\": {}, \"description\": \"services\"}\n",
    "truth": [],
    "file": "services/r/package.json",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R7T10_pkg_bom_no_scripts": {
    "expect": "read",
@@ -5997,7 +6068,8 @@
    "src": "﻿{\"name\": \"x\", \"description\": \"services\"}\n",
    "truth": [],
    "file": "services/r/package.json",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R7T11_pkg_not_named_package_json": {
    "expect": "read",
@@ -6005,7 +6077,8 @@
    "src": "{\"scripts\": \"pytest services\", \"x\": ,}\n",
    "truth": [],
    "file": "services/r/other.json",
-   "control": true
+   "control": true,
+   "reads": []
   },
   "R7T12_toml_colon_key_reads": {
    "expect": "read",
@@ -6013,7 +6086,13 @@
    "src": "[tool.x]\nservices: y\n",
    "truth": [],
    "file": "services/r/cfg.toml",
-   "control": true
+   "control": true,
+   "reads": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
   },
   "R7T13_pkg_nan_is_not_json": {
    "expect": "refuse",
@@ -6411,6 +6490,302 @@
     "web"
    ],
    "unit": "readers:scripts"
+  },
+  "R84_Z01_brace_named_top_dir": {
+   "ext": "py",
+   "src": "import sys\ndef f():\n    sys.path.insert(0, X + \"{tpl}/lib\")\nimport m\n",
+   "files": {
+    "{tpl}/lib/m.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "B1: `X + \"{tpl}/lib\"` with a tracked top-level `{tpl}/`: the unstripped first segment names it"
+  },
+  "R84_Z02_dollar_brace_named_top_dir": {
+   "ext": "py",
+   "src": "import sys\ndef f():\n    sys.path.insert(0, X + \"${tpl}/lib\")\nimport m\n",
+   "files": {
+    "${tpl}/lib/m.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "B1: `X + \"${tpl}/lib\"` with a tracked top-level `${tpl}/`"
+  },
+  "R84_Z03_brace_named_top_dir_into_pkg": {
+   "ext": "py",
+   "src": "import sys\ndef f():\n    sys.path.insert(0, X + \"{tpl}/packages\")\nimport m\n",
+   "files": {
+    "{tpl}/packages/m.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "B1 twin: `X + \"{tpl}/packages\"` names a package top either way"
+  },
+  "R84_Z04_cookiecutter_double_brace_top": {
+   "ext": "py",
+   "src": "import sys\ndef f():\n    sys.path.insert(0, X + \"{{cookiecutter.slug}}/lib\")\nimport m\n",
+   "files": {
+    "{{cookiecutter.slug}}/lib/m.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "B1: `{{cookiecutter.slug}}/lib` with that tracked top"
+  },
+  "R84_D01_declared_run_path_pkg_top": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/shared_mod.py\"",
+       "reach": [
+        "packages/shared/shared_mod.py"
+       ],
+       "reason": "R84 vector: a declared load into another package, root's B3 of #84",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "B3: runpy.run_path(f\"{source}/packages/shared/shared_mod.py\") declared with reach [that file] reads shared, as 1.7.5 did"
+  },
+  "R84_D02_declared_concat_pkg_top": {
+   "ext": "py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(source + \"/packages/shared/shared_mod.py\")\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "source + \"/packages/shared/shared_mod.py\"",
+       "reach": [
+        "packages/shared/shared_mod.py"
+       ],
+       "reason": "R84 vector: a declared load into another package, root's B3 of #84",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "B3: the `source + \"/packages/shared/shared_mod.py\"` form, declared"
+  },
+  "R84_P08_fstring_nested_quotes": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, f\"{d['root']}/packages/shared\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1: f\"{d['root']}/packages/shared\": the quote regex split on the nested quotes; literals of the {}-collapsed text are read too"
+  },
+  "R84_P16_percent": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, \"%s/packages/shared\" % source)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1: \"%s/packages/shared\" % source: a %-field is stripped"
+  },
+  "R84_P18_expandvars_no_brace": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, os.path.expandvars(\"$ROOT/packages/shared\"))\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1: os.path.expandvars(\"$ROOT/packages/shared\"): a bare $VAR/ is stripped"
+  },
+  "R84_P30_variable_then_insert": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    p = f\"{source}/packages/shared\"; sys.path.insert(0, p)\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1: p = f\"{source}/packages/shared\"; sys.path.insert(0, p): the name's one assignment is the entry's text"
+  },
+  "R84_P21_brace_with_slash_inside": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, f\"{source}/{'x/y'}/packages/shared\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1 class: f\"{source}/{'x/y'}/packages/shared\" (read [] on main and 2cc10d8)"
+  },
+  "R84_P22_fstring_triple_brace": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, f\"{{literal}}/packages/shared\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1 class: f\"{{literal}}/packages/shared\" (read [] on main and 2cc10d8)"
+  },
+  "R84_G02_js_parent_concat": {
+   "ext": "mjs",
+   "file": "scripts/x.mjs",
+   "src": "import { readFileSync } from 'node:fs';\nexport const f = (p) => readFileSync(new URL('../' + p, import.meta.url));\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "refuse",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "C1/F2: '../' + p in an unreached scripts/ file: the gate lists a quote-then-plus after the step; the route is `.`, refused"
+  },
+  "R84_G03_py_fstring_parent": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import os\ndef f(p):\n    return open(os.path.join(os.path.dirname(__file__), f\"../{p}\")).read()\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "read",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "C1/F2: f\"../{p}\" in an unreached scripts/ file: the gate lists `{` after the step; the template reaches the checkout"
+  },
+  "R84_G06_js_template_parent_after_sub": {
+   "ext": "mjs",
+   "file": "scripts/x.mjs",
+   "src": "import { readFileSync } from 'node:fs';\nexport const f = (a, b) => readFileSync(new URL(`./${a}/../${b}`, import.meta.url));\n",
+   "cfg": {
+    "edge_scan": {
+     "exclude": [
+      ".github"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services",
+      "apps"
+     ]
+    }
+   },
+   "unit": "readers:scripts",
+   "expect": "refuse",
+   "truth": [
+    "a",
+    "b2",
+    "nest",
+    "r",
+    "shared",
+    "web"
+   ],
+   "note": "F2 class: `./${a}/../${b}` in an unreached scripts/ file: listed now, a parent step after a substitution refuses"
+  },
+  "R84_P20_fstring_root_services_ctrl": {
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\n\ndef prepare(source, X, d):\n    sys.path.insert(0, f\"{source}/services/a\")\n\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "F1: f\"{source}/services/a\" names a scan root (main read ['a'] by the services/a text)"
+  },
+  "R84_P31_tmpl_named_pkgtop_own_package": {
+   "ext": "py",
+   "file": "packages/shared/y.py",
+   "unit": "shared",
+   "src": "import sys\ndef f(source):\n    sys.path.insert(0, f\"{source}/packages/shared/lib\")\n",
+   "files": {
+    "packages/shared/lib/m.py": "X=1\n"
+   },
+   "expect": "refuse",
+   "truth": [],
+   "note": "F1: f\"{source}/packages/shared/lib\" in packages/shared/y.py names its own package top; unevaluable, so it refuses"
   }
  }
 }

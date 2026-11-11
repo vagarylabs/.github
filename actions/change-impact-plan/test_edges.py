@@ -473,28 +473,34 @@ class EdgesTest(unittest.TestCase):
         extra = dict(case.get("files") or {})
         self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
         written = [rel, *sorted(extra)]
-        for path in written:
-            (repo / path).parent.mkdir(parents=True, exist_ok=True)
-        # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
-        (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
-        for path, text in extra.items():
-            (repo / path).write_text(text)
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-        cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
-        rev = None
-        if revision:
-            subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
-                            "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
-            rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-            (repo / rel).write_text("# the working tree differs from the scanned revision\n")
+        # Root's C2 of #84 (2026-11-12): every write sits inside the try, so a failed one still cleans up, and no path a
+        # vector writes may exist in the fixture (a `files` entry over a fixture keep.txt would be deleted with the case).
         try:
-            deps, readers = E.scan(repo, cfg, revision=rev)[:2]
+            for path in written:
+                self.assertFalse((repo / path).exists(), f"{path}: a vector cannot write over a fixture path")
+                (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
+            (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
+            for path, text in extra.items():
+                (repo / path).write_text(text)
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
+            rev = None
+            if revision:
+                subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
+                                "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
+                rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+                (repo / rel).write_text("# the working tree differs from the scanned revision\n")
+            try:
+                deps, readers = E.scan(repo, cfg, revision=rev)[:2]
+            except ValueError:
+                return "REFUSE"
             unit = case.get("unit") or "r"
             if unit.startswith("readers:"):
-                return sorted(readers.get(unit[len("readers:"):], ()))
+                # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
+                self.assertIn(unit[len("readers:"):], readers, f"{unit}: the scan produced no such reader unit")
+                return sorted(readers[unit[len("readers:"):]])
             return sorted(deps[unit])
-        except ValueError:
-            return "REFUSE"
         finally:
             # Per-case cleanup: the input and every `files` entry leave the index and the tree, and the directories they
             # alone created go too, so the next case starts from the bare fixture.
@@ -528,6 +534,10 @@ class EdgesTest(unittest.TestCase):
             # of [] satisfies it), so one is admitted only as a declared precision control, which asserts the absence.
             self.assertTrue(truth or case.get("control") is True,
                             f"{label}: an accept vector with truth [] proves nothing; a precision control says `control: true`")
+            if case.get("control") is True:
+                # Root's B2 of #84 (2026-11-12): `control: true` is a check, not a label: a control pins its reading (as
+                # a residual does), so a control that starts reading, or refusing, fails until the pin is re-derived.
+                self.assertEqual(got, case["reads"], f"{label}: a control's reading moved from its pin")
             self.assertTrue(got == "REFUSE" or set(truth) <= set(got), f"{label}: read {got}, truth {truth}")
             if expect == "read":
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
@@ -545,6 +555,22 @@ class EdgesTest(unittest.TestCase):
                 self.judge(label, case, self.vector_scan(repo, case))
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual" and "reads" not in c),
                          [], "every residual vector pins its reading")
+        # Root's B2 of #84 (2026-11-12): the precision controls are a closed list and each pins its reading, so a new
+        # vector cannot take `control: true` (and its truth-[] exemption) silently.
+        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True and "reads" not in c),
+                         [], "every precision control pins its reading")
+        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True),
+                         ["A31_metadata_true", "C08_setcomp_eq_metadata_control", "D10_js_whole_statement_string_mid_file",
+                          "ES3_str_backslash_8_kept", "N15_sql_file_copy", "N58_json_fixture_metadata_control",
+                          "P13_backend_services_not_root_control", "R5R02_yaml_compose_services_key",
+                          "R5R03_py_database_execute_not_a_command", "R5V50_py_db_execute_precision_control",
+                          "R6V10_pkg_nested_scripts_object", "R6V20_pkg_precision_script_name_root",
+                          "R6V30_toml_key_precision", "R7T08_pkg_no_scripts_root_elsewhere", "R7T09_pkg_empty_scripts",
+                          "R7T10_pkg_bom_no_scripts", "R7T11_pkg_not_named_package_json", "R7T12_toml_colon_key_reads",
+                          "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
+                          "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
+                          "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control"],
+                         "the precision controls are a closed list; a new one is added here, with its pinned reading")
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          [
                           "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
@@ -576,7 +602,9 @@ class EdgesTest(unittest.TestCase):
                       "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
                       "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
                       "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
-                      "W07_multiline_roots"):
+                      "W07_multiline_roots",
+                      # Root's B1 of #84: a top literally named `{tpl}` / `${tpl}` refuses on the --revision path too.
+                      "R84_Z01_brace_named_top_dir", "R84_Z02_dollar_brace_named_top_dir"):
             with self.subTest(label):
                 case = self.REVIEW_VECTORS[label]
                 self.judge(label, case, self.vector_scan(repo, case, revision=True))

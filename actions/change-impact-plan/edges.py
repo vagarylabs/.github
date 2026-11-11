@@ -11,7 +11,7 @@ A READ, on a non-comment line of a non-Markdown tracked file that lives in ANOTH
     metadata only with positive evidence, a walker root list, or a REFUSAL (which plans FULL);
   - a relative path `../x/...` that, resolved from the file's directory, lands in another package
     (`new URL("../../tts/...", import.meta.url)`, Go `os.ReadFile("../../../tts/x")`, `file:../x`, `-e ../x`). A literal in a comment, or
-in a Python docstring (any bare string statement, 1.7.4), is not a read; one in any other string IS counted
+in a Python docstring (any bare string statement, 1.7.6), is not a read; one in any other string IS counted
 (over-approximation only costs extra test runs, never a skipped one). `readers` lists, for each non-package top-level directory named in `edge_scan.reader_dirs`,
 the packages it reads; the config's job named by `edge_scan.reader_job` must list at least those.
 
@@ -80,7 +80,7 @@ COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 #      directory reads beneath that too.
 #      An argv element of an exec call (`run(["git", "ls-files", "services"])`, `git(root, "ls-files", "services")`)
 #      reads beneath the root as a command string does, and a string predicate on the root (`s.startswith("services/")`)
-#      is a comparison (H3.4) that reads beneath it (1.7.4, root 2026-11-10, core #936 reader closure).
+#      is a comparison (H3.4) that reads beneath it (1.7.6, root 2026-11-10, core #936 reader closure).
 #   3. METADATA only with positive evidence: an object key or value (never a ternary branch), a subscript key, a
 #      comparison (`==`, `in`, `case`), a .sql file, or a list/tuple/set of literals that is ASSIGNED (`X = [...]`), an
 #      object value, compared, or nested in such a collection. Never a direct argument of a call: `make("services",
@@ -99,7 +99,7 @@ EXEC_CALL = re.compile(r"(?:^|\.)(?:subprocess\.\w+|run|call|check_call|check_ou
 # selects a value that may become a path, so it is a walker read beneath the root (H3.4), never metadata and never a
 # refusal (root, 2026-11-10, #936 reader closure).
 STRING_PREDICATES = frozenset({"startswith", "endswith", "removeprefix", "removesuffix", "startsWith", "endsWith"})
-# A word that turns a docstring into data the file runs on: with one present no string statement is prose (1.7.4).
+# A word that turns a docstring into data the file runs on: with one present no string statement is prose (1.7.6).
 DOC_CONSUMERS = frozenset({"__doc__", "docopt", "getdoc", "cleandoc", "doctest"})
 # An exec call's keyword that moves its working directory (`cwd=`, `{ cwd: }`): a root named anywhere in such a call
 # is read relative to somewhere the scanner cannot see, so the call refuses (the existing vector, kept).
@@ -447,7 +447,7 @@ class Source:
         # before it) and last on its line (or followed by `;`), in a file that never consumes a docstring (no `__doc__`,
         # `docopt`, `getdoc`, `cleandoc` or `doctest` word: root's D01/D03/D04/D09/DT4 vectors read the docstring
         # through those). A doctest (`>>>`) inside it is executed code and stays a string_reads refusal; a string with a
-        # prefix (f/b/r/u) or any other shape is read as before; an untrusted bracket structure has no prose (1.7.4).
+        # prefix (f/b/r/u) or any other shape is read as before; an untrusted bracket structure has no prose (1.7.6).
         self.docstrings: list[tuple[int, int]] = []
         if self.py and self.ok and not any(tok[0] == "word" and tok[3] in DOC_CONSUMERS for tok in code):
             for j, tok in enumerate(code):

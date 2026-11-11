@@ -364,8 +364,8 @@ class EdgesTest(unittest.TestCase):
         for src, ext in metadata:
             with self.subTest(metadata=src):
                 self.assertEqual(scan(src, ext), set(), src)
-        # 1.7.4 (root 2026-11-10, core #936 reader closure): a Python docstring, any bare string statement, runs
-        # nothing, so a root it names is prose. Until 1.7.4 it was read beneath the root (H3.6) and the vendored
+        # 1.7.6 (root 2026-11-10, core #936 reader closure): a Python docstring, any bare string statement, runs
+        # nothing, so a root it names is prose. Before 1.7.6 it was read beneath the root (H3.6) and the vendored
         # services/*/app/no_redirect.py docstring made every core service read every other (1,366 undeclared reads).
         prose = (
             '"services"',
@@ -402,7 +402,7 @@ class EdgesTest(unittest.TestCase):
             ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
             ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
             ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
-            # 1.7.4: an exec call's argv reads beneath the root unless the call moves its cwd or holds a parent step.
+            # 1.7.6: an exec call's argv reads beneath the root unless the call moves its cwd or holds a parent step.
             ('subprocess.run(["git", "-C", "..", "ls-files", "services"])', "py"),
             ('subprocess.run(["ls", "services"], cwd=base)', "py"),
             ('s.replace("services", "apps")', "py"),  # a call argument that is no string predicate
@@ -441,7 +441,7 @@ class EdgesTest(unittest.TestCase):
             ('"services/b" + suffix', "py"): {"b"},  # a string that starts a statement but is not the whole of it
             ('"""services/b"""\nprint(__doc__)', "py"): {"b"},  # a consumed docstring is data (root's D01 class)
             ('def f():\n    """services/b"""\nhelp_text = inspect.getdoc(f)', "py"): {"b"},
-            # 1.7.4: an exec call's argv, and a string predicate on the root, read beneath it.
+            # 1.7.6: an exec call's argv, and a string predicate on the root, read beneath it.
             ('subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "services/"], capture_output=True)', "py"): {"b"},
             ('files = git(root, "ls-files", "services").splitlines()', "py"): {"b"},
             ('t = root / s / "test" if s.startswith("services/") else root / s', "py"): {"b"},

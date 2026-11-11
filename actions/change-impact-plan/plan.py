@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.7.3"
+PLANNER_VERSION = "1.7.4"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -1264,12 +1264,44 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
             "packages": packages, "unowned": {"files": len(unowned), "uncovered": len(uncovered)}, "gaps": gaps}
 
 
+PLAN_CONFIG_MAX_DEPTH = 64  # 1.7.4: a real plan config nests a few levels (workspace.packages.<name>.deps is 5)
+
+
+def json_nesting_depth(text: str) -> int:
+    """The deepest `[`/`{` nesting in JSON text, skipping strings and their escapes. The same scan as edges.py's
+    package.json bound (PACKAGE_JSON_MAX_DEPTH); kept here because edges.py loads plan.py, never the reverse."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
     """A plan config's bytes as a JSON object, or why they are malformed. The base and a candidate are read by the same
     rule (F29), so a config one of them refuses is refused by the other too. The schema is the caller's check."""
+    # A depth bound, not RecursionError alone: how deep `json.loads` recurses depends on the interpreter (CPython 3.13
+    # raises at 100000 levels, 3.14 parses them), and a refusal must not depend on which Python runs (edges.py's
+    # PACKAGE_JSON_MAX_DEPTH rule). The decode is json.loads's own, so a non-UTF text keeps its "not valid JSON" message.
     try:
-        cfg = json.loads(raw)
-    except RecursionError:
+        text = raw.decode(json.detect_encoding(raw), "surrogatepass")
+        if json_nesting_depth(text) > PLAN_CONFIG_MAX_DEPTH:
+            return None, "the plan config nests too deeply to parse"
+        cfg = json.loads(text)
+    except RecursionError:  # a backstop: an interpreter whose limit sits under PLAN_CONFIG_MAX_DEPTH
         return None, "the plan config nests too deeply to parse"
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
         return None, f"the plan config is not valid JSON: {exc}"

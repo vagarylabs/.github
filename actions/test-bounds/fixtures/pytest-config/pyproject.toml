@@ -1,0 +1,6 @@
+[project]
+name = "x"
+
+[tool.pytest.ini_options]
+timeout = 10
+addopts = "--timeout 25"

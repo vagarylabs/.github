@@ -1,0 +1,6 @@
+[project]
+name = "x"
+
+[tool.pytest]
+timeout = 10
+addopts = ["-q", "--timeout=25"]

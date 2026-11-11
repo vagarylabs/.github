@@ -70,13 +70,55 @@ value. The rules are in `rules/`.
 | `literal-bound.wait.condition` | ts tsx js | `vi.waitFor(fn, N)` / `vi.waitUntil(fn, N)` | 60 s |
 | `literal-bound.default.condition` | ts tsx js | a parameter default named /timeout\|deadline\|budget/i | 60 s |
 | `literal-bound.config.{case,hook}` | ts tsx js | testTimeout / hookTimeout, teardownTimeout | 120 / 240 s |
-| `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait | 120 s |
+| `literal-bound.keyword.subprocess` | py | `timeout=` of run/check_output/check_call/call/Popen/communicate/wait (not asyncio's `wait`, read below) | 120 s |
 | `literal-bound.positional.subprocess` | py | `wait(N)`, `communicate(input, N)` | 120 s |
 | `literal-bound.default.subprocess` | py | a `timeout` parameter default | 120 s |
+| `literal-bound.client.fixture` | ts tsx js py | a PostgreSQL client's timeout: node-postgres `connectionTimeoutMillis` / `statement_timeout` / `query_timeout`; asyncpg / psycopg / psycopg2 / psycopg_pool connect and pool `timeout` / `connect_timeout` / `command_timeout` (py: by binding, below). A literal 0 is "no limit" for the node-postgres keys and libpq's `connect_timeout` (psycopg, psycopg2); asyncpg's and psycopg_pool's `timeout=0` is an INSTANT timeout, so it stays a finding | 120 s (`fixture`) |
+| `literal-bound.join.subprocess` | py | a thread or process `.join(N)` or `.join(timeout=N)`. A positional name or arithmetic is judged only when it resolves to a number, since `str.join` takes one | 120 s |
+| `literal-bound.wait.condition` | py, by binding | `asyncio.wait_for(aw, N)` / `timeout=`, and `asyncio.wait(aws, timeout=N)` | 60 s |
+| `literal-bound.timeout-ctx.condition` | py, by binding | `asyncio.timeout(N)`, `async_timeout.timeout(N)` | 60 s |
+| `literal-bound.http.condition` | py, by binding | `timeout=` of `urllib.request.urlopen` (or its third positional argument), the requests and httpx functions, `requests.Session` / `httpx.Client` / `httpx.AsyncClient` methods, and the httpx client constructors | 60 s |
+| `literal-bound.http-tuple.condition` | py, by binding | each element of an HTTP `timeout=(connect, read)` tuple (a `None` element is no bound) | 60 s |
+| `literal-bound.mark.case` | py, by binding | `@pytest.mark.timeout(N)` (a literal 0 is "no limit"; a NAME resolving to 0 is still judged) | 120 s |
+| `literal-bound.ini.case` | pytest config | pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini and .pytest.ini, tox.ini (`[pytest]`), setup.cfg (`[tool:pytest]`), pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's native `[tool.pytest]`), pytest.toml and .pytest.toml (`[pytest]`), read in Python. A file that does not parse is unparsable; `timeout = 0` is "no limit" | 120 s |
+
+**By binding** (root's #65 RC B3 and delta B1-B3): the Python library calls are read over CPython's own parse of the
+file, not by spelling (`check.py` PY_CALLS).
+- **Scope** (delta B2). A name means what the nearest enclosing scope that binds it says, as in Python (a class body
+  never encloses its methods). So `from asyncio import wait` inside one function makes that function's `wait(fs)`
+  asyncio's, while `wait = proc.wait` or a `wait` parameter in another function is that function's own subprocess
+  wait, judged at 120 s. A bare name no scope binds is not read.
+- **Reached through:** `import x as y`; `from x import y` in any scope; a star import of a covered module, which binds
+  each covered name it exports (delta B1); a re-export from a local module, followed one hop (`from .helpers import
+  wait_for`, `from pkg.helpers import client`: the local module's one binding of the name must be a direct import
+  from a covered library, or one client construction); a submodule or vendored spelling (`requests.api.get`,
+  `asyncio.tasks.wait_for`, `from pip._vendor import requests`); a try/except fallback import whose bindings agree on
+  position, kind and index (`asyncio.timeout` or `async_timeout.timeout`, delta L3).
+- **Module and call aliases (read):** `mod = importlib.import_module("asyncio")` (or `from importlib import
+  import_module`) then `mod.wait_for(c, 0.5)`; the chained `importlib.import_module("asyncio").wait_for(c, 0.5)`;
+  `wf = asyncio.wait_for` then `wf(c, 0.5)`. Only a literal module name, a single-name assignment and a name bound
+  that one way in its scope are read (a second binding of the name in the scope lists it or drops it, never reads it).
+- **Client instances:** an assignment, an annotated assignment, a walrus, `with ... as c`, a class body (read as
+  `self.s` in its methods), `self.s = ...`, `requests.Session().get(...)`, `requests.session()`.
+- **Ownership.** The binding pass owns every direct argument of a call it resolves, so `from asyncio import wait;
+  wait(aws, timeout=5)` is a condition wait at 60 s, never a subprocess one.
+- **NOT COVERED, listed per call** with every run (the summary, the log and the findings JSON), so its absence from
+  the findings is never a pass:
+  - a covered call whose bound may come through a `*` or `**` splat, with no explicit bound;
+  - a call through a name its scope binds by an import AND another way (or declares global or nonlocal), or through
+    a name imports bind to calls of different positions;
+  - a call through a covered name imported from a local module one hop cannot read, or possibly bound by a star
+    import of a module this check does not follow;
+  - a call into a covered library this check does not read, or one that reaches it through getattr
+    or functools.partial, when it passes a bound keyword;
+  - any aiohttp call with a bound keyword: aiohttp is seen, not read yet (its bound is a ClientTimeout).
+- **Not read, and not listed:** a client that is a fixture or a parameter, a factory's return value, or held in a
+  container; an alias of anything but a covered call (`g = s.get` for a fixture client `s`; an alias of an alias), or a module bound to a name by
+  pytest.importorskip. A file
+  CPython cannot parse is unparsable (red).
 
 Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not
-yet covered, and due in K2 step 2: Python `asyncio.wait_for` and pool/connect timeouts, pytest-timeout and ini
-defaults, fixed flushes, sleep-as-wait, and elapsed-time asserts.
+yet covered, and due in K2 step 2: fixed flushes, sleep-as-wait, and elapsed-time asserts.
 
 A captured value is cleared only on POSITIVE proof that it is at or above its floor (root's R1, value semantics).
 Otherwise it is a finding. The proof can be:
@@ -171,6 +213,7 @@ The summary and the findings JSON list two kinds of file:
 ## Self-test
 
 Every run starts by checking `fixtures/<case>/` against its `expect.json`: exact counts per file and status, plus
-the unparsable and recovered lists. Every rule of every language must be planted RED somewhere, so a new rule
-without a fixture, or a gutted one, fails the check itself. Run it with `check.py self-test`; the tests are in
+the unparsable, recovered and NOT COVERED lists. Every rule of every language must be planted RED somewhere, so a
+new rule without a fixture, or a gutted one, fails the check itself. For the binding pass the rule ids are declared
+(PY_BOUND_RULES), and PY_CALLS must read exactly those, so emptying a position from PY_CALLS fails by name. Run it with `check.py self-test`; the tests are in
 `test_check.py`.

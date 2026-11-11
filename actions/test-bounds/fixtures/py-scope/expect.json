@@ -1,0 +1,36 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 7
+   }
+  ]
+ },
+ "files": {
+  "test_scope.py": {
+   "finding": 7
+  },
+  "test_star.py": {
+   "finding": 4
+  },
+  "pkg/test_reexport.py": {
+   "finding": 3
+  },
+  "test_unread.py": {
+   "finding": 3
+  },
+  "test_survivors.py": {
+   "finding": 11
+  }
+ },
+ "not_covered": [
+  "pkg/test_reexport.py",
+  "test_scope.py",
+  "test_unread.py",
+  "test_unread.py",
+  "test_unread.py",
+  "test_unread.py",
+  "test_unread.py"
+ ]
+}

@@ -704,6 +704,34 @@ class ImportAttributionTest(unittest.TestCase):
         deps, readers = E.scan(self.repo, reviewed_cfg(cfg or IMPORT_CFG), report=report)
         return deps, readers, report
 
+    def test_a_package_json_nested_past_the_bound_is_unreadable_in_the_directory_runner_read(self):
+        # 1.7.5: basename_mentions parsed a package.json with no bound; RecursionError is no ValueError (3.11-3.13) and
+        # CPython 3.14 parses any depth. `files` is publish metadata, skipped when the manifest parses; a manifest past
+        # PACKAGE_JSON_MAX_DEPTH is unreadable, so it is read whole and its `../../tools/` mention is a row.
+        def manifest(depth):  # the object itself is level 1
+            return '{"name":"a","files":["../../tools/"],"x":' + "[" * (depth - 1) + "]" * (depth - 1) + "}\n"
+        self.assertEqual(E.json_nesting_depth(manifest(64)), 64)
+        self.assertEqual(E.json_nesting_depth(manifest(65)), 65)
+        real, seen = json.loads, []
+
+        def loads(text, *args, **kwargs):  # an interpreter that cannot parse past the bound, recording what it is given
+            seen.append(E.json_nesting_depth(text))
+            if seen[-1] > E.PACKAGE_JSON_MAX_DEPTH:
+                raise RecursionError("maximum recursion depth exceeded")
+            return real(text, *args, **kwargs)
+
+        def mentions(depth):
+            self.files(**{"services__a__package.json": manifest(depth), "tools__run.sh": "echo\n"})
+            owner = lambda p: "a" if p.startswith("services/a/") else None
+            with patch.object(E.json, "loads", loads):
+                return E.basename_mentions(self.repo, {"inert_globs": ["tools/**"]}, owner, None, dict(os.environ), {})
+        self.assertEqual(mentions(E.PACKAGE_JSON_MAX_DEPTH), {}, "parsed: the metadata field is skipped")
+        self.assertIn(E.PACKAGE_JSON_MAX_DEPTH, seen)
+        seen.clear()
+        rows = mentions(E.PACKAGE_JSON_MAX_DEPTH + 1)
+        self.assertEqual(rows["tools/run.sh"], [["services/a/package.json", "a", False, "tools/"]])
+        self.assertEqual(seen, [], "a manifest past the bound never reaches json.loads")
+
     def test_one_hop_import_credits_the_imported_files_reads(self):
         self.files(**{"services__a__t.test.mjs": 'import { x } from "../../scripts/x.mjs";\n',
                       "scripts__x.mjs": 'export const x = () => readFileSync("services/b/data.json");\n'})

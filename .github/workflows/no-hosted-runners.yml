@@ -81,6 +81,14 @@ jobs:
           HOSTED = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|\d[\w.]*)\b")
           ALLOW = re.compile(r"#\s*hosted-ok:\s*\S")
           PUBLIC_REUSABLE_OWNER = "vagarylabs/.github"
+          # The ONE hosted exception (root, 2026-11-01): the PUBLIC vagarylabs/.github runs its own judge job hosted, per the
+          # 10-21 rule that public repos stay hosted and never use the bridge. Repository, workflow file AND job are all named;
+          # any other repository, workflow or job is not exempt.
+          HOSTED_EXEMPT = ("vagarylabs/.github", ".github/workflows/trusted-protected-paths.yml", "trusted-protected-paths")
+
+
+          def hosted_exempt(repo, rel, job):
+              return (repo, str(rel), job) == HOSTED_EXEMPT
 
 
           # ── a small evaluator for the GitHub expression subset runs-on lines use ─────────────────────────────────────────
@@ -242,9 +250,9 @@ jobs:
                   return r.read().decode("utf-8")
 
 
-          def check(root, vars_, repo_private, fetch=fetch_public):
+          def check(root, vars_, repo_private, fetch=fetch_public, repo=""):
               findings, notes = [], []
-              base_ctx = {"vars": vars_, "github": {"event": {"repository": {"private": repo_private}}}}
+              base_ctx = {"vars": vars_, "github": {"repository": repo, "event": {"repository": {"private": repo_private}}}}
               wf = pathlib.Path(root) / ".github" / "workflows"
               files = sorted(list(wf.glob("*.yml")) + list(wf.glob("*.yaml"))) if wf.is_dir() else []
               for path in files:
@@ -259,7 +267,9 @@ jobs:
                               except ValueError as e:
                                   findings.append(f"{rel} [{job}]: runs-on could not be evaluated ({e}); write it so it can be, or add '# hosted-ok: <reason>'")
                                   continue
-                              if is_hosted(eff):
+                              if is_hosted(eff) and hosted_exempt(repo, rel, job):
+                                  notes.append(f"{rel} [{job}]: hosted by the one named exception for {repo}")
+                              elif is_hosted(eff):
                                   findings.append(f"{rel} [{job}]: runs-on resolves to {eff} with this repo's vars")
                       u = re.search(r"^    uses:\s*(\S+)(.*)$", block, re.M)
                       if not u or ALLOW.search(u.group(0)):
@@ -300,6 +310,32 @@ jobs:
               return findings, notes, len(files)
 
 
+          def self_test_exemption():
+              """The hosted exception admits EXACTLY vagarylabs/.github + trusted-protected-paths.yml + job trusted-protected-paths."""
+              import tempfile
+              line = ("    runs-on: \x24{{ fromJSON((github.repository == 'vagarylabs/.github' || vars.TRUSTED_LIGHT_RUNNER == 'hosted') && "
+                      "'\"ubuntu-latest\"' || '[\"self-hosted\",\"Linux\",\"X64\",\"vl-light\"]') }}\n")
+              flat = "    runs-on: ubuntu-latest\n"
+
+              def run(repo, fname, job, runs_on):
+                  with tempfile.TemporaryDirectory() as d:
+                      w = pathlib.Path(d) / ".github" / "workflows"; w.mkdir(parents=True)
+                      (w / fname).write_text("jobs:\n  %s:\n%s" % (job, runs_on))
+                      return check(d, {}, True, repo=repo)[0]
+
+              paths = ("trusted-protected-paths.yml", "trusted-protected-paths")
+              assert run("vagarylabs/.github", *paths, line) == [], "the named case is exempt"
+              assert run("vagarylabs/.github", *paths, flat) == [], "the named case is exempt even as a literal"
+              # a PRIVATE consumer resolves the same expression to the bridge: not hosted, so nothing to refuse
+              assert run("vagarylabs/vagary-core", *paths, line) == []
+              # NEGATIVE: a hosted runs-on anywhere else still fails
+              for repo, fname, job in (("vagarylabs/vagary-core", *paths), ("vagarylabs/vagary-core", "trusted-protected-paths.yml", "other"),
+                                       ("vagarylabs/.github", "ci.yml", "trusted-protected-paths"),
+                                       ("vagarylabs/.github", "trusted-protected-paths.yml", "other"),
+                                       ("vagarylabs/.github-x", *paths), ("", *paths)):
+                  assert len(run(repo, fname, job, flat)) == 1, (repo, fname, job)
+
+
           def self_test():
               import tempfile
               vars_ = {"RUNNER_TYPE": "ubuntu-latest", "SECRET_SCAN_RUNNER": "vl-light"}
@@ -329,6 +365,7 @@ jobs:
                   # The same tree with the var on the bridge: only the literal and the called hard-hosted job remain.
                   got2, _, _ = check(d, {"RUNNER_TYPE": "vl-bridge", "SECRET_SCAN_RUNNER": "vl-light"}, True, fetch=lambda o, p, r: called)
                   assert len(got2) == 2 and "[via-var]" not in "\n".join(got2), got2
+              self_test_exemption()
               print("self-test OK: literal, var-resolved and called-workflow hosted runners are refused; self-hosted, allowlisted "
                     "and bridge-resolving lines pass; a private cross-repo call is a note")
 
@@ -339,7 +376,7 @@ jobs:
                   sys.exit(0)
               private = os.environ.get("REPO_PRIVATE") == "true"
               vars_ = json.loads(os.environ.get("VARS_JSON") or "{}")
-              got, notes, n = check(".", vars_, private)
+              got, notes, n = check(".", vars_, private, repo=os.environ.get("GITHUB_REPOSITORY", ""))
               for note in notes:
                   print(f"::notice::{note}")
               if not private:

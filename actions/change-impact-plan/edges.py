@@ -2123,9 +2123,11 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
             if base != "package.json":
                 return [text]
             if f not in manifests:
+                manifest = (read_source(repo, f, revision, environment) if revision
+                            else (repo / f).read_text(errors="replace")).removeprefix("\ufeff")
                 try:
-                    body = json.loads((read_source(repo, f, revision, environment) if revision
-                                       else (repo / f).read_text(errors="replace")).removeprefix("\ufeff"))
+                    # Bounded before the parse: RecursionError is no ValueError (3.11-3.13) and 3.14 parses any depth.
+                    body = None if json_nesting_depth(manifest) > PACKAGE_JSON_MAX_DEPTH else json.loads(manifest)
                 except ValueError:
                     body = None
                 manifests[f] = (json.dumps({k: v for k, v in body.items() if k not in PACKAGE_METADATA},

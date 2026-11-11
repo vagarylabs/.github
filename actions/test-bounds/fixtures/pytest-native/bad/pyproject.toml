@@ -1,0 +1,5 @@
+[project
+name = "x"
+
+[tool.pytest]
+timeout = 3

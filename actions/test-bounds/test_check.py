@@ -3,6 +3,8 @@ guards.test.mjs, root R4'd on #849), run in throwaway git repositories through t
 required: $TEST_BOUNDS_SG or `ast-grep` on PATH (ci.yml fetches the pinned binary); a missing binary fails, never skips."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -145,6 +147,121 @@ class SelfTest(unittest.TestCase):
         finally:
             C.compose_rules = original
         self.assertTrue(has(failures, "literal-bound.wait.condition"), failures)
+
+
+    def test_a_gutted_binding_position_fails_the_self_test_by_name(self):
+        """The binding pass's positions are declared (PY_BOUND_RULES): emptying one from PY_CALLS is named, and so is
+        dropping one callable a fixture plants RED."""
+        original = dict(C.PY_CALLS)
+        try:
+            for k in [k for k, v in original.items() if v[0] == "mark"]:
+                del C.PY_CALLS[k]
+            failures = C.self_test()
+            self.assertTrue(has(failures, "PY_BOUND_RULES declares"), failures)
+            self.assertTrue(has(failures, "rule literal-bound.mark.case (python) has no planted RED"), failures)
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update({k: v for k, v in original.items() if k != "urllib.request.urlopen"})
+            self.assertTrue(has(C.self_test(), "py-binding: findings"), "urlopen is planted RED in py-binding")
+        finally:
+            C.PY_CALLS.clear()
+            C.PY_CALLS.update(original)
+
+
+class PythonBinding(unittest.TestCase):
+    """Root's #65 RC B3: what the binding pass cannot read is listed as NOT COVERED with every run."""
+
+    def setUp(self):
+        self.repo = Repo()
+
+    def tearDown(self):
+        self.repo.done()
+
+    def verdict(self, body: str) -> dict:
+        self.repo.commit({"s/tests/test_a.py": body, BL: baseline({}, trees=[{"glob": "s/tests/**", "min_files": 1}])})
+        return self.repo.verdict(None)
+
+    def test_a_splat_is_listed_in_every_output(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", **opts)\n')
+        why = "requests.get: its bound may come through a ** splat, which is not read"
+        self.assertEqual(v["not_covered"], [("s/tests/test_a.py", 5, why)])
+        self.assertIn(f"- s/tests/test_a.py:5 {why}", C.summary_md(v))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            C.emit(v, None)
+        self.assertIn(f"NOT COVERED: s/tests/test_a.py:5 {why}", out.getvalue())
+
+    def test_an_explicit_keyword_beside_a_splat_is_read(self):
+        v = self.verdict('import requests\n\n\ndef test_x(opts):\n    requests.get("u", timeout=5, **opts)\n')
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_name_two_imports_bind_differently_is_listed(self):
+        """Only some bindings make it a covered call: listed, never read as clean."""
+        v = self.verdict("try:\n    import asyncio as a\nexcept ImportError:\n    import trio as a\n\n\n"
+                         "async def test_x(c):\n    await a.wait_for(c, 5)\n")
+        self.assertEqual([(f, ln) for f, ln, _ in v["not_covered"]], [("s/tests/test_a.py", 8)])
+        self.assertIn("bound by more than one import (asyncio, trio)", v["not_covered"][0][2])
+
+    def test_a_fallback_import_that_agrees_is_read(self):
+        """#65 delta L3: every binding is a covered call of the same position, kind and index, so it is read."""
+        v = self.verdict("try:\n    import requests as r\nexcept ImportError:\n    import httpx as r\n\n\n"
+                         'def test_x():\n    r.get("u", timeout=5)\n')
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def assert_one_finding(self, body: str) -> None:
+        v = self.verdict(body)
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_module_bound_by_importlib_is_read(self):
+        """#65 review B3: `mod = importlib.import_module("asyncio"); await mod.wait_for(c, 0.5)` is a finding."""
+        self.assert_one_finding('import importlib\n\n\nasync def test_x(c):\n'
+                                '    mod = importlib.import_module("asyncio")\n    await mod.wait_for(c, 0.5)\n')
+        self.assert_one_finding('from importlib import import_module\n\n\nasync def test_x(c):\n'
+                                '    mod = import_module("asyncio")\n    await mod.wait_for(c, 0.5)\n')
+
+    def test_the_chained_importlib_form_is_read(self):
+        self.assert_one_finding('import importlib\n\n\nasync def test_x(c):\n'
+                                '    await importlib.import_module("asyncio").wait_for(c, 0.5)\n')
+
+    def test_a_method_alias_is_read_and_a_rebound_one_is_not(self):
+        self.assert_one_finding("import asyncio\n\n\nasync def test_x(c):\n    wf = asyncio.wait_for\n"
+                                "    await wf(c, 0.5)\n")
+        # another function's own `wf` (a subprocess wait) is not the covered call
+        self.assert_one_finding("import asyncio\n\n\nasync def test_x(c):\n    wf = asyncio.wait_for\n"
+                                "    await wf(c, 0.5)\n\n\nasync def test_y(p):\n    wf = p.wait\n    await wf(0.5)\n")
+        # a name bound both ways in one scope is never read as the covered call: no finding, no false one
+        v = self.verdict("import asyncio\n\n\nasync def test_x(c, p, k):\n    wf = asyncio.wait_for\n"
+                         "    if k:\n        wf = p.wait\n    await wf(c, 0.5)\n")
+        self.assertEqual(v["counts"], {})
+
+    def test_a_local_reexport_is_read_in_the_base_tree_too(self):
+        """The one-hop read of a local module works on a base tree, which is materialized lazily (a consumer census
+        crashed reading the module before it was fetched)."""
+        t = "s/tests/test_a.py"
+        files = {"s/tests/__init__.py": "", "s/tests/helpers.py": "from asyncio import wait_for\n",
+                 t: "from .helpers import wait_for\n\n\nasync def test_x(c):\n    await wait_for(c, 1)\n",
+                 BL: baseline({t: 1}, trees=[{"glob": "s/tests/**", "min_files": 1}])}
+        base = self.repo.commit(files)
+        self.repo.commit({t: files[t] + "\n# touched\n"})
+        v = self.repo.verdict(base)
+        self.assertEqual((v["problems"], v["counts"]), ([], {t: {C.RULE: 1}}))
+
+    def test_a_toml_key_in_any_form_reports_its_line(self):
+        """#65 delta L4: an inline table, a dotted key and a quoted key are red at their own line, so a mark reaches."""
+        for text, line in (('[project]\nname = "x"\n\n[tool]\npytest = { timeout = 7 }\n', 5),
+                           ("tool.pytest.timeout = 8\n", 1), ('[tool.pytest]\n"timeout" = 9\n', 2)):
+            recs, why = C.pytest_config_bounds(text, "pyproject.toml")
+            self.assertEqual(([r["line"] for r in recs], [r["status"] for r in recs], why), ([line], ["finding"], None))
+
+    def test_the_pytest_dotfiles_are_test_like(self):
+        """A .pytest.ini or .pytest.toml outside every tree is UNSCANNED, never silently ignored (#65 delta L2)."""
+        for name in (".pytest.ini", ".pytest.toml", "pytest.toml"):
+            self.assertTrue(C.TEST_LIKE.search(f"svc/{name}"), name)
+        self.assertFalse(C.TEST_LIKE.search("svc/notpytest.ini"))
+
+    def test_a_shadowing_local_is_not_a_library_call(self):
+        """A bare name with no import is not asyncio's: `wait_for` defined here is the test's own helper."""
+        v = self.verdict("def wait_for(c, n):\n    return c\n\n\ndef test_x(c):\n    wait_for(c, 5)\n")
+        self.assertEqual(v["counts"], {})
 
 
 class DiffEntries(unittest.TestCase):
@@ -847,8 +964,8 @@ class Cli(unittest.TestCase):
         return {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
 
     def test_the_unscanned_config_list(self):
-        """#60 delta2 test gap: pytest's config files are UNSCANNED (in a tree, an unread language; outside every tree,
-        test-like), never silently clean."""
+        """#60 delta2 test gap, under K2 step 2A: a pytest config file in a tree is READ (its pytest-timeout keys), and
+        one outside every tree is UNSCANNED (test-like), never silently clean."""
         repo = Repo()
         try:
             trees = [{"glob": "s/**", "min_files": 1}]
@@ -856,9 +973,10 @@ class Cli(unittest.TestCase):
                          "s/setup.cfg": "[tool:pytest]\n", "tox.ini": "[pytest]\n", "pytest.ini": "[pytest]\n",
                          BL: baseline({"s/a.test.ts": 1}, trees=trees)})
             v = repo.verdict(None)
-            self.assertEqual(sorted(v["unscanned"]["language"]), ["s/pyproject.toml", "s/setup.cfg"])
+            self.assertEqual(sorted(v["unscanned"]["language"]), [])
             self.assertEqual(sorted(v["unscanned"]["outside_trees"]), ["pytest.ini", "tox.ini"])
-            self.assertIn("UNSCANNED: 2 tree file(s)", C.summary_md(v))
+            self.assertIn("UNSCANNED: 0 tree file(s)", C.summary_md(v))
+            self.assertEqual(v["scanned_files"], 3, "a.test.ts and the two configs in the tree are read")
         finally:
             repo.done()
 
@@ -907,7 +1025,7 @@ class Cli(unittest.TestCase):
             ok = run("check")
             self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
             self.assertIn("2 finding(s) counted", ok.stdout)
-            self.assertIn("covered (py): subprocess timeouts only", ok.stdout, "coverage is printed, never implied")
+            self.assertIn("covered (py): subprocess timeouts", ok.stdout, "coverage is printed, never implied")
             self.assertIn("UNSCANNED:", ok.stdout)
             bad = run("check", "--base", "not-a-sha")
             self.assertEqual(bad.returncode, 2, bad.stdout)

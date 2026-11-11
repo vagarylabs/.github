@@ -1,0 +1,24 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 4
+   }
+  ]
+ },
+ "files": {
+  "pytest.ini": {
+   "finding": 2
+  },
+  "tox.ini": {
+   "finding": 1
+  },
+  "setup.cfg": {
+   "cleared": 1
+  },
+  "pyproject.toml": {
+   "finding": 2
+  }
+ }
+}

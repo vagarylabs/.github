@@ -1,0 +1,6 @@
+{
+ "config": {"trees": [{"glob": "**/*", "min_files": 3}]},
+ "files": {"test_importlib_bound.py": {"finding": 1}, "test_importlib_chained.py": {"finding": 1},
+           "test_method_alias.py": {"finding": 1}},
+ "not_covered": []
+}

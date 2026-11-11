@@ -1,1 +1,18 @@
-{"config": {"trees": [{"glob": "**/*", "min_files": 3}]}, "files": {"ok.test.ts": {"cleared": 5}}}
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 4
+   }
+  ]
+ },
+ "files": {
+  "ok.test.ts": {
+   "cleared": 5
+  },
+  "test_greens.py": {
+   "cleared": 8
+  }
+ }
+}

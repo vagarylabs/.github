@@ -1,7 +1,7 @@
 """Static and behavioural tests for .github/workflows/sign-image.yml, the ONE shared keyless image signer.
 
 The workflow is the signing trust root of the fleet, so what must never drift is pinned here: the admission `if:` (the
-owner id, exactly 5 repository ids, exactly 7 caller workflow refs, main only, 3 events), the runner, the contract
+owner id, exactly 5 repository ids, exactly 7 caller workflow refs, main only, push/dispatch for all and workflow_run for voice only), the runner, the contract
 (one input, two outputs, no secrets, no checkout), the pins, and the namespace table, which must name the same 7 callers
 as the `if:`. The three Python programs the workflow embeds (namespace binding, revision binding, run-binding check)
 are cut out of the workflow text and run against fixtures, so the file a caller pins is the file that is tested.
@@ -38,6 +38,7 @@ CALLERS = [
 ]
 SAN = "https://github.com/vagarylabs/.github/.github/workflows/sign-image.yml@refs/heads/main"
 ATT_TYPE = "https://vagarylabs.github.io/attestations/signing-run/v1"
+VOICE = "vagarylabs/vagary-voice/.github/workflows/cosign-sign-image.yml@refs/heads/main"
 
 
 def job_if():
@@ -78,15 +79,53 @@ class Admission(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", cond)
         self.assertIn("github.ref_type == 'branch'", cond)
 
-    def test_exactly_three_events(self):
-        m = re.search(r"contains\(fromJSON\('(\[[^']*\])'\), github\.event_name\)", job_if())
-        self.assertIsNotNone(m)
-        self.assertEqual(json.loads(m.group(1)), ["push", "workflow_dispatch", "workflow_run"])
+    # The event rule: push and workflow_dispatch for every caller; workflow_run ONLY for the voice caller file.
+    EVENT_RULE = re.compile(
+        r"&& \(contains\(fromJSON\('(?P<always>\[[^']*\])'\), github\.event_name\) "
+        r"\|\| \(github\.event_name == 'workflow_run' && github\.workflow_ref == '(?P<run_ref>[^']*)'\)\)$")
+
+    def assert_event_rule(self, cond):
+        m = self.EVENT_RULE.search(cond)
+        self.assertIsNotNone(m, "the event term is not (push|dispatch for all) || (workflow_run AND the voice ref)")
+        self.assertEqual(json.loads(m.group("always")), ["push", "workflow_dispatch"])
+        self.assertEqual(m.group("run_ref"), VOICE)
+        self.assertEqual(cond.count("workflow_run"), 1)  # no other place admits it
+        self.assertEqual(cond.count("||"), 1)
+
+    def test_workflow_run_is_admitted_for_the_voice_caller_only(self):
+        self.assert_event_rule(job_if())
+        self.assertIn(VOICE, CALLERS)
+
+    def test_mutant_re_admitting_workflow_run_for_every_caller_is_caught(self):
+        cond = job_if()
+        everyone = cond.replace('["push","workflow_dispatch"]', '["push","workflow_dispatch","workflow_run"]')
+        self.assertNotEqual(everyone, cond)
+        with self.assertRaises(AssertionError):
+            self.assert_event_rule(everyone)
+
+    def test_mutant_admitting_workflow_run_for_another_caller_is_caught(self):
+        cond = job_if()
+        other = CALLERS[0]
+        swapped = cond.replace("github.workflow_ref == '%s'))" % VOICE, "github.workflow_ref == '%s'))" % other)
+        self.assertNotEqual(swapped, cond)
+        with self.assertRaises(AssertionError):
+            self.assert_event_rule(swapped)
+        # and a second workflow_run clause for a non-voice caller
+        extra = cond + " || (github.event_name == 'workflow_run' && github.workflow_ref == '%s')" % other
+        with self.assertRaises(AssertionError):
+            self.assert_event_rule(extra)
+
+    def test_header_does_not_present_the_if_as_the_gate(self):
+        head = TEXT.split("\nname: sign-image", 1)[0]
+        self.assertIn("CASE-INSENSITIVELY", head)
+        self.assertIn("BINDING lookup", head)
+        self.assertNotIn("GitHub evaluates the job-level `if:` below before it schedules\n# anything", head)
 
     def test_every_term_is_anded_and_nothing_else_is(self):
         cond = job_if()
-        self.assertEqual(cond.count("&&"), 5)  # six terms
-        self.assertNotIn("||", cond)
+        # six terms; the sixth is the event group, whose inner && and the single || are pinned by assert_event_rule
+        self.assertEqual(cond.count("&&"), 6)
+        self.assertEqual(cond.count("||"), 1)
         self.assertNotIn("!", cond.replace("!=", ""))
         # only documented `github` fields: a job-level `if:` cannot see steps, env or secrets
         for ctx in re.findall(r"\b(github|inputs|vars|secrets|env|needs|steps|runner)\.", cond):

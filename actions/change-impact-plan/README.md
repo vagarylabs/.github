@@ -20,6 +20,12 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.5 bounds a package.json's nesting before it is parsed at the two sites that were still unbounded: the planner's pnpm workspace graph (a manifest deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is refused as unreadable, candidate and base alike) and edges.py's directory-runner read (deeper than `PACKAGE_JSON_MAX_DEPTH` (64) is read whole, like any unparsable manifest). CPython 3.14 parses depths 3.11-3.13 refuse with `RecursionError`, so the bound is the planner's own.
+
+Planner 1.7.4 bounds a plan config's nesting before it is parsed: a config deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is red with "the plan config nests too deeply to parse", as the candidate and as the base. Until 1.7.3 that refusal came only from `json.loads` raising `RecursionError`, which depends on the interpreter: CPython 3.13 raises at 100000 levels, 3.14 (the `ubuntu-26.04` runner image) parses them, and the 100000-level config then planned reduced. `RecursionError` stays a backstop.
+
+Planner 1.7.3 makes a slow git call cost a retry, not the reduced plan (spine, from core #936: at Mac load 25-34 the reader scan's `git grep` ran past its 15 s ceiling on 2 of 4 runs). Every git subprocess gets ONE retry after a timeout, and every git ceiling scales by the new `git-timeout-scale` input (an integer 1-8, default 1). A call that times out on both attempts still plans full, under its own reason: `reader scan timed out; full validation required` (edges.py exits 3) or `canonical target lookup timed out` in the target observation. It is never folded into "unproven", and it never narrows a plan.
+
 Planner 1.7.2 adds the `source_dir` output: `GITHUB_ACTION_PATH`, the directory this step ran `plan.py`, `edges.py` and `action.yml` from. It is written only after the plan is published, so a refused plan has none, and no existing output changes.
 - It is a LOCATOR, never authority.
 - A consumer that reads those files (core's orphan gate, for one) hashes them and must match BOTH `plan.validity.{planner,reader,action}_source_sha256` AND its own policy-pinned copies.
@@ -377,7 +383,7 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
        file the PR did not touch, is still a subject (root's condition).
      - **Nothing unread passes as unmentioned.** On git 2.50 `git grep` exits 1, its "no match" status, when it cannot
        read a blob, and prints `unable to read`; git 2.56 exits 128. Every grep of the scan refuses, typed, on either
-       signal (any exit but 0 or 1), and so does a pass that times out ("reader closure unproven: timeout"). Each one
+       signal (any exit but 0 or 1), and so does a pass whose git call times out on both attempts ("reader scan timed out", 1.7.3). Each one
        plans FULL.
 
      The backstop catches a runner by any spelling that still names the file (`fork(join(__dirname, "w.mjs"))`,

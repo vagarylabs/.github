@@ -1,0 +1,31 @@
+{
+ "config": {
+  "trees": [
+   {
+    "glob": "**/*",
+    "min_files": 4
+   }
+  ],
+  "launchers": [
+   {
+    "name": "startEmbeddedPostgresTestDatabase",
+    "module": "server/helpers/embedded-postgres.ts",
+    "hook_floor_ms": 210000
+   },
+   {
+    "name": "startEmbeddedPostgresTestDatabase",
+    "module": "db/test-embedded-postgres.ts",
+    "hook_floor_ms": 210000
+   }
+  ]
+ },
+ "files": {
+  "server/a.test.ts": {
+   "cleared": 1
+  },
+  "db/b.test.ts": {
+   "cleared": 1,
+   "finding": 1
+  }
+ }
+}

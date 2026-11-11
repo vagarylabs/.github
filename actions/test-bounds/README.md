@@ -94,6 +94,10 @@ file, not by spelling (`check.py` PY_CALLS).
   from a covered library, or one client construction); a submodule or vendored spelling (`requests.api.get`,
   `asyncio.tasks.wait_for`, `from pip._vendor import requests`); a try/except fallback import whose bindings agree on
   position, kind and index (`asyncio.timeout` or `async_timeout.timeout`, delta L3).
+- **Module and call aliases (read):** `mod = importlib.import_module("asyncio")` (or `from importlib import
+  import_module`) then `mod.wait_for(c, 0.5)`; the chained `importlib.import_module("asyncio").wait_for(c, 0.5)`;
+  `wf = asyncio.wait_for` then `wf(c, 0.5)`. Only a literal module name, a single-name assignment and a name bound
+  that one way in its scope are read (a second binding of the name in the scope lists it or drops it, never reads it).
 - **Client instances:** an assignment, an annotated assignment, a walrus, `with ... as c`, a class body (read as
   `self.s` in its methods), `self.s = ...`, `requests.Session().get(...)`, `requests.session()`.
 - **Ownership.** The binding pass owns every direct argument of a call it resolves, so `from asyncio import wait;
@@ -105,11 +109,12 @@ file, not by spelling (`check.py` PY_CALLS).
     a name imports bind to calls of different positions;
   - a call through a covered name imported from a local module one hop cannot read, or possibly bound by a star
     import of a module this check does not follow;
-  - a call into a covered library this check does not read, or one that reaches it through getattr,
-    importlib.import_module or functools.partial, when it passes a bound keyword;
+  - a call into a covered library this check does not read, or one that reaches it through getattr
+    or functools.partial, when it passes a bound keyword;
   - any aiohttp call with a bound keyword: aiohttp is seen, not read yet (its bound is a ClientTimeout).
 - **Not read, and not listed:** a client that is a fixture or a parameter, a factory's return value, or held in a
-  container; a method alias (`g = s.get`); a module bound to a name by importlib or pytest.importorskip. A file
+  container; an alias of anything but a covered call (`g = s.get` for a fixture client `s`; an alias of an alias), or a module bound to a name by
+  pytest.importorskip. A file
   CPython cannot parse is unparsable (red).
 
 Only these positions are read. Every run prints them (`covered (...)`), so absence elsewhere is never a pass. Not

@@ -207,6 +207,32 @@ class PythonBinding(unittest.TestCase):
                          'def test_x():\n    r.get("u", timeout=5)\n')
         self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
 
+    def assert_one_finding(self, body: str) -> None:
+        v = self.verdict(body)
+        self.assertEqual((v["not_covered"], v["counts"]), ([], {"s/tests/test_a.py": {C.RULE: 1}}))
+
+    def test_a_module_bound_by_importlib_is_read(self):
+        """#65 review B3: `mod = importlib.import_module("asyncio"); await mod.wait_for(c, 0.5)` is a finding."""
+        self.assert_one_finding('import importlib\n\n\nasync def test_x(c):\n'
+                                '    mod = importlib.import_module("asyncio")\n    await mod.wait_for(c, 0.5)\n')
+        self.assert_one_finding('from importlib import import_module\n\n\nasync def test_x(c):\n'
+                                '    mod = import_module("asyncio")\n    await mod.wait_for(c, 0.5)\n')
+
+    def test_the_chained_importlib_form_is_read(self):
+        self.assert_one_finding('import importlib\n\n\nasync def test_x(c):\n'
+                                '    await importlib.import_module("asyncio").wait_for(c, 0.5)\n')
+
+    def test_a_method_alias_is_read_and_a_rebound_one_is_not(self):
+        self.assert_one_finding("import asyncio\n\n\nasync def test_x(c):\n    wf = asyncio.wait_for\n"
+                                "    await wf(c, 0.5)\n")
+        # another function's own `wf` (a subprocess wait) is not the covered call
+        self.assert_one_finding("import asyncio\n\n\nasync def test_x(c):\n    wf = asyncio.wait_for\n"
+                                "    await wf(c, 0.5)\n\n\nasync def test_y(p):\n    wf = p.wait\n    await wf(0.5)\n")
+        # a name bound both ways in one scope is never read as the covered call: no finding, no false one
+        v = self.verdict("import asyncio\n\n\nasync def test_x(c, p, k):\n    wf = asyncio.wait_for\n"
+                         "    if k:\n        wf = p.wait\n    await wf(c, 0.5)\n")
+        self.assertEqual(v["counts"], {})
+
     def test_a_local_reexport_is_read_in_the_base_tree_too(self):
         """The one-hop read of a local module works on a base tree, which is materialized lazily (a consumer census
         crashed reading the module before it was fetched)."""

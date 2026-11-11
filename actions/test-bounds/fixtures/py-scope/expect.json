@@ -18,7 +18,7 @@
    "finding": 3
   },
   "test_unread.py": {
-   "finding": 2
+   "finding": 3
   },
   "test_survivors.py": {
    "finding": 11
@@ -27,7 +27,6 @@
  "not_covered": [
   "pkg/test_reexport.py",
   "test_scope.py",
-  "test_unread.py",
   "test_unread.py",
   "test_unread.py",
   "test_unread.py",

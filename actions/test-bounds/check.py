@@ -130,10 +130,11 @@ COVERED = {
           "NOT COVERED, listed per call: a bound that may come through a `*` or `**` splat; a name an import and "
           "another binding share in one scope, or a declared global/nonlocal; a covered name imported from a local "
           "module one hop cannot read, or possibly bound by another module's star import; a call into a covered "
-          "library this check does not read, or one reached through getattr, importlib.import_module or "
+          "library this check does not read, or one reached through getattr or "
           "functools.partial; any aiohttp call with a bound keyword (aiohttp is not read yet). NOT READ, and not "
           "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
-          "method alias (`g = s.get`); a module bound by importlib/pytest.importorskip to a name",
+          "module bound by pytest.importorskip to a name. READ: importlib.import_module(\"<lib>\") bound to a name "
+          "or chained, and a call alias (`wf = asyncio.wait_for`)",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",
@@ -1260,6 +1261,30 @@ class PyNames:
         self.sites = {}  # (scope id, name) -> [("import", canonical) | ("unread", why) | ("client", class) | ("other", line)]
         self.stars = []
         self._walk(module, module)
+        self._bind_aliases()
+
+    def _bind_aliases(self) -> None:
+        """A second pass over single-name assignments (they are "other" sites after the walk): `mod =
+        importlib.import_module("asyncio")` binds `mod` as an import of that covered module, and `wf =
+        asyncio.wait_for` (or `mod.wait_for`) binds `wf` to that covered call. Where the value is anything else, or
+        the name is bound another way in the same scope, the name stays "other" / mixed, as before."""
+        assigns = [n for n in ast.walk(self.module) if isinstance(n, ast.Assign) and len(n.targets) == 1
+                   and isinstance(n.targets[0], ast.Name)]
+        for n in sorted(assigns, key=lambda x: (x.lineno, x.col_offset)):
+            name, scope = n.targets[0].id, self.scope_of.get(id(n), self.module)
+            got = None
+            mod = _py_import_module_arg(n.value, self.at(n.value.func)[0] if isinstance(n.value, ast.Call) else {})
+            if mod:
+                got = ("import", mod)
+            elif isinstance(n.value, (ast.Name, ast.Attribute)):
+                al, _, unread, imp = self.at(n.value)
+                canon = None if unread else _dotted(n.value, al, imp)
+                if canon in PY_CALLS:
+                    got = ("client", canon)
+            sites = self.sites.get((id(scope), name), [])
+            if got and ("other", n.targets[0].lineno) in sites:
+                sites.remove(("other", n.targets[0].lineno))
+                self._add(scope, name, got)
 
     def _add(self, scope: ast.AST, name: str, what: tuple) -> None:
         self.sites.setdefault((id(scope), name), []).append(what)
@@ -1318,6 +1343,8 @@ class PyNames:
                     self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))
             elif a.name == "*":
                 self.stars.append(where)
+            elif not node.level and mod == "importlib" and a.name == "import_module":
+                self._add(scope, local, ("import", "importlib.import_module"))
             elif not node.level and _py_canonical(f"{mod}.{a.name}").split(".")[0] in PY_LIBRARIES:
                 self._add(scope, local, ("import", _py_canonical(f"{mod}.{a.name}")))  # `from pip._vendor import requests`
             elif node.level or n:  # B1: a local module, followed one hop
@@ -1386,6 +1413,15 @@ def _root_name(node: ast.AST) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _py_import_module_arg(node: ast.AST, aliases: dict) -> str | None:
+    """The covered library `importlib.import_module("<lib>")` loads, when the argument is a string literal naming one."""
+    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and \
+            isinstance(node.args[0].value, str) and node.args[0].value.split(".")[0] in PY_LIBRARIES and \
+            _dotted(node.func, aliases, {}) == "importlib.import_module":
+        return _py_canonical(node.args[0].value)
+    return None
+
+
 def _dotted(node: ast.AST, aliases: dict, clients: dict) -> str | None:
     """The canonical dotted name a callee expression names, through imports and client instances; else None."""
     if isinstance(node, ast.Name):
@@ -1398,6 +1434,9 @@ def _dotted(node: ast.AST, aliases: dict, clients: dict) -> str | None:
         base = _dotted(node.value, aliases, clients)
         return None if base is None else _py_canonical(f"{base}.{node.attr}")
     if isinstance(node, ast.Call):  # requests.Session().get: an instance made in place
+        loaded = _py_import_module_arg(node, aliases)  # importlib.import_module("asyncio").wait_for: the module itself
+        if loaded:
+            return loaded
         ctor = _dotted(node.func, aliases, clients)
         return CLIENT_CTORS.get(_py_canonical(ctor or ""))
     return None
@@ -1553,8 +1592,7 @@ def py_binding_matches(tree: "Tree", files: list[str]) -> tuple[list[dict], list
             elif lib in PY_LIBRARIES:
                 why = f"`{canon}` is a call into {lib} that this check does not read"
             else:
-                # The callee reaches a covered library some other way (getattr(requests, "get"),
-                # importlib.import_module("requests").get), or an argument is a covered callable
+                # The callee reaches a covered library some other way (getattr(requests, "get")), or an argument is a covered callable
                 # (functools.partial(requests.get, timeout=1)): seen, not read, so listed.
                 aliases, _, _, imported = names.at(call.func)
                 via = next((v for v in aliases.values() if v.split(".")[0] in PY_LIBRARIES), None) or next(

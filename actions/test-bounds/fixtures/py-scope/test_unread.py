@@ -1,5 +1,6 @@
 # K2 step 2A RC2 (B3): a call into a covered library that this check cannot read is listed NOT COVERED, never
-# dropped. Two REDs (the submodule and vendored spellings, which are read) and six NOT COVERED rows.
+# dropped. Three REDs (the submodule and vendored spellings and importlib.import_module(...).get, which are read) and five
+# NOT COVERED rows.
 import functools
 import importlib
 import urllib.request

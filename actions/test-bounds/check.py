@@ -134,7 +134,9 @@ COVERED = {
           "functools.partial; any aiohttp call with a bound keyword (aiohttp is not read yet). NOT READ, and not "
           "listed: a client that is a fixture or parameter, a factory's return value, or held in a container; a "
           "module bound by pytest.importorskip to a name. READ: importlib.import_module(\"<lib>\") bound to a name "
-          "or chained, and a call alias (`wf = asyncio.wait_for`)",
+          "or chained, and a call alias (`wf = asyncio.wait_for`). NOT COVERED, and silent (no finding, no row; "
+          "a live instance gets a reader, nothing else does): a tuple, walrus, annotated or chained assignment of "
+          "importlib.import_module(...), a name rebound in its scope, and a non-literal import_module argument",
     "pytest config": "pytest-timeout's `timeout` and addopts `--timeout` in pytest.ini, .pytest.ini, tox.ini, "
                      "setup.cfg, pyproject.toml (`[tool.pytest.ini_options]` and pytest 9's `[tool.pytest]`), "
                      "pytest.toml and .pytest.toml (when a tree covers the file)",

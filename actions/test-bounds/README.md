@@ -97,7 +97,8 @@ file, not by spelling (`check.py` PY_CALLS).
 - **Module and call aliases (read):** `mod = importlib.import_module("asyncio")` (or `from importlib import
   import_module`) then `mod.wait_for(c, 0.5)`; the chained `importlib.import_module("asyncio").wait_for(c, 0.5)`;
   `wf = asyncio.wait_for` then `wf(c, 0.5)`. Only a literal module name, a single-name assignment and a name bound
-  that one way in its scope are read (a second binding of the name in the scope lists it or drops it, never reads it).
+  that one way in its scope are read. A name rebound in its scope is dropped: no finding and no NOT COVERED row (the
+  rebind is not listed; see the six silent forms below).
 - **Client instances:** an assignment, an annotated assignment, a walrus, `with ... as c`, a class body (read as
   `self.s` in its methods), `self.s = ...`, `requests.Session().get(...)`, `requests.session()`.
 - **Ownership.** The binding pass owns every direct argument of a call it resolves, so `from asyncio import wait;
@@ -112,6 +113,19 @@ file, not by spelling (`check.py` PY_CALLS).
   - a call into a covered library this check does not read, or one that reaches it through getattr
     or functools.partial, when it passes a bound keyword;
   - any aiohttp call with a bound keyword: aiohttp is seen, not read yet (its bound is a ClientTimeout).
+- **NOT COVERED, and silent** (no finding and no NOT COVERED row; root's #65 delta RC, 2026-11-11). A static reader
+  does not chase every aliasing form, so these six are named here and in `check.py`'s COVERED string, not read:
+  - tuple assignment: `a, b = importlib.import_module("asyncio"), y`;
+  - walrus: `(m := importlib.import_module("asyncio"))`;
+  - annotated assignment: `m: ModuleType = importlib.import_module("asyncio")`;
+  - chained assignment: `a = b = importlib.import_module("asyncio")`;
+  - rebind: `m = importlib.import_module("asyncio")` and later `m = importlib.import_module("os")` (or any other
+    value) in the same scope;
+  - non-literal argument: `importlib.import_module(name)`. Live on 2026-11-11: 30 non-literal sites in vagary-core (28 loops over literal OTel module tuples in observability.py, 2 test tables), none reaching a bound module; a reader is owed only when a bound module can reach the call.
+
+  The rule: a live instance gets a reader, nothing else does. A live instance is one in a required repository (vagaris,
+  vagary-core, vps-ansible, .github) that reaches a covered call with a bound; the grep that found none is in #65's
+  docs follow-up PR body.
 - **Not read, and not listed:** a client that is a fixture or a parameter, a factory's return value, or held in a
   container; an alias of anything but a covered call (`g = s.get` for a fixture client `s`; an alias of an alias), or a module bound to a name by
   pytest.importorskip. A file

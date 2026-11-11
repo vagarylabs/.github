@@ -129,6 +129,38 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(classify.classes_for(entry, "docker/docker-compose.yml"), set())
         self.assertEqual(classify.classes_for(entry, "server/src/index.ts"), set())
 
+    def test_the_shared_signer_and_its_tests_are_protected_in_dotgithub(self):
+        # D2 (root, R4 of .github #62): the signing trust root is whoever can merge sign-image.yml to main of this
+        # repository, so the workflow and its tests are a protected path (authority-binding) on top of the default
+        # ci-judge patterns, which this profile carries verbatim. A GitHub required approval cannot be the control:
+        # every agent acts as the one VagaryLabs-Main account. This repository is where the paths live, so they must
+        # exist here, not only in a fixture.
+        m = manifest()
+        entry = classify.repo_entry(m, "vagarylabs/.github")
+        self.assertIsNot(entry, m["default"])
+        default = {pat for p in m["default"]["protected"] for pat in p["patterns"]}
+        ci_judge = {pat for p in entry["protected"] if p["class"] == "ci-judge" for pat in p["patterns"]}
+        self.assertLessEqual(default, ci_judge)
+        for path in (".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"):
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file())
+                self.assertIn("authority-binding", classify.classes_for(entry, path))
+        # The signer, then the judge's own files (root ruling B2a, R4 of .github #69), and nothing else: the manifest
+        # patterns and classify.BLOCKING_PATHS are the same list, so neither mechanism can drift from the other.
+        binding = [pat for p in entry["protected"] if p["class"] == "authority-binding" for pat in p["patterns"]]
+        self.assertEqual(binding, [".github/workflows/sign-image.yml", "trusted/tests/test_sign_image.py"]
+                         + list(SignerBlockingTests.JUDGE))
+        self.assertEqual(set(binding), classify.BLOCKING_PATHS)
+        # nothing else this repository holds becomes authority-binding
+        for other in ("trusted/tests/test_weakening.py", "trusted/inline_scripts.py", "README.md",
+                      "trusted/templates/trusted-secret-scan.yml.in"):
+            self.assertEqual(classify.classes_for(entry, other), set(), other)
+        integrity = ".github/workflows/trusted-workflow-integrity.yml"
+        self.assertEqual(classify.classes_for(entry, integrity), {"ci-judge"})
+        # a PR that edits the signer is classified, with the class the protected-paths check reports
+        rows = classify.classify(entry, [("M", ".github/workflows/sign-image.yml"), ("M", "README.md")])
+        self.assertEqual(rows, [("M", ".github/workflows/sign-image.yml", ["authority-binding", "ci-judge"])])
+
     def test_unlisted_repo_gets_default(self):
         entry = classify.repo_entry(manifest(), "vagarylabs/vagaris")
         self.assertEqual(classify.classes_for(entry, ".github/workflows/ci.yml"), {"ci-judge"})
@@ -151,6 +183,170 @@ class DecisionTests(unittest.TestCase):
                 self.assertEqual(classify.protected_decision(["iac"], verdict, interim=False)[0], 1)
         self.assertEqual(classify.protected_decision(["iac"], "verified", interim=False)[0], 0)
         self.assertEqual(classify.protected_decision([], "not-required", interim=False)[0], 0)
+
+
+class SignerBlockingTests(unittest.TestCase):
+    """D2: a change to the shared signer, or to the protected-paths judge's own files (B2a), blocks, whatever
+    INTERIM_REPORT_ONLY says.
+
+    WHAT THESE PROVE LOCALLY: the decision LOGIC of classify.py (which paths block, that the blocking ignores the
+    interim flag, that a diff cannot argue its way out by also editing the workflow or the classifier, that only a
+    "verified" verdict opens the in-band door). WHAT THEY CANNOT PROVE: that the copy of classify.py that runs in CI
+    is not the PR's. Every test here runs the classifier from THIS checkout. Only the org/repo ruleset's `workflows`
+    rule, pinned to a vagarylabs/.github main sha, makes the workflow bytes (and the classifier inlined in them) the
+    trusted ones; that is a live-state fact for root to verify on the ruleset, not a unit-test fact. Likewise (b) proves
+    the wiring of the FUTURE in-band door with a stub; today verify_vagaris_approval returns "not-yet-available" and
+    the legitimate door is out-of-band (root lifts the ruleset, merges with R4, restores the pin).
+    """
+    SIGNER = ".github/workflows/sign-image.yml"
+    TESTS = "trusted/tests/test_sign_image.py"
+    REPO = "vagarylabs/.github"
+    # Root ruling B2a: the workflow whose pinned bytes run, every file it is rendered from, render.py, and this file
+    # (it holds the drift tests: WorkflowTests.test_generated_workflows_are_current and
+    # test_inline_copies_are_byte_identical).
+    JUDGE = (".github/workflows/trusted-protected-paths.yml", "trusted/templates/trusted-protected-paths.yml.in",
+             "trusted/templates/_shas.yml.in", "trusted/templates/_resolve_shas.yml.in", "trusted/classify.py",
+             "trusted/manifest.json", "trusted/render.py", "trusted/tests/test_trusted.py",
+             "trusted/tests/test_merge_result.py")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.d = cls.tmp.name
+        git(cls.d, "init", "-q", "-b", "main")
+        git(cls.d, "config", "user.email", "t@example.invalid")
+        git(cls.d, "config", "user.name", "t")
+        cls.write({cls.SIGNER: "name: sign-image\n", cls.TESTS: "# t\n", "README.md": "r\n",
+                   ".github/workflows/trusted-protected-paths.yml": "name: p\n", "trusted/classify.py": "X = 1\n"})
+        git(cls.d, "add", "-A")
+        git(cls.d, "commit", "-q", "-m", "base")
+        cls.base = git(cls.d, "rev-parse", "HEAD")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @classmethod
+    def write(cls, files):
+        for p, text in files.items():
+            pathlib.Path(cls.d, p).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(cls.d, p).write_text(text)
+
+    def head_with(self, files):
+        git(self.d, "checkout", "-q", "-B", "pr", self.base)
+        self.write(files)
+        git(self.d, "add", "-A")
+        git(self.d, "commit", "-q", "-m", "pr")
+        return git(self.d, "rev-parse", "HEAD")
+
+    def check(self, head):
+        out, cwd = io.StringIO(), os.getcwd()
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        try:
+            os.chdir(self.d)
+            git(self.d, "update-ref", "refs/remotes/origin/main", self.base)  # the live base, as the checkout has it
+            with contextlib.redirect_stdout(out):
+                code = classify.main(["protected-paths", "--manifest", str(MANIFEST), "--repo", self.REPO,
+                                      "--base", self.base, "--head", head, "--event", "pull_request",
+                                      "--base-ref", "main"])
+        finally:
+            os.chdir(cwd)
+        return code, out.getvalue()
+
+    def test_a_signer_diff_is_red_under_the_interim_flag(self):
+        self.assertTrue(classify.INTERIM_REPORT_ONLY)  # the repo-wide interim is untouched
+        for path in (self.SIGNER, self.TESTS):
+            with self.subTest(path=path):
+                code, out = self.check(self.head_with({path: "changed\n"}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error title=protected paths::BLOCKING", out)
+                self.assertIn(path, out)
+
+    def test_b_a_verified_approval_passes_the_future_in_band_door(self):
+        # Proves the wiring only: with verify_vagaris_approval stubbed to "verified" the same diff passes. The real
+        # verifier does not exist yet (G-23 seam), so today this door cannot open.
+        head = self.head_with({self.SIGNER: "changed\n"})
+        with mock.patch.object(classify, "verify_vagaris_approval", return_value="verified"):
+            code, out = self.check(head)
+        self.assertEqual(code, 0, out)
+        for verdict in ("not-yet-available", "missing", "denied"):
+            with self.subTest(verdict=verdict), mock.patch.object(classify, "verify_vagaris_approval",
+                                                                  return_value=verdict):
+                self.assertEqual(self.check(head)[0], 1)
+
+    def test_c_unrelated_and_other_protected_paths_are_not_blocked(self):
+        code, out = self.check(self.head_with({"README.md": "x\n", "docs/a.md": "y\n"}))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no protected class touched", out)
+        # another ci-judge path in this repo stays report-only under the interim
+        code, out = self.check(self.head_with({".github/workflows/ci.yml": "name: ci\n"}))
+        self.assertEqual(code, 0, out)
+        self.assertIn("INTERIM report-only", out)
+
+    def test_d_a_diff_that_also_edits_the_judge_is_still_red(self):
+        # LOGIC ONLY: the verdict is a function of the changed PATHS, so editing the workflow or the classifier in the
+        # same diff cannot lower it. That the PR's own copy of those files is not the one RUN is proven only by the
+        # ruleset pin (see the class docstring), not here.
+        head = self.head_with({self.SIGNER: "changed\n",
+                               ".github/workflows/trusted-protected-paths.yml": "name: p\non: nothing\n",
+                               "trusted/classify.py": "X = 2  # always pass\n"})
+        code, out = self.check(head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("BLOCKING", out)
+
+    def test_e_a_diff_to_any_one_of_the_judges_files_is_red(self):
+        # B2a: the judge's bytes change only through the door, so a re-pin cannot adopt a judge change unseen.
+        for path in self.JUDGE:
+            with self.subTest(path=path):
+                code, out = self.check(self.head_with({path: "changed\n"}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error title=protected paths::BLOCKING: %s change the shared signer or the "
+                              "protected-paths judge itself" % path, out)
+
+    def test_the_blocking_set_is_exactly_the_signer_and_the_judge(self):
+        self.assertEqual(classify.BLOCKING_PATHS, {self.SIGNER, self.TESTS} | set(self.JUDGE))
+        entry = classify.repo_entry(manifest(), self.REPO)
+        self.assertEqual(classify.blocking_rows(classify.classify(
+            entry, [("M", self.SIGNER), ("M", "trusted/classify.py"), ("M", "README.md"),
+                    ("M", ".github/workflows/ci.yml")])),
+            [("M", self.SIGNER, ["authority-binding", "ci-judge"]),
+             ("M", "trusted/classify.py", ["authority-binding"])])
+        # a path outside the set never blocks even if some profile classes it authority-binding
+        self.assertEqual(classify.blocking_rows([("M", "docker/docker-compose.override.yml", ["authority-binding"])]), [])
+
+    def test_the_blocking_set_names_every_file_the_judge_is_rendered_from(self):
+        # A new INCLUDE or INLINE in the judge's template must join the blocking set (and the manifest), or the next
+        # re-pin adopts its bytes unseen. Every path in the set is a real file of this repository.
+        inputs, todo = set(), [render.TEMPLATES / "trusted-protected-paths.yml.in"]
+        while todo:
+            t = todo.pop()
+            inputs.add(str(t.relative_to(ROOT)))
+            for line in t.read_text(encoding="utf-8").splitlines():
+                m = render.DIRECTIVE.match(line)
+                if m and m["kind"] == "INCLUDE":
+                    todo.append(render.TEMPLATES / m["path"])
+                elif m:
+                    inputs.add(m["path"])
+        # plus the regression tests of what the judge classifies (B1, N1, N2, merge_group)
+        inputs |= {str(WORKFLOWS["trusted-protected-paths"].relative_to(ROOT)), "trusted/render.py",
+                   str(pathlib.Path(__file__).resolve().relative_to(ROOT)), "trusted/tests/test_merge_result.py"}
+        self.assertEqual(inputs, set(self.JUDGE))
+        self.assertLessEqual(inputs, classify.BLOCKING_PATHS)
+        for path in classify.BLOCKING_PATHS:
+            self.assertTrue((ROOT / path).is_file(), path)
+        # this file holds the drift tests that bind the inline copies to their sources
+        self.assertTrue(callable(getattr(WorkflowTests, "test_generated_workflows_are_current")))
+        self.assertTrue(callable(getattr(WorkflowTests, "test_inline_copies_are_byte_identical")))
+
+    def test_mutant_that_drops_the_blocking_turns_the_red_assertions_green(self):
+        # The discriminator: with blocking_rows neutered, the signer diff passes (code 0), so test (a) and (d) above,
+        # which assert code 1, would fail. A mutant of the blocking therefore cannot go unnoticed.
+        head = self.head_with({self.SIGNER: "changed\n"})
+        self.assertEqual(self.check(head)[0], 1)
+        with mock.patch.object(classify, "blocking_rows", lambda rows: []):
+            self.assertEqual(self.check(head)[0], 0)
+        with mock.patch.object(classify, "BLOCKING_CLASS", "no-such-class"):
+            self.assertEqual(self.check(head)[0], 0)
 
 
 class RatchetTests(unittest.TestCase):
@@ -203,11 +399,15 @@ class EndToEndTests(unittest.TestCase):
         out = io.StringIO()
         cwd = os.getcwd()
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        extra = []
+        if mode == "protected-paths":  # the live base, as the checkout has it
+            git(self.d, "update-ref", "refs/remotes/origin/main", base or self.base)
+            extra = ["--event", "pull_request", "--base-ref", "main"]
         try:
             os.chdir(self.d)
             with contextlib.redirect_stdout(out):
                 code = classify.main([mode, "--manifest", str(MANIFEST), "--repo", "vagarylabs/vps-ansible",
-                                      "--base", base or self.base, "--head", head or self.head])
+                                      "--base", base or self.base, "--head", head or self.head] + extra)
         finally:
             os.chdir(cwd)
         return code, out.getvalue()
@@ -253,11 +453,31 @@ class WorkflowTests(unittest.TestCase):
         # The inline classifier/manifest are byte-identical copies of the trusted/ sources.
         self.assertEqual(render.main(["--check"]), 0)
 
+    # GitHub starts no run for a workflow file over 500 KB: "Each workflow file in the .github/workflows directory must
+    # be 500 KB or smaller to trigger a run" (https://docs.github.com/en/actions/reference/limits). This repository's CI
+    # never runs the trusted jobs (they are guarded off here), so an oversized render shows only as a jobless failed
+    # push run: .github #69's head 16acf403 rendered trusted-workflow-integrity.yml at 514,380 bytes, and run
+    # 41343868440 started no job ("Workflow file exceeds the maximum allowed size of 500 KB"). Pinned by a ruleset, such
+    # a required workflow would never report in any consumer. The docs do not say whether KB is 1,000 or 1,024 bytes, so
+    # the bound is the smaller. main's largest render, at 389813b5, is 487,890 bytes.
+    WORKFLOW_FILE_LIMIT = 500_000
+
+    def test_every_workflow_file_is_under_githubs_run_limit(self):
+        files = sorted(p for p in (ROOT / ".github" / "workflows").iterdir() if p.suffix in (".yml", ".yaml"))
+        # positive control: the trusted renders are among the files measured
+        self.assertLessEqual(set(WORKFLOWS.values()), set(files))
+        for path in files:
+            with self.subTest(workflow=path.name):
+                size = path.stat().st_size
+                self.assertLessEqual(size, self.WORKFLOW_FILE_LIMIT, "%s is %d bytes, %d over the %d-byte limit; GitHub "
+                                     "would start no run of it" % (path.name, size, size - self.WORKFLOW_FILE_LIMIT,
+                                                                   self.WORKFLOW_FILE_LIMIT))
+
     def test_inline_copies_are_byte_identical(self):
-        # Every copy: trusted-workflow-integrity carries two (its integrity and timeout-floor jobs).
         src = (ROOT / "trusted" / "classify.py").read_text()
-        # trusted-workflow-integrity: integrity, timeout-floor and workflow-lint (C1) each write the trusted bytes.
-        for name, copies in (("trusted-workflow-integrity", 3), ("trusted-protected-paths", 1)):
+        # ONE copy each (root's ruling A, 2026-11-02): trusted-workflow-integrity's judges are steps of one job, which
+        # writes the trusted bytes once; three copies took it past GitHub's 500 KB run limit.
+        for name, copies in (("trusted-workflow-integrity", 1), ("trusted-protected-paths", 1)):
             text = WORKFLOWS[name].read_text()
             found = list(re.finditer(
                 r"\n( *)cat > \"\$d/classify.py\" <<'TRUSTED_CLASSIFY_PY'\n(.*?)\n\1TRUSTED_CLASSIFY_PY\n", text, re.S))
@@ -273,14 +493,27 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertNotIn("pull_request_target", text)
                 self.assertNotIn("secrets.", text)
-                self.assertNotIn("ubuntu-latest", text)
-                self.assertNotIn("vars.", text)
+                # The ONE variable a ruleset workflow reads: the two-way placement switch (R1 L10). Every `vars.` is it.
+                self.assertEqual(text.count("vars."), text.count("vars.TRUSTED_LIGHT_RUNNER == 'hosted'"))
+                self.assertGreater(text.count("vars."), 0)
                 self.assertIn("\non:\n  pull_request:\n  merge_group:\n", text)
                 self.assertIn("\npermissions:\n  contents: read\n  pull-requests: read\n\njobs:", text)
                 jobs = re.findall(r"\n    runs-on: (.*)\n", text)
                 self.assertTrue(jobs)
-                self.assertEqual(set(jobs), {"[self-hosted, Linux, X64, vl-light]"})
-                self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), len(jobs))
+                bridge = '\'["self-hosted","Linux","X64","vl-light"]\''
+                switch = "${{ fromJSON(vars.TRUSTED_LIGHT_RUNNER == 'hosted' && '\"ubuntu-latest\"' || " + bridge + ") }}"
+                if name == "trusted-protected-paths":
+                    # the ONE hosted exception (public vagarylabs/.github) joined with the switch; the bridge otherwise
+                    self.assertEqual(jobs, ["${{ fromJSON((github.repository == 'vagarylabs/.github' || "
+                                            "vars.TRUSTED_LIGHT_RUNNER == 'hosted') && '\"ubuntu-latest\"' || " + bridge + ") }}"])
+                else:
+                    self.assertEqual(set(jobs), {switch})
+                # ubuntu-latest appears only as the switch's quoted JSON literal (one per job) and in comments; never bare.
+                self.assertNotRegex(text, r"runs-on: ubuntu-latest")
+                self.assertEqual(text.count("'\"ubuntu-latest\"'"), len(jobs))
+                # D2: trusted-protected-paths judges vagarylabs/.github too (no guard); the others still skip it.
+                guards = 0 if name == "trusted-protected-paths" else len(jobs)
+                self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), guards)
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):
                     self.assertRegex(use, r"@[0-9a-f]{40}$")

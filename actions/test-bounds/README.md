@@ -138,6 +138,9 @@ Otherwise it is a finding. The proof can be:
 - **the launcher class**: a `beforeAll` whose first argument calls a declared launcher. The launcher must be bound
   by a plain named import from its declared module, under the same guards. Such a hook is judged against the
   launcher's own floor. Embedded Postgres owns a 180 s startup, so its hook floor is 210 000 ms.
+  Two launchers may share a name in different modules (vagaris: server's and packages/db's
+  `startEmbeddedPostgresTestDatabase`). The hook's own import binding picks the one it calls, and a hook that calls
+  several takes the highest floor.
 - **a mark**: `timeout under test: <what it proves>`, with the mark's own text on the value's line (not merely a
   comment that ends there). A mark without a reason (a word of three letters) clears nothing. Every mark is listed,
   and a bound this change newly exempts is listed as NEW.

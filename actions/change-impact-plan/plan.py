@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.7.2"
+PLANNER_VERSION = "1.7.5"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -103,6 +103,35 @@ def canonical_coordinates(repository: str, target_ref: str, server_url: str) -> 
         raise ValueError("invalid canonical target ref")
 
 
+# Git subprocess ceilings (1.7.3; spine's report on core #936: at Mac load 25-34 the reader scan's `git grep` ran past
+# its 15 s ceiling on 2 of 4 runs and silently lost the reduced plan). A git call gets ONE retry after a timeout, and
+# every ceiling scales by CHANGE_IMPACT_GIT_TIMEOUT_SCALE (the action's git-timeout-scale input: an integer 1-8,
+# default 1, anything else reads as 1). Fail-to-FULL stays the only failure mode: a call that times out on both
+# attempts raises, and each caller plans FULL under its own distinct reason (READER_TIMEOUT, TARGET_TIMEOUT).
+GIT_ATTEMPTS = 2
+READER_TIMEOUT = "reader scan timed out"
+TARGET_TIMEOUT = "canonical target lookup timed out"
+
+
+def git_timeout(base: float) -> float:
+    raw = os.environ.get("CHANGE_IMPACT_GIT_TIMEOUT_SCALE", "1")
+    scale = int(raw) if re.fullmatch(r"[1-8]", raw) else 1
+    return base * scale
+
+
+def run_git(cmd: list, *, timeout: float, check_output: bool = False, **kwargs):
+    """subprocess.run (or check_output) for a git call: its ceiling scaled, one retry after a timeout only. Any other
+    failure is returned or raised at once, as before."""
+    for attempt in range(GIT_ATTEMPTS):
+        try:
+            if check_output:
+                return subprocess.check_output(cmd, timeout=git_timeout(timeout), **kwargs)
+            return subprocess.run(cmd, timeout=git_timeout(timeout), **kwargs)
+        except subprocess.TimeoutExpired:
+            if attempt == GIT_ATTEMPTS - 1:
+                raise
+
+
 def canonical_target(repository: str, target_ref: str, server_url: str) -> str:
     """Resolve exactly one trusted HTTPS ref without candidate Git configuration or logged credentials."""
     canonical_coordinates(repository, target_ref, server_url)
@@ -119,11 +148,11 @@ def canonical_target(repository: str, target_ref: str, server_url: str) -> str:
         env[f"GIT_CONFIG_VALUE_{number}"] = value
     with tempfile.TemporaryDirectory(prefix="ci-canonical-target-") as empty:
         # An explicit empty bare repository prevents parent-repository discovery through TMPDIR.
-        subprocess.check_output(["git", "--no-replace-objects", "init", "--bare", "--template=", empty],
-                                env=env, stderr=subprocess.PIPE, timeout=5)
-        raw = subprocess.check_output(["git", "--no-replace-objects", "-C", empty, "ls-remote", "--refs",
+        run_git(["git", "--no-replace-objects", "init", "--bare", "--template=", empty],
+                check_output=True, env=env, stderr=subprocess.PIPE, timeout=5)
+        raw = run_git(["git", "--no-replace-objects", "-C", empty, "ls-remote", "--refs",
             "--exit-code", server_url + "/" + repository + ".git", target_ref],
-            env=env, stderr=subprocess.PIPE, timeout=15).decode("ascii")
+            check_output=True, env=env, stderr=subprocess.PIPE, timeout=15).decode("ascii")
     lines = raw.splitlines()
     if len(lines) != 1 or lines[0].split("\t")[1:] != [target_ref]:
         raise ValueError("ambiguous canonical target")
@@ -149,6 +178,8 @@ def resolve_target_observation(**context):
     try:
         result.update(target_context(**context))
         result.update(status="known", target_sha=canonical_target(context["repository"], context["target_ref"], context["server_url"]))
+    except subprocess.TimeoutExpired:
+        result.update(status="unknown", reason=TARGET_TIMEOUT)  # its own reason: a slow runner, not an absent target
     except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
         pass
     return result
@@ -395,7 +426,7 @@ def provider_compare(repository: str, base: str, head: str, *, token: str, api_u
 def git_policy(root: Path, *args) -> str:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    return subprocess.check_output(["git", "--no-replace-objects", "-C", str(root), *args],
+    return run_git(["git", "--no-replace-objects", "-C", str(root), *args], check_output=True,
                                    env=env, stderr=subprocess.PIPE, timeout=5).decode().strip()
 
 
@@ -437,7 +468,7 @@ def git_observe(root: Path, *args, ok=(0,)) -> tuple[int, bytes]:
     """Read-only Git query under the same isolated environment; returns (exit code, stdout)."""
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    done = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
+    done = run_git(["git", "--no-replace-objects", "-C", str(root), *args],
                           env=env, capture_output=True, timeout=5)
     if done.returncode not in ok:
         raise ValueError("git observation failed")
@@ -729,7 +760,11 @@ def pnpm_graph(patterns: list[str], manifests: list[tuple[str, object]], extra_d
             continue
         if any(glob_to_regex(p).match(rel_dir) or rel_dir.startswith(p.rstrip("/*") + "/") for p in exclude):
             continue
-        data = json.loads(read_manifest())
+        text = read_manifest()
+        # The planner's own bound, not the interpreter's: CPython 3.14 parses 100000 levels that 3.11-3.13 refuse with RecursionError.
+        if json_nesting_depth(text) > PLAN_CONFIG_MAX_DEPTH:
+            raise ValueError(f"{rel_dir}/package.json nests deeper than {PLAN_CONFIG_MAX_DEPTH} levels")
+        data = json.loads(text)
         name = data.get("name")
         if not name:
             raise ValueError(f"{rel_dir}/package.json has no name")
@@ -1233,12 +1268,44 @@ def test_inventory(cfg: dict, pkgs: dict[str, dict], test_files: list[str]) -> d
             "packages": packages, "unowned": {"files": len(unowned), "uncovered": len(uncovered)}, "gaps": gaps}
 
 
+PLAN_CONFIG_MAX_DEPTH = 64  # 1.7.4: a real plan config nests a few levels (workspace.packages.<name>.deps is 5)
+
+
+def json_nesting_depth(text: str) -> int:
+    """The deepest `[`/`{` nesting in JSON text, skipping strings and their escapes. The same scan as edges.py's
+    package.json bound (PACKAGE_JSON_MAX_DEPTH); kept here because edges.py loads plan.py, never the reverse."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def parse_plan_config(raw: bytes) -> tuple[dict | None, str | None]:
     """A plan config's bytes as a JSON object, or why they are malformed. The base and a candidate are read by the same
     rule (F29), so a config one of them refuses is refused by the other too. The schema is the caller's check."""
+    # A depth bound, not RecursionError alone: how deep `json.loads` recurses depends on the interpreter (CPython 3.13
+    # raises at 100000 levels, 3.14 parses them), and a refusal must not depend on which Python runs (edges.py's
+    # PACKAGE_JSON_MAX_DEPTH rule). The decode is json.loads's own, so a non-UTF text keeps its "not valid JSON" message.
     try:
-        cfg = json.loads(raw)
-    except RecursionError:
+        text = raw.decode(json.detect_encoding(raw), "surrogatepass")
+        if json_nesting_depth(text) > PLAN_CONFIG_MAX_DEPTH:
+            return None, "the plan config nests too deeply to parse"
+        cfg = json.loads(text)
+    except RecursionError:  # a backstop: an interpreter whose limit sits under PLAN_CONFIG_MAX_DEPTH
         return None, "the plan config nests too deeply to parse"
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
         return None, f"the plan config is not valid JSON: {exc}"
@@ -1747,15 +1814,17 @@ def main(argv=None) -> int:
                receipt=None, scope=scope, reader_assessment=readers, test_files=test_files,
                candidate_inputs=candidate_inputs, red_test_files=red_test_files, base_config_error=base_config_error)
     if a.event == "merge_group" and scope["status"] == "known":
+        recheck_reason = "canonical target changed or unavailable before output"
         try:
             rechecked = canonical_target(a.repository, a.target_ref, a.server_url)
+        except subprocess.TimeoutExpired:
+            rechecked, recheck_reason = None, TARGET_TIMEOUT + " before output"
         except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
             rechecked = None
         scope["target_rechecked_sha"] = rechecked
         if rechecked != scope["target_sha"]:
             scope.update(status="unknown", paths=None, diff_base=None, policy_revision=None, policy_blob=None, policy_sha256=None,
-                         policy_paths=None, policy_status="unverified",
-                         reason="canonical target changed or unavailable before output")
+                         policy_paths=None, policy_status="unverified", reason=recheck_reason)
             rec = plan(cfg=None, root=root, config_path=config_path, paths=None, event=a.event, base=a.base,
                        head=a.head, expected_count=a.expected_count, forced_full_reason=scope["reason"],
                        tested=rec.get("tested"), receipt=None, scope=scope, reader_assessment=readers)

@@ -60,6 +60,7 @@ _plan = _plan_module()
 declared_packages, discover_pnpm_packages, canonical_digest = _plan.declared_packages, _plan.discover_pnpm_packages, _plan.canonical_digest
 graph_digest, sha256_file, glob_to_regex = _plan.graph_digest, _plan.sha256_file, _plan.glob_to_regex
 first_match, classify_paths, rule_matches, LOCKFILE_NAMES = _plan.first_match, _plan.classify_paths, _plan.rule_matches, _plan.LOCKFILE_NAMES
+run_git, READER_TIMEOUT = _plan.run_git, _plan.READER_TIMEOUT  # git calls: a scaled ceiling, one retry (1.7.3)
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*", "<!--", "--")
 
@@ -383,7 +384,7 @@ def read_source(repo: Path, path: str, revision: str | None, environment: dict) 
     data = reader.read(f"{revision}:{path}") if reader else None
     if data is not None:
         return data.decode("utf-8", errors="replace")
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "show", f"{revision}:{path}"],
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "show", f"{revision}:{path}"],
                          capture_output=True, timeout=15, env=environment)
     if out.returncode:
         raise ValueError(f"reader scan cannot read {path} at the scanned revision")
@@ -2052,7 +2053,7 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
         return rows + links
 
     def grep_one(args: list[str], spec: list[str]) -> list[tuple[str, str]]:
-        out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-I", *args,
+        out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-I", *args,
                               *([revision] if revision else []), "--", *spec],
                              capture_output=True, timeout=120, env={**environment, "LC_ALL": "C"})
         if only_paths is not None and b"unable to read" in (out.stderr or b""):
@@ -2122,9 +2123,11 @@ def basename_mentions(repo: Path, cfg: dict, owner, revision: str | None, enviro
             if base != "package.json":
                 return [text]
             if f not in manifests:
+                manifest = (read_source(repo, f, revision, environment) if revision
+                            else (repo / f).read_text(errors="replace")).removeprefix("\ufeff")
                 try:
-                    body = json.loads((read_source(repo, f, revision, environment) if revision
-                                       else (repo / f).read_text(errors="replace")).removeprefix("\ufeff"))
+                    # Bounded before the parse: RecursionError is no ValueError (3.11-3.13) and 3.14 parses any depth.
+                    body = None if json_nesting_depth(manifest) > PACKAGE_JSON_MAX_DEPTH else json.loads(manifest)
                 except ValueError:
                     body = None
                 manifests[f] = (json.dumps({k: v for k, v in body.items() if k not in PACKAGE_METADATA},
@@ -2856,7 +2859,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
     """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
     args = ["ls-tree", "-r", "-z", "--full-tree", revision] if revision else ["ls-files", "-s", "-z"]
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), *args], capture_output=True, timeout=60, env=environment)
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), *args], capture_output=True, timeout=60, env=environment)
     if out.returncode:
         raise ValueError("reader scan cannot list the tracked files at the scanned revision")
     entries = {}
@@ -2963,8 +2966,8 @@ def scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: 
         # refuses like every other unproven route (FULL), by a typed refusal, never by an uncaught exception.
         cmd = [str(x) for x in (err.cmd if isinstance(err.cmd, (list, tuple)) else [err.cmd])]
         what = next((f"git {x}" for x in cmd if x in ("grep", "ls-tree", "ls-files", "show", "cat-file")), cmd[0])
-        raise ValueError(f"unresolved (reader closure unproven: timeout: `{what}` ran over its {err.timeout:g} s limit)") \
-            from None
+        raise ValueError(f"unresolved ({READER_TIMEOUT}: `{what}` ran over its {err.timeout:g} s limit on both attempts; "
+                         "reader closure unproven)") from None
 
 
 def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision: str | None = None,
@@ -3013,7 +3016,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
         report["lockfiles_not_read"] = sorted(lockfiles_dropped)
     # LC_ALL=C: under a UTF-8 locale `git grep -E` stops matching a line after an invalid UTF-8 byte, so a root mention
     # later on that line was never seen. The pattern is ASCII, so byte semantics lose nothing.
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "--null", "-n", "-I", "-E", pattern,
                           *([revision] if revision else []), "--", ".", *excludes],
                          capture_output=True, timeout=15, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan")
@@ -3250,7 +3253,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     # `cd "$(dirname "$0")/../../b"` was never read, and a relative path after a `cd` the scan cannot follow would pass
     # unseen. Each such path resolves where the script is (shell_cwd_spans), or refuses; credits as the loop above.
     # `git grep -l` lists them in both modes: `ls-tree` supports neither a glob nor the `:!` excludes (exit 128).
-    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-e", "",
+    listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-e", "",
                               *([revision] if revision else []), "--", "*.sh", "*.bash", *excludes],
                              capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan's shell listing")
@@ -3287,7 +3290,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     # Round 3 of #33, B2: `".."` segment chains are parent steps everywhere. Every code file with a quoted ".." or a
     # .parent step is read whole for chains anchored at its directory (anchored_chains); each resolves like the same
     # relative path written out, so one that reaches the repository root or above refuses, and the rest are routes.
-    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+    listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                               r"""["']\.\.["']|\.parents?([^A-Za-z0-9_]|$)""", *([revision] if revision else []), "--",
                               *[f"*.{e}" for e in sorted(JS_EXT | PY_EXT)], *excludes],
                              capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
@@ -3330,11 +3333,11 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     for base_repo, extra in mention_revisions:
         if not re.fullmatch(r"[0-9a-f]{40}", extra):
             raise ValueError("reader scan base revision must be an immutable commit")
-        if subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "-e", f"{extra}^{{commit}}"],
+        if run_git(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "-e", f"{extra}^{{commit}}"],
                           capture_output=True, timeout=15, env=environment).returncode:
             raise ValueError(f"reader scan cannot read the base revision {extra}: its mentions could not be counted")
         base_tracked.update(tracked_paths(repo, extra, environment))
-        diff = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
+        diff = run_git(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
                                "--diff-filter=DMT", extra, *([revision] if revision else []), "--"],
                               capture_output=True, timeout=60, env=environment)
         if diff.returncode:
@@ -3346,7 +3349,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                                  other_tracked=base_tracked or None)
     head_tracked = tracked_paths(repo, revision, environment) if base_passes else {}
     for base_repo, extra, changed in base_passes:
-        if subprocess.run(["git", "--no-replace-objects", "-C", str(base_repo), "cat-file", "-e", f"{extra}^{{commit}}"],
+        if run_git(["git", "--no-replace-objects", "-C", str(base_repo), "cat-file", "-e", f"{extra}^{{commit}}"],
                           capture_output=True, timeout=15, env=environment).returncode:
             raise ValueError(f"reader scan cannot read the base revision {extra} in {base_repo}")
         for p, rows in basename_mentions(base_repo, cfg, owner, extra, environment, routes_to, unread,
@@ -3603,7 +3606,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     # Every computed import in tracked code, a package's or not (fix 2): a dedicated grep, since such a line names no
     # root and no `../`.
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                           IMPORT_CALL_GREP, *([revision] if revision else []), "--",
                           *[f"*.{e}" for e in sorted(JS_EXT)], *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
@@ -3785,7 +3788,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             return
         outside_entries.setdefault(package, []).append((source, value))
 
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                           PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan's Python listing")
@@ -3832,7 +3835,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     for package, entries in sorted(outside_entries.items()):
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
-        found = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
+        found = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
                                 r"^[[:space:]]*(import|from)[[:space:]]|import_module\(|__import__\(|run_module\(",
                                 *([revision] if revision else []), "--", f"{package_dir[package]}/*.py"],
                                capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
@@ -3964,7 +3967,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # Round 3, B3: the ./ routes of every file outside every package. A code file names each quoted ./ or ../ string
     # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
     dot_routes: dict[str, set[str]] = {}
-    listing = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
+    listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
                               r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
@@ -4171,7 +4174,7 @@ def base_paths(repo: Path, base: str, head: str) -> list[str]:
     for rev in (base, head):
         if not re.fullmatch(r"[0-9a-f]{40}", rev):
             raise ValueError("base-paths revisions must be immutable commits")
-    out = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "diff", "--name-only", "-z", "--no-renames",
                           "--diff-filter=DMT", base, head, "--"], capture_output=True, timeout=60,
                          env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {"GIT_NO_LAZY_FETCH": "1"})
     if out.returncode:
@@ -4209,8 +4212,14 @@ def main(argv=None) -> int:
     report: dict = {}
     # The candidate's copy of the planner config (the action reads the base copy: --config <base>/<config>).
     policy = posixpath.normpath(os.path.relpath(repo / a.config, manifest_root))
-    deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report, policy_files=(policy,),
-                         mention_revisions=((a.base_repo or a.repo, a.base_revision),) if a.base_revision else ())
+    try:
+        deps, readers = scan(repo, cfg, manifest_root=manifest_root, revision=a.revision, report=report, policy_files=(policy,),
+                             mention_revisions=((a.base_repo or a.repo, a.base_revision),) if a.base_revision else ())
+    except ValueError as err:
+        if READER_TIMEOUT not in str(err):
+            raise
+        print("FAIL " + str(err))
+        return 3  # a distinct exit: the action plans FULL under its own reason, never folded into "unproven" (1.7.3)
     if a.mode == "derive":
         print(json.dumps({"deps": {k: sorted(v) for k, v in sorted(deps.items())},
                           "readers": {k: sorted(v) for k, v in sorted(readers.items())},

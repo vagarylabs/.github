@@ -937,6 +937,17 @@ class ConfigOutsideFullTriggers(unittest.TestCase):
         self.change({"ui/a.ts": "x\n"})
         self.assert_red(r"plan config schema 2 is not 1")
 
+    def test_pnpm_graph_bounds_a_manifests_nesting_before_it_parses(self):
+        # 1.7.5: the planner's own bound (CPython 3.14 parses what 3.11-3.13 refuse with RecursionError).
+        def manifest(depth):  # the object itself is level 1
+            return '{"name":"a","x":' + "[" * (depth - 1) + "]" * (depth - 1) + "}"
+        self.assertEqual(P.json_nesting_depth(manifest(64)), 64)
+        self.assertEqual(P.json_nesting_depth(manifest(65)), 65)
+        graph = P.pnpm_graph(["packages/*"], [("packages/a", lambda: manifest(64))])
+        self.assertEqual(graph["a"]["dir"], "packages/a")
+        with self.assertRaisesRegex(ValueError, r"packages/a/package.json nests deeper than 64 levels"):
+            P.pnpm_graph(["packages/*"], [("packages/a", lambda: manifest(65))])
+
     def test_a_pnpm_graph_narrows_by_the_base_and_reds_by_the_candidates_own_edges(self):
         # pnpm: the graph comes from the tree (pnpm-workspace.yaml, manifests) plus the config's extra_deps. A manifest
         # edit is a builtin full trigger (**/package.json), so the config's extra_deps is the one route by which a

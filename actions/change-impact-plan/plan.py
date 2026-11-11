@@ -64,7 +64,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PLANNER_VERSION = "1.7.4"
+PLANNER_VERSION = "1.7.5"
 OPERATOR_ID = "ci.change-impact-plan"
 ANALYZER = {"id": OPERATOR_ID, "version": PLANNER_VERSION}
 
@@ -760,7 +760,11 @@ def pnpm_graph(patterns: list[str], manifests: list[tuple[str, object]], extra_d
             continue
         if any(glob_to_regex(p).match(rel_dir) or rel_dir.startswith(p.rstrip("/*") + "/") for p in exclude):
             continue
-        data = json.loads(read_manifest())
+        text = read_manifest()
+        # The planner's own bound, not the interpreter's: CPython 3.14 parses 100000 levels that 3.11-3.13 refuse with RecursionError.
+        if json_nesting_depth(text) > PLAN_CONFIG_MAX_DEPTH:
+            raise ValueError(f"{rel_dir}/package.json nests deeper than {PLAN_CONFIG_MAX_DEPTH} levels")
+        data = json.loads(text)
         name = data.get("name")
         if not name:
             raise ValueError(f"{rel_dir}/package.json has no name")

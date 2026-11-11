@@ -1,0 +1,287 @@
+{
+ "$comment": "Root's R4 both-readings probe of 2026-11-11 (record reviews/dotgithub-79-1110.md, probe /tmp/r4-79-1794403354). Expectation = main cb8b50d5 reading: a sorted list of the packages reader package r reads, or REFUSE. The cases where the PR head 5f9fdc0b read differently are the negative vectors; the rest are controls.",
+ "cases": {
+  "B1a_getattr_sysmodules_doc": {
+   "name": "B1a_getattr_sysmodules_doc",
+   "src": "\"\"\"services/b/x.json\"\"\"\nimport sys\ncfg = open(getattr(sys.modules[__name__], \"__doc__\").strip()).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "B1b_vars_doc": {
+   "name": "B1b_vars_doc",
+   "src": "\"\"\"services/b/x.json\"\"\"\ncfg = open(vars()[\"__doc__\"].strip()).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "B1c_ast_get_docstring": {
+   "name": "B1c_ast_get_docstring",
+   "src": "\"\"\"services/b/x.json\"\"\"\nimport ast\ncfg = open(ast.get_docstring(ast.parse(open(__file__).read()))).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "B1d_docopt_other_file": {
+   "name": "B1d_docopt_other_file",
+   "files": {
+    "services/r/usage.py": "\"\"\"Usage: sync.py [--src=<p>]\n\nOptions:\n  --src=<p>  Source [default: services/b/x.json].\n\"\"\"",
+    "services/r/main.py": "import sys, usage\nfrom docopt import docopt\nargs = docopt(sys.modules[\"usage\"].__doc__)\nopen(args[\"--src\"]).read()"
+   },
+   "expect": [
+    "b",
+    "nest"
+   ]
+  },
+  "B2a_git_C_str_root": {
+   "name": "B2a_git_C_str_root",
+   "src": "subprocess.run([\"git\", \"-C\", str(root), \"ls-files\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B2b_kwargs": {
+   "name": "B2b_kwargs",
+   "src": "subprocess.run([\"ls\", \"services\"], **kw)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B2c_js_options_var": {
+   "name": "B2c_js_options_var",
+   "src": "const opts = { cwd: dir };\nexecFileSync(\"ls\", [\"services\"], opts);",
+   "ext": "js",
+   "expect": "REFUSE"
+  },
+  "B2d_js_cwd_shorthand": {
+   "name": "B2d_js_cwd_shorthand",
+   "src": "const cwd = dir;\nexecFileSync(\"ls\", [\"services\"], { cwd });",
+   "ext": "js",
+   "expect": "REFUSE"
+  },
+  "B2e_earlier_chdir": {
+   "name": "B2e_earlier_chdir",
+   "src": "os.chdir(other)\nsubprocess.run([\"ls\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B2ctl_cwd_kw": {
+   "name": "B2ctl_cwd_kw",
+   "src": "subprocess.run([\"ls\", \"services\"], cwd=base)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B3a_git_concat": {
+   "name": "B3a_git_concat",
+   "src": "git(root, \"ls-files\", \"services\" + x)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B3b_check_output_concat": {
+   "name": "B3b_check_output_concat",
+   "src": "subprocess.check_output(\"services\" + x)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B4a_pred_in_exec_cwd": {
+   "name": "B4a_pred_in_exec_cwd",
+   "src": "subprocess.run([s for s in names if s.startswith(\"services/\")], cwd=base)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "B4b_pred_ternary_cwd": {
+   "name": "B4b_pred_ternary_cwd",
+   "src": "subprocess.run([\"ls\", p], cwd=p if p.startswith(\"services/\") else q)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "C5a_bare_git_string": {
+   "name": "C5a_bare_git_string",
+   "src": "out = git(\"ls-files services\")",
+   "ext": "py",
+   "expect": []
+  },
+  "C5b_run_shell_true": {
+   "name": "C5b_run_shell_true",
+   "src": "run(\"pytest services\", shell=True)",
+   "ext": "py",
+   "expect": []
+  },
+  "C5c_shell_true_cwd": {
+   "name": "C5c_shell_true_cwd",
+   "src": "subprocess.run(\"ls services\", shell=True, cwd=base)",
+   "ext": "py",
+   "expect": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N01_attrgetter_doc": {
+   "name": "N01_attrgetter_doc",
+   "src": "\"\"\"services/b/x.json\"\"\"\nimport operator, sys\ncfg = open(operator.attrgetter(\"__doc__\")(sys.modules[__name__]).strip()).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N02_ast_body_value": {
+   "name": "N02_ast_body_value",
+   "src": "\"\"\"services/b/x.json\"\"\"\nimport ast\ncfg = open(ast.parse(open(__file__).read()).body[0].value.value).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N03_exec_doc_other_file": {
+   "name": "N03_exec_doc_other_file",
+   "files": {
+    "services/r/payload.py": "\"\"\"import glob; FILES = glob.glob(\"services/b/*.json\")\"\"\"",
+    "services/r/runner.py": "import payload\nexec(payload.__doc__)"
+   },
+   "expect": [
+    "b",
+    "nest"
+   ]
+  },
+  "N04_partial_cwd": {
+   "name": "N04_partial_cwd",
+   "src": "import functools\nrunner = functools.partial(subprocess.run, cwd=base)\nrunner([\"ls\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N05_contextlib_chdir": {
+   "name": "N05_contextlib_chdir",
+   "src": "with contextlib.chdir(base):\n    subprocess.run([\"ls\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N06_popen_positional_cwd": {
+   "name": "N06_popen_positional_cwd",
+   "src": "subprocess.Popen([\"ls\", \"services\"], -1, None, None, None, None, None, True, False, base)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N07_git_work_tree": {
+   "name": "N07_git_work_tree",
+   "src": "subprocess.run([\"git\", \"--work-tree\", other, \"ls-files\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N08_bash_c_cd": {
+   "name": "N08_bash_c_cd",
+   "src": "subprocess.run([\"bash\", \"-c\", \"cd \" + d + \" && pytest services\"])",
+   "ext": "py",
+   "expect": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N09_js_spread_opts": {
+   "name": "N09_js_spread_opts",
+   "src": "execFileSync(\"ls\", [\"services\"], { ...opts });",
+   "ext": "js",
+   "expect": "REFUSE"
+  },
+  "N10_js_process_chdir": {
+   "name": "N10_js_process_chdir",
+   "src": "process.chdir(dir);\nexecFileSync(\"ls\", [\"services\"]);",
+   "ext": "js",
+   "expect": "REFUSE"
+  },
+  "N11_backslash_continuation_string": {
+   "name": "N11_backslash_continuation_string",
+   "src": "target = \\\n\"services/b/x.json\"\ncfg = open(target).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N12_paren_multiline_string": {
+   "name": "N12_paren_multiline_string",
+   "src": "p = os.path.join(\n    \"services/b\"\n)",
+   "ext": "py",
+   "expect": [
+    "b",
+    "nest"
+   ]
+  },
+  "N13_pnpm_dir": {
+   "name": "N13_pnpm_dir",
+   "src": "subprocess.run([\"pnpm\", \"--dir\", other, \"exec\", \"ls\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N14_tar_C": {
+   "name": "N14_tar_C",
+   "src": "subprocess.run([\"tar\", \"-C\", other, \"-cf\", \"out.tar\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N15_git_C_eq": {
+   "name": "N15_git_C_eq",
+   "src": "subprocess.run([\"git\", \"-C\" + other, \"ls-files\", \"services\"])",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N16_startswith_composed": {
+   "name": "N16_startswith_composed",
+   "src": "if s.startswith(\"services\" + os.sep + x):\n    open(s)",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N17_removeprefix_then_parent": {
+   "name": "N17_removeprefix_then_parent",
+   "src": "rel = p.removeprefix(\"services/\")\nopen(os.path.join(\"..\", \"..\", rel))",
+   "ext": "py",
+   "expect": "REFUSE"
+  },
+  "N18_semicolon_backslash_doc": {
+   "name": "N18_semicolon_backslash_doc",
+   "src": "x = 1;\\\n\"services/b/x.json\"\nprint(x)",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N19_env_PWD_cd_shell": {
+   "name": "N19_env_PWD_cd_shell",
+   "src": "subprocess.run([\"sh\", \"-c\", \"pytest services\"], cwd=base)",
+   "ext": "py",
+   "expect": [
+    "a",
+    "b",
+    "b2",
+    "nest"
+   ]
+  },
+  "N20_globals_doc": {
+   "name": "N20_globals_doc",
+   "src": "\"\"\"services/b/x.json\"\"\"\ncfg = open(globals()[\"__doc__\"]).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N21_doc_via_inspect_getsource": {
+   "name": "N21_doc_via_inspect_getsource",
+   "src": "\"\"\"services/b/x.json\"\"\"\nimport inspect, sys\nsrc = inspect.getsource(sys.modules[__name__])\ncfg = open(src.split(chr(34)*3)[1]).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  },
+  "N22_dunder_dict_doc": {
+   "name": "N22_dunder_dict_doc",
+   "src": "class Spec:\n    \"\"\"services/b/openapi.yaml\"\"\"\nspec = open(Spec.__dict__[\"__doc__\"]).read()",
+   "ext": "py",
+   "expect": [
+    "b"
+   ]
+  }
+ }
+}

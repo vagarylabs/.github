@@ -20,6 +20,8 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.6 (root 2026-11-10, core #936 reader closure), on top of the 1.7.4 and 1.7.5 depth bounds, narrows the reader where it read prose and refused evidence. A Python docstring, any bare string statement (an unprefixed string token outside every bracket that is first and last on its line) that no consumer can reach, runs nothing, so a root it names is no longer a read. The rule fails closed (root's R4 of 2026-11-11, `test_edges_r4_1111_vectors.json`): the string statements stay a read when the file, or any tracked file naming its module, holds a docstring consumer on its raw text (`__doc__`, `docopt`, `getdoc`, `cleandoc`, `doctest`, `get_docstring`, `attrgetter`, `globals()`, `vars()`, `getsource`, `getmembers`, `__dict__`, `help(`, any `ast`, `inspect` or `pydoc` word), when the file reads its own source (`__file__`, `sys.argv[0]`, `linecache`, `tokenize` with a read), and everywhere when a consumer file imports dynamically (`importlib`, `__import__`, `runpy`, `pkgutil`, entry points, `sys.modules` beyond `[__name__]` or a literal key, a computed `require`/`import()`): on core #936's tree the vendored `services/*/app/no_redirect.py` docstring ("into services/*/app/") had made every service read every other (1,366 undeclared reads from 1,458; with the first draft of the rule, 65 reads and 0 undeclared; the fail-closed form's #936 numbers are to be measured by root's both-readings probe). A doctest (`>>>`) in a docstring is executed code and still refuses; a prefixed string (`f`/`b`/`r`/`u`) is read as before. Two refusals that were evidence become reads: an argv element of an exec call (`run(["git", "ls-files", "services"])`; the callee names `git` and `gh` now count as exec calls) reads beneath the root in a STRICT form only: every other token of the call is a plain string, the argv list or tuple, or a `name=True/False/None/<number>` keyword (never one naming a cwd, dir, path, env or executable); the callee is bare or on `subprocess`, `os` or `child_process`; no argument starts with a cwd flag (`-C`, `-w`, `--work-tree`, `--git-dir`, `--dir`, `--cwd`, `--chdir`, `--prefix`, `--root`, `--project-dir`); and the file names no cwd mover (`chdir`, `pushd`, `cwd`, a work tree, `--dir`, `-C`). Anything else refuses as on main, so `git(root, "ls-files", "services")` (a word token) and `subprocess.run([...], cwd=None)` refuse. This is not command-string parity: a command string's own reading is unchanged. And a string predicate on the root (`s.startswith("services/")`, `p.startsWith('services/')`) is a comparison that reads beneath it. Rule 7 (lexical name taint) is untouched: core #936's six remaining refusals under the first draft were all rule 7 and plan FULL as before.
+
 Planner 1.7.5 bounds a package.json's nesting before it is parsed at the two sites that were still unbounded: the planner's pnpm workspace graph (a manifest deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is refused as unreadable, candidate and base alike) and edges.py's directory-runner read (deeper than `PACKAGE_JSON_MAX_DEPTH` (64) is read whole, like any unparsable manifest). CPython 3.14 parses depths 3.11-3.13 refuse with `RecursionError`, so the bound is the planner's own.
 
 Planner 1.7.4 bounds a plan config's nesting before it is parsed: a config deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is red with "the plan config nests too deeply to parse", as the candidate and as the base. Until 1.7.3 that refusal came only from `json.loads` raising `RecursionError`, which depends on the interpreter: CPython 3.13 raises at 100000 levels, 3.14 (the `ubuntu-26.04` runner image) parses them, and the 100000-level config then planned reduced. `RecursionError` stays a backstop.
@@ -84,10 +86,14 @@ FULL.
    - a list, tuple or set of literals in an assignment, an object value or a comparison (rule 8: there is no
      list-literal exemption, since `parts = ["services", "billing"]` can flow into `join(ROOT, *parts)`). Its siblings
      that name a package (`("services", "b")`) are read too;
-   - a comparison (`==`, `===`, `in`, `not in`, `case`): `d == "services"` selects a value that may become a path.
+   - a comparison (`==`, `===`, `in`, `not in`, `case`, and since 1.7.6 a string predicate: `startswith`, `endswith`,
+     `removeprefix`, `removesuffix`, `startsWith`, `endsWith` with the root as its first argument): `d == "services"`
+     selects a value that may become a path.
 
    A root SEGMENT anywhere in a string reads every package beneath its literal prefix, whatever precedes it:
-   `backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`, a route, prose, a docstring, SQL text. That
+   `backend/services/`, `./services/`, `{}/services/`, `$ROOT/services`, a route, prose, SQL text (a Python docstring,
+   any bare string statement, runs nothing and reads nothing since 1.7.6 unless a docstring consumer, a self-source
+   read or a dynamic import can reach it, see above; a doctest `>>>` inside one refuses). That
    covers an f-string, a template and a glob too: `f"{ROOT}/services/{x}"`, `"services/*/migrations"`. A backslash
    always separates. A segment inside a pure-literal `../` run (`'../app/api/x/services/route.ts'`) is a path relative to
    the file, which the `rel` rule reads exactly. A string REFUSES when:
@@ -195,7 +201,10 @@ FULL.
      as a literal or a named constant;
    - a keyword argument or default parameter;
    - a bare assignment (`kind = "services"`);
-   - an argv element of an exec call, or its options;
+   - an argv element of an exec call outside the strict form (1.7.6, see above: a word token, an options object
+     `{ cwd: }` or `spawn(cmd, { args: [...] })`, any cwd keyword or flag, a cwd mover in the file, a method callee such
+     as `self.run`) or holding a parent step; in the strict form a direct argv element, alone or in a list, reads
+     beneath the root;
    - a root inside a regex literal;
    - any file whose brackets do not close.
 

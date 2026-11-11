@@ -364,11 +364,25 @@ class EdgesTest(unittest.TestCase):
         for src, ext in metadata:
             with self.subTest(metadata=src):
                 self.assertEqual(scan(src, ext), set(), src)
+        # 1.7.6 (root 2026-11-10, core #936 reader closure): a Python docstring, any bare string statement, runs
+        # nothing, so a root it names is prose. Before 1.7.6 it was read beneath the root (H3.6) and the vendored
+        # services/*/app/no_redirect.py docstring made every core service read every other (1,366 undeclared reads).
+        prose = (
+            '"services"',
+            '"""A sweep across all of `services/` for the SDK copies."""',
+            '"""Copies this primitive into services/*/app/ on every run."""',
+            'def f():\n    """Reads services/b."""\n    return 1',
+            'class C:\n    """services/b"""\n    x = 1',
+            'x = 1\n"services/b"',
+            'def f():\n    """services/b"""\n    return 1\nprint(__name__)',  # `__name__` is no docstring consumer
+        )
+        for src in prose:
+            with self.subTest(prose=src):
+                self.assertEqual(scan(src, "py"), set(), src)
         refused = (
             ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
             ('policy_ref = dict(policy_id="services", version="1")', "py"),
             ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
-            ('"services"', "py"),
             ('kind = "services"', "py"),
             ('def walk(root="services"):\n    pass', "py"),
             ("const p = web ? 'apps' : 'services';", "js"),
@@ -388,6 +402,14 @@ class EdgesTest(unittest.TestCase):
             ("`${up}/..${sep}services/b`", "ts"),  # H3.2: a `..` step between substitutions
             ("f'{base}/..{os.sep}services/b'", "py"),  # H3.2 in an f-string
             ('"""\n>>> open(os.path.join(ROOT, "services", name))\n"""', "py"),  # a doctest is executed code
+            # 1.7.6: an exec call's argv reads beneath the root only in the strict form (argv_read); these refuse.
+            ('subprocess.run(["git", "-C", "..", "ls-files", "services"])', "py"),
+            ('subprocess.run(["ls", "services"], cwd=base)', "py"),
+            ('s.replace("services", "apps")', "py"),  # a call argument that is no string predicate
+            # Root's R4 of 2026-11-11 (blockers 2-3): these two read on the 1.7.6 head and pinned the wrong reading;
+            # `-C str(root)` moves the work tree and `root` is an identifier argument, so both refuse, as on main.
+            ('subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "services/"], capture_output=True)', "py"),
+            ('files = git(root, "ls-files", "services").splitlines()', "py"),
         )
         for src, ext in refused:
             with self.subTest(refused=src):
@@ -417,7 +439,15 @@ class EdgesTest(unittest.TestCase):
             ("if (obligation === 'services') run();", "js"): {"b"},
             ('if part not in ("services", "docs"):\n    pass', "py"): {"b"},
             ('ctxs = {c for c in contexts if c.split("/", 1)[0] == "services"}', "py"): {"b"},
-            ('"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # docstrings are read (H3.6)
+            ('r"""A sweep across all of `services/` for the SDK copies."""', "py"): {"b"},  # a prefixed string is no docstring
+            ('f"""{ROOT}/services/b"""', "py"): {"b"},
+            ('x = """services/b"""', "py"): {"b"},
+            ('"services/b" + suffix', "py"): {"b"},  # a string that starts a statement but is not the whole of it
+            ('"""services/b"""\nprint(__doc__)', "py"): {"b"},  # a consumed docstring is data (root's D01 class)
+            ('def f():\n    """services/b"""\nhelp_text = inspect.getdoc(f)', "py"): {"b"},
+            # 1.7.6: a string predicate on the root reads beneath it (the strict argv form's reads: ArgvAndProseFloor).
+            ('t = root / s / "test" if s.startswith("services/") else root / s', "py"): {"b"},
+            ("if (p.startsWith('services/')) run(p);", "js"): {"b"},
             ("'use strict';\nconst url = '/:org/services/:service';", "js"): {"b"},  # any root segment (H3.5)
             ('NOTE = "copied from backend/services/ in vagary-platform"', "py"): {"b"},
             ("SRC = b'name: services\\non: push\\n'", "py"): {"b"},  # a backslash always separates (H3.7)
@@ -2286,6 +2316,115 @@ class RulingsOf152Test(VectorHarness, unittest.TestCase):
         for prefix in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A7b", "A7c", "A7d", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
                        "C1", "C2", "C3", "C4", "C5", "C6"):
             self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
+
+class R4Vectors20261111(unittest.TestCase):
+    """Root's R4 both-readings probe of .github #79 (2026-11-11, test_edges_r4_1111_vectors.json): main's reading is the
+    contract. Each case builds the probe's fixture repo and must read exactly `expect` (the sorted packages reader
+    package r reads, or REFUSE)."""
+
+    CASES = json.loads(Path(__file__).with_name("test_edges_r4_1111_vectors.json").read_text())["cases"]
+    CFG = {"schema": 1, "workspace": {"type": "declared", "packages": {
+        "r": {"dir": "services/r", "deps": []}, "a": {"dir": "services/a", "deps": []},
+        "b": {"dir": "services/b", "deps": []}, "nest": {"dir": "services/b/worker", "deps": []},
+        "b2": {"dir": "services/b2", "deps": []}, "web": {"dir": "apps/web", "deps": []},
+        "shared": {"dir": "packages/shared", "deps": []}}},
+        "edge_scan": {"roots": ["services", "apps"], "reader_dirs": [], "reader_job": "root"},
+        "jobs": {"root": {"packages": []}}}
+
+    def read(self, case):
+        with tempfile.TemporaryDirectory(prefix="r4c-") as td:
+            repo = Path(td)
+            for d in ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared"):
+                (repo / d).mkdir(parents=True, exist_ok=True)
+                (repo / d / "keep.txt").write_text("k\n")
+            files = case["files"] if "files" in case else {"services/r/x." + case["ext"]: case["src"]}
+            for rel, src in files.items():
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text(src + "\n")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            try:
+                return sorted(E.scan(repo, self.CFG)[0].get("r", []))
+            except ValueError:
+                return "REFUSE"
+
+    def test_every_r4_1111_vector_reads_as_main_does(self):
+        self.assertEqual(len(self.CASES), 39)
+        for name, case in sorted(self.CASES.items()):
+            with self.subTest(name):
+                self.assertEqual(self.read(case), case["expect"], name)
+
+
+class ArgvPredicateProseFloor(unittest.TestCase):
+    """Change 6 of root's record (reviews/dotgithub-79-1110.md): a FLOOR inside the suite, so the 1.7.6 rules cannot pass
+    vacuously. Every R4 argv vector expects REFUSE and both 1.7.6 positive argv vectors now refuse, so a refuse-everything
+    argv_read would pass every other test; these named positive controls must READ through the strict argv form, the
+    string predicate and the prose gate, and the consumed-docstring controls must still read as on main. R4's 27 negative
+    vectors (test_edges_r4_1111_vectors.json) are the other side."""
+
+    read = R4Vectors20261111.read
+    CFG = R4Vectors20261111.CFG
+    ALL = ["a", "b", "b2", "nest"]
+    FLOOR = 8  # named positive controls of the argv and predicate rules that must read
+    READS = {
+        "argv_py_list": ('subprocess.run(["git", "ls-files", "services"])', "py"),
+        "argv_py_keywords": ('subprocess.run(["ls", "services/"], capture_output=True, check=True, timeout=60)', "py"),
+        "argv_py_tuple": ('out = subprocess.check_output(("ls", "services"))', "py"),
+        "argv_bare_git_helper": ('out = git("ls-files", "services")', "py"),
+        "argv_js_execFileSync": ('const { execFileSync } = require("child_process");\nexecFileSync("ls", ["services"]);', "js"),
+        "predicate_py_startswith": ('mine = [s for s in names if s.startswith("services/")]', "py"),
+        "predicate_py_endswith": ('if p.endswith("services"):\n    pass', "py"),
+        "predicate_js_startsWith": ("if (p.startsWith('services/')) run(p);", "js"),
+    }
+    # Fail-closed forms beyond R4's set: an exec method on an object, an options object, any cwd keyword, a `-w` flag.
+    REFUSES = {
+        "argv_method_receiver": ('self.run(["ls", "services"])', "py"),
+        "argv_js_options_object": ('execFileSync("ls", ["services"], { stdio: "inherit" });', "js"),
+        "argv_cwd_none": ('subprocess.run(["ls", "services"], cwd=None)', "py"),
+        "argv_w_flag": ('subprocess.run(["ls", "-wx", "services"])', "py"),
+    }
+    PROSE = {  # string statements no consumer reaches: prose, read nothing
+        "prose_module_docstring": {"services/r/x.py": '"""Copies this primitive into services/*/app/ on every run."""\nx = 1'},
+        "prose_function_docstring": {"services/r/x.py": 'def f():\n    """Reads services/b."""\n    return 1'},
+        "prose_unrelated_consumer": {"services/r/x.py": '"""A sweep across services/."""\nx = 1',
+                                     "services/r/other.py": "print(__doc__)"},
+    }
+    CONSUMED = {  # a consumer reaches the docstring: read as on main
+        "consumed_same_file": {"services/r/x.py": '"""services/b/x.json"""\ncfg = open(__doc__.strip()).read()'},
+        "consumed_self_source": {"services/r/x.py": '"""services/b/x.json"""\n'
+                                                    'cfg = open(open(__file__).read().split(chr(34) * 3)[1]).read()'},
+        "consumed_cross_file_importer": {"services/r/usage.py": '"""services/b/x.json"""',
+                                         "services/r/main.py": "import usage\ncfg = open(usage.__doc__.strip()).read()"},
+        "consumed_dynamic_sys_modules": {"services/r/x.py": '"""services/b/x.json"""',
+                                         "services/r/main.py": "import sys\nfor m in list(sys.modules.values()):\n"
+                                                               "    print(m.__doc__)"},
+    }
+
+    def test_the_argv_and_predicate_rules_read_their_named_controls(self):
+        got = {name: self.read({"src": src, "ext": ext}) for name, (src, ext) in self.READS.items()}
+        nothing = sorted(name for name, reading in got.items() if reading in ([], "REFUSE"))
+        self.assertGreaterEqual(len(self.READS), self.FLOOR, "the floor's control list shrank")
+        self.assertEqual(nothing, [], f"the 1.7.6 argv/predicate rules matched nothing on named controls {nothing}: "
+                                      "a rule that refuses or reads nothing everywhere would pass every other vector")
+        self.assertGreaterEqual(sum(reading == self.ALL for reading in got.values()), self.FLOOR)
+        for name, reading in got.items():
+            with self.subTest(name):
+                self.assertEqual(reading, self.ALL, name)
+
+    def test_the_strict_argv_form_refuses_its_fail_closed_forms(self):
+        for name, (src, ext) in self.REFUSES.items():
+            with self.subTest(name):
+                self.assertEqual(self.read({"src": src, "ext": ext}), "REFUSE", name)
+
+    def test_prose_reads_nothing_and_a_reachable_docstring_still_reads(self):
+        prose = {name: self.read({"files": files}) for name, files in self.PROSE.items()}
+        self.assertEqual(len(prose), 3)
+        self.assertEqual(prose, dict.fromkeys(self.PROSE, []), "a string statement no consumer reaches is prose")
+        consumed = {name: self.read({"files": files}) for name, files in self.CONSUMED.items()}
+        nothing = sorted(name for name, reading in consumed.items() if reading in ([], "REFUSE"))
+        self.assertEqual(nothing, [], f"a reachable docstring matched nothing on named controls {nothing}")
+        self.assertEqual(consumed, dict.fromkeys(self.CONSUMED, ["b"]))
+
 
 def E_add(cfg, path, name):
     targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])

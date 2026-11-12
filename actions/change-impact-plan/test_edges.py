@@ -12,6 +12,7 @@ import os
 from unittest.mock import patch
 import subprocess
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -142,6 +143,16 @@ KNOWN_FAIL_OPEN = {
     "U_S_sys_modules_sys_alone": "R6B8", "U_S_sys_modules_sys_mixed": "R6B8", "U_S_two_file_conftest_addsitedir": "R6B8",
     "U_S_two_file_conftest_alias": "R6B8", "U_S_two_residuals": "R6B8",
 }
+
+# Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
+# MAIN's reader beside the head's on every review vector (test_r6_no_regression_against_main_reader). MAIN_EDGES_BLOB is
+# the git blob of edges.py on origin/main the gate was derived against (0ff30f1ad9ce and 75e84a53527e carry it,
+# 2026-11-12), read with `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
+# re-reads origin/main: while the head's edges.py differs from main's, main's blob must still BE this one, so a PR under
+# which main's reader moved is an admission change that re-derives the gate and re-pins here; once the head and main
+# are the same reader (main itself), the pin must name a former main edges.py, so it cannot point at nothing.
+MAIN_EDGES_BLOB = "5449e5f68aa251ef8a66db44316cad70af8e21e4"
+MAIN_EDGES_PATH = "actions/change-impact-plan/edges.py"
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
 KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
@@ -945,6 +956,84 @@ class EdgesTest(unittest.TestCase):
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
+
+    def main_reader(self):
+        """MAIN's edges.py as a module, from the pinned blob MAIN_EDGES_BLOB in this clone's object store. Fails, never
+        skips, when the clone cannot show it (origin/main absent: planner-tests checks out with fetch-depth 0), when
+        main's edges.py moved under this branch (re-derive the gate, re-pin), or when the pinned text equals the head's
+        (the gate would compare a reader with itself). The module's __file__ is a path beside plan.py that is never
+        written, so main's lazy `_plan()` resolves to the plan.py this suite already imported."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        head_blob = subprocess.check_output([*git, "hash-object", "--", E.__file__], text=True).strip()
+        live = subprocess.run([*git, "rev-parse", "--verify", "-q", f"origin/main:{MAIN_EDGES_PATH}"],
+                              capture_output=True, text=True)
+        self.assertEqual(live.returncode, 0, "origin/main is not in this clone, so the gate cannot read main's reader: "
+                                             "planner-tests checks out with fetch-depth 0")
+        live_blob = live.stdout.strip()
+        if live_blob != head_blob:
+            self.assertEqual(live_blob, MAIN_EDGES_BLOB, "main's edges.py moved under this branch: re-derive the "
+                                                         "no-regression gate against it and re-pin MAIN_EDGES_BLOB")
+        else:
+            # The head IS main's reader (main itself, or a branch that changes no reader): the pin must name a former
+            # main edges.py, so the gate still compares two real readers and the pin cannot point at nothing.
+            commits = subprocess.check_output([*git, "rev-list", "origin/main", "--", MAIN_EDGES_PATH], text=True).split()
+            former = {subprocess.check_output([*git, "rev-parse", f"{c}:{MAIN_EDGES_PATH}"], text=True).strip()
+                      for c in commits}
+            self.assertIn(MAIN_EDGES_BLOB, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
+        shown = subprocess.run([*git, "cat-file", "-p", MAIN_EDGES_BLOB], capture_output=True)
+        self.assertEqual(shown.returncode, 0, f"the pinned main blob {MAIN_EDGES_BLOB} is not in this clone's object store")
+        text = shown.stdout
+        self.assertNotEqual(text, Path(E.__file__).read_bytes(),
+                            "floor: the pinned main reader and the head's are the same source, the gate would compare a "
+                            "reader with itself")
+        module = types.ModuleType("edges_main")
+        module.__file__ = str(here / f"edges_main_{MAIN_EDGES_BLOB[:12]}.py")
+        exec(compile(text, module.__file__, "exec"), module.__dict__)
+        module.today = E.today
+        return module
+
+    # Root's round-6 inputs where main refuses and the head reads its truth: the control proving the two readers the gate
+    # compares differ, so the gate cannot pass by loading the head twice.
+    GATE_CONTROL = "G01_literal_unowned_dir_under_root"
+
+    def test_r6_no_regression_against_main_reader(self):
+        """Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12), design line 7 accepted 16:44: main's reader beside
+        the head's on every review vector, root's 111 included. Where main REFUSES, the head refuses or reads its truth
+        (the table's "at": truth within the reading; G02 reads six where its truth names one). Where main READS, the head
+        refuses, reads its truth, or reads everything main reads: a head below main AND below truth is a regression.
+        Floors inside the gate: main's source differs from the head's; at least one main-refuse and one main-read case
+        was compared; GATE_CONTROL refuses on main and reads at truth on the head."""
+        main = self.main_reader()
+        repo = self.vector_repo("gate/vectors")  # named as the shared fixture is: eight S4 cases assert `checkout`
+        compared = {"main refuses": 0, "main reads": 0, "main produced no such unit": 0}
+        control = None
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            with self.subTest(label):
+                fixture = self.case_repo(repo, label, case)
+                try:
+                    main_got = self.vector_scan(fixture, case, module=main)
+                except AssertionError:
+                    main_got = None  # vector_scan's own assertion: a reader unit main's scan did not produce
+                head_got = self.vector_scan(fixture, case)
+                truth = set(case["truth"]) if isinstance(case["truth"], list) else None  # "REFUSE": no reading is at truth
+                at = head_got != "REFUSE" and truth is not None and truth <= set(head_got)
+                if label == self.GATE_CONTROL:
+                    control = (main_got, at)
+                if main_got == "REFUSE" or main_got is None:
+                    compared["main refuses" if main_got == "REFUSE" else "main produced no such unit"] += 1
+                    self.assertTrue(head_got == "REFUSE" or at,
+                                    f"{label}: main refuses, the head reads {head_got} below its truth {case['truth']}: "
+                                    f"a regression against main's reader")
+                else:
+                    compared["main reads"] += 1
+                    self.assertTrue(head_got == "REFUSE" or at or set(main_got) <= set(head_got),
+                                    f"{label}: main reads {main_got}, the head reads {head_got}: below its truth "
+                                    f"{case['truth']} and below main's reading")
+        self.assertGreater(compared["main refuses"], 0, "floor: no vector main refuses was compared")
+        self.assertGreater(compared["main reads"], 0, "floor: no vector main reads was compared")
+        self.assertEqual(control, ("REFUSE", True),
+                         f"floor: {self.GATE_CONTROL} must refuse on main and read its truth on the head, got {control}")
 
     def test_review_vector_closed_lists_hold(self):
         """The data-only closed lists the review vectors rest on, apart from any reading: REVIEW_CONTROLS and

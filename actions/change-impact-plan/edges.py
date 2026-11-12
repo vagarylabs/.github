@@ -2878,6 +2878,17 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         return found
 
     def entry(node):
+        # Root's R1 of #84's fourth delta R4 (2026-11-12): `node.id in unreadable` makes a name UNKNOWN wherever the file
+        # binds it by something the scan does not read (`root = dirname(...)` at module level and `for root, d, f in
+        # os.walk(t)` inside a function), so the entry fell to the read-nothing return of apply_entry and read []
+        # where main read [a]. An entry whose text reads such a name REFUSES, as a loader site does (path_site),
+        # declared or not, naming the binding; a name bound once by a plain assignment still evaluates.
+        bad = unreadable_in(node)
+        if bad:
+            name, kind = bad[0]
+            raise ValueError(f"unresolved (a sys.path entry `{source(node)}` reads `{name}`, bound by {kind}, which the "
+                             f"scan does not read) in {path}; bind it by a plain assignment, or write it from __file__ "
+                             "with literal parts, which the scan maps")
         value = resolved(node)
         entries.append(("unknown", text_of(node)) if value is None else ("dir", value))
 

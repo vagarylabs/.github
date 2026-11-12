@@ -9022,6 +9022,246 @@
     "shared"
    ],
    "note": "N4 of root's third delta R4: the declared twin of Y03b, p = join(dirname(__file__), \"../../packages/shared\"); p += os.sep + name; run_path(p) declared \"p\" external: the augmentation is not `+= \"<literal>\"`, so p is unevaluated and its text carries a parent step, which no declaration lifts: refuses (main and 2cc10d8 read [shared] from the evaluated prefix alone; moved on 399d7fe, pinned here)"
+  },
+  "R84_R6a_ctl_no_other_binding": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "accept",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1 control: `root` bound once by a plain assignment, no other binding in the file: the entry evaluates and reads [a] on main and every head"
+  },
+  "R84_R6b_for_in_other_fn": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\ndef walk(top):\n    for root, dirs, files in os.walk(top):\n        print(root)\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: `for root, dirs, files in os.walk(top)` inside a function makes `root` unknown file-wide; the entry `os.path.join(root, \"a\")` read [] on a7bd945 (main [a]): refuses, naming the `for` binding"
+  },
+  "R84_R6c_method_named_root": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\nclass T:\n    def root(self):\n        return 1\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: a method named `root` (`def root(self)`) binds the name file-wide for the scan; the entry refuses instead of reading [] (main [a])"
+  },
+  "R84_R6d_with_as_other_fn": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\ndef g():\n    with open(\"x\") as root:\n        pass\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: `with open(\"x\") as root` in another function; the entry refuses instead of reading [] (main [a])"
+  },
+  "R84_R6e_except_as_other_fn": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\ndef g():\n    try:\n        pass\n    except Exception as root:\n        pass\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: `except Exception as root` in another function; the entry refuses instead of reading [] (main [a])"
+  },
+  "R84_R6f_comprehension_other": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\nxs = [root for root in range(3)]\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: `[root for root in range(3)]` at module level; the entry refuses instead of reading [] (main [a])"
+  },
+  "R84_R6j_walrus_entry_os_path": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\n(LIB := os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), \"a\"))\nsys.path.insert(0, LIB)\nimport a_mod\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: `(LIB := os.path.join(...))` binds the entry's name by a walrus, which the scan does not read; the entry refuses, declared or not"
+  },
+  "R84_R6k_for_same_scope_ctl": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nsys.path.insert(0, os.path.join(root, \"a\"))\nimport a_mod\nfor root in [\"x\"]:\n    pass\n",
+   "truth": [
+    "a"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": []
+    }
+   },
+   "files": {
+    "services/a/a_mod.py": "Y=1\n"
+   },
+   "note": "Root's R1 of #84's fourth delta R4 (2026-11-12). R1: a module-level `for root in [\"x\"]` AFTER the entry; the entry refuses instead of reading [] (main [a])"
   }
  }
 }

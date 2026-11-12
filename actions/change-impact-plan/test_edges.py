@@ -839,8 +839,10 @@ class EdgesTest(unittest.TestCase):
                 # neighbouring rule) fails here. A case without `expected_rule` keeps the bare REFUSE judgment.
                 self.assert_rule(label, got, case["expected_rule"], "expected_rule")
         elif expect == "residual":
-            # A named residual reads less than its truth by ruling; its reading when pinned is recorded so that one
-            # reading even less (or more) fails here until the pin is re-derived on purpose.
+            # A named residual is a case the reader judges below what it sees, by ruling: it reads less than its truth,
+            # or (R6_residual_reexported_alias_mutation_unseen_reads) it reads its truth while a path mutation it
+            # cannot see, a module re-exported under another name, goes unjudged. Its reading when pinned is recorded
+            # so that one reading less (or more) fails here until the pin is re-derived on purpose.
             self.assertEqual(got, case["reads"], f"{label}: a residual's reading moved from its pin")
         else:
             # Root's A1 of the R-c vectors (2026-11-12): an accept vector with an empty truth proves nothing (a reading
@@ -1051,7 +1053,7 @@ class EdgesTest(unittest.TestCase):
                           "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
                           "R6V25_chdir_then_fstring_dotdot_end",
-                          "R6_residual_reexported_alias_reads_below_truth", "R84_B11_nested_fn_param_shadow",
+                          "R6_residual_reexported_alias_mutation_unseen_reads", "R84_B11_nested_fn_param_shadow",
                           "R84_S08_param_shadow_other_assign",
                           # Root's r4 item 11 (R-c r5) RC1A_residual_generated_cwd_directory left this list in the
                           # round-5 fix (2026-11-12): its tracked start lands at the root and refuses (B3).

@@ -28388,7 +28388,7 @@
    "note": "SYS-PATH-REACH refuse: `sys.path.remove(x)`.",
    "expected_rule": "the path-mutation capability `sys.path.remove('x')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
   },
-  "R6_residual_reexported_alias_reads_below_truth": {
+  "R6_residual_reexported_alias_mutation_unseen_reads": {
    "question": "R6-2 twins (cli's W1, 2026-11-12)",
    "ext": "py",
    "src": "from mypkg import s\ns.path.remove('x')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",

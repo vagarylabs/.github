@@ -1594,16 +1594,17 @@
    ]
   },
   "DT4_exec_of_docstring_no_prompt": {
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
-   "note": "same class as D01",
+   "note": "same class as D01 R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
    "src": "\"\"\"import glob; FILES = glob.glob(\"services/*/x\")\"\"\"\nexec(__doc__)\n",
    "truth": [
     "a",
     "b",
     "b2",
     "nest"
-   ]
+   ],
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "DT5_doctest_prompt_in_plain_string": {
    "expect": "sound",
@@ -10136,7 +10137,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10191,7 +10192,7 @@
     "apps/web/web_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport web_mod\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport web_mod\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10314,7 +10315,7 @@
     "packages/vendor": "shared"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10406,7 +10407,7 @@
     "vendor": "packages"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10537,7 +10538,7 @@
     "tools/lnk": "../packages/shared"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10623,7 +10624,7 @@
     ".githooks/lib/hook_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10679,7 +10680,7 @@
    },
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport vmod\n",
+    "src": "import os\nfrom pathlib import Path\nimport vmod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10733,7 +10734,7 @@
     "tools/lib/tmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport tmod\n",
+    "src": "import os\nfrom pathlib import Path\nimport tmod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -10942,7 +10943,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -11051,7 +11052,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -11160,7 +11161,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -11269,7 +11270,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -11378,7 +11379,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -11489,7 +11490,7 @@
     "services/r/conf.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nfrom conf import ROOT\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nfrom conf import ROOT\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -12104,7 +12105,7 @@
     "tools/shared": "not a directory\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "files": {
      "packages/shared/shared_mod.py": "X = 1\n",
      "vendor/shared/keep.txt": "k\n",
@@ -12306,7 +12307,7 @@
     "apps/web/app/app_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport app_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport app_mod\n",
     "files": {
      "apps/web/app/app_mod.py": "X = 1\n"
     },
@@ -12406,7 +12407,7 @@
     "apps/web/web_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport web_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport web_mod\n",
     "files": {
      "apps/web/web_mod.py": "X = 1\n"
     },
@@ -12645,7 +12646,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -12742,7 +12743,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -12839,7 +12840,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -12936,7 +12937,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -16419,7 +16420,7 @@
     "apps/web/web_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport web_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport web_mod\n",
     "files": {
      "apps/web/web_mod.py": "X = 1\n"
     },
@@ -16486,7 +16487,7 @@
     "apps/web/web_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport web_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport web_mod\n",
     "files": {
      "apps/web/web_mod.py": "X = 1\n"
     },
@@ -16608,7 +16609,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -16661,7 +16662,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -16793,7 +16794,7 @@
    "r5": true,
    "checkout": "vectors",
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -16879,7 +16880,7 @@
    "r5": true,
    "checkout": "vectors",
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -17280,7 +17281,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -18344,7 +18345,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -18564,7 +18565,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -18931,14 +18932,9 @@
     "packages/shared_v2/v2_mod.py": "X = 1\n",
     "vendor/shared/keep.txt": "k\n"
    },
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "S2R",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/dotgithub-86-1112.md"
-   },
-   "note": "Root's probe case C_reassign_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (`sys.path = [...] + sys.path` records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+   "expect": "refuse",
+   "note": "Root's probe case C_reassign_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (`sys.path = [...] + sys.path` records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open). R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "KFO_S2R_C_addsitedir_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
@@ -19008,14 +19004,9 @@
     "packages/shared_v2/v2_mod.py": "X = 1\n",
     "vendor/shared/keep.txt": "k\n"
    },
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "S2R",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/dotgithub-86-1112.md"
-   },
-   "note": "Root's probe case C_addsitedir_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (site.addsitedir records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+   "expect": "refuse",
+   "note": "Root's probe case C_addsitedir_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (site.addsitedir records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open). R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "KFO_S2R_C_extend_name_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
@@ -19487,7 +19478,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport plug_mod\n",
+    "src": "import os\nfrom pathlib import Path\nimport plug_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -20284,7 +20275,7 @@
    },
    "checkout": "vectors",
    "ablation": {
-    "src": "import sys\nimport shared_mod\n",
+    "src": "import shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20417,7 +20408,7 @@
    },
    "checkout": "vectors",
    "ablation": {
-    "src": "import sys\nimport core\n",
+    "src": "import core\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20550,7 +20541,7 @@
    },
    "checkout": "vectors",
    "ablation": {
-    "src": "import sys\nimport shared_mod\n",
+    "src": "import shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20639,7 +20630,7 @@
     "services/b/worker/m.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import sys\nimport worker.m\n",
+    "src": "import worker.m\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20691,7 +20682,7 @@
     "services/b/worker/m.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import os\nimport sys\nimport worker.m\n",
+    "src": "import os\nimport worker.m\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20777,7 +20768,7 @@
     "packages/shared/x.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import sys\nimport tmod\n",
+    "src": "import tmod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20930,7 +20921,7 @@
     "packages/shared/x.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import sys\n",
+    "src": "",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -20982,7 +20973,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import sys\nimport shared_mod\n",
+    "src": "import shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -21034,7 +21025,7 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "ablation": {
-    "src": "import sys\nimport shared_mod\n",
+    "src": "import shared_mod\n",
     "cfg": {
      "edge_scan": {
       "roots": [
@@ -21259,7 +21250,7 @@
    "expect": "read",
    "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01_declared_parent_literal_generated_cwd_reach_ignored (/private/tmp/r4pr86s23/fx/N01_declared_parent_literal_generated_cwd_reach_ignored); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../../../a, the re / REFUSE: unresolved (a sys.path entry that may leave its pack / [].",
    "ablation": {
-    "src": "import sys\nimport amod\n",
+    "src": "import amod\n",
     "cfg": {
      "schema": 1,
      "workspace": {
@@ -22033,8 +22024,8 @@
     "packages/shared/plugins/plug_mod.py": "X = 1\n"
    },
    "expect": "refuse",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N52_undeclared_literal_plus_addsitedir_kfo (/private/tmp/r4pr86s23/fx/N52_undeclared_literal_plus_addsitedir_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared'].",
-   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N52_undeclared_literal_plus_addsitedir_kfo (/private/tmp/r4pr86s23/fx/N52_undeclared_literal_plus_addsitedir_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared']. R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R86S5F_N53_declared_literal_plus_extend_name_kfo": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -22349,8 +22340,9 @@
     "packages/shared/plugins/plug_mod.py": "X = 1\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
    },
-   "expect": "read",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N18_import_module_keyword_name (/private/tmp/r4pr86s23/fx/N18_import_module_keyword_name); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N18_import_module_keyword_name (/private/tmp/r4pr86s23/fx/N18_import_module_keyword_name); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []. R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R86S5F_N19_getattr_import_module": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -22424,8 +22416,9 @@
     "packages/shared/plugins/plug_mod.py": "X = 1\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
    },
-   "expect": "read",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N19_getattr_import_module (/private/tmp/r4pr86s23/fx/N19_getattr_import_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N19_getattr_import_module (/private/tmp/r4pr86s23/fx/N19_getattr_import_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []. R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R86S5F_N20_exec_import_string": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -22499,8 +22492,9 @@
     "packages/shared/plugins/plug_mod.py": "X = 1\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
    },
-   "expect": "read",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N20_exec_import_string (/private/tmp/r4pr86s23/fx/N20_exec_import_string); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N20_exec_import_string (/private/tmp/r4pr86s23/fx/N20_exec_import_string); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []. R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R86S5F_N54_find_spec_exec_module": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -22574,8 +22568,9 @@
     "packages/shared/plugins/plug_mod.py": "X = 1\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
    },
-   "expect": "read",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N54_find_spec_exec_module (/private/tmp/r4pr86s23/fx/N54_find_spec_exec_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N54_find_spec_exec_module (/private/tmp/r4pr86s23/fx/N54_find_spec_exec_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []. R6-2 (root's R6 acceptance 16:44 2026-11-12, measured on ed22d7d8782b): the file refuses at the single refuse point, a path-mutation capability no read rule consumes; re-pinned to that rule.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R86S5F_N24_sourceless_pyc_in_landing": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -23108,14 +23103,9 @@
     "packages/shared/plugins/__init__.py": "",
     "packages/shared/plugins/plug_mod.py": "X = 1\n"
    },
-   "expect": "read",
-   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
-   "known_fail_open": {
-    "gap": "S5F",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/dotgithub-86-1112.md"
-   }
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it. R6-2 (measured on ed22d7d8782b): the widened Python listing now parses the `sys .path` file, so rule (b) refuses its undeclared bare name; the S5F gap closes by refusing.",
+   "expected_rule": "may land in"
   },
   "KFO_S5F_D04c_undeclared_dirname_bare": {
    "question": "dotgithub-86 round-5 STACK CHANGES fix",
@@ -24181,8 +24171,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "E_N18_import_module_kw_evaluated",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N18_import_module_kw_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N18_import_module_kw_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N18_import_module_kw_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N18_import_module_kw_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "E_N19_getattr_import_module_evaluated": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -24217,8 +24208,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "E_N19_getattr_import_module_evaluated",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N19_getattr_import_module_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N19_getattr_import_module_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N19_getattr_import_module_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N19_getattr_import_module_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "E_N20_exec_string_evaluated": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -24253,8 +24245,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "E_N20_exec_string_evaluated",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N20_exec_string_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N20_exec_string_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N20_exec_string_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N20_exec_string_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "E_N54_find_spec_evaluated": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -24289,8 +24282,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "E_N54_find_spec_evaluated",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N54_find_spec_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N54_find_spec_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N54_find_spec_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N54_find_spec_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "E_exec_same_file_evaluated": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -24324,8 +24318,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "E_exec_same_file_evaluated",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_exec_same_file_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_exec_same_file_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_exec_same_file_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_exec_same_file_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "G01_literal_unowned_dir_under_root": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25251,8 +25246,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_addsitedir_alias_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_addsitedir_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_addsitedir_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_dunder_iadd_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25285,8 +25281,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_dunder_iadd_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_iadd_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_iadd_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_dunder_import_sys_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25319,8 +25316,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_dunder_import_sys_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_import_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_import_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_dunder_setitem_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25353,8 +25351,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_dunder_setitem_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_setitem_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_setitem_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_exec_string_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25387,8 +25386,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_exec_string_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_exec_string_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_exec_string_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_from_sys_import_path_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25421,8 +25421,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_from_sys_import_path_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_from_sys_import_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_from_sys_import_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_getattr_sys_path_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25455,8 +25456,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_getattr_sys_path_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_getattr_sys_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_getattr_sys_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_list_insert_unbound_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25489,8 +25491,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_list_insert_unbound_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_list_insert_unbound_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_list_insert_unbound_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_reassign_mixed_control": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25557,8 +25560,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_residual_plus_addsitedir",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_residual_plus_reassign": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25591,8 +25595,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_residual_plus_reassign",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_reassign/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_reassign/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_starred_insert_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25625,8 +25630,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_starred_insert_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_starred_insert_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_starred_insert_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_sys_as_alias_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25659,8 +25665,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_sys_as_alias_alone",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_alone/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_alone/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_sys_as_alias_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25693,8 +25700,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_sys_as_alias_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_sys_modules_sys_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25727,8 +25735,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_sys_modules_sys_mixed",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_modules_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_modules_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_two_file_conftest_addsitedir": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25762,8 +25771,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_two_file_conftest_addsitedir",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_file_conftest_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_file_conftest_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "S_two_residuals": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -25796,8 +25806,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "S_two_residuals",
-   "expect": "read",
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_residuals of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_residuals/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_residuals of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_residuals/<checkout>, cfg.json). At truth on the head (main at, parent at).",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_A_dirname4_beside_linked_sibling": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26083,14 +26094,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_N18_import_module_kw",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N18_import_module_kw of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N18_import_module_kw/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N18_import_module_kw of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N18_import_module_kw/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_E_N19_getattr_import_module": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26125,14 +26131,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_N19_getattr_import_module",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N19_getattr_import_module of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N19_getattr_import_module/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N19_getattr_import_module of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N19_getattr_import_module/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_E_N20_exec_string": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26167,14 +26168,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_N20_exec_string",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N20_exec_string of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N20_exec_string/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N20_exec_string of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N20_exec_string/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_E_N54_find_spec": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26209,14 +26205,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_N54_find_spec",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N54_find_spec of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N54_find_spec/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N54_find_spec of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N54_find_spec/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_E_exec_same_file": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26250,14 +26241,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_exec_same_file",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_exec_same_file of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_exec_same_file/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_exec_same_file of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_exec_same_file/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_K_eval_shared_control": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26602,14 +26588,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_addsitedir_alias_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_addsitedir_alias_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26643,16 +26624,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_addsitedir_alias_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_addsitedir_plain_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26685,14 +26659,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_addsitedir_plain_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_plain_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_plain_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_plain_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_plain_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_addsitedir_plain_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26760,14 +26729,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_alias_assign_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_alias_assign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_alias_assign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_alias_assign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_alias_assign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_alias_assign_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26835,14 +26799,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_iadd_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_dunder_iadd_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26876,16 +26835,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_iadd_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_dunder_import_sys_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26918,14 +26870,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_import_sys_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_dunder_import_sys_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -26959,16 +26906,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_import_sys_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_dunder_setitem_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27001,14 +26941,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_setitem_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_dunder_setitem_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27042,16 +26977,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_dunder_setitem_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_exec_string_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27085,16 +27013,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_exec_string_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_exec_string_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_exec_string_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_from_sys_import_path_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27127,14 +27048,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_from_sys_import_path_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_from_sys_import_path_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27168,16 +27084,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_from_sys_import_path_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_getattr_sys_path_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27210,14 +27119,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_getattr_sys_path_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_getattr_sys_path_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27251,16 +27155,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_getattr_sys_path_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_list_insert_unbound_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27293,14 +27190,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_list_insert_unbound_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_list_insert_unbound_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27334,16 +27226,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_list_insert_unbound_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_reassign_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27376,14 +27261,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_reassign_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_reassign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_reassign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_reassign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_reassign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_reassign_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27451,14 +27331,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_residual_plus_addsitedir",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_residual_plus_reassign": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27491,14 +27366,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_residual_plus_reassign",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_reassign/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_reassign/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_starred_insert_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27531,14 +27401,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_starred_insert_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_starred_insert_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27572,16 +27437,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_starred_insert_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_sys_as_alias_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27614,14 +27472,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_sys_as_alias_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_sys_as_alias_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27655,16 +27508,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_sys_as_alias_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_sys_modules_sys_alone": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27697,14 +27543,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_sys_modules_sys_alone",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_sys_modules_sys_mixed": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27738,16 +27579,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_sys_modules_sys_mixed",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_two_file_conftest_addsitedir": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27782,16 +27616,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_two_file_conftest_addsitedir",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_two_file_conftest_alias": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27826,16 +27653,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_two_file_conftest_alias",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [
-     "a"
-    ],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_alias of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_alias/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_alias of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_alias/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "U_S_two_residuals": {
    "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
@@ -27868,14 +27688,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_S_two_residuals",
-   "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B8",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
-   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_residuals of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_residuals/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_residuals of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_residuals/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin.",
+   "expected_rule": "is consumed by no read rule; a file reads only when every one is"
   },
   "R6G1_unparsable_python_with_sys_path_refuses": {
    "question": "dotgithub-86 R6-1 (root's 16:44 ruling: what the reader does with an unparsable file)",

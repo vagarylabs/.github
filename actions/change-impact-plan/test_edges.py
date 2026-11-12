@@ -12,6 +12,7 @@ import os
 from unittest.mock import patch
 import subprocess
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -45,6 +46,239 @@ CFG = {
     "edge_scan": {"roots": ["services"], "reader_dirs": ["scripts"], "reader_job": "root"},
     "jobs": {"root": {"packages": []}},
 }
+
+
+class Refusal(str):
+    """A vector scan that refused: equal to "REFUSE", so every pin and comparison written against that string holds,
+    and carrying the reader's ValueError text, so a vector can pin WHICH rule refused (root's item 7 of the R-c r4
+    review, 2026-11-12: a refuse that accepts any ValueError also passes on a config-shape error)."""
+
+    def __new__(cls, message: str):
+        refusal = super().__new__(cls, "REFUSE")
+        refusal.message = message
+        return refusal
+
+
+# Root's B2 of #84 and item 6 of the R-c r4 review (2026-11-12): the precision controls are a closed list. A vector
+# takes `control: true` (and its truth-[] exemption) only by a one-line addition here, with its pinned `reads`; every
+# label here must exist in the review vectors, so a stale entry fails too.
+REVIEW_CONTROLS = (
+    "A31_metadata_true", "C08_setcomp_eq_metadata_control", "D10_js_whole_statement_string_mid_file",
+    "ES3_str_backslash_8_kept", "N15_sql_file_copy", "N58_json_fixture_metadata_control",
+    "P13_backend_services_not_root_control", "R5R02_yaml_compose_services_key",
+    "R5R03_py_database_execute_not_a_command", "R5V50_py_db_execute_precision_control",
+    "R6V10_pkg_nested_scripts_object", "R6V20_pkg_precision_script_name_root",
+    "R6V30_toml_key_precision", "R7T08_pkg_no_scripts_root_elsewhere", "R7T09_pkg_empty_scripts",
+    "R7T10_pkg_bom_no_scripts", "R7T11_pkg_not_named_package_json", "R7T12_toml_colon_key_reads",
+    "R84_B17_import_alias_name",
+    # The R-c r5 vectors (root's rc-vectors-r4-1112.md items 6 and 9, and core's two 11-14 declarations), each pinned
+    # in the json (`reads`), each with its declaration-only ablation.
+    "RC1B_app_own_unit_declared_control", "RC1B_core_cost_centre_bare_app_declared_control",
+    "RC1B_core_lead_intake_bare_app_declared_control", "RC1H_js_sibling_fallback_above_checkout_reads_nothing_control",
+    "RC1H_js_sibling_fallback_control_with_reentry_files",
+    "RC6D_js_fixture_name_declared_path_list_of_module_under_test_exit_control",
+    "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
+    "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
+    "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control",
+    # Root's round-6 inputs (github-86-r5fix-1112.md, 2026-11-12): the two with truth [], root's own `control` and the
+    # nested-package control judged on unit b, both reading [] on main, the parent and the head.
+    "N00_nested_control_unit_b", "U_K_no_syspath_negative",
+)
+
+# Root's ruling change on #84 (dotgithub-84-1112.md:27, 2026-11-12): the dated known fail-opens, each pinned by a vector
+# carrying `known_fail_open` {gap, until, today, record}. Its reading must EQUAL `today`, so the day a rule closes the gap
+# the pin goes red and that commit removes it (the case is then judged as the read it is); on or after `until` a case
+# still pinned fails. Root's B1 of dotgithub-86 (2026-11-12): the closed set is the LABELS, as REVIEW_CONTROLS is, each
+# with its gap, asserted both ways (a pinned vector outside the map, an entry without its vector and an entry whose
+# vector names another gap all fail), and judge() honours a pin only for a label here, so a four-key block on a failing
+# read is not a way to pass. A commit that closes a gap removes its entries here and its pins in the json together.
+KNOWN_FAIL_OPEN = {
+    "KFO_D1_K3a_subscript_store": "D1", "KFO_D1_K3b_append_mutator": "D1", "KFO_D1_K3c_class_attr_via_self": "D1",
+    "KFO_D1_K3d_setattr": "D1", "KFO_D1_K3e_nested_attr": "D1", "KFO_D1_K3f_environ_store": "D1",
+    "KFO_D1_K3l_dict_update": "D1",
+    "KFO_D2_K2q_from_import_out_of_pkg": "D2", "KFO_D2_K2q_from_import_out_of_pkg_m": "D2",
+    "KFO_D2_K2r_star_out_of_pkg": "D2",
+    "KFO_D3_K1a_chain_two_links": "D3", "KFO_D3_K1f_toplevel_link_to_shared": "D3",
+    "KFO_D3_K1g_toplevel_link_unowned": "D3",
+    "KFO_D4_K1jL_single_link_literal_twin": "D4",
+    "KFO_C01_js_name_indirection": "C01", "KFO_C02_js_two_leading_subst": "C02", "KFO_C03_js_pkg_holding_top_subst": "C03",
+    "KFO_C04_js_prefix_of_pkg_name": "C04",
+    "KFO_N3_A6_unowned_free_top_landing_external": "N3",
+    # Root's ROWs of dotgithub-86 slice 2 (rule (b) reads only the key; reassign and addsitedir record no entry): an
+    # undeclared entry with no literal tail, and every other rule-(b) case below truth (root's 13:01 condition (b)).
+    "KFO_S2R_B1_name_undecl": "S2R", "KFO_S2R_B4_empty_undecl": "S2R", "KFO_S2R_C_extend_name_undecl": "S2R",
+    "KFO_S2R_F_symlink_undecl": "S2R", "KFO_S2R_D_case_undecl": "S2R", "KFO_S2R_D_abs_undecl": "S2R",
+    "KFO_S2R_D_expanduser_undecl": "S2R",
+    # Root's round-5 STACK CHANGES of dotgithub-86 (2774a421f815, 14:27 2026-11-12): `sys .path` spacing with a bare
+    # name (N39), and the bare tail forms outside the listed ones (D04c dirname, D04d Path(..).parent, D04e a slice,
+    # D04f str.replace): [] on main, dcf6545 and 2774a421, each the only sys.path site of its file, so B2 leaves it.
+    # R6-2 (measured on ed22d7d8782b, 2026-11-12): N39 and the slice-2 C_reassign / C_addsitedir pins left this map, and
+    # with them root's B8 eleven (U_S_*) and five of B7's nine (U_E_N18/N19/N20/N54, U_E_exec_same_file): each now
+    # refuses (N39 by rule (b) once the widened listing parses it, the rest at the single refuse point) and is a refuse
+    # vector pinned to its rule.
+    "KFO_S5F_D04c_undeclared_dirname_bare": "S5F", "KFO_S5F_D04d_undeclared_Path_parent_bare": "S5F", "KFO_S5F_D04e_undeclared_slice_bare": "S5F",
+    "KFO_S5F_D04f_undeclared_replace_bare": "S5F",
+    # Root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b,
+    # 16:13 2026-11-12) and its R6 ruling: root's 111 inputs enter the vectors verbatim (R6-1); the 49 below truth on
+    # main, the parent and the head are pinned at the head's reading, each under the record's blocker: B5 (:4387
+    # startswith misses the link as the landing, as an intermediate component, link then `..`; a zip on the path), B6
+    # (:4380 a value normalising to `../` returns without refuse or credit), B7 (:4461-4485 the evaluated route narrows
+    # by names: nine rows), B8 (ruling B2 not general: the eleven unseen forms beside one resolvable entry), K04 (a
+    # PYTHONPATH in a workflow env) and B2 (the conftest landing credited only to the owning package). R6-2 to R6-5
+    # remove each pin as its slice reads or refuses the input.
+    "A01_eval_parents3_reenter_own_name": "R6B6", "U_A_dirname4_beside_linked_sibling": "R6B6",
+    "U_A_dirname4_reenter_own_name": "R6B6",
+    "K04_workflow_pythonpath_env": "R6K04",
+    "N13e_conftest_evaluated_unit_rsub": "R6B2",
+    "P04_eval_zip_on_path": "R6B5", "P04b_eval_zip_on_path_parents2": "R6B5", "U_P01_landing_is_tracked_symlink": "R6B5",
+    "U_P02_symlink_intermediate": "R6B5", "U_P03_symlink_then_dotdot": "R6B5", "U_P04_zip_on_path": "R6B5",
+    "U_E_C4_semicolon": "R6B7", "U_E_C4b_if_oneliner": "R6B7", "U_E_C4c_try_oneliner": "R6B7",
+    "U_E_C4e_unparseable_sibling": "R6B7",
+}
+
+# Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
+# MAIN's reader beside the head's on every review vector (test_r6_no_regression_against_main_reader). MAIN_EDGES_BLOB is
+# the git blob of edges.py on origin/main the gate was derived against (0ff30f1ad9ce and 75e84a53527e carry it,
+# 2026-11-12), read with `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
+# re-reads origin/main: while the head's edges.py differs from main's, main's blob must still BE this one, so a PR under
+# which main's reader moved is an admission change that re-derives the gate and re-pins here; once the head and main
+# are the same reader (main itself), the pin must name a former main edges.py, so it cannot point at nothing.
+MAIN_EDGES_BLOB = "5449e5f68aa251ef8a66db44316cad70af8e21e4"
+MAIN_EDGES_PATH = "actions/change-impact-plan/edges.py"
+# Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
+# carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
+KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
+
+# Root's R4 of R6-1 (17:51 2026-11-12): a suite red by design hides a new red, so the designed-red set is closed and
+# compared BY NAME. Each test below collects the labels whose judgement failed and asserts that set EQUALS its entry
+# here: a 47th label (a new red), a label gone green (a slice read it: move it out here, in the same commit) and a
+# label no vector carries each fail by name, and the suite is GREEN exactly when the set matches. The sets are the
+# R6-1 head's (bd87cffc7f7f: local 742 s run and hosted run 43217057338 read the same 46).
+DESIGNED_RED = {
+    # test_review_vectors_read_their_truth_or_refuse: the 28 of ff414447 (round-5 rule pins) and root's nine of the
+    # 16:13 ruling (main refuses, the head reads [] below truth). Re-judged on the R6-2 scanner (ed22d7d8782b, 2026-11-12):
+    # all 37 stay red and none moves; the 28 do not wait on the refuse point after all, each fails on its own rule (a
+    # reach list, code the scan excludes, a name that names no tracked file), none on a path-mutation capability.
+    "review": frozenset({
+        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
+        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
+        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
+        "RC1F_py_two_subdirs_declared_whole_prefix", "RC1F_refuse_reach_strict_subset_of_prefix",
+        "RC1F_unowned_caller_reach_strict_subset_reads_less_today",
+        "RC1G_js_in_checkout_fallback_declared_external_refuses", "RC1G_js_in_checkout_fallback_declared_fixture_refuses",
+        "RC1G_js_in_checkout_fallback_declared_package_refuses", "RC1G_js_sibling_load_declared_fixture_refuses",
+        "RC1G_js_sibling_load_declared_package_refuses", "RC1I_f1_str_concat_declared",
+        "RC1K_js_env_only_load_declared_fixture_refuses", "RC1S_backslash_parent_step_declared_refuses",
+        "RC1S_py_sys_path_os_sep_join_literals_b1", "RC1X_py_one_expression_sys_path_and_run_path_one_entry_refuses",
+        "RC1X_py_param_root_and_module_root_one_entry_refuses",
+        "RC4B_js_whole_checkout_template_excluded_top_dir_declared_none",
+        "RC5B_py_literal_route_to_excluded_code_declared_reach_list", "RC5E_py_declared_reach_list_direct_edge_only",
+        "RC5F_py_scripts_caller_declared_reach_list_judged_on_readers", "RC5G_py_declared_reach_list_full_two_routes",
+        "RC5J_py_two_route_hook_and_cd_route_full_reach_refuses", "RC5J_py_two_route_hook_and_cd_route_partial_reach_refuses",
+        "RC5J_py_two_route_hook_own_line_cd_full_reach", "RC6B_extensionless_loader_target_declared_sources",
+        "RC6B_js_loader_literal_untracked_build_output_declared_sources", "RC6B_node_addon_declared_native_sources",
+        "RC6G_py_fixture_route_declared_reach_own_unit_refuses", "RC6H_refuse_reach_names_the_namer_itself",
+        "RC6I_refuse_reach_names_only_the_callers_own_unit",
+    }),
+    # test_r6_no_regression_against_main_reader: exactly root's nine (main REFUSE, head reads [] below truth).
+    "gate": frozenset({
+        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
+        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
+        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
+    }),
+}
+
+# Root's S1 of dotgithub-86 (2026-11-12): the `"r5": true` opt-in is closed. Exactly R5_VECTOR_COUNT vectors carry it
+# (equality, so an addition is a deliberate edit here), and they are exactly the `RC` labels outside the five #84
+# vectors below that predate round 5, so dropping the flag from one vector (or swapping a drop for an addition) cannot
+# take it out of the ablation and expected_rule checks.
+R5_VECTOR_COUNT = 168  # slice 2 FIX: + the 25 RC1T vectors (root's A/B/P probe cases); slice 3 FIX: + the two RC1A climb twins
+R5_PREFIX = "RC"
+RC_LABELS_BEFORE_R5 = ("RC1I_f1_fstring", "RC1I_f1_os_path_join", "RC1I_f1_str_concat", "RC1I_f1_str_path_div",
+                       "RC4G_f2_unreached_scripts_template_starts_no_unit")
+
+# Root's S2 of dotgithub-86 (2026-11-12): the reader's catch-all refusal, apply_entry's `kind == "unknown"` raise in
+# edges.py (a sys.path or pytest pythonpath entry that cannot be evaluated). It fires with or without a round-5 rule, so
+# an `expected_rule` (or `ablation_expected_rule`) it also contains cannot tell the new rule from it: assert_rule refuses
+# such a fragment, and test_review_vector_closed_lists_hold asserts the template is still edges.py's, so this check
+# cannot go vacuous when the message changes.
+CATCH_ALL_REFUSAL = "unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) in {where}"
+CATCH_ALL_WHATS = ("sys.path entry", "pytest pythonpath entry")
+
+# Root's N of dotgithub-86 (09:39, 2026-11-12): the pinned-rules floor is equality on the count, not > 0. Exactly
+# R5_SYS_PATH_RULE_PINS pins (22 expected_rule, 3 ablation_expected_rule: the 25 S2 re-marked) name the r5 sys.path
+# rule's fragment, which test_review_vector_closed_lists_hold also pins against the text edges.py raises.
+R5_SYS_PATH_RULE = "an undeclared sys.path entry"
+R5_SYS_PATH_RULE_PINS = 25
+# Slice 2 of the rule commits (RC1B, root's dotgithub-86 review, 2026-11-12): the rules the RC1B vectors name, closed the
+# same way. Each fragment maps to (the number of pins naming it, by equality; the text of ITS raise site in edges.py).
+# The raise site, not the fragment: `stale computed_imports entry` is also assess's check-mode text, so a fragment
+# pin would hold on an edges.py without the scan() rule.
+RC1B_RULE_PINS = {
+    "a sys.path entry is declared with a reach list": (2, 'but a sys.path entry is declared with "'),
+    "trailing components": (6, 'f"trailing components are not `{tail}`'),
+    "is not a tracked directory": (2, 'f"not a tracked directory) in {where}"'),
+    "stale computed_imports entry": (3, 'raise ValueError(f"stale computed_imports entry: '),
+    # Root's B1/B2 of slice 2 (2026-11-12): a declared entry whose path has no literal tail of a listed form refuses
+    # (the RC1T vectors), and rule (b), apply_entry's undeclared-tail refusal, pinned by its own raise site.
+    # 16 + R86S23_declared_prefixed_parent_step_refuses_no_tail (the s2+s3 stack: no tail after the parent-step route).
+    "has no tail the scan reads": (17, 'has no tail the scan reads: its last path "'),
+    # R6-2 (2026-11-12): + KFO_S5F_N39_sys_space_bare_name, which the widened Python listing now parses and rule (b) refuses.
+    "may land in": (6, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
+}
+# Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
+# parent-step sys.path literal refuses by, closed the same way. `code the scan excludes` is also the closure's text (the
+# RC4 and RC5 vectors name it), so its count is every pin naming it and its site is apply_entry's RC1A raise.
+RC1A_RULE_PINS = {
+    "lands in no tracked directory": (4, 'lands in no tracked directory: from each one "'),
+    "a symlink component": (3, 'a symlink component, "'),
+    "code the scan excludes": (13, 'lands in {landing}, code the scan "'),
+}
+# Root's slice 3 CHANGES (dotgithub-86, 12:02 2026-11-12): B2 credits a climb above the checkout that re-enters it by its
+# own name, so the depth-0/1 re-entries (RC1A_depth0/depth1_cwd_reentry_by_own_name_reads, renamed by root's 12:43
+# ruling) read their truth, and their twins whose climb names no own name (RC1A_refuse_depth0/depth1_cwd_climb_names_
+# no_own_name) refuse, so `lands in no tracked directory` stays at 4 pins and R5_VECTOR_COUNT gains the two twins; B4
+# judges a package-free landing by the parsed names, so the R86S3_C4/C4b/C4c siblings refuse as C4ctrl does (`a
+# package-free landing` 1 -> 4). B4's new refusal (a package file that does not parse) is pinned here the same way.
+# Root's round-5 STACK CHANGES of dotgithub-86 (2774a421f815, 14:27 2026-11-12), B1 (a declared parent-step literal's
+# reach validated and credited), B2 (a file reads only when every sys.path site resolves), B4 (a climb beside the
+# checkout refuses), B5 (a symlink or a sourceless .pyc inside a landing): each fragment -> (pins naming it, by
+# equality; its raise site in edges.py; a named control vector that must carry it), walked with the floor below.
+R5F_RULE_PINS = {
+    "but a parent-step literal is declared with a reach list": (1, '"but a parent-step literal is declared with a reach list: the tracked directories "', "R86S5F_N10_declared_parent_literal_with_keyword_reach"),
+    "neither one of its landings nor a tracked directory": (1, "which is neither one of its landings nor a tracked directory) in ", "R86S5F_N01d_declared_literal_reach_not_a_landing_tracked_cwd"),
+    # R6-2 (2026-11-12): 5 -> 4, R86S5F_N52's `site.addsitedir` now refuses first at the single refuse point (R6 rule).
+    # W1b (2026-11-12): 4 -> 5, the carve-out twin R6_carveout_residual_beside_entry_refuses pins it.
+    "a file reads only when every one of its sys.path sites resolves": (5, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
+    "where it may re-enter the checkout by a path the scan cannot see": (3, '"checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "', "R86S5F_N15_beside_dir_then_dotdot_reenters"),
+    "a sourceless .pyc": (2, 'else "a sourceless .pyc"', "R86S5F_N24_sourceless_pyc_in_landing"),
+    "a symlink inside the landing": (2, '"a symlink inside the landing" if tracked.get(held)', "R86S5F_N28_symlink_inside_owned_landing"),
+    "the repository root or above it": (12, "the repository root or above it", "R86S3_C12_dotdot_only_nested"),
+}
+RC1A_FIX_RULE_PINS = {
+}
+# R6-2 of dotgithub-86 (root's R6 acceptance 16:44 2026-11-12, decisions (i)-(iii); cli's scanner draft ed22d7d8782b):
+# python_file_facts' single refuse point, the first path-mutation capability occurrence no read rule consumes. Every
+# vector it refuses pins this clause (a twin may pin the named occurrence before it), closed by equality on the count as
+# the rules above are. The template is split over two f-strings in edges.py, so both halves are pinned as raise sites.
+R6_CAPABILITY_RULE = "is consumed by no read rule; a file reads only when every one is"
+R6_CAPABILITY_RULE_PINS = 98  # W1b (2026-11-12): + the 35 R6_ refuse twins, each pinning its named occurrence and the clause
+R6_CAPABILITY_SITES = ('raise ValueError(f"unresolved (the path-mutation capability `{segment}` on line {lineno} of {path} '
+                       'is consumed by "', 'f"no read rule; a file reads only when every one is) in {path}")')
+
+
+def catch_all_fragments():
+    """The literal text of every rendering of CATCH_ALL_REFUSAL: the parts between its `{value}` and `{where}`."""
+    return [part for what in CATCH_ALL_WHATS
+            for part in re.split(r"\{value\}|\{where\}", CATCH_ALL_REFUSAL.replace("{what}", what)) if part]
+
+
+def catch_all_pattern():
+    """CATCH_ALL_REFUSAL as a regex matching every message it renders, whatever its `value` and `where`: a fragment that
+    straddles a placeholder (`cannot be evaluated) in services`) is in no literal part, yet is found in a catch-all."""
+    what = "|".join(re.escape(w) for w in CATCH_ALL_WHATS)
+    return "".join(f"(?:{what})" if part == "{what}" else ".*" if part in ("{value}", "{where}") else re.escape(part)
+                   for part in re.split(r"(\{what\}|\{value\}|\{where\})", CATCH_ALL_REFUSAL) if part)
 
 
 class EdgesTest(unittest.TestCase):
@@ -458,13 +692,38 @@ class EdgesTest(unittest.TestCase):
 
     FIXTURE_DIRS = ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared", ".github")
 
-    def vector_scan(self, repo, case, revision=False):
+    def case_repo(self, repo, label, case):
+        """The fixture a case runs in: the shared one, unless the case names its checkout's parent directory
+        (`fixture_parent`, root's round-6 harness layout fx/<label>/<checkout>, 2026-11-12: C06 and C07 re-enter the
+        checkout through that name) or links beside its checkout (`outside_links`) or beside the checkout's parent
+        (`grand_links`): such a case gets its own <fixture_parent>/<checkout> fixture, so the parent directory is the
+        name the input or the grand link uses and its links collide with no other case's."""
+        if "fixture_parent" in case or "outside_links" in case or "grand_links" in case:
+            return self.vector_repo(f"{case.get('fixture_parent', label)}/{case.get('checkout', 'vectors')}")
+        return repo
+
+    def vector_scan(self, repo, case, revision=False, module=None, full=False):
         """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
         --revision`) through an immutable commit whose working tree has since changed. Root's A2 of the R-c vectors
         (2026-11-12): a case's `files` {path: text} are written too (the second tracked file a vector needs: an excluded
         hook, the sources a loader lands in) and removed after it, with the input, so no case reads another's files; its
         `unit` names what is judged, the package that owns the caller (default `r`) or a reader directory's unit
-        (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander."""
+        (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander.
+        Root's round-6 inputs (2026-11-12) add: a `files` value {"hex": ...} for bytes a JSON string cannot hold (a zip
+        on the path); `outside_links` {name: target}, a link beside the checkout naming it by its directory name;
+        `grand_links` {name: target}, a link beside the checkout's parent naming that parent; `env`, the case's own
+        environment for the scan. Every scan runs without GITHUB_REPOSITORY (root's harness removes it, so the fixture
+        never takes the runner's repository name as its own) and then with the case's `env`. `module` is the reader to
+        run, the head's edges by default; the no-regression gate passes main's. `full` (root's G3 of R6-1, 2026-11-12)
+        returns EVERY unit the scan produced, {("deps", package): sorted, ("readers", dir): sorted}, so the gate compares
+        all of them; by default the judged unit's reading alone (unit_reading)."""
+        reader = module or E
+        # Root's S4 of dotgithub-86 (2026-11-12): a vector whose input re-enters the checkout through the checkout's own
+        # directory name (`../vectors/packages/shared`) holds only in a fixture of that name. It names it in `checkout`,
+        # asserted here, so a fixture under another name fails loudly instead of the vector testing something else.
+        if "checkout" in case:
+            self.assertEqual(repo.name, case["checkout"], f"this vector re-enters a checkout named {case['checkout']!r}; "
+                                                          f"the fixture is {repo.name!r}")
         subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "services/r"], check=True)
         for f in sorted((repo / "services/r").rglob("*"), reverse=True):
             if f.is_file() and f.name != "keep.txt":
@@ -474,10 +733,22 @@ class EdgesTest(unittest.TestCase):
         links = dict(case.get("symlinks") or {})  # {link path: target}, as the round-4 harness writes them (X08b)
         self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
         written = [rel, *sorted(extra), *sorted(links)]
+        # A link beside the checkout names the checkout (its directory name); one beside the checkout's parent names
+        # that parent. Asserted so a fixture under another name fails loudly (as `checkout` does above).
+        beside = {}
+        for name, target in dict(case.get("outside_links") or {}).items():
+            self.assertEqual(target, repo.name, f"outside link {name!r} -> {target!r}: it names the checkout, which is {repo.name!r}")
+            beside[repo.parent / name] = target
+        for name, target in dict(case.get("grand_links") or {}).items():
+            self.assertEqual(target, repo.parent.name,
+                             f"grand link {name!r} -> {target!r}: it names the checkout's parent, which is {repo.parent.name!r}")
+            beside[repo.parent.parent / name] = target
         # No path a vector writes may exist in the fixture, checked BEFORE the try: inside it, the cleanup would delete
         # the fixture file the guard refused to overwrite (root's K3 of #84's R4, 2026-11-12).
         for path in written:
             self.assertFalse((repo / path).exists(), f"{path}: a vector cannot write over a fixture path")
+        for link in beside:
+            self.assertFalse(link.exists() or link.is_symlink(), f"{link}: a vector cannot write over a path beside the fixture")
         # Root's C2 of #84 (2026-11-12): every write sits inside the try, so a failed one still cleans up.
         try:
             for path in written:
@@ -485,31 +756,41 @@ class EdgesTest(unittest.TestCase):
             # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
             (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
             for path, text in extra.items():
-                (repo / path).write_text(text)
+                if isinstance(text, dict):  # {"hex": ...}: bytes a JSON string cannot hold (root's P04, a zip on the path)
+                    (repo / path).write_bytes(bytes.fromhex(text["hex"]))
+                else:
+                    (repo / path).write_text(text)
             for path, target in links.items():
                 os.symlink(target, repo / path)
+            for link, target in beside.items():
+                os.symlink(target, link)
             subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
             cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
             rev = None
             if revision:
+                # --allow-empty: the gate scans one input at a revision through both readers, and the second scan's tree
+                # equals the first commit's (the cleanup emptied the index, the rewrite refilled it the same way).
                 subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
-                                "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
+                                "commit", "-qm", "vector", "--no-gpg-sign", "--allow-empty"], check=True)
                 rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
                 (repo / rel).write_text("# the working tree differs from the scanned revision\n")
             try:
-                deps, readers = E.scan(repo, cfg, revision=rev)[:2]
-            except ValueError:
-                return "REFUSE"
-            unit = case.get("unit") or "r"
-            if unit.startswith("readers:"):
-                # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
-                self.assertIn(unit[len("readers:"):], readers, f"{unit}: the scan produced no such reader unit")
-                return sorted(readers[unit[len("readers:"):]])
-            return sorted(deps[unit])
+                with patch.dict(os.environ):
+                    os.environ.pop("GITHUB_REPOSITORY", None)
+                    os.environ.update(case.get("env") or {})
+                    deps, readers = reader.scan(repo, cfg, revision=rev)[:2]
+            except ValueError as err:
+                return Refusal(str(err))  # == "REFUSE"; .message is the rule that refused (root's item 7, r4 review)
+            if full:
+                return {**{("deps", u): sorted(v) for u, v in deps.items()},
+                        **{("readers", u): sorted(v) for u, v in readers.items()}}
+            return self.unit_reading(case, deps, readers)
         finally:
             # Per-case cleanup: the input and every `files` entry leave the index and the tree, and the directories they
             # alone created go too, so the next case starts from the bare fixture.
             subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "--", *written], check=True)
+            for link in beside:
+                link.unlink(missing_ok=True)
             for path in written:
                 (repo / path).unlink(missing_ok=True)
                 parent = (repo / path).parent
@@ -517,6 +798,20 @@ class EdgesTest(unittest.TestCase):
                         not any(parent.iterdir()):
                     parent.rmdir()
                     parent = parent.parent
+
+    @staticmethod
+    def unit_key(case):
+        """The unit a case is judged on, as a `full` reading keys it: ("deps", package) or ("readers", dir)."""
+        unit = case.get("unit") or "r"
+        return ("readers", unit[len("readers:"):]) if unit.startswith("readers:") else ("deps", unit)
+
+    def unit_reading(self, case, deps, readers):
+        kind, name = self.unit_key(case)
+        if kind == "readers":
+            # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
+            self.assertIn(name, readers, f"readers:{name}: the scan produced no such reader unit")
+            return sorted(readers[name])
+        return sorted(deps[name])
 
     def vector_repo(self, name):
         repo = Path(self._td.name) / name
@@ -528,11 +823,26 @@ class EdgesTest(unittest.TestCase):
 
     def judge(self, label, case, got):
         truth, expect = case["truth"], case["expect"]
-        if expect == "refuse":
+        if "known_fail_open" in case:
+            # A dated known fail-open reads below its truth by ruling: its pin, not its truth, is judged, either way. Only
+            # a label in the closed KNOWN_FAIL_OPEN map is (root's B1 of dotgithub-86): a pin added to any other vector
+            # fails here, whatever it says.
+            self.assertIn(label, KNOWN_FAIL_OPEN, f"{label}: a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
+            pin = case["known_fail_open"]
+            self.assertEqual(got, pin["today"], f"{label}: known fail-open {pin['gap']} read {got}, pinned "
+                                                f"{pin['today']}; once it reads its truth {truth} this commit removes the pin")
+        elif expect == "refuse":
             self.assertEqual(got, "REFUSE", label)
+            if "expected_rule" in case:
+                # Root's item 7 and ruling (c) of the R-c r4 review (2026-11-12): a refuse names the rule it expects, as
+                # a substring of the reader's ValueError, so a refusal for another reason (a config-shape error, a
+                # neighbouring rule) fails here. A case without `expected_rule` keeps the bare REFUSE judgment.
+                self.assert_rule(label, got, case["expected_rule"], "expected_rule")
         elif expect == "residual":
-            # A named residual reads less than its truth by ruling; its reading when pinned is recorded so that one
-            # reading even less (or more) fails here until the pin is re-derived on purpose.
+            # A named residual is a case the reader judges below what it sees, by ruling: it reads less than its truth,
+            # or (R6_residual_reexported_alias_mutation_unseen_reads) it reads its truth while a path mutation it
+            # cannot see, a module re-exported under another name, goes unjudged. Its reading when pinned is recorded
+            # so that one reading less (or more) fails here until the pin is re-derived on purpose.
             self.assertEqual(got, case["reads"], f"{label}: a residual's reading moved from its pin")
         else:
             # Root's A1 of the R-c vectors (2026-11-12): an accept vector with an empty truth proves nothing (a reading
@@ -547,36 +857,184 @@ class EdgesTest(unittest.TestCase):
             if expect == "read":
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
 
+    def assert_rule(self, label, got, rule, field):
+        """`got` refused, and for the rule `rule` names: a substring of the reader's ValueError (ruling (c))."""
+        self.assertTrue(isinstance(rule, str) and rule.strip(),
+                        f"{label}: `{field}` must be a non-empty string; an empty fragment matches every refusal")
+        # Root's S2 of dotgithub-86 (2026-11-12): a fragment the catch-all refusal also prints passes on the catch-all,
+        # so it cannot tell the rule it names from it.
+        self.assertEqual([part for part in catch_all_fragments() if rule in part], [],
+                         f"{label}: `{field}` {rule!r} is text the catch-all refusal also prints; pin a clause of the rule "
+                         "itself")
+        self.assertIsInstance(got, Refusal, f"{label}: no refusal message was recorded to judge `{field}` against")
+        self.assertIn(rule, got.message, f"{label}: refused for another rule: `{field}` {rule!r} is not in the "
+                                         f"refusal {got.message[:200]!r}")
+        self.assertIsNone(re.fullmatch(catch_all_pattern(), got.message, re.S),
+                          f"{label}: the refusal is the catch-all ({got.message[:200]!r}); `{field}` {rule!r} matched its "
+                          "text, not its rule's")
+
+    def assert_known_fail_open_pins(self, vectors, on):
+        """The data-only checks on every `known_fail_open` vector, against the date `on`: a label of the closed
+        KNOWN_FAIL_OPEN map with its gap, its `until` exactly KNOWN_FAIL_OPEN_UNTIL, a read with a truth, never a control
+        or a residual, pinned below its truth, not past the date; and the map and the pinned vectors equal both ways."""
+        until = datetime.date.fromisoformat(KNOWN_FAIL_OPEN_UNTIL)
+        pinned = {}
+        for label, case in sorted(vectors.items()):
+            if "known_fail_open" not in case:
+                continue
+            pin = case["known_fail_open"]
+            # Outside the subTest: a failed case still counts, so only a drop or an addition trips the both-ways check.
+            pinned[label] = pin.get("gap") if isinstance(pin, dict) else None
+            with self.subTest(f"{label}:known_fail_open"):
+                self.assertEqual(sorted(pin), ["gap", "record", "today", "until"], f"{label}: known_fail_open's keys")
+                self.assertIn(label, KNOWN_FAIL_OPEN, f"{label}: a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
+                self.assertEqual(pin["gap"], KNOWN_FAIL_OPEN[label],
+                                 f"{label}: pinned gap {pin['gap']!r}, KNOWN_FAIL_OPEN says {KNOWN_FAIL_OPEN[label]!r}")
+                self.assertEqual(pin["until"], KNOWN_FAIL_OPEN_UNTIL,
+                                 f"{label}: until {pin['until']!r}; every pin carries KNOWN_FAIL_OPEN_UNTIL, no later date")
+                # expect read, so never a residual: the residual list is exactly the `expect: residual` labels.
+                self.assertEqual(case["expect"], "read", f"{label}: a known fail-open is a read, not a residual or a refuse")
+                self.assertNotEqual(case.get("control"), True, f"{label}: a case is a control or a known fail-open, not both")
+                self.assertTrue(case["truth"] and isinstance(pin["today"], list) and
+                                not set(case["truth"]) <= set(pin["today"]),
+                                f"{label}: a known fail-open pins a reading below a non-empty truth, not {pin['today']}")
+                if on >= until or on >= datetime.date.fromisoformat(pin["until"]):
+                    self.fail(f"{label}: known fail-open {pin['gap']} past its date {KNOWN_FAIL_OPEN_UNTIL}")
+        # Membership both ways, each failure naming its side, then the gaps (root's B1 of dotgithub-86).
+        self.assertEqual(sorted(set(pinned) - set(KNOWN_FAIL_OPEN)), [],
+                         "a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
+        self.assertEqual(sorted(set(KNOWN_FAIL_OPEN) - set(pinned)), [],
+                         "a stale KNOWN_FAIL_OPEN entry: it names no review vector carrying its known_fail_open pin")
+        self.assertEqual(pinned, KNOWN_FAIL_OPEN, "a pinned vector's known_fail_open.gap differs from KNOWN_FAIL_OPEN")
+
+    # Ruling (c) of root's R-c r4 review (2026-11-12): how a vector opts in. A case carrying `ablation` is always judged
+    # by test_review_vector_ablations_read_no_truth_and_refuses_pin_their_rule. A case that also says `"r5": true` makes
+    # the round-5 schema mandatory for itself: an accept (`expect` read or sound, a control included) must carry
+    # `ablation` and `ablation_kind`, a refuse must carry `expected_rule`. The pre-r5 vectors carry neither key and keep
+    # passing unchanged; an r5 vector cannot drop its ablation or its rule silently.
+    ABLATION_KINDS = ("construct+declaration", "declaration")
+    ABLATION_KEYS = {"src", "cfg", "files", "symlinks"}
+
+    def ablation_input(self, case):
+        """The ablated case as vector_scan reads it, built as the r3/r4 measurer built it (vectors-rc-driver3.py
+        run_ablation): `src` is the ablation's (the case's `src_hex` is dropped, or vector_scan would scan the original
+        bytes); `files` and `symlinks` are the ablation's when it carries them, else the case's own; `cfg` is the
+        ablation's or NONE (the fixture's REVIEW_CFG), never the case's, which would put back the declaration being
+        ablated; `ext`, `file` and `unit` stay the case's, so the ablation is judged on the unit the case is."""
+        ablation = case["ablation"]
+        ablated = {key: value for key, value in case.items() if key in ("ext", "file", "unit", "files", "symlinks")}
+        ablated["src"] = ablation["src"]
+        for key in ("files", "symlinks", "cfg"):
+            if key in ablation:
+                ablated[key] = ablation[key]
+        return ablated
+
+    def test_review_vector_ablations_read_no_truth_and_refuses_pin_their_rule(self):
+        """Ruling (c) of root's R-c r4 review (2026-11-12), items 6 and 7: every accept's ablation runs, controls included
+        (the r4 measurer skipped controls, so the one `declaration` ablation never ran). A construct+declaration
+        ablation must READ (a refusal is not ok) and read NO unit of the case's truth, or the vector does not test the
+        construct it names; a declaration-only ablation must REFUSE for its `ablation_expected_rule`."""
+        repo = self.vector_repo("ablations")
+        judged = 0
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            accept = case["expect"] not in ("refuse", "residual")
+            with self.subTest(f"{label}:ablation"):
+                if case.get("r5") is True:
+                    if case["expect"] == "refuse":
+                        self.assertIn("expected_rule", case, f"{label}: an r5 refuse pins its rule in `expected_rule`")
+                    elif accept:
+                        self.assertIn("ablation", case, f"{label}: an r5 accept (a control too) carries an `ablation`")
+                if "ablation" not in case:
+                    self.assertFalse({"ablation_kind", "ablation_expected_rule"} & set(case),
+                                     f"{label}: an ablation_kind or ablation_expected_rule without an `ablation`")
+                    continue
+                self.assertTrue(accept, f"{label}: an ablation is judged on an accept only, not expect {case['expect']!r}")
+                ablation, kind = case["ablation"], case.get("ablation_kind")
+                self.assertIsInstance(ablation, dict, f"{label}: an ablation is an object")
+                self.assertIsInstance(ablation.get("src"), str, f"{label}: an ablation carries its `src`")
+                self.assertEqual(sorted(set(ablation) - self.ABLATION_KEYS), [],
+                                 f"{label}: an ablation carries only {sorted(self.ABLATION_KEYS)}; another key is not read")
+                self.assertIn(kind, self.ABLATION_KINDS, f"{label}: ablation_kind {kind!r} is not one of {self.ABLATION_KINDS}")
+                got = self.vector_scan(repo, self.ablation_input(case))
+                judged += 1
+                if kind == "construct+declaration":
+                    self.assertNotIn("ablation_expected_rule", case,
+                                     f"{label}: ablation_expected_rule belongs to a declaration-only ablation")
+                    if isinstance(got, Refusal):
+                        self.fail(f"{label}: the construct+declaration ablation refused ({got.message[:200]!r}); with its "
+                                  f"construct and declaration removed it must READ")
+                    self.assertEqual(sorted(set(case["truth"]) & set(got)), [],
+                                     f"{label}: the ablation (construct and declaration removed) still reads truth units, "
+                                     f"read {got}: the vector does not test the construct it names")
+                else:
+                    self.assertEqual(got, "REFUSE", f"{label}: the declaration-only ablation read {got}; it must refuse")
+                    self.assertIn("ablation_expected_rule", case, f"{label}: a declaration-only ablation pins its rule")
+                    self.assert_rule(label, got, case["ablation_expected_rule"], "ablation_expected_rule")
+        # A floor inside the gate: with no ablation in the vectors this test asserted nothing, so it fails instead.
+        self.assertGreater(judged, 0, "the ablation assertion matched nothing: no review vector carries an `ablation`")
+
+    def assert_designed_red(self, which, red):
+        """The labels whose judgement failed (`red`: label -> why) must EQUAL DESIGNED_RED[which] by name. Three ways to
+        fail, each naming its labels: a label no vector carries (a renamed or dropped vector leaves a stale pin), a NEW red
+        (a 47th: the real regression a designed-red suite would otherwise hide), and a label gone GREEN (a slice read it
+        and must move it out of DESIGNED_RED in the same commit, so the set never pins more than the head's reading)."""
+        designed = DESIGNED_RED[which]
+        self.assertEqual(sorted(label for label in designed if self.vector_of(label) not in self.REVIEW_VECTORS), [],
+                         f"DESIGNED_RED[{which!r}] names labels no review vector carries")
+        new = sorted(set(red) - designed)
+        green = sorted(designed - set(red))
+        self.assertEqual(new, [], f"NEW red outside DESIGNED_RED[{which!r}] ({len(new)}): "
+                                  + "; ".join(f"{label}: {red[label][:300]}" for label in new))
+        self.assertEqual(green, [], f"designed-red labels now GREEN ({len(green)}), move them out of DESIGNED_RED[{which!r}]"
+                                    f" in this commit: {green}")
+
+    @staticmethod
+    def vector_of(label):
+        """The review vector a red label names: the gate's ablation leg reds `<label>:ablation`, its revision leg
+        `<label>@revision`; every other label is the vector itself."""
+        return label.split(":ablation")[0].split("@revision")[0]
+
+    def test_designed_red_pin_fails_by_name_three_ways(self):
+        """assert_designed_red is not vacuous: the designed set itself passes; a 47th label, a designed label gone green
+        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (the
+        nine fail both tests), and both sets name only vectors."""
+        for which in DESIGNED_RED:
+            self.assert_designed_red(which, {label: "designed" for label in DESIGNED_RED[which]})
+        self.assertTrue({label for label in DESIGNED_RED["gate"] if label == self.vector_of(label)} <= DESIGNED_RED["review"],
+                        "the gate's tree-leg reds are review reds too")
+        review = {label: "designed" for label in DESIGNED_RED["review"]}
+        with self.assertRaisesRegex(AssertionError, r"NEW red outside DESIGNED_RED\['review'\] \(1\): A12_dict_value_as_path: why"):
+            self.assert_designed_red("review", {**review, "A12_dict_value_as_path": "why"})
+        gone = sorted(DESIGNED_RED["review"])[0]
+        with self.assertRaisesRegex(AssertionError, rf"now GREEN \(1\).*{gone}"):
+            self.assert_designed_red("review", {k: v for k, v in review.items() if k != gone})
+        with patch.dict(DESIGNED_RED, {"review": DESIGNED_RED["review"] | {"ZZ_no_such_vector"}}):
+            with self.assertRaisesRegex(AssertionError, r"names labels no review vector carries"):
+                self.assert_designed_red("review", {**review, "ZZ_no_such_vector": "x"})
+
     def test_review_vectors_read_their_truth_or_refuse(self):
         """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
         (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
         does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
         os.path.split), and the fifth and sixth reviews' inputs outside README rule 4's closed list, all named
-        residuals."""
+        residuals; and #84's dated known fail-opens (KNOWN_FAIL_OPEN), each judged by its pin until its date. The closed
+        lists these rest on are test_review_vector_closed_lists_hold's, so they report apart from any vector's reading."""
         repo = self.vector_repo("vectors")
+        red = {}
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
-                self.judge(label, case, self.vector_scan(repo, case))
+                try:
+                    self.judge(label, case, self.vector_scan(self.case_repo(repo, label, case), case))
+                except AssertionError as exc:
+                    red[label] = str(exc)
+        self.assert_designed_red("review", red)
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual" and "reads" not in c),
                          [], "every residual vector pins its reading")
         # Root's B2 of #84 (2026-11-12): the precision controls are a closed list and each pins its reading, so a new
         # vector cannot take `control: true` (and its truth-[] exemption) silently.
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True and "reads" not in c),
                          [], "every precision control pins its reading")
-        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True),
-                         ["A31_metadata_true", "C08_setcomp_eq_metadata_control", "D10_js_whole_statement_string_mid_file",
-                          "ES3_str_backslash_8_kept", "N15_sql_file_copy", "N58_json_fixture_metadata_control",
-                          "P13_backend_services_not_root_control", "R5R02_yaml_compose_services_key",
-                          "R5R03_py_database_execute_not_a_command", "R5V50_py_db_execute_precision_control",
-                          "R6V10_pkg_nested_scripts_object", "R6V20_pkg_precision_script_name_root",
-                          "R6V30_toml_key_precision", "R7T08_pkg_no_scripts_root_elsewhere", "R7T09_pkg_empty_scripts",
-                          "R7T10_pkg_bom_no_scripts", "R7T11_pkg_not_named_package_json", "R7T12_toml_colon_key_reads",
-                          "R84_B17_import_alias_name",
-                          "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
-                          "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
-                          "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control"],
-                         "the precision controls are a closed list; a new one is added here, with its pinned reading")
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          [
                           "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
@@ -594,25 +1052,303 @@ class EdgesTest(unittest.TestCase):
                           "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
                           "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
-                          "R6V25_chdir_then_fstring_dotdot_end", "R84_B11_nested_fn_param_shadow",
+                          "R6V25_chdir_then_fstring_dotdot_end",
+                          "R6_residual_reexported_alias_mutation_unseen_reads", "R84_B11_nested_fn_param_shadow",
                           "R84_S08_param_shadow_other_assign",
+                          # Root's r4 item 11 (R-c r5) RC1A_residual_generated_cwd_directory left this list in the
+                          # round-5 fix (2026-11-12): its tracked start lands at the root and refuses (B3).
                           "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 
+    def pinned_main_source(self, head_source, pin):
+        """The text of MAIN's edges.py the gate compares the head's with: the blob `pin` (MAIN_EDGES_BLOB) from this
+        clone's object store. Fails, never skips, when the clone cannot show it (origin/main absent: planner-tests checks
+        out with fetch-depth 0), when main's edges.py moved under this branch (re-derive the gate, re-pin), when the head
+        IS main's reader but the pin names no edges.py main ever carried, or when the pinned text equals the head's (the
+        gate would compare a reader with itself). `head_source` is the head reader's text; main_reader passes the real
+        one, test_main_pin_resolves_when_the_head_is_main drives the head == main branch with main's own.
+        Root's G1 of R6-1 (2026-11-12): `git -C <action dir> rev-list -- <path>` resolves the path against the action
+        directory and returned 0 commits for a repo-root path, so the head == main branch could never pass (the day #86
+        lands, red on main and on every PR leaving edges.py alone): the pathspec is `:(top)`-anchored."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        head_blob = subprocess.check_output([*git, "hash-object", "--stdin"], input=head_source).decode().strip()
+        live = subprocess.run([*git, "rev-parse", "--verify", "-q", f"origin/main:{MAIN_EDGES_PATH}"],
+                              capture_output=True, text=True)
+        self.assertEqual(live.returncode, 0, "origin/main is not in this clone, so the gate cannot read main's reader: "
+                                             "planner-tests checks out with fetch-depth 0")
+        live_blob = live.stdout.strip()
+        if live_blob != head_blob:
+            self.assertEqual(live_blob, pin, "main's edges.py moved under this branch: re-derive the no-regression gate "
+                                             "against it and re-pin MAIN_EDGES_BLOB")
+        else:
+            # The head IS main's reader (main itself, or a branch that changes no reader): the pin must name a former
+            # main edges.py, so the gate still compares two real readers and the pin cannot point at nothing.
+            former = self.former_main_blobs()
+            self.assertIn(pin, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
+        shown = subprocess.run([*git, "cat-file", "-p", pin], capture_output=True)
+        self.assertEqual(shown.returncode, 0, f"the pinned main blob {pin} is not in this clone's object store")
+        self.assertNotEqual(shown.stdout, head_source, "floor: the pinned main reader and the head's are the same source, "
+                                                       "the gate would compare a reader with itself")
+        return shown.stdout
+
+    def former_main_blobs(self):
+        """Every blob of MAIN_EDGES_PATH origin/main ever carried, in history order (the live one first): the set the
+        head == main branch of pinned_main_source resolves MAIN_EDGES_BLOB in. The pathspec is anchored at the top of
+        the work tree (`:(top)`), so the command reads the same from the action directory as from the repo root."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        commits = subprocess.check_output([*git, "rev-list", "origin/main", "--", f":(top){MAIN_EDGES_PATH}"],
+                                          text=True).split()
+        blobs = []
+        for c in commits:
+            blob = subprocess.check_output([*git, "rev-parse", f"{c}:{MAIN_EDGES_PATH}"], text=True).strip()
+            if blob not in blobs:
+                blobs.append(blob)
+        return blobs
+
+    def main_reader(self):
+        """MAIN's edges.py as a module, from the pinned blob MAIN_EDGES_BLOB (pinned_main_source). The module's __file__
+        is a path beside plan.py that is never written, so main's lazy `_plan()` resolves to the plan.py this suite
+        already imported."""
+        here = Path(E.__file__).resolve().parent
+        text = self.pinned_main_source(Path(E.__file__).read_bytes(), MAIN_EDGES_BLOB)
+        module = types.ModuleType("edges_main")
+        module.__file__ = str(here / f"edges_main_{MAIN_EDGES_BLOB[:12]}.py")
+        exec(compile(text, module.__file__, "exec"), module.__dict__)
+        module.today = E.today
+        return module
+
+    def test_main_pin_resolves_when_the_head_is_main(self):
+        """Root's G1 of R6-1 (2026-11-12): the head == main branch of the pin, driven. With main's own edges.py as the
+        head source and a FORMER main blob as the pin, pinned_main_source resolves the pin (it is in origin/main's
+        history of the file) and returns its text; with a blob main never carried (the head's own, while it differs
+        from main's) it fails naming the pin; and the live pin MAIN_EDGES_BLOB is itself a blob main carried. The
+        history read from the action directory holds more than one blob: the 0-commit read of the G1 bug fails here."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        former = self.former_main_blobs()
+        self.assertGreater(len(former), 1, f"origin/main's history of {MAIN_EDGES_PATH} read from the action directory "
+                                           f"holds {len(former)} blob(s): the pathspec is not anchored at the top")
+        self.assertIn(MAIN_EDGES_BLOB, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
+        live_blob = subprocess.check_output([*git, "rev-parse", f"origin/main:{MAIN_EDGES_PATH}"], text=True).strip()
+        self.assertEqual(former[0], live_blob)
+        main_source = subprocess.check_output([*git, "cat-file", "-p", live_blob])
+        older = next(blob for blob in former if blob != live_blob)
+        self.assertEqual(self.pinned_main_source(main_source, older),
+                         subprocess.check_output([*git, "cat-file", "-p", older]))
+        head_blob = subprocess.check_output([*git, "hash-object", "--", E.__file__], text=True).strip()
+        if head_blob not in former:  # the head changes the reader (this branch does): a pin main never carried fails
+            with self.assertRaisesRegex(AssertionError, "names no edges.py main ever carried"):
+                self.pinned_main_source(main_source, head_blob)
+        # The pin equal to the head source is the floor, not a resolution.
+        with self.assertRaisesRegex(AssertionError, "compare a reader with itself"):
+            self.pinned_main_source(main_source, live_blob)
+
+    # Root's round-6 inputs where main refuses and the head reads its truth: the control proving the two readers the gate
+    # compares differ, so the gate cannot pass by loading the head twice.
+    GATE_CONTROL = "G01_literal_unowned_dir_under_root"
+
+    # The review vectors the --revision path is driven on (test_review_vectors_hold_at_a_revision): the round-2 cases
+    # whose lines span or shift, positive controls that must READ, and #84's B1 brace-named tops. The no-regression gate
+    # scans the same closed list through both readers at a revision.
+    REVISION_LABELS = ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
+                       "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
+                       "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
+                       "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
+                       "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
+                       "W07_multiline_roots",
+                       # Root's B1 of #84: a top literally named `{tpl}` / `${tpl}` refuses on the --revision path too.
+                       "R84_Z01_brace_named_top_dir", "R84_Z02_dollar_brace_named_top_dir")
+
+    def leg_fixture(self, repo, label, case, leg):
+        """case_repo for the gate's ablation and revision legs: a case that names its own fixture (fixture_parent,
+        checkout, links beside it) gets one under `<leg>/`, apart from the tree leg's fixture of the same name."""
+        if "fixture_parent" in case or "outside_links" in case or "grand_links" in case or "checkout" in case:
+            case = {**case, "fixture_parent": f"{leg}/{case.get('fixture_parent', label)}"}
+        return self.case_repo(repo, label, case)
+
+    def gate_compare(self, label, case, truth, main_full, head_full, compared, red):
+        """One input under both readers, main's `main_full` beside the head's `head_full` (each "REFUSE" or a `full`
+        reading of every unit). Where main REFUSES (or produced no judged unit), the head refuses or reads its truth.
+        Where main READS the judged unit, the head refuses, reads its truth, or reads everything main reads. Root's G3
+        of R6-1 (RULED 2026-11-12): when BOTH readers read, EVERY unit of deps and readers is compared, the judged unit
+        at truth excepted: a head below main on any unit is a regression (vector_scan returning the judged unit alone
+        is how the rsub case hid). `red` gains label -> why; `compared` counts what was compared. Returns whether the
+        all-units leg alone made the label red (the verdict change root asked to be counted)."""
+        key = self.unit_key(case)
+        main_got = main_full if main_full == "REFUSE" else main_full.get(key)  # None: main produced no such unit
+        head_got = head_full if head_full == "REFUSE" else head_full.get(key)
+        if head_got is None:
+            red[label] = f"the head's scan produced no unit {key}"  # root's B2 of #84: never an empty reading
+            return False
+        at = head_got != "REFUSE" and truth is not None and truth <= set(head_got)
+        if main_got == "REFUSE" or main_got is None:
+            compared["main refuses" if main_got == "REFUSE" else "main produced no such unit"] += 1
+            if not (head_got == "REFUSE" or at):
+                red[label] = (f"main refuses, the head reads {head_got} below its truth {sorted(truth)}: a regression "
+                              f"against main's reader")
+        else:
+            compared["main reads"] += 1
+            if not (head_got == "REFUSE" or at or set(main_got) <= set(head_got)):
+                red[label] = (f"main reads {main_got}, the head reads {head_got}: below its truth {sorted(truth)} and "
+                              f"below main's reading")
+        if main_full == "REFUSE" or head_full == "REFUSE":
+            return False
+        compared["both read"] += 1
+        below = {}
+        for unit, main_units in sorted(main_full.items()):
+            if unit != key:
+                compared["other units"] += 1
+            if unit == key and at:
+                continue
+            if not set(main_units) <= set(head_full.get(unit, [])):
+                below[unit] = (main_units, head_full.get(unit, []))
+        if below and label not in red:
+            red[label] = "all-units: main reads more than the head on " + "; ".join(
+                f"{kind}:{name} main {m} head {h}" for (kind, name), (m, h) in sorted(below.items()))
+            return True
+        return False
+
+    def test_r6_no_regression_against_main_reader(self):
+        """Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12), design line 7 accepted 16:44: main's reader beside
+        the head's on every review vector, root's 111 included (the rule: gate_compare). Three legs: every vector through
+        the working tree; every accept's ablation (ablation_input, judged with no truth: an ablation reads none of it);
+        REVISION_LABELS through an immutable commit (the --revision path action.yml runs). Floors inside the gate: main's
+        source differs from the head's; at least one main-refuse, one main-read and one both-read case was compared, and
+        the all-units leg compared units beyond the judged one; every ablation and every REVISION_LABELS case was
+        compared; GATE_CONTROL refuses on main and reads at truth on the head. The all-units verdict changes (labels red
+        by that leg alone) are printed with the counts for the push line."""
+        main = self.main_reader()
+        repo = self.vector_repo("gate/vectors")  # named as the shared fixture is: eight S4 cases assert `checkout`
+        compared = {"main refuses": 0, "main reads": 0, "main produced no such unit": 0, "both read": 0, "other units": 0,
+                    "ablations": 0, "at a revision": 0}
+        control = None
+        red = {}
+        all_units_only = []
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            with self.subTest(label):
+                fixture = self.case_repo(repo, label, case)
+                main_full = self.vector_scan(fixture, case, module=main, full=True)
+                head_full = self.vector_scan(fixture, case, full=True)
+                truth = set(case["truth"]) if isinstance(case["truth"], list) else None  # "REFUSE": no reading is at truth
+                if label == self.GATE_CONTROL:
+                    head_got = head_full if head_full == "REFUSE" else head_full.get(self.unit_key(case))
+                    main_got = main_full if main_full == "REFUSE" else main_full.get(self.unit_key(case))
+                    control = (main_got, head_got != "REFUSE" and head_got is not None and truth <= set(head_got))
+                if self.gate_compare(label, case, truth, main_full, head_full, compared, red):
+                    all_units_only.append(label)
+        ablations = self.vector_repo("gate-ablations/vectors")
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            if "ablation" not in case:
+                continue
+            with self.subTest(f"{label}:ablation"):
+                ablated = self.ablation_input(case)
+                fixture = self.leg_fixture(ablations, label, ablated, "gate-ablations")
+                main_full = self.vector_scan(fixture, ablated, module=main, full=True)
+                head_full = self.vector_scan(fixture, ablated, full=True)
+                compared["ablations"] += 1
+                if self.gate_compare(f"{label}:ablation", ablated, set(), main_full, head_full, compared, red):
+                    all_units_only.append(f"{label}:ablation")
+        revision = self.vector_repo("gate-revision/vectors")
+        for label in self.REVISION_LABELS:
+            with self.subTest(f"{label}@revision"):
+                case = self.REVIEW_VECTORS[label]
+                fixture = self.leg_fixture(revision, label, case, "gate-revision")
+                main_full = self.vector_scan(fixture, case, revision=True, module=main, full=True)
+                head_full = self.vector_scan(fixture, case, revision=True, full=True)
+                compared["at a revision"] += 1
+                truth = set(case["truth"]) if isinstance(case["truth"], list) else None
+                if self.gate_compare(f"{label}@revision", case, truth, main_full, head_full, compared, red):
+                    all_units_only.append(f"{label}@revision")
+        print(f"\nno-regression gate: compared {compared}; red {len(red)}; all-units verdict changes "
+              f"{len(all_units_only)}: {all_units_only}", file=sys.stderr)
+        self.assert_designed_red("gate", red)
+        self.assertGreater(compared["main refuses"], 0, "floor: no vector main refuses was compared")
+        self.assertGreater(compared["main reads"], 0, "floor: no vector main reads was compared")
+        self.assertGreater(compared["both read"], 0, "floor: no vector both readers read was compared")
+        self.assertGreater(compared["other units"], 0, "floor: the all-units leg compared no unit beyond the judged one")
+        self.assertEqual(compared["ablations"], sum(1 for c in self.REVIEW_VECTORS.values() if "ablation" in c))
+        self.assertGreater(compared["ablations"], 0, "floor: no ablation was compared")
+        self.assertEqual(compared["at a revision"], len(self.REVISION_LABELS))
+        self.assertEqual(control, ("REFUSE", True),
+                         f"floor: {self.GATE_CONTROL} must refuse on main and read its truth on the head, got {control}")
+
+    def test_review_vector_closed_lists_hold(self):
+        """The data-only closed lists the review vectors rest on, apart from any reading: REVIEW_CONTROLS and
+        KNOWN_FAIL_OPEN both ways, the pins dated KNOWN_FAIL_OPEN_UNTIL, the `"r5": true` set (S1), and no
+        `expected_rule` / `ablation_expected_rule` the catch-all refusal also prints, against the template edges.py
+        really raises (S2; root's dotgithub-86 review, 2026-11-12)."""
+        vectors = self.REVIEW_VECTORS
+        # Ruling (c) of root's R-c r4 review (2026-11-12): membership is asserted both ways, each failure naming its side.
+        controls = {k for k, c in vectors.items() if c.get("control") is True}
+        self.assertEqual(len(set(REVIEW_CONTROLS)), len(REVIEW_CONTROLS), "REVIEW_CONTROLS names a label twice")
+        self.assertEqual(sorted(controls - set(REVIEW_CONTROLS)), [],
+                         "a precision control outside the closed list: add it to REVIEW_CONTROLS, with its pinned reading")
+        self.assertEqual(sorted(set(REVIEW_CONTROLS) - controls), [],
+                         "a stale REVIEW_CONTROLS entry: it names no `control: true` review vector")
+        # The real UTC date, not the suite's frozen E.today() (2026-10-29, top of file): every `until` falls after it,
+        # so against it a dated pin could never expire.
+        self.assert_known_fail_open_pins(vectors, datetime.datetime.now(datetime.timezone.utc).date())
+        # S1: the r5 set is closed, by count and by label.
+        r5 = {k for k, c in vectors.items() if c.get("r5") is True}
+        self.assertEqual(sorted(k for k, c in vectors.items() if "r5" in c and c["r5"] is not True), [],
+                         "`r5` is `true` or absent")
+        self.assertEqual(len(r5), R5_VECTOR_COUNT, f"{len(r5)} vectors carry `\"r5\": true`, R5_VECTOR_COUNT says "
+                                                   f"{R5_VECTOR_COUNT}: a drop or an addition is an edit there")
+        self.assertEqual(sorted(k for k in RC_LABELS_BEFORE_R5 if k not in vectors), [],
+                         "a stale RC_LABELS_BEFORE_R5 entry: it names no review vector")
+        expected_r5 = {k for k in vectors if k.startswith(R5_PREFIX) and k not in RC_LABELS_BEFORE_R5}
+        self.assertEqual(sorted(expected_r5 - r5), [], f"an {R5_PREFIX} vector without `\"r5\": true`")
+        self.assertEqual(sorted(r5 - expected_r5), [], f"an `\"r5\": true` vector outside the {R5_PREFIX} labels")
+        # S2: the catch-all template is edges.py's own (one raise, its two `what`s), so the check below is not vacuous.
+        source = Path(E.__file__).read_text()
+        head, tail = CATCH_ALL_REFUSAL.split("in {where}")
+        self.assertRegex(source, re.escape(f'f"{head}"') + r"\s*" + re.escape('f"in {where}"'),
+                         "CATCH_ALL_REFUSAL is no longer the template edges.py raises: re-derive it")
+        self.assertEqual(tail, "")
+        self.assertIn('what: str = "sys.path entry"', source, "CATCH_ALL_WHATS: apply_entry's default `what` moved")
+        self.assertIn('"pytest pythonpath entry"', source, "CATCH_ALL_WHATS: the pytest pythonpath `what` moved")
+        fragments = catch_all_fragments()
+        rules = {(k, field): c[field] for k, c in vectors.items()
+                 for field in ("expected_rule", "ablation_expected_rule") if field in c}
+        pinned = sorted(f"{k}:{field}" for (k, field), rule in rules.items() if R5_SYS_PATH_RULE in rule)
+        self.assertEqual(len(pinned), R5_SYS_PATH_RULE_PINS,
+                         f"{len(pinned)} pins name {R5_SYS_PATH_RULE!r}, R5_SYS_PATH_RULE_PINS says {R5_SYS_PATH_RULE_PINS}: "
+                         "a drop or an addition is an edit there")
+        self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
+                      "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
+        # Slices 2 and 3 and R6-2: each rule's pin count by equality, and its own raise site in edges.py.
+        for site in R6_CAPABILITY_SITES:
+            self.assertIn(site, source, f"R6_CAPABILITY_SITES: {site!r} is no longer in edges.py: re-derive it")
+        for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
+                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS),
+                                ("R6_CAPABILITY_RULE_PINS",
+                                 {R6_CAPABILITY_RULE: (R6_CAPABILITY_RULE_PINS, R6_CAPABILITY_SITES[1])}),
+                                ("R5F_RULE_PINS", {rule: pin[:2] for rule, pin in R5F_RULE_PINS.items()})):
+            for rule, (count, site) in pins.items():
+                named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
+                self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "
+                                                    f"drop or an addition is an edit there")
+                self.assertIn(site, source,
+                              f"{pins_name}: the raise site of {rule!r} is no longer in edges.py: re-derive it")
+        # The round-5 fix's floor inside the gate: every R5F rule names at least one pin, its named control among them.
+        self.assertTrue(R5F_RULE_PINS, "R5F_RULE_PINS matched nothing: the round-5 fix pins no rule")
+        for rule, (count, site, control) in R5F_RULE_PINS.items():
+            named = sorted(k for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
+            self.assertTrue(named, f"R5F_RULE_PINS: {rule!r} matched nothing: no vector pins it")
+            self.assertIn(control, named, f"R5F_RULE_PINS: {rule!r} is not pinned by its named control {control}")
+        self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
+                                if any(rule in part for part in fragments)), [],
+                         "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")
+
     def test_the_action_path_reads_the_scanned_revision(self):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a
         later working tree. The round-2 cases whose lines span or shift, plus positive controls that must READ."""
         repo = self.vector_repo("revision")
-        for label in ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
-                      "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
-                      "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
-                      "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
-                      "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
-                      "W07_multiline_roots",
-                      # Root's B1 of #84: a top literally named `{tpl}` / `${tpl}` refuses on the --revision path too.
-                      "R84_Z01_brace_named_top_dir", "R84_Z02_dollar_brace_named_top_dir"):
+        for label in self.REVISION_LABELS:
             with self.subTest(label):
                 case = self.REVIEW_VECTORS[label]
                 self.judge(label, case, self.vector_scan(repo, case, revision=True))

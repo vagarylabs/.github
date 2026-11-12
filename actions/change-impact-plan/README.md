@@ -20,6 +20,8 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.7 makes the Python reader fail closed by token (R6-2 of #86, 2026-11-12). It implements cli's R6 design, which root accepted at 16:44 with decisions (i)-(iii), under the operator's ruling (d) of the same day: the measured R6-2 result goes to the operator on 11-14, and the reader stays fail closed. A Python file now reads only when every path-mutation capability in it is consumed by a read rule (rule 9). `python_file_facts` holds the one refuse point, so no caller decides read or refuse for Python, and the refusal names the first unconsumed occurrence by its source and line. The listing grep lists every Python file holding a capability word or `PYTHONPATH`, so more files are parsed, and a listed file that does not parse refuses. One new read rule consumes a `sys` binding whose every use is an attribute off the import path: `import sys; sys.exit(main())` reads (root's (i)). An alias, an argument, a subscript, a `del`, a rebinding, `from sys import path` or `from sys import *` refuses, and so does `globals()` in a file that imports sys. A dead import refuses (root's (ii)). An import of `site`, any use of a site-bound name and `addsitedir` by any name refuse: no rule reads them. `module_from_spec` is consumed by no rule, so a load through `spec_from_file_location` and `module_from_spec` refuses. The carve-out that read a file whose only `sys.path` sites recorded no entry (a reassignment, `site.addsitedir`, an alias of `sys.path`) is gone; a file whose entries are all residuals still reads. One named residual: a module re-exported under another name (`from helpers import s`, then `s.path.remove(x)`) reads. R6-1 added the no-regression gate, `test_r6_no_regression_against_main_reader`: main's reader runs beside this one on every review vector, root's 111 included (root's (iii) entered them verbatim). Root's ruling of 2026-11-12 21:32 added three narrowings, each a rule (rule 9, N1-N3): a `sys.path` membership test reads the list, a loader call with a literal module name reads through its chain, and `importlib.metadata` reads and literal `importlib.resources` anchors are not refusals. The review vectors number 1,060, the 51 R6-2 twins included: every accept twin reads a non-empty truth and its control, the same construct with one change, refuses. Measured tree cost of R6-2 (2026-11-12, after N1-N3, both readers on the same checkout): vagary-core head 9cea8193 (3,134 files), main's reader refuses 11 files, this one 154 (190 before N1-N3), so 143 more files plan FULL than on main (179 before); vagaris head 1ac91295 (49 files), 2 and 9, cost 7. The 11-14 result to the operator is this number re-measured on that day's heads.
+
 Planner 1.7.6 closes two reader holes root found on main (2026-11-12, F1, F2 and F4 of the R-c review) and tightens the vector harness. F1/F4: rule 6 refused an unevaluable `sys.path` entry only when its literal named a scan root or a top-level directory outside every package, so `sys.path.insert(0, str(source / "packages/shared"))` (and the `os.path.join`, `+ "/packages/shared"` and f-string forms), `sys.path.insert(0, "packages/shared")`, `"./packages/shared"`, `str(Path.cwd() / "packages/shared")`, `os.path.abspath("packages/shared")` and `ROOT / "packages/shared"` with `ROOT` imported each read as a documented residual (nothing credited) while the module was imported from `packages/shared`. A PACKAGE top is a named top now, and a leading `./`, `/` or substitution (`{source}/`, `${x}/`) is stripped before the top-level name is read, so every one of those forms refuses. F2: the dot-route grep needed a word character after `../`, so `` `../${p}` `` in a file outside every package that nothing reached started no unit and its reader directory read nothing; `${` is accepted after the step, so the template starts its unit and, as a whole-checkout route, reads every package (or refuses on excluded code, rule 3). Harness: a review vector may carry `files` (a second tracked file, removed with the input after the case) and `unit` (the package or `readers:<dir>` judged); an accept vector with an empty truth is refused unless it is a declared precision control (`control: true`, the 26 existing ones, a closed list in the test, each with its reading pinned as `reads`); every write of a case sits inside its cleanup, and no case may write over a fixture path. Ten vectors pin the readings (RC1I x4, F4a-F4e, RC4G). Root's R4 of the first head (B1, B3, C1): the strip had hidden a tracked top-level directory literally named `{tpl}` or `${tpl}` (main refused, the first head read nothing), so each literal is compared as written and stripped; a declared computed load whose literal lands inside another package (`runpy.run_path(f"{source}/packages/shared/mod.py")`, rule 8) is honoured first instead of refusing before the declaration lookup; the strip covers `%s/`, `%(x)s/`, `$VAR/` and `{{x}}/`, a substitution holding quotes, and a name with one assignment, and the dot-route grep lists `../{p}` and `'../' + p` (both refuse or read the checkout, as `../${p}` does). Seventeen `R84_` vectors pin those readings (582 review vectors). Root's R4 of the second head (F1, K1-K3): the declaration-first route honoured a declared load without crediting the package its text lands in (`reach: "external"` read nothing, a reach list read only its own packages); the landing's owner is credited whatever the reach says. B3 does not only move readings toward refuse: `runpy.run_path(f"{source}/packages/shared/shared_mod.py".replace("packages/shared", "services/a"))`, declared, refused on main and reads `[a, shared]` now, every literal landing credited, which is sound by the literal-path rule (a literal naming a package is a load into it). Of eleven forms that read nothing on main and on both heads, ten are fixed: nested braces, `+=`, a two-level name chain, a name assigned in two branches, tuple unpacking, a `%-10s/` field, `{os.sep}`, and the dot-route grep's `` `../` + p ``, `'../'.concat(p)` (both refuse on the `.` route) and `"../%s" % p` (a template, read as `f"../{p}"` is); one is a dated residual, a bare parameter as the entry (`R84_S08`, review by 2026-12-10). Sixteen more `R84_` vectors pin those readings (598 review vectors). Root's R4 of the third head (B1, B2, C1-C3): the landing credit skipped a caller outside every package whose literals land one in a package and one on a package-free top (`scripts/x.py` loading `f"{source}/packages/shared/m.py" if k else f"{source}/tools/t.py"`, declared, read nothing: the credit was gated on every landing being in another package, a condition meant for the refusal of a PACKAGE caller), so the landing's owner is credited for every caller, and through a symlink; a name hid the landing at a loader site (`p = f"{source}/packages/shared/m.py"; runpy.run_path(p)`, declared as `p`, read nothing) since the loader read the argument's source alone, so it reads the text rule 6 reads, the name's assignments included; the JS twin (`` import(`${source}/packages/shared/m.mjs`) `` declared `"external"`) read nothing on main and every head, so rule 4 credits a template literal's landing package as rule 8 does; two forms that moved from `[shared]` to refuse (an augmentation that is not `+= "<literal>"` before a loader, a `sys.path` entry that is a parameter with a module-level default) are pinned; a name in an argument default or a decorator is the enclosing scope's, not the parameter's (no reading moves). Nine more `R84_` vectors pin those readings (607 review vectors). Root's R4 of the fourth head (K1-K3, N4): the symlink credit replaced the holder's owner with the target's (a package symlink `packages/a/m.py -> ../shared/m.py` loaded by name credited `shared` alone), so both are credited; the un-shadow of a parameter-named name in a default or decorator read the enclosing scope's name whatever its binding (`def f(p=p)` with a module `p` assigned in two branches read below truth), so it reads the enclosing name only when that name has one plain module literal binding, and refuses otherwise; a name a computed load reads that the scan cannot read (bound by a walrus, a `for`, a comprehension, `with ... as`, `except ... as`, a `match` pattern, a `def`, a `class`, a bare annotation, an unpacking the scan cannot pair, a starred or nested target, a parameter default that is not a plain module literal, or an attribute assignment) read `[]` under a declaration and refuses now, declared or not, naming the binding; an augmented computed loader that is declared (`p += f"/{x}"` before `runpy.run_path(p)`) refuses as the undeclared form does. A name alone as a `sys.path` entry inside a nested function (`R84_B11`) is a dated residual with `R84_S08`. Forty-two more `R84_` vectors pin those readings (649 review vectors). Root's R4 of that head (R1): a name the file also binds by something the scan does not read (`root = dirname(dirname(abspath(__file__)))` at module level and `for root, d, f in os.walk(t)` inside a function, or a method, a `with ... as`, an `except ... as`, a comprehension variable, a later module-level `for`) was unknown file-wide, so a `sys.path` entry reading it fell to the read-nothing residual and read `[]` where main read the package; such an entry refuses now, declared or not, naming the binding, as a loader site does; a name bound once by a plain assignment still evaluates. Eight more `R84_R6` vectors pin those readings, one of them the control (657 review vectors). Every other reading over the review vectors, the round-3/4 vectors and the R-c vectors is unchanged except where a reading moved toward refuse or toward a larger read by these rules (the both-readings table in the PR).
 
 Planner 1.7.5 bounds a package.json's nesting before it is parsed at the two sites that were still unbounded: the planner's pnpm workspace graph (a manifest deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is refused as unreadable, candidate and base alike) and edges.py's directory-runner read (deeper than `PACKAGE_JSON_MAX_DEPTH` (64) is read whole, like any unparsable manifest). CPython 3.14 parses depths 3.11-3.13 refuse with `RecursionError`, so the bound is the planner's own.
@@ -462,8 +464,11 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - `os.path.join` and `/` with string constants;
    - names assigned exactly once.
 
-   It reads `sys.path.insert`, `.append`, `.extend`, `+=` and slice assignment. Where the entry lands decides the
-   effect:
+   It reads `sys.path.insert(i, x)` with exactly two arguments, `.append(x)` and `.extend(xs)` with exactly one, `+=`,
+   and an assignment to a slice or an index of `sys.path` (`sys.path[0:0] = [...]`). Each of these consumes the
+   statement it read (rule 9). Any other use of `sys.path` is consumed by no rule and refuses: `p = sys.path`,
+   `sys.path.remove(x)`, `sys.path = [...]`, `sys.path.insert(*args)`, `list.insert(sys.path, 0, x)` and
+   `sys.path.__iadd__([x])`. Where the entry lands decides the effect:
    - **inside the package's own directory:** nothing;
    - **inside another package:** a dep, since the package imports by name from that package's directory;
    - **outside every package:** each module that any of the package's Python files imports by name, and that exists
@@ -492,7 +497,12 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      scope, so beside a module `(LIB := ...)`, a `for LIB in ...`, an import of `LIB` or a second assignment in a
      helper the default stays the parameter's, and the entry is its text, which refuses when that text names a parent
      step or a top);
-   - a package Python file that changes `sys.path` and does not parse refuses.
+   - a file reads only when every `sys.path` entry in it resolves by a read rule. A residual entry (named below) beside
+     an entry that resolves refuses the whole file. A file whose entries are ALL residuals reads, and reads nothing for
+     them. R6-2 removed the carve-out that also read a file whose only sites recorded no entry (a reassignment,
+     `site.addsitedir`, an alias of `sys.path`): those forms refuse under rule 9;
+   - a Python file the scan reads (rule 9 says which) that does not parse refuses: `unresolved (a Python file the scan
+     must read does not parse: <path>: <error>)`.
 7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.2.
    - It is read from the config pytest would read: the nearest directory walking up from the package that holds one of
      `pytest.ini` (it wins in its directory, even with no `[pytest]` section), `pyproject.toml`
@@ -503,8 +513,13 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
 8. **Python's loaders.** These are the `require.resolve` analog, under rule 4.
    - **By name:** `importlib.import_module(x)`, `__import__(x)` and `runpy.run_module(x)`. A literal name is an import
      by name, resolved through the package's entries. A non-literal name needs a `computed_imports` declaration.
-   - **By path:** `importlib.util.spec_from_file_location(name, p)` (where `module_from_spec` then loads),
-     `runpy.run_path(p)` and `exec(open(p).read())`. The path `p` is evaluated as in rule 6:
+     Each such call is consumed (rule 9). A literal naming `sys`, `site`, `importlib`, `runpy` or `builtins`
+     (`__import__("sys").path`, `import_module("sys")`) is not an import by name. It is that module, judged by rule 9,
+     and it refuses in every form, `__import__("sys").argv` included.
+   - **By path:** `importlib.util.spec_from_file_location(name, p)` (or `location=p`), `runpy.run_path(p)` and
+     `exec(open(p).read())`. Each such call is consumed (rule 9). `importlib.util.module_from_spec(spec)` is consumed
+     by no rule, so a file that calls it refuses, even beside the `spec_from_file_location` that built the spec. A
+     loader call with no path argument (`run_path()`) refuses too. The path `p` is evaluated as in rule 6:
      - evaluated, it is a literal load, an edge with no declaration;
      - not evaluated, the floor judges its longest EVALUATED prefix:
        - a prefix inside the importing package (no parent step after it) is declarable, as `reach: "package"`;
@@ -551,6 +566,78 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
 
      The names then resolve by name like any import, so they are not assumed external. An iterable from a call
      (`sorted(x)`, `.split()`) stays computed.
+9. **A Python file reads only when every path-mutation capability in it is consumed** (R6-2 of #86, root's ruling of
+   2026-11-12, fail closed by token; cli's R6 design, accepted by root at 16:44).
+   - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
+     `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
+     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`. It also parses every file holding
+     `PYTHONPATH` anywhere. A word in a comment or a string is read and found clean, except `PYTHONPATH` in a string.
+   - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
+     it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
+   - **The kinds.** Each of these, outside a consumed node, is an occurrence:
+     - **sys binding:** `import sys` under any alias, `from sys import ...` (any name, any alias, `*`),
+       `__import__("sys")` and `import_module("sys")`. A name literally called `sys`, `site`, `importlib`, `runpy` or
+       `builtins` imported from ANY module binds that module, as the imported name or as the alias (`from helpers
+       import sys`, `from os import sys as s`). A `del` or a rebinding of a bound name is an occurrence too.
+     - **sys path reach:** `.path`, `.modules`, `.meta_path`, `.path_hooks`, `.path_importer_cache` or any dunder on a
+       sys expression (a sys-bound name, `__import__("sys")`, `os.sys`): `p = sys.path`, `sys.path.remove(x)`,
+       `sys.modules["sys"].path`, `sys.__dict__`. The one exception is N1's membership test below.
+     - **site:** `import site` under any alias, `from site import ...`, any use of a site-bound name, and `addsitedir`
+       by any name or attribute. No rule reads them, so each one refuses.
+     - **loader:** an import of `importlib`, `runpy` or `builtins` under any alias, or of any submodule of them; a use
+       of a loader-bound name outside a consumed call (`importlib.util.find_spec("m")`, `importlib.reload(m)`); a
+       loader call by attribute on anything (`x.module_from_spec(spec)`). Submodules count: `from importlib.metadata
+       import version` binds a loader name, consumed only when every use is an N3 read below; bound and unused, it
+       refuses.
+     - **exec:** `exec`, `eval` or `compile` as a bare name (`exec("import x")`, `eval("1")`, `exec(__doc__)`), or as an
+       attribute of a loader-bound name (`builtins.exec(s)`). `exec(open(p).read())` is consumed by rule 8.
+       `re.compile(...)` is not an occurrence.
+     - **environment:** a string constant holding `PYTHONPATH`: an environ key, a shell string, an `env=` mapping, a
+       docstring.
+     - **scope:** `globals()`, `locals()` or `vars()` with no argument, in a file that binds sys by an import.
+   - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used
+     at least once and EVERY use is an attribute other than the five above and the dunders, or sits inside a consumed
+     node. `import sys; sys.exit(main())` reads, and so do `sys.argv`, `sys.stderr` and `import sys as s; s.exit(0)`.
+     A name that is aliased (`s = sys`), passed (`getattr(sys, "path")`, `vars(sys)`, `dir(sys)`, `setattr(sys, ...)`),
+     subscripted, deleted or rebound refuses. `from sys import argv` is the attribute read itself: consumed when `argv`
+     is used. `from sys import path` (any of the five, any alias) and `from sys import *` always refuse. Only a bound
+     name has the rule: `__import__("sys").argv` refuses.
+   - **A loader binding** is consumed when it is used at least once and every use sits inside a consumed call:
+     `import importlib; importlib.import_module("json")` reads.
+   - **The narrowings N1-N3** (root's ruling of 2026-11-12 21:32, on cli's measured census of core main 9cea8193:
+     R6-2 refused 190 of 3,134 files). Each is a rule, none a hand exemption, and each has a twin that keeps refusing:
+     - **N1:** `x in sys.path` and `x not in sys.path` read the list: the attribute is a comparator of an `in` /
+       `not in` compare. A guarded insert, append or remove in the same file is judged on its own, so
+       `if p not in sys.path: sys.path.insert(0, p)` reads by rule 6 and the twin with `sys.path.remove(x)` in the
+       guarded block refuses. `sys.path in y`, `'m' in sys.modules` and the `__import__("sys")` binding form stay
+       refusals. Twins: `R6_N1_guard_not_in_insert_reads`; `R6_N1_guard_in_remove_refuses`,
+       `R6_N1_left_operand_refuses`, `R6_N1_modules_membership_refuses`.
+     - **N2:** a loader call with a LITERAL module name that the recording branch consumed (`__import__("json")`,
+       `import_module("server")`, `run_module("m")`) is read through the chain that follows it (`.loads(x)`,
+       `.app`): the literal is already this file's dependency edge. A non-literal first argument refuses as before.
+       Twins: `R6_N2_dunder_import_literal_chain_reads`, `R6_N2_import_module_literal_attr_reads`;
+       `R6_N2_dunder_import_nonliteral_chain_refuses`, `R6_N2_import_module_nonliteral_attr_refuses`.
+     - **N3:** `importlib.metadata.version(...)` and `.files(...)` read installed metadata and are not loads.
+       `importlib.resources.files(anchor)` and `read_text(anchor, ...)` import the anchor package: a literal anchor
+       is recorded as a dependency edge (receiver-checked, so `Path("x").read_text("utf-8")` is never one) and read
+       through its chain; a non-literal anchor refuses. `entry_points(...).load()` stays a loader and refuses.
+       Twins: `R6_N3_resources_files_literal_reads`, `R6_N3_resources_read_text_literal_reads`,
+       `R6_N3_metadata_version_reads`; `R6_N3_resources_files_nonliteral_refuses`,
+       `R6_N3_resources_read_text_nonliteral_refuses`, `R6_N3_metadata_entry_points_load_refuses`.
+   - **A dead import refuses** (root's decision (ii)). `import sys`, `import site`, `import importlib` or
+     `from sys import argv`, bound and never used, is consumed by no rule.
+   - **A local is not the module.** A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is
+     the module all the same (a star import, an injection): `p = sys.path` with no import refuses. A file that binds
+     the name itself (an assignment, a parameter, a `def`) holds a local, and its uses are not occurrences. An import of
+     the name wins over a local binding, and the binding is then a rebinding, which refuses.
+   - **One refuse point.** The last step of `python_file_facts` sorts the occurrences by line and column and refuses the
+     file on the first: ``unresolved (the path-mutation capability `<segment>` on line <n> of <path> is consumed by no
+     read rule; a file reads only when every one is) in <path>``. The segment is the occurrence's source, whitespace
+     collapsed. A sys binding that fails its rule is an occurrence on its own import line, so a file that imports sys at
+     the top and later reaches the path is named by its `import sys`, not by the reach.
+   - **Every Python file the scan reads.** The refuse point holds for a package file, a file outside every package and a
+     reached file: each is read through `python_file_facts`. A file with no occurrence has nothing to consume and reads
+     as before.
 
 Not closed (documented residuals). Each one names no basename the backstop matches, or names it only somewhere the
 scan does not read. `test_edges_round4_vectors.json` pins root's round-4 instances (T5-T8b), T10g and T10h as the
@@ -566,7 +653,7 @@ drops they are:
   bare `test` in a manifest or a workflow is not one;
 - a mention by STEM only: an import by module NAME into a directory outside every package (Python `sys.path` plus
   `import x`, a tsconfig `paths` alias, a bundler alias), or an extensionless specifier in a position no rule reads.
-  Python `sys.path` escapes are closed by rules 6-8 above, except the residuals below;
+  Python `sys.path` escapes are closed by rules 6-9 above, except the residuals below;
 - a name built at runtime that never spells the basename: concatenated pieces, or a manifest's computed entries (a
   manifest that lists the file by name is a mention, so the backstop catches it);
 - a glob in a non-code file (`include: ["**/*.mjs"]` in a config the scan does not parse), and a basename inside a
@@ -577,10 +664,18 @@ drops they are:
 - an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
   variable, or a bare parameter of the enclosing function, `def prepare(p): sys.path.insert(0, p)`: `R84_S08`, a dated
   residual, review by 2026-12-10);
-- a `sys.path` entry or pytest config inside a reached file outside every package (only its loaders are checked
-  there);
+- a module re-exported under another name (root's decision (i) of R6, a named residual): `from helpers import s`,
+  where `helpers` binds `s` to `sys`, then `s.path.remove(x)`. The scan reads one file, and `s` is not literally `sys`,
+  so the file reads and the removal is unseen. `from helpers import sys` and `from helpers import s as sys` are sys
+  bindings (rule 9);
+- the N1-N3 boundaries (root's ruling of 2026-11-12 21:32, rule 9): `importlib.metadata.version(...)` and
+  `.files(...)` read installed metadata the scan does not see, so they add no edge (N3); a literal N2 / N3 name is an
+  edge only where the scan resolves the name, like any import by name; an N1 membership test is a read of the list,
+  and what the file does with the answer is judged only through the statements it guards;
+- a `sys.path` entry or pytest config inside a reached file outside every package: its loaders and its capabilities
+  (rule 9) are checked there, but a recorded entry is not applied;
 - `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
-  default exclude);
+  default exclude). In a Python file the scan reads, a `PYTHONPATH` string refuses (rule 9);
 - a data-driven read (code that reads a manifest, then the paths in it);
 - Python dotted and relative imports in a reached file (`from .x import y`, `import a.b`): only a same-directory
   `import x` / `from x import` is followed;

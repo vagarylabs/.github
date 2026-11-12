@@ -697,7 +697,7 @@ class EdgesTest(unittest.TestCase):
             return self.vector_repo(f"{case.get('fixture_parent', label)}/{case.get('checkout', 'vectors')}")
         return repo
 
-    def vector_scan(self, repo, case, revision=False, module=None):
+    def vector_scan(self, repo, case, revision=False, module=None, full=False):
         """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
         --revision`) through an immutable commit whose working tree has since changed. Root's A2 of the R-c vectors
         (2026-11-12): a case's `files` {path: text} are written too (the second tracked file a vector needs: an excluded
@@ -709,7 +709,9 @@ class EdgesTest(unittest.TestCase):
         `grand_links` {name: target}, a link beside the checkout's parent naming that parent; `env`, the case's own
         environment for the scan. Every scan runs without GITHUB_REPOSITORY (root's harness removes it, so the fixture
         never takes the runner's repository name as its own) and then with the case's `env`. `module` is the reader to
-        run, the head's edges by default; the no-regression gate passes main's."""
+        run, the head's edges by default; the no-regression gate passes main's. `full` (root's G3 of R6-1, 2026-11-12)
+        returns EVERY unit the scan produced, {("deps", package): sorted, ("readers", dir): sorted}, so the gate compares
+        all of them; by default the judged unit's reading alone (unit_reading)."""
         reader = module or E
         # Root's S4 of dotgithub-86 (2026-11-12): a vector whose input re-enters the checkout through the checkout's own
         # directory name (`../vectors/packages/shared`) holds only in a fixture of that name. It names it in `checkout`,
@@ -761,8 +763,10 @@ class EdgesTest(unittest.TestCase):
             cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
             rev = None
             if revision:
+                # --allow-empty: the gate scans one input at a revision through both readers, and the second scan's tree
+                # equals the first commit's (the cleanup emptied the index, the rewrite refilled it the same way).
                 subprocess.run(["git", "-C", str(repo), "-c", "user.name=f", "-c", "user.email=f@example.invalid",
-                                "commit", "-qm", "vector", "--no-gpg-sign"], check=True)
+                                "commit", "-qm", "vector", "--no-gpg-sign", "--allow-empty"], check=True)
                 rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
                 (repo / rel).write_text("# the working tree differs from the scanned revision\n")
             try:
@@ -772,12 +776,10 @@ class EdgesTest(unittest.TestCase):
                     deps, readers = reader.scan(repo, cfg, revision=rev)[:2]
             except ValueError as err:
                 return Refusal(str(err))  # == "REFUSE"; .message is the rule that refused (root's item 7, r4 review)
-            unit = case.get("unit") or "r"
-            if unit.startswith("readers:"):
-                # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
-                self.assertIn(unit[len("readers:"):], readers, f"{unit}: the scan produced no such reader unit")
-                return sorted(readers[unit[len("readers:"):]])
-            return sorted(deps[unit])
+            if full:
+                return {**{("deps", u): sorted(v) for u, v in deps.items()},
+                        **{("readers", u): sorted(v) for u, v in readers.items()}}
+            return self.unit_reading(case, deps, readers)
         finally:
             # Per-case cleanup: the input and every `files` entry leave the index and the tree, and the directories they
             # alone created go too, so the next case starts from the bare fixture.
@@ -791,6 +793,20 @@ class EdgesTest(unittest.TestCase):
                         not any(parent.iterdir()):
                     parent.rmdir()
                     parent = parent.parent
+
+    @staticmethod
+    def unit_key(case):
+        """The unit a case is judged on, as a `full` reading keys it: ("deps", package) or ("readers", dir)."""
+        unit = case.get("unit") or "r"
+        return ("readers", unit[len("readers:"):]) if unit.startswith("readers:") else ("deps", unit)
+
+    def unit_reading(self, case, deps, readers):
+        kind, name = self.unit_key(case)
+        if kind == "readers":
+            # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
+            self.assertIn(name, readers, f"readers:{name}: the scan produced no such reader unit")
+            return sorted(readers[name])
+        return sorted(deps[name])
 
     def vector_repo(self, name):
         repo = Path(self._td.name) / name
@@ -956,7 +972,7 @@ class EdgesTest(unittest.TestCase):
         (a 47th: the real regression a designed-red suite would otherwise hide), and a label gone GREEN (a slice read it
         and must move it out of DESIGNED_RED in the same commit, so the set never pins more than the head's reading)."""
         designed = DESIGNED_RED[which]
-        self.assertEqual(sorted(designed - set(self.REVIEW_VECTORS)), [],
+        self.assertEqual(sorted(label for label in designed if self.vector_of(label) not in self.REVIEW_VECTORS), [],
                          f"DESIGNED_RED[{which!r}] names labels no review vector carries")
         new = sorted(set(red) - designed)
         green = sorted(designed - set(red))
@@ -965,13 +981,20 @@ class EdgesTest(unittest.TestCase):
         self.assertEqual(green, [], f"designed-red labels now GREEN ({len(green)}), move them out of DESIGNED_RED[{which!r}]"
                                     f" in this commit: {green}")
 
+    @staticmethod
+    def vector_of(label):
+        """The review vector a red label names: the gate's ablation leg reds `<label>:ablation`, its revision leg
+        `<label>@revision`; every other label is the vector itself."""
+        return label.split(":ablation")[0].split("@revision")[0]
+
     def test_designed_red_pin_fails_by_name_three_ways(self):
         """assert_designed_red is not vacuous: the designed set itself passes; a 47th label, a designed label gone green
         and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (the
         nine fail both tests), and both sets name only vectors."""
         for which in DESIGNED_RED:
             self.assert_designed_red(which, {label: "designed" for label in DESIGNED_RED[which]})
-        self.assertTrue(DESIGNED_RED["gate"] <= DESIGNED_RED["review"], "the gate's nine are review reds too")
+        self.assertTrue({label for label in DESIGNED_RED["gate"] if label == self.vector_of(label)} <= DESIGNED_RED["review"],
+                        "the gate's tree-leg reds are review reds too")
         review = {label: "designed" for label in DESIGNED_RED["review"]}
         with self.assertRaisesRegex(AssertionError, r"NEW red outside DESIGNED_RED\['review'\] \(1\): A12_dict_value_as_path: why"):
             self.assert_designed_red("review", {**review, "A12_dict_value_as_path": "why"})
@@ -1120,43 +1143,128 @@ class EdgesTest(unittest.TestCase):
     # compares differ, so the gate cannot pass by loading the head twice.
     GATE_CONTROL = "G01_literal_unowned_dir_under_root"
 
+    # The review vectors the --revision path is driven on (test_review_vectors_hold_at_a_revision): the round-2 cases
+    # whose lines span or shift, positive controls that must READ, and #84's B1 brace-named tops. The no-regression gate
+    # scans the same closed list through both readers at a revision.
+    REVISION_LABELS = ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
+                       "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
+                       "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
+                       "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
+                       "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
+                       "W07_multiline_roots",
+                       # Root's B1 of #84: a top literally named `{tpl}` / `${tpl}` refuses on the --revision path too.
+                       "R84_Z01_brace_named_top_dir", "R84_Z02_dollar_brace_named_top_dir")
+
+    def leg_fixture(self, repo, label, case, leg):
+        """case_repo for the gate's ablation and revision legs: a case that names its own fixture (fixture_parent,
+        checkout, links beside it) gets one under `<leg>/`, apart from the tree leg's fixture of the same name."""
+        if "fixture_parent" in case or "outside_links" in case or "grand_links" in case or "checkout" in case:
+            case = {**case, "fixture_parent": f"{leg}/{case.get('fixture_parent', label)}"}
+        return self.case_repo(repo, label, case)
+
+    def gate_compare(self, label, case, truth, main_full, head_full, compared, red):
+        """One input under both readers, main's `main_full` beside the head's `head_full` (each "REFUSE" or a `full`
+        reading of every unit). Where main REFUSES (or produced no judged unit), the head refuses or reads its truth.
+        Where main READS the judged unit, the head refuses, reads its truth, or reads everything main reads. Root's G3
+        of R6-1 (RULED 2026-11-12): when BOTH readers read, EVERY unit of deps and readers is compared, the judged unit
+        at truth excepted: a head below main on any unit is a regression (vector_scan returning the judged unit alone
+        is how the rsub case hid). `red` gains label -> why; `compared` counts what was compared. Returns whether the
+        all-units leg alone made the label red (the verdict change root asked to be counted)."""
+        key = self.unit_key(case)
+        main_got = main_full if main_full == "REFUSE" else main_full.get(key)  # None: main produced no such unit
+        head_got = head_full if head_full == "REFUSE" else head_full.get(key)
+        if head_got is None:
+            red[label] = f"the head's scan produced no unit {key}"  # root's B2 of #84: never an empty reading
+            return False
+        at = head_got != "REFUSE" and truth is not None and truth <= set(head_got)
+        if main_got == "REFUSE" or main_got is None:
+            compared["main refuses" if main_got == "REFUSE" else "main produced no such unit"] += 1
+            if not (head_got == "REFUSE" or at):
+                red[label] = (f"main refuses, the head reads {head_got} below its truth {sorted(truth)}: a regression "
+                              f"against main's reader")
+        else:
+            compared["main reads"] += 1
+            if not (head_got == "REFUSE" or at or set(main_got) <= set(head_got)):
+                red[label] = (f"main reads {main_got}, the head reads {head_got}: below its truth {sorted(truth)} and "
+                              f"below main's reading")
+        if main_full == "REFUSE" or head_full == "REFUSE":
+            return False
+        compared["both read"] += 1
+        below = {}
+        for unit, main_units in sorted(main_full.items()):
+            if unit != key:
+                compared["other units"] += 1
+            if unit == key and at:
+                continue
+            if not set(main_units) <= set(head_full.get(unit, [])):
+                below[unit] = (main_units, head_full.get(unit, []))
+        if below and label not in red:
+            red[label] = "all-units: main reads more than the head on " + "; ".join(
+                f"{kind}:{name} main {m} head {h}" for (kind, name), (m, h) in sorted(below.items()))
+            return True
+        return False
+
     def test_r6_no_regression_against_main_reader(self):
         """Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12), design line 7 accepted 16:44: main's reader beside
-        the head's on every review vector, root's 111 included. Where main REFUSES, the head refuses or reads its truth
-        (the table's "at": truth within the reading; G02 reads six where its truth names one). Where main READS, the head
-        refuses, reads its truth, or reads everything main reads: a head below main AND below truth is a regression.
-        Floors inside the gate: main's source differs from the head's; at least one main-refuse and one main-read case
-        was compared; GATE_CONTROL refuses on main and reads at truth on the head."""
+        the head's on every review vector, root's 111 included (the rule: gate_compare). Three legs: every vector through
+        the working tree; every accept's ablation (ablation_input, judged with no truth: an ablation reads none of it);
+        REVISION_LABELS through an immutable commit (the --revision path action.yml runs). Floors inside the gate: main's
+        source differs from the head's; at least one main-refuse, one main-read and one both-read case was compared, and
+        the all-units leg compared units beyond the judged one; every ablation and every REVISION_LABELS case was
+        compared; GATE_CONTROL refuses on main and reads at truth on the head. The all-units verdict changes (labels red
+        by that leg alone) are printed with the counts for the push line."""
         main = self.main_reader()
         repo = self.vector_repo("gate/vectors")  # named as the shared fixture is: eight S4 cases assert `checkout`
-        compared = {"main refuses": 0, "main reads": 0, "main produced no such unit": 0}
+        compared = {"main refuses": 0, "main reads": 0, "main produced no such unit": 0, "both read": 0, "other units": 0,
+                    "ablations": 0, "at a revision": 0}
         control = None
         red = {}
+        all_units_only = []
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 fixture = self.case_repo(repo, label, case)
-                try:
-                    main_got = self.vector_scan(fixture, case, module=main)
-                except AssertionError:
-                    main_got = None  # vector_scan's own assertion: a reader unit main's scan did not produce
-                head_got = self.vector_scan(fixture, case)
+                main_full = self.vector_scan(fixture, case, module=main, full=True)
+                head_full = self.vector_scan(fixture, case, full=True)
                 truth = set(case["truth"]) if isinstance(case["truth"], list) else None  # "REFUSE": no reading is at truth
-                at = head_got != "REFUSE" and truth is not None and truth <= set(head_got)
                 if label == self.GATE_CONTROL:
-                    control = (main_got, at)
-                if main_got == "REFUSE" or main_got is None:
-                    compared["main refuses" if main_got == "REFUSE" else "main produced no such unit"] += 1
-                    if not (head_got == "REFUSE" or at):
-                        red[label] = (f"main refuses, the head reads {head_got} below its truth {case['truth']}: a "
-                                      f"regression against main's reader")
-                else:
-                    compared["main reads"] += 1
-                    if not (head_got == "REFUSE" or at or set(main_got) <= set(head_got)):
-                        red[label] = (f"main reads {main_got}, the head reads {head_got}: below its truth {case['truth']} "
-                                      f"and below main's reading")
+                    head_got = head_full if head_full == "REFUSE" else head_full.get(self.unit_key(case))
+                    main_got = main_full if main_full == "REFUSE" else main_full.get(self.unit_key(case))
+                    control = (main_got, head_got != "REFUSE" and head_got is not None and truth <= set(head_got))
+                if self.gate_compare(label, case, truth, main_full, head_full, compared, red):
+                    all_units_only.append(label)
+        ablations = self.vector_repo("gate-ablations/vectors")
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            if "ablation" not in case:
+                continue
+            with self.subTest(f"{label}:ablation"):
+                ablated = self.ablation_input(case)
+                fixture = self.leg_fixture(ablations, label, ablated, "gate-ablations")
+                main_full = self.vector_scan(fixture, ablated, module=main, full=True)
+                head_full = self.vector_scan(fixture, ablated, full=True)
+                compared["ablations"] += 1
+                if self.gate_compare(f"{label}:ablation", ablated, set(), main_full, head_full, compared, red):
+                    all_units_only.append(f"{label}:ablation")
+        revision = self.vector_repo("gate-revision/vectors")
+        for label in self.REVISION_LABELS:
+            with self.subTest(f"{label}@revision"):
+                case = self.REVIEW_VECTORS[label]
+                fixture = self.leg_fixture(revision, label, case, "gate-revision")
+                main_full = self.vector_scan(fixture, case, revision=True, module=main, full=True)
+                head_full = self.vector_scan(fixture, case, revision=True, full=True)
+                compared["at a revision"] += 1
+                truth = set(case["truth"]) if isinstance(case["truth"], list) else None
+                if self.gate_compare(f"{label}@revision", case, truth, main_full, head_full, compared, red):
+                    all_units_only.append(f"{label}@revision")
+        print(f"\nno-regression gate: compared {compared}; red {len(red)}; all-units verdict changes "
+              f"{len(all_units_only)}: {all_units_only}", file=sys.stderr)
         self.assert_designed_red("gate", red)
         self.assertGreater(compared["main refuses"], 0, "floor: no vector main refuses was compared")
         self.assertGreater(compared["main reads"], 0, "floor: no vector main reads was compared")
+        self.assertGreater(compared["both read"], 0, "floor: no vector both readers read was compared")
+        self.assertGreater(compared["other units"], 0, "floor: the all-units leg compared no unit beyond the judged one")
+        self.assertEqual(compared["ablations"], sum(1 for c in self.REVIEW_VECTORS.values() if "ablation" in c))
+        self.assertGreater(compared["ablations"], 0, "floor: no ablation was compared")
+        self.assertEqual(compared["at a revision"], len(self.REVISION_LABELS))
         self.assertEqual(control, ("REFUSE", True),
                          f"floor: {self.GATE_CONTROL} must refuse on main and read its truth on the head, got {control}")
 
@@ -1228,14 +1336,7 @@ class EdgesTest(unittest.TestCase):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a
         later working tree. The round-2 cases whose lines span or shift, plus positive controls that must READ."""
         repo = self.vector_repo("revision")
-        for label in ("N10_py_ternary_in_join", "N12_fstring_sql_with_nested_join", "N26_subprocess_multiline_list_own_line",
-                      "N27_subprocess_list_opened_own_line", "N31_js_spawn_multiline", "N42_parent_after_Path_call",
-                      "N52_formfeed_above_multiline_join", "N53_u2028_in_js_string_above_join",
-                      "X01_formfeed_index_overrun_crash", "X02_lone_cr_above_multiline_join",
-                      "A01_multiline_join_computed", "A02_multiline_join_literal", "A03_multiline_args_same_line",
-                      "W07_multiline_roots",
-                      # Root's B1 of #84: a top literally named `{tpl}` / `${tpl}` refuses on the --revision path too.
-                      "R84_Z01_brace_named_top_dir", "R84_Z02_dollar_brace_named_top_dir"):
+        for label in self.REVISION_LABELS:
             with self.subTest(label):
                 case = self.REVIEW_VECTORS[label]
                 self.judge(label, case, self.vector_scan(repo, case, revision=True))

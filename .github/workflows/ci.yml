@@ -99,7 +99,8 @@ jobs:
         with:
           persist-credentials: false
           # change-impact-plan's no-regression gate reads MAIN's edges.py from the clone (`git cat-file` of the blob
-          # test_edges.MAIN_EDGES_BLOB pins and origin/main's) beside the head's: the full history, not the merge commit.
+          # test_edges.MAIN_EDGES_BLOB pins, and origin/main's): the checkout is still the PR's merge commit, with the
+          # full history behind it so origin/main and the pinned blob are in the object store.
           fetch-depth: 0
       - name: change-impact planner unit tests
         run: |

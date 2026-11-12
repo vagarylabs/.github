@@ -157,6 +157,43 @@ MAIN_EDGES_PATH = "actions/change-impact-plan/edges.py"
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
 KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
 
+# Root's R4 of R6-1 (17:51 2026-11-12): a suite red by design hides a new red, so the designed-red set is closed and
+# compared BY NAME. Each test below collects the labels whose judgement failed and asserts that set EQUALS its entry
+# here: a 47th label (a new red), a label gone green (a slice read it: move it out here, in the same commit) and a
+# label no vector carries each fail by name, and the suite is GREEN exactly when the set matches. The sets are the
+# R6-1 head's (bd87cffc7f7f: local 742 s run and hosted run 43217057338 read the same 46).
+DESIGNED_RED = {
+    # test_review_vectors_read_their_truth_or_refuse: the 28 of ff414447 (round-5 rule pins that wait on the R6-2
+    # refuse point and rule 5) and root's nine of the 16:13 ruling (main refuses, the head reads [] below truth).
+    "review": frozenset({
+        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
+        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
+        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
+        "RC1F_py_two_subdirs_declared_whole_prefix", "RC1F_refuse_reach_strict_subset_of_prefix",
+        "RC1F_unowned_caller_reach_strict_subset_reads_less_today",
+        "RC1G_js_in_checkout_fallback_declared_external_refuses", "RC1G_js_in_checkout_fallback_declared_fixture_refuses",
+        "RC1G_js_in_checkout_fallback_declared_package_refuses", "RC1G_js_sibling_load_declared_fixture_refuses",
+        "RC1G_js_sibling_load_declared_package_refuses", "RC1I_f1_str_concat_declared",
+        "RC1K_js_env_only_load_declared_fixture_refuses", "RC1S_backslash_parent_step_declared_refuses",
+        "RC1S_py_sys_path_os_sep_join_literals_b1", "RC1X_py_one_expression_sys_path_and_run_path_one_entry_refuses",
+        "RC1X_py_param_root_and_module_root_one_entry_refuses",
+        "RC4B_js_whole_checkout_template_excluded_top_dir_declared_none",
+        "RC5B_py_literal_route_to_excluded_code_declared_reach_list", "RC5E_py_declared_reach_list_direct_edge_only",
+        "RC5F_py_scripts_caller_declared_reach_list_judged_on_readers", "RC5G_py_declared_reach_list_full_two_routes",
+        "RC5J_py_two_route_hook_and_cd_route_full_reach_refuses", "RC5J_py_two_route_hook_and_cd_route_partial_reach_refuses",
+        "RC5J_py_two_route_hook_own_line_cd_full_reach", "RC6B_extensionless_loader_target_declared_sources",
+        "RC6B_js_loader_literal_untracked_build_output_declared_sources", "RC6B_node_addon_declared_native_sources",
+        "RC6G_py_fixture_route_declared_reach_own_unit_refuses", "RC6H_refuse_reach_names_the_namer_itself",
+        "RC6I_refuse_reach_names_only_the_callers_own_unit",
+    }),
+    # test_r6_no_regression_against_main_reader: exactly root's nine (main REFUSE, head reads [] below truth).
+    "gate": frozenset({
+        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
+        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
+        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
+    }),
+}
+
 # Root's S1 of dotgithub-86 (2026-11-12): the `"r5": true` opt-in is closed. Exactly R5_VECTOR_COUNT vectors carry it
 # (equality, so an addition is a deliberate edit here), and they are exactly the `RC` labels outside the five #84
 # vectors below that predate round 5, so dropping the flag from one vector (or swapping a drop for an addition) cannot
@@ -913,6 +950,38 @@ class EdgesTest(unittest.TestCase):
         # A floor inside the gate: with no ablation in the vectors this test asserted nothing, so it fails instead.
         self.assertGreater(judged, 0, "the ablation assertion matched nothing: no review vector carries an `ablation`")
 
+    def assert_designed_red(self, which, red):
+        """The labels whose judgement failed (`red`: label -> why) must EQUAL DESIGNED_RED[which] by name. Three ways to
+        fail, each naming its labels: a label no vector carries (a renamed or dropped vector leaves a stale pin), a NEW red
+        (a 47th: the real regression a designed-red suite would otherwise hide), and a label gone GREEN (a slice read it
+        and must move it out of DESIGNED_RED in the same commit, so the set never pins more than the head's reading)."""
+        designed = DESIGNED_RED[which]
+        self.assertEqual(sorted(designed - set(self.REVIEW_VECTORS)), [],
+                         f"DESIGNED_RED[{which!r}] names labels no review vector carries")
+        new = sorted(set(red) - designed)
+        green = sorted(designed - set(red))
+        self.assertEqual(new, [], f"NEW red outside DESIGNED_RED[{which!r}] ({len(new)}): "
+                                  + "; ".join(f"{label}: {red[label][:300]}" for label in new))
+        self.assertEqual(green, [], f"designed-red labels now GREEN ({len(green)}), move them out of DESIGNED_RED[{which!r}]"
+                                    f" in this commit: {green}")
+
+    def test_designed_red_pin_fails_by_name_three_ways(self):
+        """assert_designed_red is not vacuous: the designed set itself passes; a 47th label, a designed label gone green
+        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (the
+        nine fail both tests), and both sets name only vectors."""
+        for which in DESIGNED_RED:
+            self.assert_designed_red(which, {label: "designed" for label in DESIGNED_RED[which]})
+        self.assertTrue(DESIGNED_RED["gate"] <= DESIGNED_RED["review"], "the gate's nine are review reds too")
+        review = {label: "designed" for label in DESIGNED_RED["review"]}
+        with self.assertRaisesRegex(AssertionError, r"NEW red outside DESIGNED_RED\['review'\] \(1\): A12_dict_value_as_path: why"):
+            self.assert_designed_red("review", {**review, "A12_dict_value_as_path": "why"})
+        gone = sorted(DESIGNED_RED["review"])[0]
+        with self.assertRaisesRegex(AssertionError, rf"now GREEN \(1\).*{gone}"):
+            self.assert_designed_red("review", {k: v for k, v in review.items() if k != gone})
+        with patch.dict(DESIGNED_RED, {"review": DESIGNED_RED["review"] | {"ZZ_no_such_vector"}}):
+            with self.assertRaisesRegex(AssertionError, r"names labels no review vector carries"):
+                self.assert_designed_red("review", {**review, "ZZ_no_such_vector": "x"})
+
     def test_review_vectors_read_their_truth_or_refuse(self):
         """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
@@ -922,9 +991,14 @@ class EdgesTest(unittest.TestCase):
         residuals; and #84's dated known fail-opens (KNOWN_FAIL_OPEN), each judged by its pin until its date. The closed
         lists these rest on are test_review_vector_closed_lists_hold's, so they report apart from any vector's reading."""
         repo = self.vector_repo("vectors")
+        red = {}
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
-                self.judge(label, case, self.vector_scan(self.case_repo(repo, label, case), case))
+                try:
+                    self.judge(label, case, self.vector_scan(self.case_repo(repo, label, case), case))
+                except AssertionError as exc:
+                    red[label] = str(exc)
+        self.assert_designed_red("review", red)
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual" and "reads" not in c),
                          [], "every residual vector pins its reading")
         # Root's B2 of #84 (2026-11-12): the precision controls are a closed list and each pins its reading, so a new
@@ -1008,6 +1082,7 @@ class EdgesTest(unittest.TestCase):
         repo = self.vector_repo("gate/vectors")  # named as the shared fixture is: eight S4 cases assert `checkout`
         compared = {"main refuses": 0, "main reads": 0, "main produced no such unit": 0}
         control = None
+        red = {}
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
                 fixture = self.case_repo(repo, label, case)
@@ -1022,14 +1097,15 @@ class EdgesTest(unittest.TestCase):
                     control = (main_got, at)
                 if main_got == "REFUSE" or main_got is None:
                     compared["main refuses" if main_got == "REFUSE" else "main produced no such unit"] += 1
-                    self.assertTrue(head_got == "REFUSE" or at,
-                                    f"{label}: main refuses, the head reads {head_got} below its truth {case['truth']}: "
-                                    f"a regression against main's reader")
+                    if not (head_got == "REFUSE" or at):
+                        red[label] = (f"main refuses, the head reads {head_got} below its truth {case['truth']}: a "
+                                      f"regression against main's reader")
                 else:
                     compared["main reads"] += 1
-                    self.assertTrue(head_got == "REFUSE" or at or set(main_got) <= set(head_got),
-                                    f"{label}: main reads {main_got}, the head reads {head_got}: below its truth "
-                                    f"{case['truth']} and below main's reading")
+                    if not (head_got == "REFUSE" or at or set(main_got) <= set(head_got)):
+                        red[label] = (f"main reads {main_got}, the head reads {head_got}: below its truth {case['truth']} "
+                                      f"and below main's reading")
+        self.assert_designed_red("gate", red)
         self.assertGreater(compared["main refuses"], 0, "floor: no vector main refuses was compared")
         self.assertGreater(compared["main reads"], 0, "floor: no vector main reads was compared")
         self.assertEqual(control, ("REFUSE", True),

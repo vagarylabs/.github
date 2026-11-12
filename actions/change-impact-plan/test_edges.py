@@ -167,6 +167,17 @@ RC1A_FIX_RULE_PINS = {
     "does not parse, so its imports cannot be read": (1, 'f"parse, so its imports cannot be read) in {where}"'),
 }
 
+# Slice 4 (the RC1 remainder: RC1G, RC1K, RC1F, RC1X; root's R-c r3 item 5, r4 items 3 and 10, dotgithub-86,
+# 2026-11-12): the four rules those vectors refuse by, closed the same way, each with its one raise site (the in-checkout
+# fallback and the env-only base share ONE raise, so `takes a reach list` has one site). RC1S's declared backslash entry
+# refuses by RC1B's `trailing components` site, and RC1I and RC1S's os.sep.join are reads, so neither adds a pin.
+RC1_REMAINDER_RULE_PINS = {
+    "takes a reach list": (4, 'f"{lands}: such a load takes a reach list naming the tracked paths it loads) "'),
+    "takes reach external": (2, 'f"above this repository takes reach external, never fixture or package) in {path}"'),
+    "a strict subset": (2, 'a strict subset of that prefix at "'),
+    "covers more than one site": (2, 'entry `{key}` covers more than one site, "'),
+}
+
 
 def catch_all_fragments():
     """The literal text of every rendering of CATCH_ALL_REFUSAL: the parts between its `{value}` and `{where}`."""
@@ -906,9 +917,10 @@ class EdgesTest(unittest.TestCase):
                          "a drop or an addition is an edit there")
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
-        # Slices 2 and 3: each rule's pin count by equality, and its own raise site in edges.py.
+        # Slices 2, 3 and 4: each rule's pin count by equality, and its own raise site in edges.py.
         for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
-                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS)):
+                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS),
+                                ("RC1_REMAINDER_RULE_PINS", RC1_REMAINDER_RULE_PINS)):
             for rule, (count, site) in pins.items():
                 named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
                 self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "
@@ -1548,6 +1560,12 @@ class ImportAttributionTest(unittest.TestCase):
                 expr = "str(HERE / file)" if why == "evaluated prefix" else 'str(_mod.ROOT / "scripts/gen.py")'
                 cfg = json.loads(json.dumps(IMPORT_CFG))
                 cfg["edge_scan"]["computed_imports"] = [{"file": "scripts/apply.py", "expr": expr, "reach": ["scripts/gen.py"]}]
+                if why == "evaluated prefix":
+                    # Root dotgithub-86 RC1F (slice 4): the free tail may name anything under scripts/, so one file in
+                    # it is a strict-subset reach and refuses; the whole package-free prefix reads.
+                    with self.assertRaisesRegex(ValueError, "a strict subset of that prefix"):
+                        self.scan(cfg)
+                    cfg["edge_scan"]["computed_imports"][0]["reach"] = ["scripts"]
                 self.scan(cfg)
                 (self.repo / "scripts/apply.py").unlink()
         # Controls: an unowned caller whose prefix has a package beneath it (the repo root via `..`, or services/) still

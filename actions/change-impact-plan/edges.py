@@ -1858,6 +1858,25 @@ IMPORTING_UNPARSED_EXT = frozenset({"mdx", "astro", "vue", "svelte"})
 # ESM import of a TypeScript file that way (`import "../../scripts/x.js"` loads scripts/x.ts).
 TS_SOURCES = {".js": (".ts", ".tsx", ".d.ts"), ".jsx": (".tsx",), ".mjs": (".mts", ".d.mts"), ".cjs": (".cts", ".d.cts")}
 COMPUTED_REACH = frozenset({"package", "external", "fixture"})
+# A JS binding of an environment variable, maybe with a plain literal fallback (`const core = process.env.CORE_DIR ??
+# "../a";`): group 1 the name, group 4 the fallback's text (RC1G/RC1K). Any other right-hand side is not read here.
+ENV_BINDING = re.compile(r"""\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\.env(?:\.[A-Za-z_$][\w$]*|"""
+                         r"""\[\s*(["'])[^"'\n]*\2\s*\])\s*(?:(?:\?\?|\|\|)\s*(["'])([^"'\\\n]*)\3)?\s*(?=;|\n|$)""")
+
+
+def environment_base(src: "Source", tokens: list) -> tuple[str, str | None] | None:
+    """The environment base of a JS computed import, if any: ("process.env", None) when the expression reads
+    `process.env` itself, (name, fallback or None) when it reads a name the file binds by ENV_BINDING; else None."""
+    for j in range(len(tokens) - 2):
+        if [t[0] for t in tokens[j:j + 3]] == ["word", "op", "word"] and [t[3] for t in tokens[j:j + 3]] == [
+                "process", ".", "env"]:
+            return "process.env", None
+    words = {t[3] for j, t in enumerate(tokens) if t[0] == "word" and not (
+        j and tokens[j - 1][0] == "op" and tokens[j - 1][3] in (".", "?."))}
+    for m in ENV_BINDING.finditer(src.text):
+        if m.group(1) in words:
+            return m.group(1), m.group(4)
+    return None
 # Every line a loader call can start on (loader_call_opens decides). A name bound to createRequire(...) lives in a file
 # that names createRequire, so that word finds its file.
 IMPORT_CALL_GREP = (r"(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\(|(require|import\.meta)\.resolve[[:space:]]*\("
@@ -2386,14 +2405,32 @@ def anchored_chain_sites(src: "Source") -> list[tuple[str, int, int]]:
 PARENT_STEP_LITERAL = re.compile(r"""(["'])([^"'\\\n]*)\1""")
 
 
+OS_SEP_JOIN = re.compile(r"os\.sep\.join\(\s*(\[[^\[\]]*\]|\([^()]*,[^()]*\))\s*\)")
+
+
 def parent_step_literal(text: str) -> str | None:
     """B1's literal (RC1A, root's R-c r2 review B1 and dotgithub-86): a sys.path entry written as ONE plain string
     literal (no prefix, no escape, no second literal) that is relative and holds a `..` component, its text as the
-    process reads it; None for anything else (a backslash path is B2's, `os.sep.join` and f-strings are other forms)."""
-    m = PARENT_STEP_LITERAL.fullmatch(text.strip())
-    if m is None or m.group(2).startswith("/") or ".." not in m.group(2).split("/"):
+    process reads it; None for anything else (a backslash path is B2's, f-strings are another form). `os.sep.join`
+    over a list or tuple of plain literals only is B1's too (root's R-c r4 item 4, RC1S): os.sep is `/`, so it reads
+    as its parts joined by `/`; a part that is a name, a prefixed or escaped string, or a string that is not a tuple
+    (`os.sep.join("..")` joins characters) makes it a computed entry, B2's by its text."""
+    stripped = text.strip()
+    m = PARENT_STEP_LITERAL.fullmatch(stripped)
+    if m is not None:
+        value = m.group(2)
+    else:
+        j = OS_SEP_JOIN.fullmatch(stripped)
+        parts = j.group(1)[1:-1].split(",") if j else []
+        if parts and not parts[-1].strip():
+            parts.pop()  # a trailing comma
+        found = [PARENT_STEP_LITERAL.fullmatch(p.strip()) for p in parts]
+        if not found or any(p is None for p in found):
+            return None
+        value = "/".join(p.group(2) for p in found)
+    if value.startswith("/") or ".." not in value.split("/"):
         return None
-    return m.group(2)
+    return value
 
 
 def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[int, int]]:
@@ -3887,6 +3924,28 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if verdict == "inside" and entry["reach"] != "package":
                 raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
                                  f"declared reach \"package\") in {path}")
+            if isinstance(entry["reach"], str):
+                # The RC1G and RC1K rules (root's R-c r3 item 5 and r4 item 10, dotgithub-86, 2026-11-12): a load whose
+                # base is the environment (`process.env.CORE_DIR`, or a binding of it with a literal fallback) is judged
+                # by where that base can land. An env-only base may name any path, this checkout included, and a
+                # fallback anchored at the file that lands IN the checkout is a load of tracked code: a keyword reach
+                # contradicts either, so it takes a reach list. A fallback above the checkout is code outside this
+                # repository that runs: reach "external", never "fixture" or "package".
+                base = environment_base(src, tokens)
+                if base is not None:
+                    name, fallback = base
+                    landing = (None if fallback is None or fallback.startswith("/")
+                               else posixpath.normpath(posixpath.join(posixpath.dirname(path), fallback)))
+                    if fallback is None or (landing is not None and landing != ".." and not landing.startswith("../")):
+                        lands = ("the environment, which may name any path, this checkout included" if fallback is None
+                                 else f"`{name}`, whose fallback \"{fallback}\" lands in this checkout at {landing}")
+                        raise ValueError(f"unresolved (`{expr}` is declared reach \"{entry['reach']}\", but its base is "
+                                         f"{lands}: such a load takes a reach list naming the tracked paths it loads) "
+                                         f"in {path}")
+                    if entry["reach"] != "external":
+                        raise ValueError(f"unresolved (`{expr}` is declared reach \"{entry['reach']}\", but its base "
+                                         f"`{name}` falls back to \"{fallback}\", outside the checkout: a load of code "
+                                         f"above this repository takes reach external, never fixture or package) in {path}")
             used.add((path, expr))
             # Root's C1 of #84's second delta R4 (2026-11-12), the JS twin of rule 8's landing credit: the package a
             # literal of the expression lands in (import(`${source}/packages/shared/m.mjs`), the leading `./`, `/` and
@@ -4076,7 +4135,22 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # lets a computed tail reach any of them, so it still escapes.
             free = prefix is not None and not any(d == prefix[0] or d.startswith(prefix[0].rstrip("/") + "/") or prefix[0] in (".", "")
                                                   for d in package_dir.values())
-            if kind == "path" and prefix is not None and not inside and other is None and (prefix[1] or not unowned_caller or not free):
+            # The RC1F rule (root's R-c r2 review R-c1(c), dotgithub-86, 2026-11-12): a computed TAIL under a package-free
+            # prefix with no parent step after it may spell anything beneath that prefix, so a reach-list declaration
+            # reads it, from a package's file as from an unowned caller, only when the reach covers the WHOLE prefix
+            # (the prefix itself or a directory holding it); a strict subset drops what the tail can name.
+            reach = by_site[(path, expr)]["reach"] if (path, expr) in by_site else None
+            tail_load = (kind == "path" and prefix is not None and not inside and other is None and not prefix[1] and free
+                         and isinstance(reach, list))
+            if tail_load:
+                whole = posixpath.normpath(prefix[0])
+                if not any(posixpath.normpath(t) in (".", whole) or whole.startswith(posixpath.normpath(t) + "/")
+                           for t in reach):
+                    raise ValueError(f"unresolved (the computed Python load `{expr}` may name anything under `{whole}`, "
+                                     f"but it is declared to reach {', '.join(reach)}, a strict subset of that prefix at "
+                                     f"most; a computed tail takes the whole package-free prefix as its reach) in {path}")
+            if kind == "path" and prefix is not None and not inside and other is None and not tail_load and (
+                    prefix[1] or not unowned_caller or not free):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
             if kind == "path" and prefix is None:
@@ -4150,11 +4224,24 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         tail = posixpath.normpath(LEADING.sub("", raw))
         return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
 
-    def key_tail(key: str) -> str | None:
+    CONCAT_SUFFIX = re.compile(r"""\+\s*["'][^"']*["']\s*$""")
+    BACKSLASH_LITERAL = re.compile(r"""(["'])((?:[^"'\\\n]|\\\\)*\\\\(?:[^"'\\\n]|\\\\)*)\1""")
+
+    def key_tail(key: str, declared: bool = False) -> str | None:
         """The key's one quoted literal, normalised: the tail before root's B1 of slice 2. Rule (b) below still refuses
-        by it as well as by the AST tail, so no undeclared entry it refused reads now (`"shared" + X`)."""
+        by it as well as by the AST tail, so no undeclared entry it refused reads now (`"shared" + X`). For a
+        DECLARED entry (RC1I, the slice 2 finding): a literal led by `/` that is the right operand of a trailing `+`
+        (`str(source) + "/packages/shared"`) is a separator after a computed base, not an absolute path, so its tail is
+        the literal without it; and one plain literal with a backslash and no `/` (`"..\\\\packages\\\\shared"`) is ONE
+        posix component, its runtime text, which no tracked directory's trailing component equals (RC1S, root's r4
+        item 4: undeclarable)."""
         literals = QUOTED.findall(SEP_SUBST.sub("/", key))
-        if len(literals) != 1 or PARENT_STEP.search(key) or literals[0].startswith("/"):
+        if declared and len(literals) == 1 and "/" not in literals[0]:
+            m = BACKSLASH_LITERAL.fullmatch(key.strip())
+            if m is not None:
+                return m.group(2).replace("\\\\", "\\")
+        if len(literals) != 1 or PARENT_STEP.search(key) or (
+                literals[0].startswith("/") and not (declared and CONCAT_SUFFIX.search(key))):
             return None
         tail = posixpath.normpath(LEADING.sub("", literals[0]))
         return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
@@ -4215,6 +4302,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     key: str | None = None, tail: str | None = None) -> None:
         declared = by_site.get((where, key)) if key is not None else None
         tail = entry_tail(tail, key) if kind == "unknown" and key is not None else None
+        if declared is not None and kind == "unknown" and tail is None and key is not None:
+            # Slice 4 stacked (RC1I, RC1S): the two DECLARED-only forms the AST tail has none for, read from the key's
+            # text, and only where they differ from the undeclared reading (`str(source) + "/packages/shared"` reads by
+            # `packages/shared`; a lone backslash literal is one posix component). Any other form keeps no tail.
+            by_text = key_tail(key, True)
+            tail = by_text if by_text != key_tail(key) else None
         # The parent-step route is judged BEFORE the no-tail refusal (slice 2 fix stacked on slice 3, 2026-11-12): a
         # bare parent-step literal is read by its landings, declared or not; the no-tail refusal is for a declared
         # entry that is neither a parent-step literal nor a listed tail form (`r"../x"`, `join("../..", X)`).
@@ -4322,6 +4415,20 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                           PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan's Python listing")
+    def one_site_per_entry(path: str, entries, sites) -> None:
+        """The RC1X rule (root's R-c r4 item 3, dotgithub-86, 2026-11-12): a computed_imports entry is keyed by its file
+        and its text, so the same text at two sites (a module-level `root` and a parameter `root`), or one expression
+        that is both a sys.path entry and a loader argument, would hang constructs that land apart, or rules that
+        judge a reach differently, on ONE declaration: it refuses until each construct has its own text."""
+        counts: dict[str, int] = {}
+        for key in [key for _, _, key, _ in entries if key is not None] + [site[1] for site in sites]:
+            counts[key] = counts.get(key, 0) + 1
+        for key, n in sorted(counts.items()):
+            if n > 1 and (path, key) in by_site:
+                raise ValueError(f"unresolved (the edge_scan.computed_imports entry `{key}` covers more than one site, "
+                                 f"{n} of that text (sys.path entries and loader arguments), whose landings one declaration "
+                                 f"cannot tell apart; give each construct its own text) in {path}")
+
     listed = {p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p}
     # Root's B1 of the slice 3 CHANGES: the files scan()'s parse set a sys.path entry aside in are read here too, so an
     # entry the grep misses (`sys .path.insert`, `sys.\` + newline) is never suppressed there and unread here.
@@ -4331,9 +4438,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if package is None:
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
             # sys.path entries stay a documented residual.
-            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
+            entries, _, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+            one_site_per_entry(path, entries, sites)
+            check_python_sites(path, sites)
             continue
         entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+        one_site_per_entry(path, entries, sites)
         parsed_names.setdefault(package, set()).update(file_names)
         for kind, value, key, tail in entries:
             apply_entry(package, path, kind, value, path, key=key, tail=tail)

@@ -41,7 +41,7 @@
    "note": "Root's probe K3a_subscript_store (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -86,7 +86,7 @@
    "note": "Root's probe K3b_append_mutator (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -131,7 +131,7 @@
    "note": "Root's probe K3l_dict_update (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -176,7 +176,7 @@
    "note": "Root's probe K3f_environ_store (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -221,7 +221,7 @@
    "note": "Root's probe K3d_setattr (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -266,7 +266,7 @@
    "note": "Root's probe K3e_nested_attr (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -311,7 +311,7 @@
    "note": "Root's probe K3c_class_attr_via_self (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D1",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -350,7 +350,7 @@
    "note": "Root's probe K2q_from_import_out_of_pkg (r4pr84e/adv_e3.json), converted field for field.",
    "known_fail_open": {
     "gap": "D2",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [
      "shared"
     ],
@@ -391,7 +391,7 @@
    "note": "Root's probe K2q_from_import_out_of_pkg_m (r4pr84e/adv_e3.json), converted field for field.",
    "known_fail_open": {
     "gap": "D2",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [
      "shared"
     ],
@@ -415,7 +415,7 @@
    "note": "Root's probe K2r_star_out_of_pkg (r4pr84e/adv_e4.json), converted field for field.",
    "known_fail_open": {
     "gap": "D2",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [
      "shared"
     ],
@@ -465,7 +465,7 @@
    "note": "Root's probe K1f_toplevel_link_to_shared (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D3",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -514,7 +514,7 @@
    "note": "Root's probe K1g_toplevel_link_unowned (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D3",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -565,7 +565,7 @@
    "note": "Root's probe K1a_chain_two_links (r4pr84e/adv_e.json), converted field for field.",
    "known_fail_open": {
     "gap": "D3",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [
      "a",
      "shared"
@@ -609,7 +609,7 @@
    "note": "Root's probe K1jL_single_link_literal_twin (r4pr84e/adv_e2.json), converted field for field.",
    "known_fail_open": {
     "gap": "D4",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [
      "a"
     ],
@@ -656,7 +656,7 @@
    "note": "Root's probe C01_js_name_indirection (r4pr84d/adv_d.json), converted field for field.",
    "known_fail_open": {
     "gap": "C01",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -701,7 +701,7 @@
    "note": "Root's probe C02_js_two_leading_subst (r4pr84d/adv_d.json), converted field for field.",
    "known_fail_open": {
     "gap": "C02",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -746,7 +746,7 @@
    "note": "Root's probe C03_js_pkg_holding_top_subst (r4pr84d/adv_d.json), converted field for field.",
    "known_fail_open": {
     "gap": "C03",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -791,7 +791,7 @@
    "note": "Root's probe C04_js_prefix_of_pkg_name (r4pr84d/adv_d.json), converted field for field.",
    "known_fail_open": {
     "gap": "C04",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -838,7 +838,7 @@
    "note": "Root's probe A6_unowned_free_top_landing_external (r4pr84d/adv_d.json), converted field for field.",
    "known_fail_open": {
     "gap": "N3",
-    "until": "2026-11-14",
+    "until": "2026-11-28",
     "today": [],
     "record": "lanes/root/reviews/dotgithub-84-1112.md"
    }
@@ -10218,9 +10218,7 @@
    "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../packages/nothing\"]\nimport shared_mod\n",
-   "truth": [
-    "shared"
-   ],
+   "truth": [],
    "unit": "r",
    "note": "B1(i): from every tracked directory `../../packages/nothing` joins to a path that does not exist (a landing that does not exist is no landing, root r4 item 11): zero landings, refuse. Twin: RC1A_py_sys_path_parent_step_literal_lands_in_shared_no_declaration.",
    "cfg": {
@@ -10953,7 +10951,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_bare_name_declared": {
@@ -11062,7 +11060,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_literal_package_top_declared": {
@@ -11171,7 +11169,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_dot_slash_package_top_declared": {
@@ -11280,7 +11278,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_cwd_div_package_top_declared": {
@@ -11389,7 +11387,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_abspath_package_top_declared": {
@@ -11499,7 +11497,7 @@
     "tools/shared": "not a directory\n",
     "services/r/conf.py": "from pathlib import Path\nROOT = Path(__file__).resolve().parents[2]\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_imported_root_div_package_top_declared": {
@@ -12106,7 +12104,7 @@
     "packages/notshared/keep.txt": "k\n",
     "tools/shared": "not a directory\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_two_constructs_both_declared": {
@@ -12219,7 +12217,7 @@
    "files": {
     "services/r/app/app_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_app_own_unit_declared_control": {
@@ -12287,7 +12285,7 @@
     }
    },
    "ablation_kind": "declaration",
-   "ablation_expected_rule": "a sys.path entry that may leave its package",
+   "ablation_expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_app_bare_name_other_unit_undeclared": {
@@ -12320,7 +12318,7 @@
    "files": {
     "apps/web/app/app_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_app_bare_name_other_unit_declared": {
@@ -12420,7 +12418,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1D_py_sys_path_insert_param_base_literal_declared_reach": {
@@ -12659,7 +12657,7 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1I_f1_str_path_div_declared": {
@@ -12756,7 +12754,7 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1I_f1_os_path_join_declared": {
@@ -12853,7 +12851,7 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1I_f1_str_concat_declared": {
@@ -12950,7 +12948,7 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1I_f1_fstring_declared": {
@@ -13793,7 +13791,8 @@
     "services/a/x.mjs": "export const a = 1;\n"
    },
    "expected_rule": "above the checkout but through its own name",
-   "r5": true
+   "r5": true,
+   "checkout": "vectors"
   },
   "RC1K_js_env_only_load_undeclared": {
    "question": "R-c1(d)",
@@ -16256,7 +16255,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1Q_py_key_r_string_different_key_refuses": {
@@ -16300,7 +16299,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1Q_py_key_implicit_concat_different_key_refuses": {
@@ -16344,7 +16343,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1Q_py_key_inner_parens_different_key_refuses": {
@@ -16388,7 +16387,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1Q_py_key_trailing_slash_different_key_refuses": {
@@ -16432,7 +16431,7 @@
    "files": {
     "apps/web/web_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1Q_py_key_outer_parens_same_key_reads": {
@@ -16811,7 +16810,7 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1S_backslash_parent_step_declared_refuses": {
@@ -16889,7 +16888,8 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "expected_rule": "lands in no tracked directory",
-   "r5": true
+   "r5": true,
+   "checkout": "vectors"
   },
   "RC1A_refuse_depth1_cwd_lands_above_checkout": {
    "question": "R-c1(a) B1, root r4 item 11",
@@ -16922,16 +16922,15 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "expected_rule": "lands in no tracked directory",
-   "r5": true
+   "r5": true,
+   "checkout": "vectors"
   },
   "RC1A_refuse_landing_does_not_exist": {
    "question": "R-c1(a) B1(i), root r4 item 11",
    "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../packages/shared/missing\"]\nimport shared_mod\n",
-   "truth": [
-    "shared"
-   ],
+   "truth": [],
    "unit": "r",
    "note": "Root r4 item 11: from every depth-2 directory the literal joins to packages/shared/missing, inside the checkout under a tracked parent, but no such directory exists: a landing that does not exist is no landing; zero landings, refuse.",
    "cfg": {
@@ -17020,7 +17019,7 @@
    "files": {
     "services/r/app/cost_centre.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_core_cost_centre_bare_app_declared_control": {
@@ -17089,7 +17088,7 @@
     }
    },
    "ablation_kind": "declaration",
-   "ablation_expected_rule": "a sys.path entry that may leave its package",
+   "ablation_expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_core_lead_intake_bare_app_undeclared": {
@@ -17121,7 +17120,7 @@
    "files": {
     "services/r/app/server.py": "X = 1\n"
    },
-   "expected_rule": "a sys.path entry that may leave its package",
+   "expected_rule": "an undeclared sys.path entry",
    "r5": true
   },
   "RC1B_core_lead_intake_bare_app_declared_control": {
@@ -17190,7 +17189,7 @@
     }
    },
    "ablation_kind": "declaration",
-   "ablation_expected_rule": "a sys.path entry that may leave its package",
+   "ablation_expected_rule": "an undeclared sys.path entry",
    "r5": true
   }
  }

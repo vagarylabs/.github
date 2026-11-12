@@ -84,8 +84,57 @@ REVIEW_CONTROLS = (
 # Root's ruling change on #84 (dotgithub-84-1112.md:27, 2026-11-12): the dated known fail-opens, each pinned by a vector
 # carrying `known_fail_open` {gap, until, today, record}. Its reading must EQUAL `today`, so the day a rule closes the gap
 # the pin goes red and that commit removes it (the case is then judged as the read it is); on or after `until` a case
-# still pinned fails. The gaps are a closed set, so a vector cannot be dropped silently.
-KNOWN_FAIL_OPEN_GAPS = ("D1", "D2", "D3", "D4", "C01", "C02", "C03", "C04", "N3")
+# still pinned fails. Root's B1 of dotgithub-86 (2026-11-12): the closed set is the LABELS, as REVIEW_CONTROLS is, each
+# with its gap, asserted both ways (a pinned vector outside the map, an entry without its vector and an entry whose
+# vector names another gap all fail), and judge() honours a pin only for a label here, so a four-key block on a failing
+# read is not a way to pass. A commit that closes a gap removes its entries here and its pins in the json together.
+KNOWN_FAIL_OPEN = {
+    "KFO_D1_K3a_subscript_store": "D1", "KFO_D1_K3b_append_mutator": "D1", "KFO_D1_K3c_class_attr_via_self": "D1",
+    "KFO_D1_K3d_setattr": "D1", "KFO_D1_K3e_nested_attr": "D1", "KFO_D1_K3f_environ_store": "D1",
+    "KFO_D1_K3l_dict_update": "D1",
+    "KFO_D2_K2q_from_import_out_of_pkg": "D2", "KFO_D2_K2q_from_import_out_of_pkg_m": "D2",
+    "KFO_D2_K2r_star_out_of_pkg": "D2",
+    "KFO_D3_K1a_chain_two_links": "D3", "KFO_D3_K1f_toplevel_link_to_shared": "D3",
+    "KFO_D3_K1g_toplevel_link_unowned": "D3",
+    "KFO_D4_K1jL_single_link_literal_twin": "D4",
+    "KFO_C01_js_name_indirection": "C01", "KFO_C02_js_two_leading_subst": "C02", "KFO_C03_js_pkg_holding_top_subst": "C03",
+    "KFO_C04_js_prefix_of_pkg_name": "C04",
+    "KFO_N3_A6_unowned_free_top_landing_external": "N3",
+}
+# Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
+# carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
+KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
+
+# Root's S1 of dotgithub-86 (2026-11-12): the `"r5": true` opt-in is closed. Exactly R5_VECTOR_COUNT vectors carry it
+# (equality, so an addition is a deliberate edit here), and they are exactly the `RC` labels outside the five #84
+# vectors below that predate round 5, so dropping the flag from one vector (or swapping a drop for an addition) cannot
+# take it out of the ablation and expected_rule checks.
+R5_VECTOR_COUNT = 141
+R5_PREFIX = "RC"
+RC_LABELS_BEFORE_R5 = ("RC1I_f1_fstring", "RC1I_f1_os_path_join", "RC1I_f1_str_concat", "RC1I_f1_str_path_div",
+                       "RC4G_f2_unreached_scripts_template_starts_no_unit")
+
+# Root's S2 of dotgithub-86 (2026-11-12): the reader's catch-all refusal, apply_entry's `kind == "unknown"` raise in
+# edges.py (a sys.path or pytest pythonpath entry that cannot be evaluated). It fires with or without a round-5 rule, so
+# an `expected_rule` (or `ablation_expected_rule`) it also contains cannot tell the new rule from it: assert_rule refuses
+# such a fragment, and test_review_vector_closed_lists_hold asserts the template is still edges.py's, so this check
+# cannot go vacuous when the message changes.
+CATCH_ALL_REFUSAL = "unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) in {where}"
+CATCH_ALL_WHATS = ("sys.path entry", "pytest pythonpath entry")
+
+
+def catch_all_fragments():
+    """The literal text of every rendering of CATCH_ALL_REFUSAL: the parts between its `{value}` and `{where}`."""
+    return [part for what in CATCH_ALL_WHATS
+            for part in re.split(r"\{value\}|\{where\}", CATCH_ALL_REFUSAL.replace("{what}", what)) if part]
+
+
+def catch_all_pattern():
+    """CATCH_ALL_REFUSAL as a regex matching every message it renders, whatever its `value` and `where`: a fragment that
+    straddles a placeholder (`cannot be evaluated) in services`) is in no literal part, yet is found in a catch-all."""
+    what = "|".join(re.escape(w) for w in CATCH_ALL_WHATS)
+    return "".join(f"(?:{what})" if part == "{what}" else ".*" if part in ("{value}", "{where}") else re.escape(part)
+                   for part in re.split(r"(\{what\}|\{value\}|\{where\})", CATCH_ALL_REFUSAL) if part)
 
 
 class EdgesTest(unittest.TestCase):
@@ -506,6 +555,12 @@ class EdgesTest(unittest.TestCase):
         hook, the sources a loader lands in) and removed after it, with the input, so no case reads another's files; its
         `unit` names what is judged, the package that owns the caller (default `r`) or a reader directory's unit
         (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander."""
+        # Root's S4 of dotgithub-86 (2026-11-12): a vector whose input re-enters the checkout through the checkout's own
+        # directory name (`../vectors/packages/shared`) holds only in a fixture of that name. It names it in `checkout`,
+        # asserted here, so a fixture under another name fails loudly instead of the vector testing something else.
+        if "checkout" in case:
+            self.assertEqual(repo.name, case["checkout"], f"this vector re-enters a checkout named {case['checkout']!r}; "
+                                                          f"the fixture is {repo.name!r}")
         subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "services/r"], check=True)
         for f in sorted((repo / "services/r").rglob("*"), reverse=True):
             if f.is_file() and f.name != "keep.txt":
@@ -570,7 +625,10 @@ class EdgesTest(unittest.TestCase):
     def judge(self, label, case, got):
         truth, expect = case["truth"], case["expect"]
         if "known_fail_open" in case:
-            # A dated known fail-open reads below its truth by ruling: its pin, not its truth, is judged, either way.
+            # A dated known fail-open reads below its truth by ruling: its pin, not its truth, is judged, either way. Only
+            # a label in the closed KNOWN_FAIL_OPEN map is (root's B1 of dotgithub-86): a pin added to any other vector
+            # fails here, whatever it says.
+            self.assertIn(label, KNOWN_FAIL_OPEN, f"{label}: a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
             pin = case["known_fail_open"]
             self.assertEqual(got, pin["today"], f"{label}: known fail-open {pin['gap']} read {got}, pinned "
                                                 f"{pin['today']}; once it reads its truth {truth} this commit removes the pin")
@@ -602,32 +660,51 @@ class EdgesTest(unittest.TestCase):
         """`got` refused, and for the rule `rule` names: a substring of the reader's ValueError (ruling (c))."""
         self.assertTrue(isinstance(rule, str) and rule.strip(),
                         f"{label}: `{field}` must be a non-empty string; an empty fragment matches every refusal")
+        # Root's S2 of dotgithub-86 (2026-11-12): a fragment the catch-all refusal also prints passes on the catch-all,
+        # so it cannot tell the rule it names from it.
+        self.assertEqual([part for part in catch_all_fragments() if rule in part], [],
+                         f"{label}: `{field}` {rule!r} is text the catch-all refusal also prints; pin a clause of the rule "
+                         "itself")
         self.assertIsInstance(got, Refusal, f"{label}: no refusal message was recorded to judge `{field}` against")
         self.assertIn(rule, got.message, f"{label}: refused for another rule: `{field}` {rule!r} is not in the "
                                          f"refusal {got.message[:200]!r}")
+        self.assertIsNone(re.fullmatch(catch_all_pattern(), got.message, re.S),
+                          f"{label}: the refusal is the catch-all ({got.message[:200]!r}); `{field}` {rule!r} matched its "
+                          "text, not its rule's")
 
     def assert_known_fail_open_pins(self, vectors, on):
-        """The data-only checks on every `known_fail_open` vector, against the date `on`: a read with a truth, never a
-        control or a residual, pinned below its truth, not past its `until`; the gaps present are exactly the closed set."""
-        gaps = set()
+        """The data-only checks on every `known_fail_open` vector, against the date `on`: a label of the closed
+        KNOWN_FAIL_OPEN map with its gap, its `until` exactly KNOWN_FAIL_OPEN_UNTIL, a read with a truth, never a control
+        or a residual, pinned below its truth, not past the date; and the map and the pinned vectors equal both ways."""
+        until = datetime.date.fromisoformat(KNOWN_FAIL_OPEN_UNTIL)
+        pinned = {}
         for label, case in sorted(vectors.items()):
             if "known_fail_open" not in case:
                 continue
             pin = case["known_fail_open"]
-            gaps.add(pin.get("gap"))  # outside the subTest: a failed case's gap still counts, so only a drop trips the floor
+            # Outside the subTest: a failed case still counts, so only a drop or an addition trips the both-ways check.
+            pinned[label] = pin.get("gap") if isinstance(pin, dict) else None
             with self.subTest(f"{label}:known_fail_open"):
                 self.assertEqual(sorted(pin), ["gap", "record", "today", "until"], f"{label}: known_fail_open's keys")
-                self.assertIn(pin["gap"], KNOWN_FAIL_OPEN_GAPS, f"{label}: gap {pin['gap']!r} is not a dated known fail-open")
+                self.assertIn(label, KNOWN_FAIL_OPEN, f"{label}: a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
+                self.assertEqual(pin["gap"], KNOWN_FAIL_OPEN[label],
+                                 f"{label}: pinned gap {pin['gap']!r}, KNOWN_FAIL_OPEN says {KNOWN_FAIL_OPEN[label]!r}")
+                self.assertEqual(pin["until"], KNOWN_FAIL_OPEN_UNTIL,
+                                 f"{label}: until {pin['until']!r}; every pin carries KNOWN_FAIL_OPEN_UNTIL, no later date")
                 # expect read, so never a residual: the residual list is exactly the `expect: residual` labels.
                 self.assertEqual(case["expect"], "read", f"{label}: a known fail-open is a read, not a residual or a refuse")
                 self.assertNotEqual(case.get("control"), True, f"{label}: a case is a control or a known fail-open, not both")
                 self.assertTrue(case["truth"] and isinstance(pin["today"], list) and
                                 not set(case["truth"]) <= set(pin["today"]),
                                 f"{label}: a known fail-open pins a reading below a non-empty truth, not {pin['today']}")
-                if on >= datetime.date.fromisoformat(pin["until"]):
-                    self.fail(f"{label}: known fail-open {pin['gap']} past its date {pin['until']}")
-        self.assertEqual(sorted(gaps), sorted(KNOWN_FAIL_OPEN_GAPS),
-                         "the known fail-open vectors must cover KNOWN_FAIL_OPEN_GAPS exactly, each gap at least once")
+                if on >= until or on >= datetime.date.fromisoformat(pin["until"]):
+                    self.fail(f"{label}: known fail-open {pin['gap']} past its date {KNOWN_FAIL_OPEN_UNTIL}")
+        # Membership both ways, each failure naming its side, then the gaps (root's B1 of dotgithub-86).
+        self.assertEqual(sorted(set(pinned) - set(KNOWN_FAIL_OPEN)), [],
+                         "a known_fail_open pin outside the closed KNOWN_FAIL_OPEN map")
+        self.assertEqual(sorted(set(KNOWN_FAIL_OPEN) - set(pinned)), [],
+                         "a stale KNOWN_FAIL_OPEN entry: it names no review vector carrying its known_fail_open pin")
+        self.assertEqual(pinned, KNOWN_FAIL_OPEN, "a pinned vector's known_fail_open.gap differs from KNOWN_FAIL_OPEN")
 
     # Ruling (c) of root's R-c r4 review (2026-11-12): how a vector opts in. A case carrying `ablation` is always judged
     # by test_review_vector_ablations_read_no_truth_and_refuses_pin_their_rule. A case that also says `"r5": true` makes
@@ -701,7 +778,8 @@ class EdgesTest(unittest.TestCase):
         (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
         does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
         os.path.split), and the fifth and sixth reviews' inputs outside README rule 4's closed list, all named
-        residuals; and #84's dated known fail-opens (KNOWN_FAIL_OPEN_GAPS), each judged by its pin until its date."""
+        residuals; and #84's dated known fail-opens (KNOWN_FAIL_OPEN), each judged by its pin until its date. The closed
+        lists these rest on are test_review_vector_closed_lists_hold's, so they report apart from any vector's reading."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
@@ -712,13 +790,6 @@ class EdgesTest(unittest.TestCase):
         # vector cannot take `control: true` (and its truth-[] exemption) silently.
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True and "reads" not in c),
                          [], "every precision control pins its reading")
-        # Ruling (c) of root's R-c r4 review (2026-11-12): membership is asserted both ways, each failure naming its side.
-        controls = {k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True}
-        self.assertEqual(len(set(REVIEW_CONTROLS)), len(REVIEW_CONTROLS), "REVIEW_CONTROLS names a label twice")
-        self.assertEqual(sorted(controls - set(REVIEW_CONTROLS)), [],
-                         "a precision control outside the closed list: add it to REVIEW_CONTROLS, with its pinned reading")
-        self.assertEqual(sorted(set(REVIEW_CONTROLS) - controls), [],
-                         "a stale REVIEW_CONTROLS entry: it names no `control: true` review vector")
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          [
                           "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
@@ -745,9 +816,49 @@ class EdgesTest(unittest.TestCase):
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
+
+    def test_review_vector_closed_lists_hold(self):
+        """The data-only closed lists the review vectors rest on, apart from any reading: REVIEW_CONTROLS and
+        KNOWN_FAIL_OPEN both ways, the pins dated KNOWN_FAIL_OPEN_UNTIL, the `"r5": true` set (S1), and no
+        `expected_rule` / `ablation_expected_rule` the catch-all refusal also prints, against the template edges.py
+        really raises (S2; root's dotgithub-86 review, 2026-11-12)."""
+        vectors = self.REVIEW_VECTORS
+        # Ruling (c) of root's R-c r4 review (2026-11-12): membership is asserted both ways, each failure naming its side.
+        controls = {k for k, c in vectors.items() if c.get("control") is True}
+        self.assertEqual(len(set(REVIEW_CONTROLS)), len(REVIEW_CONTROLS), "REVIEW_CONTROLS names a label twice")
+        self.assertEqual(sorted(controls - set(REVIEW_CONTROLS)), [],
+                         "a precision control outside the closed list: add it to REVIEW_CONTROLS, with its pinned reading")
+        self.assertEqual(sorted(set(REVIEW_CONTROLS) - controls), [],
+                         "a stale REVIEW_CONTROLS entry: it names no `control: true` review vector")
         # The real UTC date, not the suite's frozen E.today() (2026-10-29, top of file): every `until` falls after it,
         # so against it a dated pin could never expire.
-        self.assert_known_fail_open_pins(self.REVIEW_VECTORS, datetime.datetime.now(datetime.timezone.utc).date())
+        self.assert_known_fail_open_pins(vectors, datetime.datetime.now(datetime.timezone.utc).date())
+        # S1: the r5 set is closed, by count and by label.
+        r5 = {k for k, c in vectors.items() if c.get("r5") is True}
+        self.assertEqual(sorted(k for k, c in vectors.items() if "r5" in c and c["r5"] is not True), [],
+                         "`r5` is `true` or absent")
+        self.assertEqual(len(r5), R5_VECTOR_COUNT, f"{len(r5)} vectors carry `\"r5\": true`, R5_VECTOR_COUNT says "
+                                                   f"{R5_VECTOR_COUNT}: a drop or an addition is an edit there")
+        self.assertEqual(sorted(k for k in RC_LABELS_BEFORE_R5 if k not in vectors), [],
+                         "a stale RC_LABELS_BEFORE_R5 entry: it names no review vector")
+        expected_r5 = {k for k in vectors if k.startswith(R5_PREFIX) and k not in RC_LABELS_BEFORE_R5}
+        self.assertEqual(sorted(expected_r5 - r5), [], f"an {R5_PREFIX} vector without `\"r5\": true`")
+        self.assertEqual(sorted(r5 - expected_r5), [], f"an `\"r5\": true` vector outside the {R5_PREFIX} labels")
+        # S2: the catch-all template is edges.py's own (one raise, its two `what`s), so the check below is not vacuous.
+        source = Path(E.__file__).read_text()
+        head, tail = CATCH_ALL_REFUSAL.split("in {where}")
+        self.assertRegex(source, re.escape(f'f"{head}"') + r"\s*" + re.escape('f"in {where}"'),
+                         "CATCH_ALL_REFUSAL is no longer the template edges.py raises: re-derive it")
+        self.assertEqual(tail, "")
+        self.assertIn('what: str = "sys.path entry"', source, "CATCH_ALL_WHATS: apply_entry's default `what` moved")
+        self.assertIn('"pytest pythonpath entry"', source, "CATCH_ALL_WHATS: the pytest pythonpath `what` moved")
+        fragments = catch_all_fragments()
+        rules = {(k, field): c[field] for k, c in vectors.items()
+                 for field in ("expected_rule", "ablation_expected_rule") if field in c}
+        self.assertGreater(len(rules), 0, "the catch-all check matched nothing: no vector pins a rule")
+        self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
+                                if any(rule in part for part in fragments)), [],
+                         "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")
 
     def test_the_action_path_reads_the_scanned_revision(self):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a

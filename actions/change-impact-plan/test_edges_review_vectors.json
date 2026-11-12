@@ -16857,16 +16857,16 @@
    "expected_rule": "trailing components",
    "r5": true
   },
-  "RC1A_refuse_depth0_cwd_lands_above_checkout": {
+  "RC1A_depth0_cwd_reentry_by_own_name_reads": {
    "question": "R-c1(a) B1, root r4 item 11",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../vectors/packages/shared\"]\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
    "unit": "r",
-   "note": "Root r4 item 11: from the depth-0 directory `.`, `../vectors/packages/shared` lands ABOVE the checkout (re-entering through its own name `vectors`, the harness checkout); a landing above the checkout is no landing, and from every other tracked directory the path names nothing: zero landings, refuse (B1(i)). Truth [shared] is what the OS loads when the checkout is named vectors.",
+   "note": "Root r4 item 11: from the depth-0 directory `.`, `../vectors/packages/shared` lands ABOVE the checkout (re-entering through its own name `vectors`, the harness checkout); a landing above the checkout is no landing, and from every other tracked directory the path names nothing: zero landings, refuse (B1(i)). Truth [shared] is what the OS loads when the checkout is named vectors. Re-marked by root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B2: the climb above the checkout re-enters it by its own name (vectors) and lands in packages/shared, which is credited (renamed from RC1A_refuse_depth0_cwd_lands_above_checkout by root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12): B2 governs this form). The checkout name is stated in `checkout` and asserted against the fixture; the not-own-name twin is RC1A_refuse_depth0_cwd_climb_names_no_own_name..",
    "cfg": {
     "edge_scan": {
      "roots": [
@@ -16887,20 +16887,72 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "lands in no tracked directory",
    "r5": true,
-   "checkout": "vectors"
+   "checkout": "vectors",
+   "ablation": {
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
   },
-  "RC1A_refuse_depth1_cwd_lands_above_checkout": {
-   "question": "R-c1(a) B1, root r4 item 11",
+  "RC1A_refuse_depth0_cwd_climb_names_no_own_name": {
+   "question": "R-c1(a) B1, root r4 item 11, root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12)",
    "expect": "refuse",
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../other/packages/shared\"]\nimport shared_mod\n",
+   "truth": [],
+   "unit": "r",
+   "note": "root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12): the twin of RC1A_depth0_cwd_reentry_by_own_name_reads, differing in one property only: the first component after the climb is `other`, not the checkout's own name (`vectors`, stated in `checkout`). `../other/packages/shared` from the depth-0 directory climbs above the checkout beside it, which B2 never credits; from every other tracked directory the path names nothing: zero landings, refuse (r4 item 11's rule).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "r5": true,
+   "checkout": "vectors",
+   "expected_rule": "lands in no tracked directory"
+  },
+  "RC1A_depth1_cwd_reentry_by_own_name_reads": {
+   "question": "R-c1(a) B1, root r4 item 11",
+   "expect": "read",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../vectors/packages/shared\"]\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
    "unit": "r",
-   "note": "Root r4 item 11: from a depth-1 directory (services, apps, packages), `../../vectors/packages/shared` lands above the checkout through its own name; no landing inside it: refuse. Twin: RC1A_refuse_depth0_cwd_lands_above_checkout (one property: the depth).",
+   "note": "Root r4 item 11: from a depth-1 directory (services, apps, packages), `../../vectors/packages/shared` lands above the checkout through its own name; no landing inside it: refuse. Twin: RC1A_depth0_cwd_reentry_by_own_name_reads (one property: the depth). Re-marked by root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B2: the climb above the checkout re-enters it by its own name (vectors) and lands in packages/shared, which is credited (renamed from RC1A_refuse_depth1_cwd_lands_above_checkout by root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12): B2 governs this form). The checkout name is stated in `checkout` and asserted against the fixture; the not-own-name twin is RC1A_refuse_depth1_cwd_climb_names_no_own_name..",
    "cfg": {
     "edge_scan": {
      "roots": [
@@ -16921,9 +16973,61 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "expected_rule": "lands in no tracked directory",
    "r5": true,
-   "checkout": "vectors"
+   "checkout": "vectors",
+   "ablation": {
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "RC1A_refuse_depth1_cwd_climb_names_no_own_name": {
+   "question": "R-c1(a) B1, root r4 item 11, root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12)",
+   "expect": "refuse",
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../other/packages/shared\"]\nimport shared_mod\n",
+   "truth": [],
+   "unit": "r",
+   "note": "root's ruling on the dotgithub-86 slice 3 FIX (12:43 2026-11-12): the twin of RC1A_depth1_cwd_reentry_by_own_name_reads, differing in one property only: the first component after the climb is `other`, not the checkout's own name (`vectors`, stated in `checkout`). `../../other/packages/shared` from the depth-1 directory climbs above the checkout beside it, which B2 never credits; from every other tracked directory the path names nothing: zero landings, refuse (r4 item 11's rule).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "r5": true,
+   "checkout": "vectors",
+   "expected_rule": "lands in no tracked directory"
   },
   "RC1A_refuse_landing_does_not_exist": {
    "question": "R-c1(a) B1(i), root r4 item 11",
@@ -17191,6 +17295,905 @@
    "ablation_kind": "declaration",
    "ablation_expected_rule": "an undeclared sys.path entry",
    "r5": true
+  },
+  "R86S3_C1_reentry_by_checkout_name_beside_another_landing": {
+   "question": "dotgithub-86 slice 3 CHANGES B2",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../vectors/packages/shared\"]\nimport shared_mod\n",
+   "truth": [
+    "shared",
+    "vs"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B2, root's fixture C1_reentry_by_checkout_name_beside_another_landing (/tmp/r4pr86s3/fx/C1_reentry_by_checkout_name_beside_another_landing). From the root start the literal climbs above the checkout and re-enters it by its own name (vectors), landing in packages/shared; from services it lands in vectors/packages/shared (package vs). Before the fix the re-entry was dropped silently beside the other landing, reading [vs].",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    },
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "vs": {
+       "dir": "vectors",
+       "deps": []
+      }
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "vectors/packages/shared/shared_mod.py": "X = 2\n"
+   },
+   "checkout": "vectors",
+   "ablation": {
+    "src": "import sys\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     },
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "vs": {
+        "dir": "vectors",
+        "deps": []
+       }
+      }
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C1b_flat_layout_reentry": {
+   "question": "dotgithub-86 slice 3 CHANGES B2",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../vectors/lib\")\nimport core\n",
+   "truth": [
+    "myapp",
+    "rootlib"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B2, root's fixture C1b_flat_layout_reentry (/tmp/r4pr86s3/fx/C1b_flat_layout_reentry). Root's fixture checks out as myapp; the review fixture is named vectors, so the in-checkout directory and the literal say vectors (../vectors/lib) and the package names stay root's (myapp owns vectors, rootlib owns lib): truth is root's verbatim. The root start re-enters and lands in lib (rootlib); services lands in vectors/lib.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    },
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "myapp": {
+       "dir": "vectors",
+       "deps": []
+      },
+      "rootlib": {
+       "dir": "lib",
+       "deps": []
+      }
+     }
+    }
+   },
+   "files": {
+    "vectors/lib/core.py": "X = 1\n",
+    "lib/core.py": "X = 2\n"
+   },
+   "checkout": "vectors",
+   "ablation": {
+    "src": "import sys\nimport core\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     },
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "myapp": {
+        "dir": "vectors",
+        "deps": []
+       },
+       "rootlib": {
+        "dir": "lib",
+        "deps": []
+       }
+      }
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C1c_reentry_only_actions_double_nest": {
+   "question": "dotgithub-86 slice 3 CHANGES B2",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../vectors/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared",
+    "vs"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B2, root's fixture C1c_reentry_only_actions_double_nest (/tmp/r4pr86s3/fx/C1c_reentry_only_actions_double_nest). From services the literal climbs two steps, the second above the checkout, and re-enters by its name into packages/shared; from services/b/worker it lands in services/vectors/packages/shared (package vs).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    },
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "vs": {
+       "dir": "services/vectors",
+       "deps": []
+      }
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "services/vectors/packages/shared/shared_mod.py": "X = 2\n"
+   },
+   "checkout": "vectors",
+   "ablation": {
+    "src": "import sys\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     },
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "vs": {
+        "dir": "services/vectors",
+        "deps": []
+       }
+      }
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C2_nested_package_under_owned_landing": {
+   "question": "dotgithub-86 slice 3 CHANGES B5",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../b\")\nimport worker.m\n",
+   "truth": [
+    "nest"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B5, root's fixture C2_nested_package_under_owned_landing (/tmp/r4pr86s3/fx/C2_nested_package_under_owned_landing). The literal lands in services/b, which b owns; `import worker.m` loads services/b/worker/m.py, which nest owns. An owned landing now credits the packages nested in it too (RC1A route).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/b/worker/m.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\nimport worker.m\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C2ctrl_evaluated_twin": {
+   "question": "dotgithub-86 slice 3 CHANGES B5",
+   "expect": "read",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../b\"))\nimport worker.m\n",
+   "truth": [
+    "nest"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B5, root's fixture C2ctrl_evaluated_twin (/tmp/r4pr86s3/fx/C2ctrl_evaluated_twin). The evaluated twin of R86S3_C2: the entry evaluates to services/b and credited only b on dcf6545 and on db92bfe. Root ruled the nested credit for both routes; this is the evaluated route's vector.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/b/worker/m.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import os\nimport sys\nimport worker.m\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C12_dotdot_only_nested": {
+   "question": "dotgithub-86 slice 3 CHANGES B5",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"..\")\nimport worker.m\n",
+   "truth": [
+    "nest"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B5, root's fixture C12_dotdot_only_nested (/tmp/r4pr86s3/fx/C12_dotdot_only_nested). `..` from services/b/worker lands in services/b (owned by b), where worker.m is nest's; a bare `..` literal.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/b/worker/m.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\nimport worker.m\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C3_package_dir_beats_module_in_reader_landing": {
+   "question": "dotgithub-86 slice 3 CHANGES B3",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../tools/lib\"]\nimport tmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B3, root's fixture C3_package_dir_beats_module_in_reader_landing (/tmp/r4pr86s3/fx/C3_package_dir_beats_module_in_reader_landing). tools/lib holds tmod.py and tmod/__init__.py; Python loads the package directory, whose __init__ reads packages/shared. The landing judgment now reads both, so neither shadows the other.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "tools/lib/tmod.py": "X = 1\n",
+    "tools/lib/tmod/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\nimport tmod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C4_sibling_semicolon_import": {
+   "question": "dotgithub-86 slice 3 CHANGES B4",
+   "expect": "refuse",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B4, root's fixture C4_sibling_semicolon_import (/tmp/r4pr86s3/fx/C4_sibling_semicolon_import). The package's other file imports vmod after a semicolon (`import os; import vmod`), which the line grep read as `os;` alone, so the package-free landing vendor/lib was judged by no name and read []. Names now come from a parse of every Python file of the package, so vmod is judged: vendor/lib is outside every scan root and reader directory, so it refuses, as the plain-import twin (root's C4ctrl) does.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/r/y.py": "import os; import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expected_rule": "a package-free landing"
+  },
+  "R86S3_C4b_sibling_if_oneliner": {
+   "question": "dotgithub-86 slice 3 CHANGES B4",
+   "expect": "refuse",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B4, root's fixture C4b_sibling_if_oneliner (/tmp/r4pr86s3/fx/C4b_sibling_if_oneliner). `if True: import vmod` in the package's other file: the parse finds the import the line grep missed; vendor/lib refuses as in R86S3_C4.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/r/y.py": "if True: import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expected_rule": "a package-free landing"
+  },
+  "R86S3_C4c_sibling_try_oneliner": {
+   "question": "dotgithub-86 slice 3 CHANGES B4",
+   "expect": "refuse",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B4, root's fixture C4c_sibling_try_oneliner (/tmp/r4pr86s3/fx/C4c_sibling_try_oneliner). `try: import vmod` in the package's other file: the parse finds the import the line grep missed; vendor/lib refuses as in R86S3_C4.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/r/y.py": "try: import vmod\nexcept ImportError: pass\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expected_rule": "a package-free landing"
+  },
+  "R86S3_C4d_reader_landing_semicolon": {
+   "question": "dotgithub-86 slice 3 CHANGES B4",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../tools/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B4, root's fixture C4d_reader_landing_semicolon (/tmp/r4pr86s3/fx/C4d_reader_landing_semicolon). As R86S3_C4 with the landing in the reader directory tools/lib: `import os; import vmod` is now read by the parse, so tools/lib/vmod.py is an edge and its read of packages/shared is credited.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/r/y.py": "import os; import vmod\n",
+    "tools/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C5_sys_space_path": {
+   "question": "dotgithub-86 slice 3 CHANGES B1",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys .path.insert(0, \"../../packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B1, root's fixture C5_sys_space_path (/tmp/r4pr86s3/fx/C5_sys_space_path). `sys .path.insert`: scan()'s parse set the literal aside, but the reader listed only files a text grep for `sys\\.path` matched, so it was read by neither (db92bfe read [shared], dcf6545 []). Both now use one file set.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C5b_sys_backslash_continuation": {
+   "question": "dotgithub-86 slice 3 CHANGES B1",
+   "expect": "read",
+   "ext": "py",
+   "src": "import sys\nsys.\\\npath.insert(0, \"../../packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B1, root's fixture C5b_sys_backslash_continuation (/tmp/r4pr86s3/fx/C5b_sys_backslash_continuation). `sys.\\` + newline + `path.insert`: the line grep cannot see it; the parsed file set reads it (B1).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n"
+   },
+   "ablation": {
+    "src": "import sys\nimport shared_mod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S3_C4e_unparseable_package_file_refuses": {
+   "question": "dotgithub-86 slice 3 CHANGES B4",
+   "expect": "refuse",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../tools/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "root's dotgithub-86 slice 3 CHANGES (lanes/root/reviews/dotgithub-86-1112.md, 12:02 2026-11-12), B4's refusal: R86S3_C4d with the package's other file not parsing (a syntax error after its `import os; import vmod`), so the names the package imports cannot be read and the package-free landing tools/lib cannot be judged; dcf6545 read []. The raise site's pin (RC1A_FIX_RULE_PINS).",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "services/r/y.py": "import os; import vmod\ndef broken(:\n    pass\n",
+    "tools/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expected_rule": "does not parse, so its imports cannot be read"
   }
  }
 }

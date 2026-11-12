@@ -2383,10 +2383,24 @@ def anchored_chain_sites(src: "Source") -> list[tuple[str, int, int]]:
     return sites
 
 
-def python_owned_spans(text: str) -> list[tuple[int, int]]:
+PARENT_STEP_LITERAL = re.compile(r"""(["'])([^"'\\\n]*)\1""")
+
+
+def parent_step_literal(text: str) -> str | None:
+    """B1's literal (RC1A, root's R-c r2 review B1 and dotgithub-86): a sys.path entry written as ONE plain string
+    literal (no prefix, no escape, no second literal) that is relative and holds a `..` component, its text as the
+    process reads it; None for anything else (a backslash path is B2's, `os.sep.join` and f-strings are other forms)."""
+    m = PARENT_STEP_LITERAL.fullmatch(text.strip())
+    if m is None or m.group(2).startswith("/") or ".." not in m.group(2).split("/"):
+        return None
+    return m.group(2)
+
+
+def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[int, int]]:
     """Character spans of the Python expressions 1.5.2's evaluator judges itself (python_file_facts): every sys.path
     entry (insert/append/extend, `+=`, slice assignment) and every loader path (spec_from_file_location, run_path,
-    exec(open(p))). A chain inside one is that evaluator's to judge, never a route of its own."""
+    exec(open(p))). A chain inside one is that evaluator's to judge, never a route of its own. With `parent_literals`,
+    only the sys.path entries B1 reads by their landings (parent_step_literal), each element alone."""
     import ast
     try:
         tree = ast.parse(text)
@@ -2414,8 +2428,28 @@ def python_owned_spans(text: str) -> list[tuple[int, int]]:
             parts.append(node.id)
         return ".".join(reversed(parts))
 
+    def items(node) -> list:  # the elements python_file_facts reads as entries
+        return list(node.elts) if isinstance(node, (ast.List, ast.Tuple)) else [node]
+
     out = []
     for node in ast.walk(tree):
+        if parent_literals:
+            name = dotted(node.func) if isinstance(node, ast.Call) else ""
+            if name == "sys.path.insert" and len(node.args) == 2:
+                elements = [node.args[1]]
+            elif name == "sys.path.append" and len(node.args) == 1:
+                elements = [node.args[0]]
+            elif name == "sys.path.extend" and len(node.args) == 1:
+                elements = items(node.args[0])
+            elif isinstance(node, ast.AugAssign) and dotted(node.target) == "sys.path":
+                elements = items(node.value)
+            elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and dotted(t.value) == "sys.path"
+                                                      for t in node.targets):
+                elements = items(node.value)
+            else:
+                continue
+            out += [s for s in map(span, elements) if parent_step_literal(text[s[0]:s[1]]) is not None]
+            continue
         if isinstance(node, ast.Call):
             name = dotted(node.func)
             if name in ("sys.path.insert", "sys.path.append", "sys.path.extend") or name.endswith(
@@ -3216,11 +3250,23 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     scan_names, scan_name_globs = unresolved_name_registry(es, own_names(repo), Path(repo).resolve().as_posix())
     scan_names_used: set = set()
     root_info: dict[str, tuple] = {}
+    parent_literal_spans: dict[str, list] = {}  # a package's .py file -> the spans of its B1 sys.path literals
 
     def relative_or_root(path: str, spec: str, at: int) -> set:
         """relative_target, except that a root base whose every use joins string literals stands for exactly those
         literals (1.5.2, root's ruling b: root_base_uses); `at` is the offset of the name in the file."""
         ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext in PY_EXT and owner(path) is not None:
+            # RC1A (B1): a parent-step literal sys.path entry in a package's file is relative to the process cwd, not to
+            # the file, so import_closure's apply_entry reads it by its landings over every tracked directory (the
+            # file's own among them) or refuses; read from the file's directory it is never a route of its own.
+            if path not in parent_literal_spans:
+                src = sources.get(path)
+                if src is None:
+                    src = sources[path] = Source(read_source(repo, path, revision, environment), ext)
+                parent_literal_spans[path] = python_owned_spans(src.text, parent_literals=True)
+            if any(a <= at < b for a, b in parent_literal_spans[path]):
+                return set()
         if ext in JS_EXT | PY_EXT and posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)) == ".":
             if path not in root_info:
                 src = sources.get(path)
@@ -4047,6 +4093,37 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         want = tail.split("/")
         return directory.split("/")[-len(want):] == want
 
+    # package -> [(the edge's source path, a package-free B1 landing, the entry's key, its file)], judged once the
+    # package's imported names are known (below, beside outside_entries).
+    free_landings: dict[str, list[tuple[str, str, str, str]]] = {}
+
+    def parent_step_landings(literal: str) -> tuple[list[str], list[tuple[str, str]]]:
+        """B1's landings of a parent-step literal: from every TRACKED directory (the repository root `""` included), its
+        components walked one at a time against the tracked tree, never normpath alone (root's r4 item 5: `lnk/../x`
+        resolves `lnk` first). A step above the checkout, or a component that is no tracked directory, gives no landing
+        from that start (root's r4 item 11); a component that is a tracked symlink (mode 120000) is returned in
+        `links`, with the start it was reached from, whichever start reaches it."""
+        parts = [c for c in literal.split("/") if c not in ("", ".")]
+        landings, links = set(), []
+        for start in sorted(tracked_dirs):
+            here = start.split("/") if start else []
+            for c in parts:
+                if c == "..":
+                    if not here:
+                        break  # above the checkout
+                    here.pop()
+                    continue
+                here.append(c)
+                path = "/".join(here)
+                if tracked.get(path) == "120000":
+                    links.append((path, start))
+                    break
+                if path not in tracked_dirs:
+                    break  # no such tracked directory
+            else:
+                landings.add("/".join(here))
+        return sorted(landings), sorted(set(links))
+
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
                     key: str | None = None) -> None:
         declared = by_site.get((where, key)) if key is not None else None
@@ -4071,6 +4148,30 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                      f"not a tracked directory) in {where}")
             for target in reach:
                 apply_entry(package, source, "dir", posixpath.normpath(target), where, what)
+            return
+        literal = parent_step_literal(key) if kind == "unknown" and key is not None and declared is None else None
+        if literal is not None:
+            # The RC1A rule (root's R-c r2 review B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): an
+            # undeclared parent-step literal takes no declaration. It lands, relative to the process cwd, wherever it
+            # joins from a tracked directory; every such landing is read and credited, or the entry refuses.
+            landings, links = parent_step_landings(literal)
+            if links:
+                link, start = links[0]
+                raise ValueError(f"unresolved (the sys.path entry `{key}` passes through {link}, a symlink component, "
+                                 f"from {start or '.'}; the scan does not follow links, so it cannot tell where the entry "
+                                 f"lands) in {where}")
+            if not landings:
+                raise ValueError(f"unresolved (the sys.path entry `{key}` lands in no tracked directory: from each one "
+                                 f"it joins to a path above the checkout or to none that is tracked) in {where}")
+            for landing in landings:
+                if landing and excluded(landing):
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing}, code the scan "
+                                     f"excludes, so its reads cannot be credited) in {where}")
+            for landing in landings:
+                if owner(landing) is not None:
+                    apply_entry(package, source, "dir", landing, where, what)
+                else:
+                    free_landings.setdefault(package, []).append((source, landing, key, where))
             return
         if kind == "unknown":
             if escapes_by_text(value):
@@ -4144,7 +4245,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if d in ("", "."):
                 break
             d = posixpath.dirname(d)
-    for package, entries in sorted(outside_entries.items()):
+    for package in sorted(set(outside_entries) | set(free_landings)):
+        entries = outside_entries.get(package, [])
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
         found = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
@@ -4168,6 +4270,31 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     if candidate in tracked or candidate in tracked_dirs:
                         edges.setdefault(source, set()).add(candidate)
                         break
+        for source, landing, key, where in free_landings.get(package, []):
+            # B1(iv), RC1A: a package-free landing is read by what the package imports from it. A module (or package
+            # directory) it resolves to that a package owns credits that package; one under a reader directory is an
+            # edge the closure follows, so its reads are credited; any other is a read nothing credits, and refuses.
+            base = f"{landing}/" if landing else ""
+            for name in sorted(names):
+                stem = base + name
+                modules = [stem + ".py"] if stem + ".py" in tracked else sorted(
+                    p for p in tracked if p.startswith(stem + "/") and p.endswith(".py"))
+                for module in modules:
+                    holder = owner(module)
+                    if holder is not None:
+                        if holder != package:
+                            deps[package].add(holder)
+                        continue
+                    if "/" in module and module.split("/")[0] in reader_dirs:
+                        edges.setdefault(source, set()).add(module)
+                        continue
+                    if module.split("/")[0] in roots:
+                        raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, where "
+                                         f"`{name}` resolves to {module}, a file under a scan root that no package owns, "
+                                         f"so its reads are not credited) in {where}")
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, "
+                                     f"a package-free landing outside every scan root and reader directory, where "
+                                     f"`{name}` resolves to {module}, whose reads are not credited) in {where}")
 
     imports: dict[str, set[str]] = {}
     unit_imports: dict[str, set[str]] = {}  # a path outside every package -> the reader units whose files reach it

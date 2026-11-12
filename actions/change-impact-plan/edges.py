@@ -2591,10 +2591,11 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[str], list[tuple]]:
+def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
-    - An entry is ("dir", repo-relative directory, which may start with `../` above the repository) or ("unknown", its
-      source text).
+    - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
+      the text rule 6 reads, key), `key` the entry's own source as written (whitespace collapsed): the text an
+      edge_scan.computed_imports `expr` names it by (the r5 sys.path rule, root's dotgithub-86 review, 2026-11-12).
     - The names are every top-level module imported by name: `import x`, `from x import y`, and a LITERAL
       `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
@@ -2890,7 +2891,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                              f"scan does not read) in {path}; bind it by a plain assignment, or write it from __file__ "
                              "with literal parts, which the scan maps")
         value = resolved(node)
-        entries.append(("unknown", text_of(node)) if value is None else ("dir", value))
+        entries.append(("unknown", text_of(node), source(node)) if value is None else ("dir", value, source(node)))
 
     def is_sys_path(node):
         return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
@@ -4024,9 +4025,19 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
     parsed_names: dict[str, set[str]] = {}  # package -> names its parsed files import, loop literals included
 
-    def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry") -> None:
+    def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
+                    key: str | None = None) -> None:
         if kind == "unknown":
             if escapes_by_text(value):
+                # The r5 sys.path rule (root's dotgithub-86 review, 2026-11-12; vectors RC1B/RC1C/RC1I/RC1Q/RC1S): a
+                # Python sys.path entry that may leave its package and that no edge_scan.computed_imports entry names
+                # (its `file` this file, its `expr` the entry's text as written, `key`) refuses by its own rule. A
+                # different text (quotes, an r prefix, adjacent literals, inner parentheses, a trailing slash) is a
+                # different key, so a twin's declaration does not cover it (RC1Q). A DECLARED entry, and a pytest
+                # pythonpath entry (no key), fall to the catch-all below until a rule commit honours the declaration.
+                if key is not None and (where, key) not in by_site:
+                    raise ValueError(f"unresolved (an undeclared sys.path entry `{value}` may leave its package; declare "
+                                     f"it in edge_scan.computed_imports by its text as written, `{key}`) in {where}")
                 raise ValueError(f"unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) "
                                  f"in {where}")
             return  # an entry naming no parent step and no top-level directory: a documented residual
@@ -4053,8 +4064,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             continue
         entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
         parsed_names.setdefault(package, set()).update(file_names)
-        for kind, value in entries:
-            apply_entry(package, path, kind, value, path)
+        for kind, value, key in entries:
+            apply_entry(package, path, kind, value, path, key=key)
         check_python_sites(path, sites)
     # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
     # each entry relative to that config's directory, applied like a sys.path entry.

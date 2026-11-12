@@ -122,6 +122,12 @@ RC_LABELS_BEFORE_R5 = ("RC1I_f1_fstring", "RC1I_f1_os_path_join", "RC1I_f1_str_c
 CATCH_ALL_REFUSAL = "unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) in {where}"
 CATCH_ALL_WHATS = ("sys.path entry", "pytest pythonpath entry")
 
+# Root's N of dotgithub-86 (09:39, 2026-11-12): the pinned-rules floor is equality on the count, not > 0. Exactly
+# R5_SYS_PATH_RULE_PINS pins (22 expected_rule, 3 ablation_expected_rule: the 25 S2 re-marked) name the r5 sys.path
+# rule's fragment, which test_review_vector_closed_lists_hold also pins against the text edges.py raises.
+R5_SYS_PATH_RULE = "an undeclared sys.path entry"
+R5_SYS_PATH_RULE_PINS = 25
+
 
 def catch_all_fragments():
     """The literal text of every rendering of CATCH_ALL_REFUSAL: the parts between its `{value}` and `{where}`."""
@@ -855,7 +861,12 @@ class EdgesTest(unittest.TestCase):
         fragments = catch_all_fragments()
         rules = {(k, field): c[field] for k, c in vectors.items()
                  for field in ("expected_rule", "ablation_expected_rule") if field in c}
-        self.assertGreater(len(rules), 0, "the catch-all check matched nothing: no vector pins a rule")
+        pinned = sorted(f"{k}:{field}" for (k, field), rule in rules.items() if R5_SYS_PATH_RULE in rule)
+        self.assertEqual(len(pinned), R5_SYS_PATH_RULE_PINS,
+                         f"{len(pinned)} pins name {R5_SYS_PATH_RULE!r}, R5_SYS_PATH_RULE_PINS says {R5_SYS_PATH_RULE_PINS}: "
+                         "a drop or an addition is an edit there")
+        self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
+                      "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
         self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
                                 if any(rule in part for part in fragments)), [],
                          "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")

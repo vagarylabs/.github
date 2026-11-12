@@ -3093,6 +3093,19 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     def consume(node) -> None:
         consumed.update(id(sub) for sub in ast.walk(node))
 
+    # N3 (root's ruling of 2026-11-12 21:32): `importlib.resources.files(anchor)` / `.read_text(anchor, ...)` import the
+    # anchor package. The receivers and bound names this file reaches them by, so `p.read_text("utf-8")` is never one.
+    res_mods = {"importlib.resources"}
+    res_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            res_mods |= {alias.asname or alias.name for alias in node.names if alias.name == "importlib.resources"}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == "importlib":
+                res_mods |= {alias.asname or alias.name for alias in node.names if alias.name == "resources"}
+            elif node.module == "importlib.resources":
+                res_names |= {alias.asname or alias.name for alias in node.names if alias.name in ("files", "read_text")}
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
@@ -3134,6 +3147,15 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                 else:
                     sites.append(("module", source(arg), None, None, None))
                     consume(node)
+            elif name in ("files", "read_text") and node.args and (
+                    isinstance(f, ast.Name) and f.id in res_names
+                    or isinstance(f, ast.Attribute) and source(f.value) in res_mods):
+                # N3: a LITERAL anchor is a dependency edge of this file, like import_module("x"); a non-literal one is
+                # left to the R6-2 scan below, which refuses it (root's ruling of 2026-11-12 21:32).
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.split(".")[0] not in CAPABILITY_MODULES:
+                    names.add(arg.value.split(".")[0])
+                    consume(node)
             elif name in ("spec_from_file_location", "run_path"):
                 arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
                     if name == "spec_from_file_location" else (node.args[0] if node.args else None)
@@ -3166,6 +3188,11 @@ SYS_PATH_ATTRS = frozenset({"path", "modules", "meta_path", "path_hooks", "path_
 LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "spec_from_file_location",
                           "module_from_spec", "SourceFileLoader", "addsitedir"})
 EXEC_CALLS = frozenset({"exec", "eval", "compile"})
+# N2 / N3 (root's ruling of 2026-11-12 21:32): the loader calls read through their chain when the first argument is a literal
+# the recording branch consumed, the importlib.metadata reads that are not loads, the importlib.resources anchors recorded as edges.
+N2_LITERAL_LOADERS = frozenset({"import_module", "__import__", "run_module"})
+N3_METADATA_READS = frozenset({"importlib.metadata.version", "importlib.metadata.files"})
+N3_RESOURCE_READS = frozenset({"importlib.resources.files", "importlib.resources.read_text"})
 
 
 def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) -> list[tuple[int, str]]:
@@ -3197,6 +3224,14 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
       consumed call and there is at least one.
     - ENV: a string constant holding `PYTHONPATH` anywhere (an environ key, a shell string, an `env=` mapping).
     - SCOPE: `globals()`, `locals()` or `vars()` with no argument in a file that binds sys (root's twin (i)).
+    Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
+    hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
+    same file is judged on its own); N2 a loader call with a LITERAL module name that a recording branch consumed
+    (`__import__("json")`, `import_module("server")`, `run_module("m")`) is read through the chain that follows it
+    (`.loads(x)`, `.app`), a non-literal first argument refuses as before; N3 `importlib.metadata.version(...)` and
+    `importlib.metadata.files(...)` read installed metadata and are not loads, `importlib.resources.files(anchor)` and
+    `read_text(anchor, ...)` import the anchor package: a literal anchor is recorded as this file's dependency edge and
+    read through its chain, a non-literal one refuses; `entry_points(...).load()` stays a loader.
     A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
     import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
     local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""
@@ -3240,6 +3275,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     bound: dict[str, str] = {m: f for m, f in CAPABILITY_MODULES.items() if m not in local_bound}
     if "__builtins__" not in local_bound:
         bound["__builtins__"] = "loader"
+    modpath: dict[str, str] = {m: m for m in CAPABILITY_MODULES}  # bound name -> the dotted module or function it stands for
     binds: list[tuple] = []  # (import statement, [bound names], [names bound from `from sys import <non-path>`])
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -3249,6 +3285,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
                 if top in CAPABILITY_MODULES:
                     name = alias.asname or top
                     bound[name] = CAPABILITY_MODULES[top]
+                    modpath[name] = alias.name if alias.asname else top
                     hit.append(name)
             if hit:
                 binds.append((node, hit, []))
@@ -3265,10 +3302,12 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
                         from_sys.append(name)  # `from sys import argv`: the attribute read itself
                     else:
                         bound[name] = family
+                        modpath[name] = f"{node.module}.{alias.name}"
                         hit.append(name)
                 elif alias.name in CAPABILITY_MODULES or name in CAPABILITY_MODULES:
                     # A name literally called sys/site/importlib/runpy/builtins imported from any other module binds it.
                     bound[name] = CAPABILITY_MODULES.get(alias.name) or CAPABILITY_MODULES[name]
+                    modpath[name] = alias.name if alias.name in CAPABILITY_MODULES else name
                     hit.append(name)
             if hit or from_sys:
                 binds.append((node, hit, from_sys))
@@ -3284,6 +3323,40 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             return call_name(node.func) in ("__import__", "import_module")
         return isinstance(node, ast.Attribute) and node.attr == "sys"
 
+    def membership_read(attr) -> bool:
+        """N1: `x in sys.path` / `x not in sys.path` reads the list (the attribute is a comparator of an In/NotIn compare)."""
+        g = parent.get(attr)
+        return attr.attr == "path" and isinstance(g, ast.Compare) and any(c is attr for c in g.comparators) \
+            and all(isinstance(op, (ast.In, ast.NotIn)) for op in g.ops)
+
+    def owning_call(node):
+        """Climb the attribute chain a loader name heads to the call it makes: (attribute names, the Call or None)."""
+        attrs, cur = [], node
+        while True:
+            p = parent.get(cur)
+            if isinstance(p, ast.Attribute) and p.value is cur:
+                attrs.append(p.attr)
+                cur = p
+            elif isinstance(p, ast.Call) and p.func is cur:
+                return attrs, p
+            else:
+                return attrs, None
+
+    def read_through(node) -> bool:
+        """N2 / N3: a loader name whose call a recording branch consumed with a LITERAL first argument is read through the
+        chain after the call; `importlib.metadata.version` / `.files` are reads of installed metadata. Anything else is
+        judged as before (a non-literal argument, another attribute, `entry_points(...).load()`)."""
+        attrs, call = owning_call(node)
+        if call is None:
+            return False
+        dotted = ".".join([modpath.get(node.id, node.id)] + attrs) if isinstance(node, ast.Name) else None
+        if dotted in N3_METADATA_READS:
+            return True
+        literal = bool(call.args) and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str)
+        if dotted in N3_RESOURCE_READS or call_name(call.func) in N2_LITERAL_LOADERS or call_name(call.func) in ("files", "read_text"):
+            return id(call) in consumed and literal
+        return False
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             family = bound.get(node.id)
@@ -3296,28 +3369,32 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             if family == "sys":
                 p = parent.get(node)
                 if isinstance(p, ast.Attribute) and p.value is node:
-                    if p.attr in SYS_PATH_ATTRS or p.attr.startswith("__"):
+                    if (p.attr in SYS_PATH_ATTRS or p.attr.startswith("__")) and not membership_read(p):
                         refuse(chain_top(node))
                     else:
-                        safe.add(id(node))
+                        safe.add(id(node))  # a non-path attribute, or N1's `x in sys.path`
                 else:
                     refuse(node)  # aliased, passed, subscripted, compared: the module itself leaves the name
             elif family in ("site", "loader"):
-                if id(node) not in consumed:
+                if family == "loader" and read_through(node):
+                    safe.add(id(node))  # N2 / N3
+                elif id(node) not in consumed:
                     refuse(chain_top(node))  # an alias, an argument, an attribute no recording branch read
             elif node.id in EXEC_CALLS or node.id in LOADER_CALLS:
-                refuse(chain_top(node))
+                if not read_through(node):
+                    refuse(chain_top(node))
             elif node.id in ("globals", "locals", "vars") and binds_sys:
                 p = parent.get(node)
                 if isinstance(p, ast.Call) and p.func is node and not p.args and not p.keywords:
                     refuse(p)
         elif isinstance(node, ast.Attribute):
             if node.attr in LOADER_CALLS:
-                refuse(chain_top(node))
+                if not read_through(node):
+                    refuse(chain_top(node))
             elif node.attr in EXEC_CALLS and isinstance(node.value, ast.Name) and bound.get(node.value.id) == "loader":
                 refuse(chain_top(node))
             elif not isinstance(node.value, ast.Name) and sys_expression(node.value) \
-                    and (node.attr in SYS_PATH_ATTRS or node.attr.startswith("__")):
+                    and (node.attr in SYS_PATH_ATTRS or node.attr.startswith("__")) and not membership_read(node):
                 refuse(chain_top(node))  # `__import__("sys").path`, `os.sys.path`: the anonymous sys reaches the path
         elif isinstance(node, ast.Call) and sys_expression(node):
             p = parent.get(node)
@@ -3335,7 +3412,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             elif bound[name] == "sys":
                 ok = ok and all(id(u) in safe or id(u) in consumed for u in used)
             else:
-                ok = ok and all(id(u) in consumed for u in used)
+                ok = ok and all(id(u) in consumed or id(u) in safe for u in used)  # `safe`: N2 / N3 reads
         for name in from_sys:
             if not any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) for n in ast.walk(tree)):
                 ok = False

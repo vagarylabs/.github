@@ -114,7 +114,7 @@ KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
 # (equality, so an addition is a deliberate edit here), and they are exactly the `RC` labels outside the five #84
 # vectors below that predate round 5, so dropping the flag from one vector (or swapping a drop for an addition) cannot
 # take it out of the ablation and expected_rule checks.
-R5_VECTOR_COUNT = 166  # slice 2 FIX: + the 25 RC1T vectors (root's A/B/P probe cases)
+R5_VECTOR_COUNT = 168  # slice 2 FIX: + the 25 RC1T vectors (root's A/B/P probe cases); slice 3 FIX: + the two RC1A climb twins
 R5_PREFIX = "RC"
 RC_LABELS_BEFORE_R5 = ("RC1I_f1_fstring", "RC1I_f1_os_path_join", "RC1I_f1_str_concat", "RC1I_f1_str_path_div",
                        "RC4G_f2_unreached_scripts_template_starts_no_unit")
@@ -143,7 +143,8 @@ RC1B_RULE_PINS = {
     "stale computed_imports entry": (3, 'raise ValueError(f"stale computed_imports entry: '),
     # Root's B1/B2 of slice 2 (2026-11-12): a declared entry whose path has no literal tail of a listed form refuses
     # (the RC1T vectors), and rule (b), apply_entry's undeclared-tail refusal, pinned by its own raise site.
-    "has no tail the scan reads": (16, 'has no tail the scan reads: its last path "'),
+    # 16 + R86S23_declared_prefixed_parent_step_refuses_no_tail (the s2+s3 stack: no tail after the parent-step route).
+    "has no tail the scan reads": (17, 'has no tail the scan reads: its last path "'),
     "may land in": (3, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
 }
 # Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
@@ -153,8 +154,17 @@ RC1A_RULE_PINS = {
     "lands in no tracked directory": (4, 'lands in no tracked directory: from each one "'),
     "a symlink component": (3, 'a symlink component, "'),
     "code the scan excludes": (13, 'lands in {landing}, code the scan "'),
-    "a package-free landing": (1, 'f"a package-free landing outside every scan root and reader directory, where "'),
+    "a package-free landing": (4, 'f"a package-free landing outside every scan root and reader directory, where "'),
     "that no package owns": (1, 'a file under a scan root that no package owns, "'),
+}
+# Root's slice 3 CHANGES (dotgithub-86, 12:02 2026-11-12): B2 credits a climb above the checkout that re-enters it by its
+# own name, so the depth-0/1 re-entries (RC1A_depth0/depth1_cwd_reentry_by_own_name_reads, renamed by root's 12:43
+# ruling) read their truth, and their twins whose climb names no own name (RC1A_refuse_depth0/depth1_cwd_climb_names_
+# no_own_name) refuse, so `lands in no tracked directory` stays at 4 pins and R5_VECTOR_COUNT gains the two twins; B4
+# judges a package-free landing by the parsed names, so the R86S3_C4/C4b/C4c siblings refuse as C4ctrl does (`a
+# package-free landing` 1 -> 4). B4's new refusal (a package file that does not parse) is pinned here the same way.
+RC1A_FIX_RULE_PINS = {
+    "does not parse, so its imports cannot be read": (1, 'f"parse, so its imports cannot be read) in {where}"'),
 }
 
 
@@ -897,7 +907,8 @@ class EdgesTest(unittest.TestCase):
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
         # Slices 2 and 3: each rule's pin count by equality, and its own raise site in edges.py.
-        for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS)):
+        for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
+                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS)):
             for rule, (count, site) in pins.items():
                 named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
                 self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "

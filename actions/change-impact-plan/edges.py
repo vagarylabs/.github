@@ -3303,6 +3303,10 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     scan_names_used: set = set()
     root_info: dict[str, tuple] = {}
     parent_literal_spans: dict[str, list] = {}  # a package's .py file -> the spans of its B1 sys.path literals
+    # Root's B1 of the slice 3 CHANGES (dotgithub-86, 2026-11-12): every file whose PARSE set aside a sys.path entry or a
+    # loader path below (its chains left to the Python evaluator) is a file import_closure's reader reads, whatever a
+    # text grep for `sys\.path` lists (`sys .path`, a backslash continuation): one file set for both.
+    parsed_sys_path_files: set[str] = set()
 
     def relative_or_root(path: str, spec: str, at: int) -> set:
         """relative_target, except that a root base whose every use joins string literals stands for exactly those
@@ -3317,6 +3321,8 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
                 if src is None:
                     src = sources[path] = Source(read_source(repo, path, revision, environment), ext)
                 parent_literal_spans[path] = python_owned_spans(src.text, parent_literals=True)
+                if parent_literal_spans[path]:
+                    parsed_sys_path_files.add(path)
             if any(a <= at < b for a, b in parent_literal_spans[path]):
                 return set()
         if ext in JS_EXT | PY_EXT and posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)) == ".":
@@ -3583,6 +3589,8 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
             # A chain inside a sys.path entry or a loader path is 1.5.2's Python evaluator's to judge (it credits what is
             # imported by name, or floors an unevaluated loader path), never a directory route of its own.
             owned = python_owned_spans(sources[path].text)
+            if owned:
+                parsed_sys_path_files.add(path)
             sites = [x for x in sites if not any(a <= sources[path].code[x[1]][1] < b for a, b in owned)]
         if not sites:
             continue
@@ -3600,7 +3608,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     unowned: dict[str, dict] = {}
     imports, unused, unresolved_data, unit_imports, stood_for, routes_to = import_closure(
         repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps, readers, unowned,
-        names_used_before=scan_names_used)
+        names_used_before=scan_names_used, parsed_files=frozenset(parsed_sys_path_files))
     # Root's ruling on the backstop's consequence (2026-10-29): mentions over BASE ∪ HEAD, so a mention the PR adds
     # flags, and so does one it removes. The base tree is data like the head: it can only add FULL paths. A file the PR
     # did not change has the same text at both ends, so the base pass reads only the deleted and modified ones (D/M/T,
@@ -3648,7 +3656,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
 
 
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
-                   readers, unowned, names_used_before=frozenset()):
+                   readers, unowned, names_used_before=frozenset(), parsed_files=frozenset()):
     """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
     ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
@@ -4167,12 +4175,28 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         `links`, with the start it was reached from, whichever start reaches it."""
         parts = [c for c in literal.split("/") if c not in ("", ".")]
         landings, links = set(), []
+        checkout = Path(repo).resolve().as_posix()
+        names = own_names(repo)
         for start in sorted(tracked_dirs):
             here = start.split("/") if start else []
+            above = None  # the walk's components above the checkout, relative to it: None while inside
             for c in parts:
+                if above is not None:
+                    # Root's B2 of the slice 3 CHANGES: a step above the checkout that re-enters it by its own name
+                    # (`../repo/lib` with CI's .../repo/repo, or the checkout's own directory name) lands inside it; the
+                    # walk resumes at the root. Lexical against the actual checkout path, and one level up by any of
+                    # own_names; a directory beside the checkout, never re-entered, gives no landing from this start.
+                    above.append(c)
+                    at = posixpath.normpath(posixpath.join(checkout, *above))
+                    if at == checkout or (above == ["..", c] and c in names):
+                        above, here = None, []
+                    elif c != ".." and not checkout.startswith(at.rstrip("/") + "/"):
+                        break  # beside the checkout: not tracked here, so nothing it holds is read
+                    continue
                 if c == "..":
                     if not here:
-                        break  # above the checkout
+                        above = [".."]  # above the checkout: read on only if the walk re-enters it
+                        continue
                     here.pop()
                     continue
                 here.append(c)
@@ -4183,14 +4207,19 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 if path not in tracked_dirs:
                     break  # no such tracked directory
             else:
-                landings.add("/".join(here))
+                if above is None:  # a walk that ends above the checkout lands in nothing tracked
+                    landings.add("/".join(here))
         return sorted(landings), sorted(set(links))
 
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
                     key: str | None = None, tail: str | None = None) -> None:
         declared = by_site.get((where, key)) if key is not None else None
         tail = entry_tail(tail, key) if kind == "unknown" and key is not None else None
-        if declared is not None and kind == "unknown" and tail is None:
+        # The parent-step route is judged BEFORE the no-tail refusal (slice 2 fix stacked on slice 3, 2026-11-12): a
+        # bare parent-step literal is read by its landings, declared or not; the no-tail refusal is for a declared
+        # entry that is neither a parent-step literal nor a listed tail form (`r"../x"`, `join("../..", X)`).
+        literal = parent_step_literal(key) if kind == "unknown" and key is not None else None
+        if declared is not None and kind == "unknown" and tail is None and literal is None:
             # Root's B1 and B2 of dotgithub-86 slice 2 (2026-11-12): a declared entry with no tail has no reach the scan
             # can check (`os.path.join("packages/shared", PLUGIN)` declared to packages/shared once read shared, truth
             # its child; `p` declared once read nothing and its declaration counted as used). It refuses, unused.
@@ -4219,11 +4248,13 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             for target in reach:
                 apply_entry(package, source, "dir", posixpath.normpath(target), where, what)
             return
-        literal = parent_step_literal(key) if kind == "unknown" and key is not None and declared is None else None
         if literal is not None:
-            # The RC1A rule (root's R-c r2 review B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): an
-            # undeclared parent-step literal takes no declaration. It lands, relative to the process cwd, wherever it
-            # joins from a tracked directory; every such landing is read and credited, or the entry refuses.
+            # The RC1A rule (root's R-c r2 review B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): a
+            # parent-step literal needs no declaration. It lands, relative to the process cwd, wherever it joins from
+            # a tracked directory; every such landing is read and credited, or the entry refuses. A declaration of
+            # one (root's C13) is honoured by that reading, so its key is used here; its reach is not what is read.
+            if declared is not None:
+                used.add((where, key))
             landings, links = parent_step_landings(literal)
             if links:
                 link, start = links[0]
@@ -4272,6 +4303,14 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if value == ".." or value.startswith("../"):
             return  # above the repository: nothing tracked is imported from there
         found = owner(value)
+        if found is not None:
+            # Root's B5 of the slice 3 CHANGES: an owned directory on the path imports, by name, the packages nested
+            # inside it too (`import worker.m` from services/b reaches services/b/worker), on every route that lands
+            # here (an evaluated entry, an RC1B reach, an RC1A landing, a pytest pythonpath entry).
+            inner = value.rstrip("/") + "/"
+            for nested, directory in sorted(package_dir.items()):
+                if nested != package and directory.startswith(inner):
+                    deps[package].add(nested)
         if found == package:
             return
         if found is not None:
@@ -4283,7 +4322,11 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                           PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
                          capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(out, "the reader scan's Python listing")
-    for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
+    listed = {p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p}
+    # Root's B1 of the slice 3 CHANGES: the files scan()'s parse set a sys.path entry aside in are read here too, so an
+    # entry the grep misses (`sys .path.insert`, `sys.\` + newline) is never suppressed there and unread here.
+    listed |= {p for p in parsed_files if p in tracked and not excluded(p)}
+    for path in sorted(listed):
         package = owner(path)
         if package is None:
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
@@ -4343,15 +4386,42 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     if candidate in tracked or candidate in tracked_dirs:
                         edges.setdefault(source, set()).add(candidate)
                         break
+        if free_landings.get(package):
+            # Root's B4 of the slice 3 CHANGES: a package-free landing is judged by the names a PARSE of every Python
+            # file of the package imports (`import os; import vmod`, `if True: import vmod`, `try: import vmod`), the
+            # grep's names kept beside them; a file that does not parse leaves those names unknown, and refuses.
+            import ast
+            top = package_dir[package]
+            below = f"{top}/" if top not in ("", ".") else ""
+            for path in sorted(p for p in tracked if p.startswith(below) and p.endswith(".py")):
+                try:
+                    tree = ast.parse(read_source(repo, path, revision, environment))
+                except (SyntaxError, ValueError):
+                    _, landing, key, where = free_landings[package][0]
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, a package-free "
+                                     f"landing judged by the names {package}'s Python files import, but {path} does not "
+                                     f"parse, so its imports cannot be read) in {where}") from None
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        names |= {alias.name.split(".")[0] for alias in node.names}
+                    elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                        names.add(node.module.split(".")[0])
+                    elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and \
+                            isinstance(node.args[0].value, str) and getattr(node.func, "attr", getattr(
+                                node.func, "id", "")) in ("import_module", "__import__", "run_module"):
+                        if node.args[0].value and not node.args[0].value.startswith("."):
+                            names.add(node.args[0].value.split(".")[0])
         for source, landing, key, where in free_landings.get(package, []):
             # B1(iv), RC1A: a package-free landing is read by what the package imports from it. A module (or package
             # directory) it resolves to that a package owns credits that package; one under a reader directory is an
             # edge the closure follows, so its reads are credited; any other is a read nothing credits, and refuses.
+            # Root's B3 of the slice 3 CHANGES: `name.py` AND the files of a `name/` package beside it are both read
+            # (Python loads the package directory when it holds an __init__.py), so neither shadows the other here.
             base = f"{landing}/" if landing else ""
             for name in sorted(names):
                 stem = base + name
-                modules = [stem + ".py"] if stem + ".py" in tracked else sorted(
-                    p for p in tracked if p.startswith(stem + "/") and p.endswith(".py"))
+                modules = sorted(({stem + ".py"} if stem + ".py" in tracked else set()) | {
+                    p for p in tracked if p.startswith(stem + "/") and p.endswith(".py")})
                 for module in modules:
                     holder = owner(module)
                     if holder is not None:

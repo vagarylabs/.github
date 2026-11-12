@@ -47,6 +47,47 @@ CFG = {
 }
 
 
+class Refusal(str):
+    """A vector scan that refused: equal to "REFUSE", so every pin and comparison written against that string holds,
+    and carrying the reader's ValueError text, so a vector can pin WHICH rule refused (root's item 7 of the R-c r4
+    review, 2026-11-12: a refuse that accepts any ValueError also passes on a config-shape error)."""
+
+    def __new__(cls, message: str):
+        refusal = super().__new__(cls, "REFUSE")
+        refusal.message = message
+        return refusal
+
+
+# Root's B2 of #84 and item 6 of the R-c r4 review (2026-11-12): the precision controls are a closed list. A vector
+# takes `control: true` (and its truth-[] exemption) only by a one-line addition here, with its pinned `reads`; every
+# label here must exist in the review vectors, so a stale entry fails too.
+REVIEW_CONTROLS = (
+    "A31_metadata_true", "C08_setcomp_eq_metadata_control", "D10_js_whole_statement_string_mid_file",
+    "ES3_str_backslash_8_kept", "N15_sql_file_copy", "N58_json_fixture_metadata_control",
+    "P13_backend_services_not_root_control", "R5R02_yaml_compose_services_key",
+    "R5R03_py_database_execute_not_a_command", "R5V50_py_db_execute_precision_control",
+    "R6V10_pkg_nested_scripts_object", "R6V20_pkg_precision_script_name_root",
+    "R6V30_toml_key_precision", "R7T08_pkg_no_scripts_root_elsewhere", "R7T09_pkg_empty_scripts",
+    "R7T10_pkg_bom_no_scripts", "R7T11_pkg_not_named_package_json", "R7T12_toml_colon_key_reads",
+    "R84_B17_import_alias_name",
+    # The R-c r5 vectors (root's rc-vectors-r4-1112.md items 6 and 9, and core's two 11-14 declarations), each pinned
+    # in the json (`reads`), each with its declaration-only ablation.
+    "RC1B_app_own_unit_declared_control", "RC1B_core_cost_centre_bare_app_declared_control",
+    "RC1B_core_lead_intake_bare_app_declared_control", "RC1H_js_sibling_fallback_above_checkout_reads_nothing_control",
+    "RC1H_js_sibling_fallback_control_with_reentry_files",
+    "RC6D_js_fixture_name_declared_path_list_of_module_under_test_exit_control",
+    "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
+    "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
+    "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control",
+)
+
+# Root's ruling change on #84 (dotgithub-84-1112.md:27, 2026-11-12): the dated known fail-opens, each pinned by a vector
+# carrying `known_fail_open` {gap, until, today, record}. Its reading must EQUAL `today`, so the day a rule closes the gap
+# the pin goes red and that commit removes it (the case is then judged as the read it is); on or after `until` a case
+# still pinned fails. The gaps are a closed set, so a vector cannot be dropped silently.
+KNOWN_FAIL_OPEN_GAPS = ("D1", "D2", "D3", "D4", "C01", "C02", "C03", "C04", "N3")
+
+
 class EdgesTest(unittest.TestCase):
     def setUp(self):
         environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -498,8 +539,8 @@ class EdgesTest(unittest.TestCase):
                 (repo / rel).write_text("# the working tree differs from the scanned revision\n")
             try:
                 deps, readers = E.scan(repo, cfg, revision=rev)[:2]
-            except ValueError:
-                return "REFUSE"
+            except ValueError as err:
+                return Refusal(str(err))  # == "REFUSE"; .message is the rule that refused (root's item 7, r4 review)
             unit = case.get("unit") or "r"
             if unit.startswith("readers:"):
                 # Root's B2 of #84: a reader unit the scan did not produce is a failure, never an empty reading.
@@ -528,8 +569,18 @@ class EdgesTest(unittest.TestCase):
 
     def judge(self, label, case, got):
         truth, expect = case["truth"], case["expect"]
-        if expect == "refuse":
+        if "known_fail_open" in case:
+            # A dated known fail-open reads below its truth by ruling: its pin, not its truth, is judged, either way.
+            pin = case["known_fail_open"]
+            self.assertEqual(got, pin["today"], f"{label}: known fail-open {pin['gap']} read {got}, pinned "
+                                                f"{pin['today']}; once it reads its truth {truth} this commit removes the pin")
+        elif expect == "refuse":
             self.assertEqual(got, "REFUSE", label)
+            if "expected_rule" in case:
+                # Root's item 7 and ruling (c) of the R-c r4 review (2026-11-12): a refuse names the rule it expects, as
+                # a substring of the reader's ValueError, so a refusal for another reason (a config-shape error, a
+                # neighbouring rule) fails here. A case without `expected_rule` keeps the bare REFUSE judgment.
+                self.assert_rule(label, got, case["expected_rule"], "expected_rule")
         elif expect == "residual":
             # A named residual reads less than its truth by ruling; its reading when pinned is recorded so that one
             # reading even less (or more) fails here until the pin is re-derived on purpose.
@@ -547,13 +598,110 @@ class EdgesTest(unittest.TestCase):
             if expect == "read":
                 self.assertNotEqual(got, "REFUSE", f"{label}: a resolvable read must not refuse")
 
+    def assert_rule(self, label, got, rule, field):
+        """`got` refused, and for the rule `rule` names: a substring of the reader's ValueError (ruling (c))."""
+        self.assertTrue(isinstance(rule, str) and rule.strip(),
+                        f"{label}: `{field}` must be a non-empty string; an empty fragment matches every refusal")
+        self.assertIsInstance(got, Refusal, f"{label}: no refusal message was recorded to judge `{field}` against")
+        self.assertIn(rule, got.message, f"{label}: refused for another rule: `{field}` {rule!r} is not in the "
+                                         f"refusal {got.message[:200]!r}")
+
+    def assert_known_fail_open_pins(self, vectors, on):
+        """The data-only checks on every `known_fail_open` vector, against the date `on`: a read with a truth, never a
+        control or a residual, pinned below its truth, not past its `until`; the gaps present are exactly the closed set."""
+        gaps = set()
+        for label, case in sorted(vectors.items()):
+            if "known_fail_open" not in case:
+                continue
+            pin = case["known_fail_open"]
+            gaps.add(pin.get("gap"))  # outside the subTest: a failed case's gap still counts, so only a drop trips the floor
+            with self.subTest(f"{label}:known_fail_open"):
+                self.assertEqual(sorted(pin), ["gap", "record", "today", "until"], f"{label}: known_fail_open's keys")
+                self.assertIn(pin["gap"], KNOWN_FAIL_OPEN_GAPS, f"{label}: gap {pin['gap']!r} is not a dated known fail-open")
+                # expect read, so never a residual: the residual list is exactly the `expect: residual` labels.
+                self.assertEqual(case["expect"], "read", f"{label}: a known fail-open is a read, not a residual or a refuse")
+                self.assertNotEqual(case.get("control"), True, f"{label}: a case is a control or a known fail-open, not both")
+                self.assertTrue(case["truth"] and isinstance(pin["today"], list) and
+                                not set(case["truth"]) <= set(pin["today"]),
+                                f"{label}: a known fail-open pins a reading below a non-empty truth, not {pin['today']}")
+                if on >= datetime.date.fromisoformat(pin["until"]):
+                    self.fail(f"{label}: known fail-open {pin['gap']} past its date {pin['until']}")
+        self.assertEqual(sorted(gaps), sorted(KNOWN_FAIL_OPEN_GAPS),
+                         "the known fail-open vectors must cover KNOWN_FAIL_OPEN_GAPS exactly, each gap at least once")
+
+    # Ruling (c) of root's R-c r4 review (2026-11-12): how a vector opts in. A case carrying `ablation` is always judged
+    # by test_review_vector_ablations_read_no_truth_and_refuses_pin_their_rule. A case that also says `"r5": true` makes
+    # the round-5 schema mandatory for itself: an accept (`expect` read or sound, a control included) must carry
+    # `ablation` and `ablation_kind`, a refuse must carry `expected_rule`. The pre-r5 vectors carry neither key and keep
+    # passing unchanged; an r5 vector cannot drop its ablation or its rule silently.
+    ABLATION_KINDS = ("construct+declaration", "declaration")
+    ABLATION_KEYS = {"src", "cfg", "files", "symlinks"}
+
+    def ablation_input(self, case):
+        """The ablated case as vector_scan reads it, built as the r3/r4 measurer built it (vectors-rc-driver3.py
+        run_ablation): `src` is the ablation's (the case's `src_hex` is dropped, or vector_scan would scan the original
+        bytes); `files` and `symlinks` are the ablation's when it carries them, else the case's own; `cfg` is the
+        ablation's or NONE (the fixture's REVIEW_CFG), never the case's, which would put back the declaration being
+        ablated; `ext`, `file` and `unit` stay the case's, so the ablation is judged on the unit the case is."""
+        ablation = case["ablation"]
+        ablated = {key: value for key, value in case.items() if key in ("ext", "file", "unit", "files", "symlinks")}
+        ablated["src"] = ablation["src"]
+        for key in ("files", "symlinks", "cfg"):
+            if key in ablation:
+                ablated[key] = ablation[key]
+        return ablated
+
+    def test_review_vector_ablations_read_no_truth_and_refuses_pin_their_rule(self):
+        """Ruling (c) of root's R-c r4 review (2026-11-12), items 6 and 7: every accept's ablation runs, controls included
+        (the r4 measurer skipped controls, so the one `declaration` ablation never ran). A construct+declaration
+        ablation must READ (a refusal is not ok) and read NO unit of the case's truth, or the vector does not test the
+        construct it names; a declaration-only ablation must REFUSE for its `ablation_expected_rule`."""
+        repo = self.vector_repo("ablations")
+        judged = 0
+        for label, case in sorted(self.REVIEW_VECTORS.items()):
+            accept = case["expect"] not in ("refuse", "residual")
+            with self.subTest(f"{label}:ablation"):
+                if case.get("r5") is True:
+                    if case["expect"] == "refuse":
+                        self.assertIn("expected_rule", case, f"{label}: an r5 refuse pins its rule in `expected_rule`")
+                    elif accept:
+                        self.assertIn("ablation", case, f"{label}: an r5 accept (a control too) carries an `ablation`")
+                if "ablation" not in case:
+                    self.assertFalse({"ablation_kind", "ablation_expected_rule"} & set(case),
+                                     f"{label}: an ablation_kind or ablation_expected_rule without an `ablation`")
+                    continue
+                self.assertTrue(accept, f"{label}: an ablation is judged on an accept only, not expect {case['expect']!r}")
+                ablation, kind = case["ablation"], case.get("ablation_kind")
+                self.assertIsInstance(ablation, dict, f"{label}: an ablation is an object")
+                self.assertIsInstance(ablation.get("src"), str, f"{label}: an ablation carries its `src`")
+                self.assertEqual(sorted(set(ablation) - self.ABLATION_KEYS), [],
+                                 f"{label}: an ablation carries only {sorted(self.ABLATION_KEYS)}; another key is not read")
+                self.assertIn(kind, self.ABLATION_KINDS, f"{label}: ablation_kind {kind!r} is not one of {self.ABLATION_KINDS}")
+                got = self.vector_scan(repo, self.ablation_input(case))
+                judged += 1
+                if kind == "construct+declaration":
+                    self.assertNotIn("ablation_expected_rule", case,
+                                     f"{label}: ablation_expected_rule belongs to a declaration-only ablation")
+                    if isinstance(got, Refusal):
+                        self.fail(f"{label}: the construct+declaration ablation refused ({got.message[:200]!r}); with its "
+                                  f"construct and declaration removed it must READ")
+                    self.assertEqual(sorted(set(case["truth"]) & set(got)), [],
+                                     f"{label}: the ablation (construct and declaration removed) still reads truth units, "
+                                     f"read {got}: the vector does not test the construct it names")
+                else:
+                    self.assertEqual(got, "REFUSE", f"{label}: the declaration-only ablation read {got}; it must refuse")
+                    self.assertIn("ablation_expected_rule", case, f"{label}: a declaration-only ablation pins its rule")
+                    self.assert_rule(label, got, case["ablation_expected_rule"], "ablation_expected_rule")
+        # A floor inside the gate: with no ablation in the vectors this test asserted nothing, so it fails instead.
+        self.assertGreater(judged, 0, "the ablation assertion matched nothing: no review vector carries an `ablation`")
+
     def test_review_vectors_read_their_truth_or_refuse(self):
         """Every input of root's three independent reviews, spine's own probes and the round-4 rule-7 vectors: none may
         read less than its truth without refusing, and those resolvable today must keep reading. Exempt: A12/N08/N11
         (object values and keys, the ratified metadata), T19/T36/T37 (lexical limits), M5/M6/V48 (a literal root read
         does not start taint: measured +11 vagary-core refusals) and V45-V47 (heads by tuple slicing, a regex or
         os.path.split), and the fifth and sixth reviews' inputs outside README rule 4's closed list, all named
-        residuals."""
+        residuals; and #84's dated known fail-opens (KNOWN_FAIL_OPEN_GAPS), each judged by its pin until its date."""
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
@@ -564,19 +712,13 @@ class EdgesTest(unittest.TestCase):
         # vector cannot take `control: true` (and its truth-[] exemption) silently.
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True and "reads" not in c),
                          [], "every precision control pins its reading")
-        self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True),
-                         ["A31_metadata_true", "C08_setcomp_eq_metadata_control", "D10_js_whole_statement_string_mid_file",
-                          "ES3_str_backslash_8_kept", "N15_sql_file_copy", "N58_json_fixture_metadata_control",
-                          "P13_backend_services_not_root_control", "R5R02_yaml_compose_services_key",
-                          "R5R03_py_database_execute_not_a_command", "R5V50_py_db_execute_precision_control",
-                          "R6V10_pkg_nested_scripts_object", "R6V20_pkg_precision_script_name_root",
-                          "R6V30_toml_key_precision", "R7T08_pkg_no_scripts_root_elsewhere", "R7T09_pkg_empty_scripts",
-                          "R7T10_pkg_bom_no_scripts", "R7T11_pkg_not_named_package_json", "R7T12_toml_colon_key_reads",
-                          "R84_B17_import_alias_name",
-                          "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
-                          "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
-                          "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control"],
-                         "the precision controls are a closed list; a new one is added here, with its pinned reading")
+        # Ruling (c) of root's R-c r4 review (2026-11-12): membership is asserted both ways, each failure naming its side.
+        controls = {k for k, c in self.REVIEW_VECTORS.items() if c.get("control") is True}
+        self.assertEqual(len(set(REVIEW_CONTROLS)), len(REVIEW_CONTROLS), "REVIEW_CONTROLS names a label twice")
+        self.assertEqual(sorted(controls - set(REVIEW_CONTROLS)), [],
+                         "a precision control outside the closed list: add it to REVIEW_CONTROLS, with its pinned reading")
+        self.assertEqual(sorted(set(REVIEW_CONTROLS) - controls), [],
+                         "a stale REVIEW_CONTROLS entry: it names no `control: true` review vector")
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual"),
                          [
                           "A12_dict_value_as_path", "M5_py_literal_join_then_parent_parent",
@@ -596,10 +738,16 @@ class EdgesTest(unittest.TestCase):
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
                           "R6V25_chdir_then_fstring_dotdot_end", "R84_B11_nested_fn_param_shadow",
                           "R84_S08_param_shadow_other_assign",
+                          # Root's r4 item 11 (R-c r5): a directory generated at run time, reads [] for truth
+                          # [shared], dated 2026-11-12, review_by 2026-11-20.
+                          "RC1A_residual_generated_cwd_directory",
                           "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
+        # The real UTC date, not the suite's frozen E.today() (2026-10-29, top of file): every `until` falls after it,
+        # so against it a dated pin could never expire.
+        self.assert_known_fail_open_pins(self.REVIEW_VECTORS, datetime.datetime.now(datetime.timezone.utc).date())
 
     def test_the_action_path_reads_the_scanned_revision(self):
         """action.yml runs `edges.py check --revision <candidate>`: the classifier reads the committed bytes, never a

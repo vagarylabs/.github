@@ -27703,6 +27703,881 @@
    "expect": "refuse",
    "expected_rule": "a Python file the scan must read does not parse",
    "note": "A Python file the scan must read (it carries a sys.path site) that does not parse refuses, today and under R6 (python_file_facts raises): 16 of the 1,314 fixture files of the 897 vectors are unparsable by design and refuse the same way; this vector pins the rule by name."
+  },
+  "R6_B8_addsitedir_alias_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nfrom site import addsitedir as asd\nasd('x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 10: an aliased addsitedir.",
+   "expected_rule": "the path-mutation capability `asd('x')` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_dunder_iadd_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nsys.path.__iadd__(['x'])\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 7: `__iadd__`.",
+   "expected_rule": "the path-mutation capability `sys.path.__iadd__(['x'])` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_dunder_import_sys_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n__import__('sys').path.insert(0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 4: `__import__('sys').path`.",
+   "expected_rule": "the path-mutation capability `__import__('sys').path.insert(0, 'x')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_dunder_setitem_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nsys.path.__setitem__(slice(0, 0), ['x'])\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 8: `__setitem__`.",
+   "expected_rule": "the path-mutation capability `sys.path.__setitem__(slice(0, 0), ['x'])` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_exec_string_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nexec(\"sys.path.insert(0, 'x')\")\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 11: an exec string.",
+   "expected_rule": "the path-mutation capability `exec(\"sys.path.insert(0, 'x')\")` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_from_sys_import_path_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nfrom sys import path\npath.insert(0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 2: `from sys import path`.",
+   "expected_rule": "the path-mutation capability `from sys import path` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_getattr_insert_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\ngetattr(sys, 'path').insert(0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 3: `getattr(sys, 'path')`.",
+   "expected_rule": "the path-mutation capability `sys` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_list_insert_unbound_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nlist.insert(sys.path, 0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 6: `list.insert(sys.path, ...)`.",
+   "expected_rule": "the path-mutation capability `sys.path` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_starred_insert_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nargs = (0, 'x')\nsys.path.insert(*args)\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 5: `insert(*args)`.",
+   "expected_rule": "the path-mutation capability `sys.path.insert(*args)` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_sys_as_alias_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nimport sys as s\ns.path.insert(0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 1: `import sys as s`.",
+   "expected_rule": "the path-mutation capability `s.path.insert(0, 'x')` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_B8_sys_modules_sys_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nsys.modules['sys'].path.insert(0, 'x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "B8 form 9: `sys.modules['sys'].path`.",
+   "expected_rule": "the path-mutation capability `sys.modules['sys'].path.insert(0, 'x')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N1_guard_in_remove_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nif os.path.join(os.path.dirname(__file__), \"../../vendor/lib\") not in sys.path:\n    sys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\n    sys.path.remove('x')\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N1 control: the same guard with a mutation in the guarded block (`sys.path.remove(x)`), judged on its own: it refuses.",
+   "expected_rule": "the path-mutation capability `sys.path.remove('x')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N1_guard_not_in_insert_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nif os.path.join(os.path.dirname(__file__), \"../../vendor/lib\") not in sys.path:\n    sys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N1 accept: `if p not in sys.path: sys.path.insert(0, p)`; the membership test reads the list and the guarded insert is a resolvable rule-6 entry, so `import vmod` is followed and the file reads shared."
+  },
+  "R6_N1_left_operand_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nif os.path.join(os.path.dirname(__file__), \"../../vendor/lib\") not in sys.path:\n    sys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport vmod\nok = sys.path in [[]]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N1 control: `sys.path in y` puts sys.path on the left, not a comparator; it stays a refusal.",
+   "expected_rule": "the path-mutation capability `sys.path` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N1_modules_membership_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nif os.path.join(os.path.dirname(__file__), \"../../vendor/lib\") not in sys.path:\n    sys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport vmod\nok = 'm' in sys.modules\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N1 control: `'m' in sys.modules` is no read of sys.path; it stays a refusal.",
+   "expected_rule": "the path-mutation capability `sys.modules` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N2_dunder_import_literal_chain_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nx = __import__('json').loads('1')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N2 accept: `__import__('json').loads(x)`; the literal names vendor/lib/json.py, which reads shared (the entry credits vendor/lib in full; pre-N the file refused)."
+  },
+  "R6_N2_dunder_import_nonliteral_chain_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nx = __import__(n).loads('1')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N2 control: the same chain with a non-literal first argument refuses.",
+   "expected_rule": "the path-mutation capability `__import__(n).loads('1')` on line 4 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N2_import_module_literal_attr_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport importlib\napp = importlib.import_module('server').app\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N2 accept: `importlib.import_module('server').app`; the literal names vendor/lib/server.py, which reads shared (the entry credits vendor/lib in full; pre-N the file refused)."
+  },
+  "R6_N2_import_module_nonliteral_attr_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport importlib\napp = importlib.import_module(name).app\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N2 control: the same chain with a non-literal module name refuses.",
+   "expected_rule": "the path-mutation capability `importlib.import_module(name).app` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N3_metadata_entry_points_load_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport vmod\nimport importlib.metadata\nfor e in importlib.metadata.entry_points(group='g'):\n    e.load()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N3 control: `entry_points(...)` then `.load()` stays a loader and refuses.",
+   "expected_rule": "the path-mutation capability `importlib.metadata.entry_points(group='g')` on line 6 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N3_metadata_version_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport vmod\nimport importlib.metadata\nv = importlib.metadata.version('pkg')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N3 accept: `importlib.metadata.version('pkg')` reads installed metadata and is not a load; the truth comes from `import vmod` by design, the construct only must not refuse."
+  },
+  "R6_N3_resources_files_literal_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport importlib.resources\nt = importlib.resources.files('mypkg').joinpath('a.txt').read_text()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N3 accept: `importlib.resources.files('mypkg')`; the literal anchor is recorded as a dependency edge, vendor/lib/mypkg, which reads shared."
+  },
+  "R6_N3_resources_files_nonliteral_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nimport importlib.resources\nt = importlib.resources.files(pkg).joinpath('a.txt').read_text()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N3 control: the same chain with a non-literal anchor refuses.",
+   "expected_rule": "the path-mutation capability `importlib.resources.files(pkg).joinpath('a.txt').read_text()` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_N3_resources_read_text_literal_reads": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nfrom importlib import resources\nt = resources.read_text('mypkg', 'a.txt')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "read",
+   "note": "N3 accept: `resources.read_text('mypkg', 'a.txt')`; the literal anchor is the edge to vendor/lib/mypkg."
+  },
+  "R6_N3_resources_read_text_nonliteral_refuses": {
+   "question": "R6-2 N1-N3 twins (cli's W1b, root's ruling of 2026-11-12 21:32)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib\"))\nfrom importlib import resources\nt = resources.read_text(pkg, 'a.txt')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/json.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/server.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/__init__.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[3] / 'packages/shared/x.py').read_text()\n",
+    "vendor/lib/mypkg/a.txt": "a\n"
+   },
+   "expect": "refuse",
+   "note": "N3 control: `read_text` with a non-literal anchor refuses.",
+   "expected_rule": "the path-mutation capability `resources.read_text(pkg, 'a.txt')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_carveout_residual_beside_entry_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\np = 'worker'\nsys.path.insert(0, p)\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "Carve-out: a residual rule-(b) entry beside a resolving entry refuses the file (residual sites only, R6-2).",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R6_env_other_key_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\nhome = os.environ['HOME']\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "ENV accept: an environ key other than PYTHONPATH."
+  },
+  "R6_env_pythonpath_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\nos.environ['PYTHONPATH'] = 'x'\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "ENV refuse: the `PYTHONPATH` constant.",
+   "expected_rule": "the path-mutation capability `'PYTHONPATH'` on line 3 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_eval_string_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "y = eval('1')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "EXEC refuse: `eval('1')`.",
+   "expected_rule": "the path-mutation capability `eval('1')` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_exec_open_read_file_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nexec(open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read())\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "EXEC accept: `exec(open(p).read())`, p from __file__ (rule 8)."
+  },
+  "R6_exec_string_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "exec('import x')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "EXEC refuse: `exec('import x')`.",
+   "expected_rule": "the path-mutation capability `exec('import x')` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_loader_dead_import_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import importlib\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "LOADER refuse: a dead `import importlib`.",
+   "expected_rule": "the path-mutation capability `import importlib` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_loader_find_spec_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import importlib.util\nspec = importlib.util.find_spec('m')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "LOADER refuse: `importlib.util.find_spec('m')`.",
+   "expected_rule": "the path-mutation capability `importlib.util.find_spec('m')` on line 2 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_loader_import_module_literal_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import importlib\nimportlib.import_module('json')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "LOADER accept: `importlib.import_module('json')` is a consumed loader call."
+  },
+  "R6_loader_module_from_spec_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import importlib.util\nmod = importlib.util.module_from_spec(spec)\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "LOADER refuse: `module_from_spec`.",
+   "expected_rule": "the path-mutation capability `importlib.util.module_from_spec(spec)` on line 2 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_reach_alias_of_path_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nfrom mylib import *\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\np = sys.path\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-PATH-REACH refuse: `p = sys.path` (sys by a star import, so the reach itself is named).",
+   "expected_rule": "the path-mutation capability `sys.path` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_reach_base_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "SYS-PATH-REACH accept: the one rule-6 entry, the base of the reach and B8 twins."
+  },
+  "R6_reach_reassign_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path = [os.path.join(os.path.dirname(__file__), \"../../packages/shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-PATH-REACH refuse: `sys.path = [...]`.",
+   "expected_rule": "the path-mutation capability `sys.path` on line 3 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_reach_remove_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\nsys.path.remove('x')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-PATH-REACH refuse: `sys.path.remove(x)`.",
+   "expected_rule": "the path-mutation capability `sys.path.remove('x')` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_residual_reexported_alias_reads_below_truth": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "from mypkg import s\ns.path.remove('x')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "residual",
+   "note": "The named residual (root's decision (i) of R6): sys re-exported under another name (`from mypkg import s`, mypkg outside the tree) is unseen, so `s.path.remove(x)` is no occurrence and the file reads instead of refusing. Its reading is pinned: the literal read of packages/shared, the removal unseen.",
+   "reads": [
+    "shared"
+   ]
+  },
+  "R6_scope_globals_no_sys_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "g = globals()\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "SCOPE accept: `globals()` in a file that binds no sys."
+  },
+  "R6_scope_globals_with_sys_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\ng = globals()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SCOPE refuse: `globals()` in a file binding sys.",
+   "expected_rule": "the path-mutation capability `globals()` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_site_absent_literal_read_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "SITE/LOADER/SYS-BIND accept twin: the literal read with no capability import."
+  },
+  "R6_site_addsitedir_alias_call_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "from site import addsitedir as a\na('x')\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SITE refuse: `from site import addsitedir as a; a(x)`.",
+   "expected_rule": "the path-mutation capability `a('x')` on line 2 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_site_dead_import_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import site\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SITE refuse: a dead `import site` (no rule reads site).",
+   "expected_rule": "the path-mutation capability `import site` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_sysbind_alias_assign_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\ns = sys\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-BIND refuse: the binding is aliased (`s = sys`); rule 5 does not consume it, the refusal names the binding.",
+   "expected_rule": "the path-mutation capability `sys` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_sysbind_dead_import_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import sys\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-BIND refuse: a dead `import sys` (root's (ii): no rule, refuses); its accept twin is R6_site_absent_literal_read_reads.",
+   "expected_rule": "the path-mutation capability `import sys` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_sysbind_exit_main_reads": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\ndef main():\n    return 0\nsys.exit(main())\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "SYS-BIND accept: every use of the sys binding is a non-path attribute or a consumed rule-6 site (rule 5)."
+  },
+  "R6_sysbind_from_mypkg_import_s_as_sys_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "from mypkg import s as sys\nimport os\nDATA = open(os.path.join(os.path.dirname(__file__), \"../../packages/shared/x.py\")).read()\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-BIND refuse: a name literally `sys` imported from any module is a sys bind; here it is dead, so it refuses (W2's probe).",
+   "expected_rule": "the path-mutation capability `from mypkg import s as sys` on line 1 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_sysbind_getattr_path_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\np = getattr(sys, 'path')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "SYS-BIND refuse: the binding is passed (`getattr(sys, 'path')`); the refusal names the binding.",
+   "expected_rule": "the path-mutation capability `sys` on line 5 of services/r/x.py is consumed by no read rule; a file reads only when every one is"
+  },
+  "R6_unparsable_file_refuses": {
+   "question": "R6-2 twins (cli's W1, 2026-11-12)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, 'x'\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "An unparsable Python file refuses with the parse message.",
+   "expected_rule": "a Python file the scan must read does not parse"
   }
  }
 }

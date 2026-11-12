@@ -248,7 +248,8 @@ R5F_RULE_PINS = {
     "but a parent-step literal is declared with a reach list": (1, '"but a parent-step literal is declared with a reach list: the tracked directories "', "R86S5F_N10_declared_parent_literal_with_keyword_reach"),
     "neither one of its landings nor a tracked directory": (1, "which is neither one of its landings nor a tracked directory) in ", "R86S5F_N01d_declared_literal_reach_not_a_landing_tracked_cwd"),
     # R6-2 (2026-11-12): 5 -> 4, R86S5F_N52's `site.addsitedir` now refuses first at the single refuse point (R6 rule).
-    "a file reads only when every one of its sys.path sites resolves": (4, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
+    # W1b (2026-11-12): 4 -> 5, the carve-out twin R6_carveout_residual_beside_entry_refuses pins it.
+    "a file reads only when every one of its sys.path sites resolves": (5, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
     "where it may re-enter the checkout by a path the scan cannot see": (3, '"checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "', "R86S5F_N15_beside_dir_then_dotdot_reenters"),
     "a sourceless .pyc": (2, 'else "a sourceless .pyc"', "R86S5F_N24_sourceless_pyc_in_landing"),
     "a symlink inside the landing": (2, '"a symlink inside the landing" if tracked.get(held)', "R86S5F_N28_symlink_inside_owned_landing"),
@@ -261,7 +262,7 @@ RC1A_FIX_RULE_PINS = {
 # vector it refuses pins this clause (a twin may pin the named occurrence before it), closed by equality on the count as
 # the rules above are. The template is split over two f-strings in edges.py, so both halves are pinned as raise sites.
 R6_CAPABILITY_RULE = "is consumed by no read rule; a file reads only when every one is"
-R6_CAPABILITY_RULE_PINS = 63
+R6_CAPABILITY_RULE_PINS = 98  # W1b (2026-11-12): + the 35 R6_ refuse twins, each pinning its named occurrence and the clause
 R6_CAPABILITY_SITES = ('raise ValueError(f"unresolved (the path-mutation capability `{segment}` on line {lineno} of {path} '
                        'is consumed by "', 'f"no read rule; a file reads only when every one is) in {path}")')
 
@@ -1049,7 +1050,8 @@ class EdgesTest(unittest.TestCase):
                           "R5V38_py_getattr_literal_method", "R5V39_py_factory_closure", "R5V40_py_deque_appendleft",
                           "R5V41_js_object_assign", "R6V02_yml_key_still_metadata_control", "R6V03_uppercase_YML_ext",
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
-                          "R6V25_chdir_then_fstring_dotdot_end", "R84_B11_nested_fn_param_shadow",
+                          "R6V25_chdir_then_fstring_dotdot_end",
+                          "R6_residual_reexported_alias_reads_below_truth", "R84_B11_nested_fn_param_shadow",
                           "R84_S08_param_shadow_other_assign",
                           # Root's r4 item 11 (R-c r5) RC1A_residual_generated_cwd_directory left this list in the
                           # round-5 fix (2026-11-12): its tracked start lands at the root and refuses (B3).

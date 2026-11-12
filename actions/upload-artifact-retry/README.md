@@ -92,3 +92,19 @@ the calling step read `success` in 54 s. Job `control-no-budget` (budgets `0`, c
 attempt one hung to the calling step's bound, "The action has timed out" ended it as `failure`, the retry step started
 and was timed out after 23 ms with no second `CONNECT`; the calling step read `failure`. The runner forced the node20
 action onto Node.js 24; the preload ran there.
+
+vagaris run 43138749144 (the same branch, the action pinned at this PR's fourth head `53e3a2d`, the same `runs-on`
+expression resolving to `vl-light`; runners `vl-bridge-runner-1-11/12/13`). The two jobs above re-proved at the new
+head: `hang-then-retry` attempt one failed at 47.6 s, the retry finalised `13909270262` (168 bytes) in 11.3 s;
+`control-no-budget` timed out at 119.9 s and its retry step was timed out after 16 ms. The third job,
+`hang-blob-then-retry`, holds a different connection: the proxy tunnels everything except the **first** `CONNECT` to a
+`blob.core.windows.net` host, which it never answers. Attempt one tunnelled to the results service (`conn 1`, so
+`CreateArtifact` returned and the client logged "Beginning upload of artifact content to blob storage"), then hung on
+the blob upload (`conn 2`, held open) and the budget failed it at 45.6 s with the artifact created and never finalised.
+The retry (`overwrite: true`) tunnelled to the results service and twice to the blob host (`conn 3-7`), uploaded
+173 bytes, finalised artifact `13907874490` under the same name and the calling step read `success` in 13.4 s. The
+retry's log holds **no delete line**: `overwrite` looks the name up among finished artifacts, the unfinalised record
+from attempt one is not among them, so nothing is deleted and the retry's own create goes through under that name.
+The run's artifact list, read from outside, holds exactly one artifact per name (two in the run). The half-created
+record is invisible to the API; this is also why the "name that existed before the step" bullet above stays a static
+rule rather than something the retry can detect.

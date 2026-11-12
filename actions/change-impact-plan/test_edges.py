@@ -153,7 +153,7 @@ RC1B_RULE_PINS = {
 RC1A_RULE_PINS = {
     "lands in no tracked directory": (4, 'lands in no tracked directory: from each one "'),
     "a symlink component": (3, 'a symlink component, "'),
-    "code the scan excludes": (13, 'lands in {landing}, code the scan "'),
+    "code the scan excludes": (14, 'lands in {landing}, code the scan "'),
     "a package-free landing": (4, 'f"a package-free landing outside every scan root and reader directory, where "'),
     "that no package owns": (1, 'a file under a scan root that no package owns, "'),
 }
@@ -176,6 +176,18 @@ RC1_REMAINDER_RULE_PINS = {
     "takes reach external": (2, 'f"above this repository takes reach external, never fixture or package) in {path}"'),
     "a strict subset": (2, 'a strict subset of that prefix at "'),
     "covers more than one site": (2, 'entry `{key}` covers more than one site, "'),
+}
+
+# Slice 5 (the RC4B/RC5/RC6 remainder; root's R-c r2 item R-c6(b), r3 items 6 and 7, r4 items 8 and 10, dotgithub-86,
+# 2026-11-12): the two refusals the new declaration forms add, closed the same way, each with its one raise site.
+# `rule 7: a root path and a `..` step` is also the unexcluded hook's text (RC5J_py_unexcluded_hook_and_cd_refuses_rule7,
+# scan's raw_taint site), so its 3 pins are the two declared `&&` vectors plus that one; the site here is the declared
+# excluded hook's `cd ... && node ...` raise. The reads (a declared hook reach list, a loader target declared to its
+# sources, the whole-checkout `none`) add no refusal text and no pin; their twins pin `code the scan excludes` and
+# `no tracked file or directory`, which slice 3 already counts.
+RC5_RULE_PINS = {
+    "rule 7: a root path and a `..` step": (3, 'f"unresolved (rule 7: a root path and a `..` step on line {number} of {path}, "'),
+    "names the caller's own unit": (3, 'with a reach that names the caller\'s own unit "'),
 }
 
 
@@ -873,6 +885,22 @@ class EdgesTest(unittest.TestCase):
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 
+    def test_whole_checkout_none_rule_is_narrowed_by_four_disqualifiers(self):
+        """Slice 5 round 2: reach `none` on an excluded top directory reads only in RC4B's exact construct. Its control is
+        RC4B (reads); the four disqualifiers (extra_edges on the directory, a covering inert glob, a declared name that is
+        a scan root, a package under the excluded directory) each stay a `code the scan excludes` refusal."""
+        cases = self.REVIEW_VECTORS
+        control = "RC4B"
+        disqualified = ["RC4E_", "RC4F_", "RC4H_", "RC4I_"]
+        named = [k for k in cases if k.startswith(control + "_")]
+        self.assertEqual(len(named), 1, named)
+        self.assertEqual(cases[named[0]]["expect"], "read")
+        for prefix in disqualified:
+            found = [k for k in cases if k.startswith(prefix)]
+            self.assertEqual(len(found), 1, prefix)
+            self.assertEqual((cases[found[0]]["expect"], cases[found[0]].get("expected_rule")),
+                             ("refuse", "code the scan excludes"), found[0])
+
     def test_review_vector_closed_lists_hold(self):
         """The data-only closed lists the review vectors rest on, apart from any reading: REVIEW_CONTROLS and
         KNOWN_FAIL_OPEN both ways, the pins dated KNOWN_FAIL_OPEN_UNTIL, the `"r5": true` set (S1), and no
@@ -917,10 +945,10 @@ class EdgesTest(unittest.TestCase):
                          "a drop or an addition is an edit there")
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
-        # Slices 2, 3 and 4: each rule's pin count by equality, and its own raise site in edges.py.
+        # Slices 2, 3, 4 and 5: each rule's pin count by equality, and its own raise site in edges.py.
         for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
                                 ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS),
-                                ("RC1_REMAINDER_RULE_PINS", RC1_REMAINDER_RULE_PINS)):
+                                ("RC1_REMAINDER_RULE_PINS", RC1_REMAINDER_RULE_PINS), ("RC5_RULE_PINS", RC5_RULE_PINS)):
             for rule, (count, site) in pins.items():
                 named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
                 self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "

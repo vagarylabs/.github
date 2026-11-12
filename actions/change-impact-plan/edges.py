@@ -3645,7 +3645,8 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     unowned: dict[str, dict] = {}
     imports, unused, unresolved_data, unit_imports, stood_for, routes_to = import_closure(
         repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps, readers, unowned,
-        names_used_before=scan_names_used, parsed_files=frozenset(parsed_sys_path_files))
+        names_used_before=scan_names_used, parsed_files=frozenset(parsed_sys_path_files),
+        cover_globs=tuple(list(cfg.get("inert_globs") or []) + list((cfg.get("extra_edges") or {}).keys())))
     # Root's ruling on the backstop's consequence (2026-10-29): mentions over BASE ∪ HEAD, so a mention the PR adds
     # flags, and so does one it removes. The base tree is data like the head: it can only add FULL paths. A file the PR
     # did not change has the same text at both ends, so the base pass reads only the deleted and modified ones (D/M/T,
@@ -3693,7 +3694,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
 
 
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
-                   readers, unowned, names_used_before=frozenset(), parsed_files=frozenset()):
+                   readers, unowned, names_used_before=frozenset(), parsed_files=frozenset(), cover_globs=()):
     """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
     ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
@@ -4559,10 +4560,93 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     unresolved_data: set[str] = set()  # the declared names that resolve to nothing (report only)
     names_stood_for: dict[str, set[str]] = {}  # an untracked name -> the enclosing directory it stands for (report)
 
+    queue_more: list[str] = []  # what declared_excluded_code asks the running closure to follow
+
+    def unit_key(path: str) -> tuple:
+        """The selection unit a file runs in: its package, else its reader directory's job (or <unmapped>)."""
+        found = owner(path)
+        return ("package", found) if found is not None else ("unit", unit_of(path))
+
+    def refuse_own_unit(namer: str, name: str, reach: list) -> None:
+        """Slice 5, root's r4 item 10 (RC6G/H/I): a declared reach list whose every path is in the caller's own unit
+        (the namer itself included) admits nothing the caller does not already read: it is `none` in effect, so it refuses."""
+        files = [f for x in reach for f in (files_of(posixpath.normpath(x)) or [posixpath.normpath(x)])]
+        if files and all(unit_key(f) == unit_key(namer) for f in files):
+            raise ValueError(f"unresolved ({namer} declares {name} with a reach that names the caller's own unit "
+                             f"({unit_key(namer)[1]}) only, so it admits nothing the caller does not already read: "
+                             "declare the paths in another unit it reaches, or restructure the site)")
+
+    rule7_reader = RootLiteral(roots, by_dir, owner, [])
+
+    def declared_excluded_code(path: str, target: str) -> bool:
+        """Slice 5 (RC4B, RC5): excluded code a namer reaches is credited when every namer declares it, else it refuses.
+        - a reach LIST for the file itself: the file's literal routes are read (shell_names / named_paths) and the
+          list must cover each one; the list is then the direct edges. A `cd` joined to a command that names a root
+          path (rule 7: `cd "$(dirname "$0")/.." && node services/x`) refuses whatever the list says; a route the
+          reader cannot spell, or one the list does not cover, leaves the existing refusal.
+        - reach "none" on the file's exact single-segment exclude entry, for a namer whose glob spells the WHOLE
+          checkout: the glob reaches every other file directly, so nothing is lost."""
+        namers_here = sorted(set(namers.get(target, ())) | set(namers.get(path, ())))
+        if not namers_here:
+            return False
+        top = path.split("/")[0]
+        grants: list[tuple[tuple, list]] = []
+        for f in namers_here:
+            entry = by_name.get((f, path))
+            if entry is not None and isinstance(entry["reach"], list):
+                reach = sorted(posixpath.normpath(x) for x in entry["reach"])
+                if code_source(path) is None:
+                    for number, line in enumerate(read_source(repo, path, revision, environment).split("\n"), 1):
+                        line = rule7_reader.strip_comment(line)
+                        if shell_cd_ranges(line.strip()) and PARENT_STEP.search(line) and (
+                                rule7_reader.root_any.search(line) or rule7_reader.root_word.search(line)):
+                            raise ValueError(f"unresolved (rule 7: a root path and a `..` step on line {number} of {path}, "
+                                             f"a `cd` joined to a command that names a root path, which {f} declares: "
+                                             "a declared reach cannot be checked against its routes)")
+                routes = set(named_paths(path))
+                if code_source(path) is None:
+                    # A bare root path (`node services/a/run.mjs`, after an own-line cd to the repository root) is a
+                    # route too: the scan reads it as a root literal, which shell_names does not.
+                    bare = re.compile(r"(?<![\w./-])((?:" + "|".join(re.escape(r) for r in sorted(roots)) +
+                                      r")(?:/[A-Za-z0-9_.-]+)+)")
+                    for line in read_source(repo, path, revision, environment).split("\n"):
+                        routes.update(m.group(1) for m in bare.finditer(rule7_reader.strip_comment(line)))
+                if not routes or any(r in (".", "..") or r.startswith("../") for r in routes) or not all(
+                        any(r == x or r.startswith(x + "/") for x in reach) for r in routes):
+                    return False
+                refuse_own_unit(f, path, reach)
+                grants.append(((f, path), reach))
+                continue
+            entry = by_name.get((f, top))
+            if entry is not None and entry["reach"] == "none" and top in patterns and "/" not in top and \
+                    not any(c in top for c in "*?[") and path.startswith(top + "/"):
+                # Each disqualifier leaves the refusal (RC4E, RC4F, RC4H, RC4I): the exclusion is all that reach
+                # `none` may stand for, so nothing else may bear on the directory or on the namer's other names.
+                under = [p for p in tracked if p.startswith(top + "/")]
+                cover = [glob_to_regex(g) for g in cover_globs]
+                if any(c.match(p) for c in cover for p in under + [top]):
+                    return False  # extra_edges or inert_globs maps the directory: reach `none` contradicts the mapping
+                if top in roots or any(n in roots for (nf, n) in by_name if nf == f):
+                    return False  # a declared name that is a scan root
+                if any(owner(p) is not None for p in under) or any(
+                        owner(p) is not None for (nf, n) in by_name if nf == f for p in tracked
+                        if p.startswith(n + "/")):
+                    return False  # a package sits under the excluded directory (or under another name f declares)
+                routes = named_paths(f)
+                if all(p in routes for p in tracked if not excluded(p)):
+                    grants.append(((f, top), []))
+                    continue
+            return False
+        for name_key, reach in grants:
+            names_used.add(name_key)
+            queue_more.extend(reach)
+        return True
+
     def closure(key: str, starts: list[str], credit, record: dict) -> None:
         """Every route from `starts` to a fixed point. `credit(found)` credits a package read; `record[path]` gains `key`
         for every reached file outside every package. A route that resolves to nothing refuses unless declared."""
         queue, seen = sorted(set(starts)), set()
+        queue_more.clear()
         whole_dirs: set[str] = set()  # directories this closure reached in full: every tracked file beneath is credited
         undeclared: list[tuple[str, str]] = []  # (namer, target): judged once the closure is complete
         while queue:
@@ -4590,7 +4674,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 if found is not None:
                     credit(found)
                     continue
-                if target in loader_targets or not namers.get(target):
+                # Slice 5 (RC6B): a loader target that is an untracked build output (dist/cli.js, an extensionless
+                # entry, an addon) is declared to the SOURCES it is built from: every namer declares a reach LIST
+                # whose every path names tracked files. A reach that names the target itself, or nothing tracked, or
+                # `none`, leaves the refusal.
+                declared_sources = target in loader_targets and bool(namers.get(target)) and all(
+                    by_name.get((f, target)) is not None and isinstance(by_name[(f, target)]["reach"], list)
+                    and all(files_of(posixpath.normpath(x)) for x in by_name[(f, target)]["reach"])
+                    for f in namers[target])
+                if (target in loader_targets or not namers.get(target)) and not declared_sources:
                     # A declared reach (a computed import's, or an unresolved name's) that itself names nothing.
                     raise ValueError(f"unresolved ({key} reaches {target}, which names no tracked file or directory, so "
                                      "a change to what it stands for could not select it)")
@@ -4609,6 +4701,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                         elif shared.count("/") < 1:
                             undeclared.append((f, target))
                         continue
+                    if isinstance(entry["reach"], list):
+                        refuse_own_unit(f, target, entry["reach"])
                     names_used.add((f, target))
                     unresolved_data.add(target)
                     if isinstance(entry["reach"], list):
@@ -4634,6 +4728,10 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 code = is_code(path)
                 if excluded(path):
                     if code:
+                        if declared_excluded_code(path, target):
+                            queue.extend(sorted(set(queue_more) - seen))
+                            queue_more.clear()
+                            continue
                         raise ValueError(f"unresolved ({key} reaches {path}, code the scan excludes, so its reads "
                                          "cannot be credited)")
                     continue

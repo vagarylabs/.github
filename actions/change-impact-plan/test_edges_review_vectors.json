@@ -21294,6 +21294,51 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "expected_rule": "has no tail the scan reads"
+  },
+  "R86S5_js_literal_route_to_excluded_top_dir_declared_none_refuses": {
+   "question": "dotgithub-86 slice 5 (RC4B twin)",
+   "expect": "refuse",
+   "ext": "mjs",
+   "src": "import { readFileSync } from \"node:fs\";\nexport const n = readFileSync(new URL(\"../.githooks/post-checkout\", import.meta.url)).length;\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "note": "Slice 5: RC4B's `none` on the exact exclude entry is honoured only for a namer whose glob spells the WHOLE checkout. A literal route to the excluded hook with the same declaration still refuses: the hook runs tools/x.mjs, which the namer never reaches directly.",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ],
+     "unresolved_names": [
+      {
+       "file": "scripts/x.mjs",
+       "name": ".githooks",
+       "reach": "none",
+       "reason": "the template globs the checkout for sizes of listed files; .githooks is excluded code the scan never credits",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "file": "scripts/x.mjs",
+   "files": {
+    ".githooks/post-checkout": "#!/bin/sh\nnode \"$(dirname \"$0\")/../tools/x.mjs\"\n",
+    "tools/x.mjs": "import \"../packages/shared/x.mjs\";\n",
+    "packages/shared/x.mjs": "export const x = 1;\n",
+    "services/r/t.mjs": "import { sizes } from \"../../scripts/x.mjs\";\nexport const n = sizes([\"README.md\"]);\n"
+   },
+   "expected_rule": "code the scan excludes"
   }
  }
 }

@@ -2591,7 +2591,7 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[str], list[tuple[str, str, str | None]]]:
+def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository) or ("unknown", its
       source text).
@@ -2618,8 +2618,12 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             a = node.args
             params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs} | {x.arg for x in (a.vararg, a.kwarg) if x}
+            # Argument defaults and decorators evaluate in the ENCLOSING scope (`def setup(LIB=LIB)` reads the module's
+            # LIB), so a Name there is not the parameter's (root's C3 of #84's second delta R4, 2026-11-12).
+            outer = {id(n) for d in (*a.defaults, *[x for x in a.kw_defaults if x], *getattr(node, "decorator_list", ()))
+                     for n in ast.walk(d)}
             shadowed.update(id(n) for n in ast.walk(node) if isinstance(n, ast.Name) and n.id in params and
-                            isinstance(n.ctx, ast.Load))
+                            isinstance(n.ctx, ast.Load) and id(n) not in outer)
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
         value = getattr(node, "value", None)
         for t in targets:
@@ -2738,15 +2742,19 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         return current, parts
 
     def path_site(arg):
+        """("path", expr, resolved target, (evaluated prefix, a step after it) or None, the rule-6 text): the text is
+        what rule 8 reads when nothing evaluates, the argument's source AND every assignment of the names it reads
+        (text_of), so `p = f"{source}/packages/shared/m.py"; runpy.run_path(p)` lands where the f-string lands (root's
+        B2 of #84's second delta R4, 2026-11-12: the source `p` alone named no top and read nothing)."""
         target = resolved(arg)
         if target is not None:
-            return ("path", source(arg), target, None)
+            return ("path", source(arg), target, None, None)
         found = evaluated_prefix(arg)
         if found is None:
-            return ("path", source(arg), None, None)
+            return ("path", source(arg), None, None, text_of(arg))
         prefix, rest = found
         stepping = any(isinstance(n, ast.Constant) and isinstance(n.value, str) and PARENT_STEP.search(n.value) for n in rest)
-        return ("path", source(arg), None, (prefix, stepping))
+        return ("path", source(arg), None, (prefix, stepping), None)
 
     def resolved(node) -> str | None:
         value = ev(node)
@@ -2893,7 +2901,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 elif looped is not None:
                     names |= {value.split(".")[0] for value in looped}  # resolved by name, like any import
                 else:
-                    sites.append(("module", source(arg), None, None))
+                    sites.append(("module", source(arg), None, None, None))
             elif name in ("spec_from_file_location", "run_path"):
                 arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
                     if name == "spec_from_file_location" else (node.args[0] if node.args else None)
@@ -3654,6 +3662,13 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
                                  f"declared reach \"package\") in {path}")
             used.add((path, expr))
+            # Root's C1 of #84's second delta R4 (2026-11-12), the JS twin of rule 8's landing credit: the package a
+            # literal of the expression lands in (import(`${source}/packages/shared/m.mjs`), the leading `./`, `/` and
+            # substitutions stripped as parent_verdict strips them) is credited whatever the reach says; declared
+            # "external" it read nothing. The reach list adds, never replaces.
+            for found in sorted({owner(posixpath.normpath(re.sub(r"^(?:\./|/|\$\{[^}]*\}/)+", "", t[3][0])))
+                                 for t in tokens if t[0] == "str"} - {None, caller}):
+                credit_package(path, caller, found)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reaches(posixpath.normpath(target))
@@ -3817,7 +3832,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
-        for kind, expr, target, prefix in sites:
+        for kind, expr, target, prefix, text in sites:
             if kind == "path" and target is not None:
                 if not (target == ".." or target.startswith("../")):
                     reach_from(path, target)
@@ -3844,15 +3859,22 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # package (`f"{source}/packages/shared/mod.py"`, F1) is rule 8's load into another package, declarable
                 # like an evaluated prefix there, so its declaration is honoured first (root's B3 of #84, 2026-11-12);
                 # undeclared, or landing in the caller's own package or on a package-free top, it refuses as before.
-                parent, landings = escape_tops(expr)
+                # The literals are read through the names, as rule 6 reads them (`text`, root's B2 of #84's second
+                # delta R4): `p = f"{source}/packages/shared/m.py"; runpy.run_path(p)` lands in shared.
+                parent, landings = escape_tops(text)
                 declarable = (path, expr) in by_site and all(owner(x) not in (None, owner(path)) for x in landings)
                 if parent or (not unowned_caller and landings and not declarable):
                     raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                      "write it from __file__ with literal parts, which the scan maps")
-                # Root's F1 of #84's R4 (2026-11-12): the package a declarable text lands in is credited whatever the
-                # declaration's reach says (the reach ADDS to the landing, never replaces it), as the evaluated-prefix
-                # twin credits `other`. A reach of "external", "fixture" or "package" on such a site is not a way to read [].
-                landed = {owner(x) for x in landings} if declarable else set()
+                # Root's F1 of #84's R4 (2026-11-12): the package a text lands in is credited whatever the declaration's
+                # reach says (the reach ADDS to the landing, never replaces it), as the evaluated-prefix twin credits
+                # `other`. A reach of "external", "fixture" or "package" on such a site is not a way to read []. For a
+                # caller OUTSIDE every package too (root's B1 of the second delta R4): its landings on a package-free top
+                # (`tools/t.py`, its own `scripts/`) are the paths its reach declares, and its landing in a package is
+                # credited, so `declarable` (which asks every landing to be in another package) does not gate the credit.
+                # A symlinked landing (`packages/link/m.py`, link -> shared) is credited to its target's owner (X08b);
+                # from a PACKAGE caller the link still refuses above, as before (X08).
+                landed = {owner(resolve_links(x)) for x in landings} - {None, owner(path)}
             else:
                 landed = set()
             entry = by_site.get((path, expr))

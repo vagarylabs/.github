@@ -471,8 +471,9 @@ class EdgesTest(unittest.TestCase):
                 f.unlink()
         rel = case.get("file") or "services/r/x." + case["ext"]
         extra = dict(case.get("files") or {})
+        links = dict(case.get("symlinks") or {})  # {link path: target}, as the round-4 harness writes them (X08b)
         self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
-        written = [rel, *sorted(extra)]
+        written = [rel, *sorted(extra), *sorted(links)]
         # No path a vector writes may exist in the fixture, checked BEFORE the try: inside it, the cleanup would delete
         # the fixture file the guard refused to overwrite (root's K3 of #84's R4, 2026-11-12).
         for path in written:
@@ -485,6 +486,8 @@ class EdgesTest(unittest.TestCase):
             (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
             for path, text in extra.items():
                 (repo / path).write_text(text)
+            for path, target in links.items():
+                os.symlink(target, repo / path)
             subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
             cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
             rev = None

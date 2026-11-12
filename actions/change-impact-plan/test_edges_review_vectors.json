@@ -7139,6 +7139,319 @@
     "web"
    ],
    "note": "K1 fixed: '../'.concat(p) in an unreached scripts/ file: the grep lists quote-then-.concat( after the step; the route is `.`, refused"
+  },
+  "R84_X04_unowned_mixed_pkg_and_free_top": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source, k):\n    runpy.run_path(f\"{source}/packages/shared/m.py\" if k else f\"{source}/tools/t.py\")\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n",
+    "tools/t.py": "T=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "f\"{source}/packages/shared/m.py\" if k else f\"{source}/tools/t.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "unit": "readers:scripts",
+   "note": "B1: scripts/x.py run_path(f\"{source}/packages/shared/m.py\" if k else f\"{source}/tools/t.py\") declared \"external\" credits shared on the scripts unit (read [] before: `declarable` asked every landing to be in another package, so an unowned caller's free-top landing emptied the credit)"
+  },
+  "R84_X04b_unowned_mixed_reach_list": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source, k):\n    runpy.run_path(f\"{source}/packages/shared/m.py\" if k else f\"{source}/tools/t.py\")\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n",
+    "tools/t.py": "T=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "f\"{source}/packages/shared/m.py\" if k else f\"{source}/tools/t.py\"",
+       "reach": [
+        "tools/t.py"
+       ],
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "unit": "readers:scripts",
+   "note": "B1: the same site declared reach [tools/t.py] credits shared too; the reach adds the free-top path, never replaces the landing"
+  },
+  "R84_X05_unowned_mixed_pkg_and_own_top": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source, k):\n    runpy.run_path(f\"{source}/packages/shared/m.py\" if k else f\"{source}/scripts/y.py\")\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n",
+    "scripts/y.py": "S=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "f\"{source}/packages/shared/m.py\" if k else f\"{source}/scripts/y.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "unit": "readers:scripts",
+   "note": "B1: the second branch lands in the caller's own reader directory (scripts/y.py): shared is still credited"
+  },
+  "R84_X08b_symlinked_landing_unowned": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/link/m.py\")\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "f\"{source}/packages/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "unit": "readers:scripts",
+   "symlinks": {
+    "packages/link": "shared"
+   },
+   "note": "B1: packages/link -> shared; an unowned caller's load through the symlink credits shared (the owned caller's twin X08 refuses: a symlinked landing from a package)"
+  },
+  "R84_X06_name_indirection_external": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    p = f\"{source}/packages/shared/m.py\"\n    runpy.run_path(p)\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "B2: p = f\"{source}/packages/shared/m.py\"; runpy.run_path(p) declared \"p\" external credits shared: the landing is read from the name's assignment text, as rule 6 reads a sys.path entry (read [] before)"
+  },
+  "R84_X06b_name_indirection_unowned": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source):\n    p = f\"{source}/packages/shared/m.py\"\n    runpy.run_path(p)\n",
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "unit": "readers:scripts",
+   "note": "B2: the same through a name from a caller outside every package (scripts unit)"
+  },
+  "R84_X22_js_template_decl_external": {
+   "ext": "mjs",
+   "file": "services/r/x.mjs",
+   "src": "export const f = (source) => import(`${source}/packages/shared/m.mjs`);\n",
+   "files": {
+    "packages/shared/m.mjs": "export const X = 1;\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.mjs",
+       "expr": "`${source}/packages/shared/m.mjs`",
+       "reach": "external",
+       "reason": "R84 vector: root's second delta R4 of #84, the landing package is credited for every caller and through names",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "read",
+   "truth": [
+    "shared"
+   ],
+   "note": "C1: import(`${source}/packages/shared/m.mjs`) declared \"external\" credits shared, the package the template's literal lands in, as rule 8 credits the Python twin (read [] on main and both earlier heads)"
+  },
+  "R84_Y03b_aug_computed_loader_undeclared": {
+   "ext": "py",
+   "src": "import os, runpy\ndef load(name):\n    p = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\n    p += os.sep + name\n    runpy.run_path(p)\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n",
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C2: p = join(dirname(__file__), \"../../packages/shared\"); p += os.sep + name; run_path(p) undeclared: the augmentation is not `+= \"<literal>\"`, so the name is unevaluated and its text holds a parent step: refuses (main read [shared] from the evaluated prefix alone)"
+  },
+  "R84_Y04_default_arg_shadow_syspath": {
+   "ext": "py",
+   "src": "import os, sys\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\ndef setup(LIB=LIB):\n    sys.path.insert(0, LIB)\nsetup()\nimport shared_mod\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n",
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "C2: LIB = join(dirname(__file__), \"../../packages/shared\"); def setup(LIB=LIB): sys.path.insert(0, LIB): the entry is the parameter (shadowed inside setup), whose text carries the module assignment's parent step: refuses (main read [shared]); the default `LIB=LIB` itself reads the module's LIB (C3), which changes no reading here"
   }
  }
 }

@@ -105,6 +105,12 @@ KNOWN_FAIL_OPEN = {
     "KFO_S2R_B1_name_undecl": "S2R", "KFO_S2R_B4_empty_undecl": "S2R", "KFO_S2R_C_reassign_undecl": "S2R",
     "KFO_S2R_C_addsitedir_undecl": "S2R", "KFO_S2R_C_extend_name_undecl": "S2R", "KFO_S2R_F_symlink_undecl": "S2R",
     "KFO_S2R_D_case_undecl": "S2R", "KFO_S2R_D_abs_undecl": "S2R", "KFO_S2R_D_expanduser_undecl": "S2R",
+    # Root's round-5 STACK CHANGES of dotgithub-86 (2774a421f815, 14:27 2026-11-12): `sys .path` spacing with a bare
+    # name (N39), and the bare tail forms outside the listed ones (D04c dirname, D04d Path(..).parent, D04e a slice,
+    # D04f str.replace): [] on main, dcf6545 and 2774a421, each the only sys.path site of its file, so B2 leaves it.
+    "KFO_S5F_N39_sys_space_bare_name": "S5F", "KFO_S5F_D04c_undeclared_dirname_bare": "S5F",
+    "KFO_S5F_D04d_undeclared_Path_parent_bare": "S5F", "KFO_S5F_D04e_undeclared_slice_bare": "S5F",
+    "KFO_S5F_D04f_undeclared_replace_bare": "S5F",
 }
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
@@ -145,7 +151,7 @@ RC1B_RULE_PINS = {
     # (the RC1T vectors), and rule (b), apply_entry's undeclared-tail refusal, pinned by its own raise site.
     # 16 + R86S23_declared_prefixed_parent_step_refuses_no_tail (the s2+s3 stack: no tail after the parent-step route).
     "has no tail the scan reads": (17, 'has no tail the scan reads: its last path "'),
-    "may land in": (3, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
+    "may land in": (5, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
 }
 # Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
 # parent-step sys.path literal refuses by, closed the same way. `code the scan excludes` is also the closure's text (the
@@ -154,8 +160,6 @@ RC1A_RULE_PINS = {
     "lands in no tracked directory": (4, 'lands in no tracked directory: from each one "'),
     "a symlink component": (3, 'a symlink component, "'),
     "code the scan excludes": (13, 'lands in {landing}, code the scan "'),
-    "a package-free landing": (4, 'f"a package-free landing outside every scan root and reader directory, where "'),
-    "that no package owns": (1, 'a file under a scan root that no package owns, "'),
 }
 # Root's slice 3 CHANGES (dotgithub-86, 12:02 2026-11-12): B2 credits a climb above the checkout that re-enters it by its
 # own name, so the depth-0/1 re-entries (RC1A_depth0/depth1_cwd_reentry_by_own_name_reads, renamed by root's 12:43
@@ -163,8 +167,20 @@ RC1A_RULE_PINS = {
 # no_own_name) refuse, so `lands in no tracked directory` stays at 4 pins and R5_VECTOR_COUNT gains the two twins; B4
 # judges a package-free landing by the parsed names, so the R86S3_C4/C4b/C4c siblings refuse as C4ctrl does (`a
 # package-free landing` 1 -> 4). B4's new refusal (a package file that does not parse) is pinned here the same way.
+# Root's round-5 STACK CHANGES of dotgithub-86 (2774a421f815, 14:27 2026-11-12), B1 (a declared parent-step literal's
+# reach validated and credited), B2 (a file reads only when every sys.path site resolves), B4 (a climb beside the
+# checkout refuses), B5 (a symlink or a sourceless .pyc inside a landing): each fragment -> (pins naming it, by
+# equality; its raise site in edges.py; a named control vector that must carry it), walked with the floor below.
+R5F_RULE_PINS = {
+    "but a parent-step literal is declared with a reach list": (1, '"but a parent-step literal is declared with a reach list: the tracked directories "', "R86S5F_N10_declared_parent_literal_with_keyword_reach"),
+    "neither one of its landings nor a tracked directory": (1, "which is neither one of its landings nor a tracked directory) in ", "R86S5F_N01d_declared_literal_reach_not_a_landing_tracked_cwd"),
+    "a file reads only when every one of its sys.path sites resolves": (5, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
+    "where it may re-enter the checkout by a path the scan cannot see": (3, '"checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "', "R86S5F_N15_beside_dir_then_dotdot_reenters"),
+    "a sourceless .pyc": (2, 'else "a sourceless .pyc"', "R86S5F_N24_sourceless_pyc_in_landing"),
+    "a symlink inside the landing": (2, '"a symlink inside the landing" if tracked.get(held)', "R86S5F_N28_symlink_inside_owned_landing"),
+    "the repository root or above it": (12, "the repository root or above it", "R86S3_C12_dotdot_only_nested"),
+}
 RC1A_FIX_RULE_PINS = {
-    "does not parse, so its imports cannot be read": (1, 'f"parse, so its imports cannot be read) in {where}"'),
 }
 
 
@@ -854,9 +870,8 @@ class EdgesTest(unittest.TestCase):
                           "R6V18_pkg_husky_hooks_not_scripts", "R6V24_chdir_then_path_cwd_parent",
                           "R6V25_chdir_then_fstring_dotdot_end", "R84_B11_nested_fn_param_shadow",
                           "R84_S08_param_shadow_other_assign",
-                          # Root's r4 item 11 (R-c r5): a directory generated at run time, reads [] for truth
-                          # [shared], dated 2026-11-12, review_by 2026-11-20.
-                          "RC1A_residual_generated_cwd_directory",
+                          # Root's r4 item 11 (R-c r5) RC1A_residual_generated_cwd_directory left this list in the
+                          # round-5 fix (2026-11-12): its tracked start lands at the root and refuses (B3).
                           "T19_partial_split_root",
                           "T36_computed_prefix_not_repo_root",
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
@@ -908,13 +923,20 @@ class EdgesTest(unittest.TestCase):
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
         # Slices 2 and 3: each rule's pin count by equality, and its own raise site in edges.py.
         for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
-                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS)):
+                                ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS),
+                                ("R5F_RULE_PINS", {rule: pin[:2] for rule, pin in R5F_RULE_PINS.items()})):
             for rule, (count, site) in pins.items():
                 named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
                 self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "
                                                     f"drop or an addition is an edit there")
                 self.assertIn(site, source,
                               f"{pins_name}: the raise site of {rule!r} is no longer in edges.py: re-derive it")
+        # The round-5 fix's floor inside the gate: every R5F rule names at least one pin, its named control among them.
+        self.assertTrue(R5F_RULE_PINS, "R5F_RULE_PINS matched nothing: the round-5 fix pins no rule")
+        for rule, (count, site, control) in R5F_RULE_PINS.items():
+            named = sorted(k for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
+            self.assertTrue(named, f"R5F_RULE_PINS: {rule!r} matched nothing: no vector pins it")
+            self.assertIn(control, named, f"R5F_RULE_PINS: {rule!r} is not pinned by its named control {control}")
         self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
                                 if any(rule in part for part in fragments)), [],
                          "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")

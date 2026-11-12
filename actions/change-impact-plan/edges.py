@@ -109,6 +109,7 @@ CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
+GENERATED_CWD = "\0generated"  # an untracked directory component beneath a tracked start (parent_step_landings)
 PERCENT_FIELD = r"%(?:\([^)]*\))?[-+ #0]*\d*(?:\.\d+)?[A-Za-z]"  # a %-format field, flags/width/precision included
 PERCENT_RE = re.compile(PERCENT_FIELD)
 # A parent step inside a substitution. A single `'.'` is a separator (`.split('.')`), never a step; dots build one only
@@ -3122,6 +3123,32 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     return entries, names, sites
 
 
+def unrecorded_sys_path_sites(text: str) -> list[str]:
+    """The sys.path sites python_file_facts records no entry for (root's B2 of the dotgithub-86 round-5 STACK CHANGES,
+    2026-11-12): `sys.path = [...]` (a reassignment), `site.addsitedir(x)` and `p = sys.path` (an alias whose mutations
+    are not followed), each by its source text. A file that does not parse has none here (python_file_facts judges it)."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+
+    def is_sys_path(node):
+        return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and \
+            node.value.id == "sys"
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(is_sys_path(t) for t in targets) or (node.value is not None and is_sys_path(node.value)):
+                found.append(ast.get_source_segment(text, node) or "sys.path")
+        elif isinstance(node, ast.NamedExpr) and is_sys_path(node.value):
+            found.append(ast.get_source_segment(text, node) or "sys.path")
+        elif isinstance(node, ast.Call) and (getattr(node.func, "attr", None) == "addsitedir" or
+                                             getattr(node.func, "id", None) == "addsitedir"):
+            found.append(ast.get_source_segment(text, node) or "addsitedir")
+    return found
+
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
     """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
     args = ["ls-tree", "-r", "-z", "--full-tree", revision] if revision else ["ls-files", "-s", "-z"]
@@ -4163,53 +4190,76 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         want = tail.split("/")
         return directory.split("/")[-len(want):] == want
 
-    # package -> [(the edge's source path, a package-free B1 landing, the entry's key, its file)], judged once the
-    # package's imported names are known (below, beside outside_entries).
-    free_landings: dict[str, list[tuple[str, str, str, str]]] = {}
+    # Root's B2 of the round-5 STACK CHANGES: the (file, key) of every sys.path entry rule (b) leaves as a residual,
+    # so the file's other entries are judged with it (the per-file loop below).
+    residual_sites: list[tuple[str, str]] = []
+    # Root's B5 of the round-5 STACK CHANGES: every tracked symlink and every sourceless .pyc (no `stem.py` beside it,
+    # never one under __pycache__, which Python does not import sourceless), judged where a directory lands.
+    unreadable_held = sorted(p for p, mode in tracked.items() if mode == "120000" or (
+        p.endswith(".pyc") and posixpath.basename(posixpath.dirname(p)) != "__pycache__" and p[:-1] not in tracked))
 
-    def parent_step_landings(literal: str) -> tuple[list[str], list[tuple[str, str]]]:
+    def parent_step_landings(literal: str) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str]], list[str]]:
         """B1's landings of a parent-step literal: from every TRACKED directory (the repository root `""` included), its
         components walked one at a time against the tracked tree, never normpath alone (root's r4 item 5: `lnk/../x`
         resolves `lnk` first). A step above the checkout, or a component that is no tracked directory, gives no landing
         from that start (root's r4 item 11); a component that is a tracked symlink (mode 120000) is returned in
-        `links`, with the start it was reached from, whichever start reaches it."""
+        `links`, with the start it was reached from, whichever start reaches it.
+
+        Root's round-5 fix of dotgithub-86 (STACK CHANGES at 2774a421f815, 2026-11-12), [I] for the undeclared twins
+        of B1 (N01u, N01mu): a process may run from a directory generated beneath a tracked one (`services/r/gen/deep`),
+        so each tracked start is also walked with up to as many untracked components beneath it as the literal's
+        leading parent steps consume; `../../../a` from `services/r/gen/deep` lands in services/a. B4 (N15, N12): a
+        walk that climbs above the checkout to a directory beside it is returned in `beside` when the checkout may
+        still be under it, a later parent step (`../other/../repo/x`) or a sibling of the checkout one level up whose
+        remaining path is a tracked directory (`../repo/packages/shared`, a link or clone of the checkout).
+        A walk from a generated start is a source of ADDED landings only (`added`): it records no link and no climb
+        beside the checkout, and apply_entry drops its landing when that is the root or code the scan excludes, so a
+        generated start never refuses an entry the tracked starts read (S3_C12, N27, RC1S b1, cli's 11-12 course fix)."""
         parts = [c for c in literal.split("/") if c not in ("", ".")]
-        landings, links = set(), []
+        leading = next((i for i, c in enumerate(parts) if c != ".."), len(parts))
+        landings, links, beside, added = set(), [], [], set()
         checkout = Path(repo).resolve().as_posix()
         names = own_names(repo)
         for start in sorted(tracked_dirs):
-            here = start.split("/") if start else []
-            above = None  # the walk's components above the checkout, relative to it: None while inside
-            for c in parts:
-                if above is not None:
-                    # Root's B2 of the slice 3 CHANGES: a step above the checkout that re-enters it by its own name
-                    # (`../repo/lib` with CI's .../repo/repo, or the checkout's own directory name) lands inside it; the
-                    # walk resumes at the root. Lexical against the actual checkout path, and one level up by any of
-                    # own_names; a directory beside the checkout, never re-entered, gives no landing from this start.
-                    above.append(c)
-                    at = posixpath.normpath(posixpath.join(checkout, *above))
-                    if at == checkout or (above == ["..", c] and c in names):
-                        above, here = None, []
-                    elif c != ".." and not checkout.startswith(at.rstrip("/") + "/"):
-                        break  # beside the checkout: not tracked here, so nothing it holds is read
-                    continue
-                if c == "..":
-                    if not here:
-                        above = [".."]  # above the checkout: read on only if the walk re-enters it
+            for generated in range(leading + 1):
+                here = (start.split("/") if start else []) + [GENERATED_CWD] * generated
+                above = None  # the walk's components above the checkout, relative to it: None while inside
+                for i, c in enumerate(parts):
+                    if above is not None:
+                        # Root's B2 of the slice 3 CHANGES: a step above the checkout that re-enters it by its own name
+                        # (`../repo/lib` with CI's .../repo/repo, or the checkout's own directory name) lands inside it;
+                        # the walk resumes at the root. Lexical against the actual checkout path, and one level up by
+                        # any of own_names.
+                        above.append(c)
+                        at = posixpath.normpath(posixpath.join(checkout, *above))
+                        if at == checkout or (above == ["..", c] and c in names):
+                            above, here = None, []
+                        elif c != ".." and not checkout.startswith(at.rstrip("/") + "/"):
+                            rest = parts[i + 1:]
+                            if not generated and (".." in rest or (above == ["..", c] and rest and "/".join(rest) in tracked_dirs)):
+                                beside.append((start, "/".join(above)))
+                            break  # beside the checkout: not tracked here, so nothing it holds is read
                         continue
-                    here.pop()
-                    continue
-                here.append(c)
-                path = "/".join(here)
-                if tracked.get(path) == "120000":
-                    links.append((path, start))
-                    break
-                if path not in tracked_dirs:
-                    break  # no such tracked directory
-            else:
-                if above is None:  # a walk that ends above the checkout lands in nothing tracked
-                    landings.add("/".join(here))
-        return sorted(landings), sorted(set(links))
+                    if c == "..":
+                        if not here:
+                            above = [".."]  # above the checkout: read on only if the walk re-enters it
+                            continue
+                        here.pop()
+                        continue
+                    if GENERATED_CWD in here:
+                        break  # a component beneath a generated directory: nothing tracked
+                    here.append(c)
+                    path = "/".join(here)
+                    if tracked.get(path) == "120000":
+                        if not generated:
+                            links.append((path, start))
+                        break
+                    if path not in tracked_dirs:
+                        break  # no such tracked directory
+                else:
+                    if above is None and GENERATED_CWD not in here:  # a walk ending above or beneath: nothing tracked
+                        (added if generated else landings).add("/".join(here))
+        return sorted(landings), sorted(set(links)), sorted(set(beside)), sorted(added - landings)
 
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
                     key: str | None = None, tail: str | None = None) -> None:
@@ -4251,28 +4301,54 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         if literal is not None:
             # The RC1A rule (root's R-c r2 review B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): a
             # parent-step literal needs no declaration. It lands, relative to the process cwd, wherever it joins from
-            # a tracked directory; every such landing is read and credited, or the entry refuses. A declaration of
-            # one (root's C13) is honoured by that reading, so its key is used here; its reach is not what is read.
+            # a tracked directory (or one generated beneath it); every such landing is read and credited, or the entry
+            # refuses. Root's B1 of the round-5 STACK CHANGES (2774a421f815): a declaration of one is validated, its
+            # reach a LIST of tracked directories (never a keyword), and each is credited WITH the landings (the cwd it
+            # claims may be one the scan cannot walk, N01/N01m); a reach that is no tracked directory refuses.
+            landings, links, beside, added = parent_step_landings(literal)
             if declared is not None:
+                reach = declared["reach"]
+                if not isinstance(reach, list):
+                    raise ValueError(f"unresolved (the parent-step sys.path entry `{key}` is declared reach \"{reach}\", "
+                                     "but a parent-step literal is declared with a reach list: the tracked directories "
+                                     f"it lands in, credited with its landings) in {where}")
+                for target in reach:
+                    if posixpath.normpath(target) not in landings and posixpath.normpath(target) not in tracked_dirs:
+                        raise ValueError(f"unresolved (the parent-step sys.path entry `{key}` is declared to reach "
+                                         f"`{target}`, which is neither one of its landings nor a tracked directory) in "
+                                         f"{where}")
                 used.add((where, key))
-            landings, links = parent_step_landings(literal)
             if links:
                 link, start = links[0]
                 raise ValueError(f"unresolved (the sys.path entry `{key}` passes through {link}, a symlink component, "
                                  f"from {start or '.'}; the scan does not follow links, so it cannot tell where the entry "
                                  f"lands) in {where}")
-            if not landings:
+            reached = sorted(set(landings) | ({posixpath.normpath(t) for t in declared["reach"]} if declared else set()))
+            tracked_reached = reached
+            # a generated start's landing is added, never refused: the root and excluded code contribute nothing
+            reached = sorted(set(reached) | {landing for landing in added if landing and not excluded(landing)})
+            if beside and reached:
+                # Root's B4 of the round-5 STACK CHANGES (N15, N12): a start whose walk climbs beside the checkout,
+                # where the checkout may still be (a later parent step, or a sibling one level up), is not dropped
+                # because another start lands: it refuses.
+                start, at = beside[0]
+                raise ValueError(f"unresolved (the sys.path entry `{key}` climbs from {start or '.'} to {at}, beside the "
+                                 "checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "
+                                 f"beside the checkout is not dropped for another start's landing) in {where}")
+            if not reached:
                 raise ValueError(f"unresolved (the sys.path entry `{key}` lands in no tracked directory: from each one "
                                  f"it joins to a path above the checkout or to none that is tracked) in {where}")
-            for landing in landings:
+            for landing in tracked_reached:
                 if landing and excluded(landing):
                     raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing}, code the scan "
                                      f"excludes, so its reads cannot be credited) in {where}")
-            for landing in landings:
-                if owner(landing) is not None:
-                    apply_entry(package, source, "dir", landing, where, what)
-                else:
-                    free_landings.setdefault(package, []).append((source, landing, key, where))
+            for landing in reached:
+                # Root's B3 of the round-5 STACK CHANGES (ruling 3 withdrawn): a package-free landing is read as a
+                # whole-directory route, as its evaluated twin is (the literal read from the file's directory), and
+                # the closure judges it; the landing is also applied as an evaluated entry, as the twin's is.
+                apply_entry(package, source, "dir", landing or ".", where, what)
+                if owner(landing) is None:
+                    edges.setdefault(source, set()).add(landing or ".")
             return
         if kind == "unknown":
             if escapes_by_text(value):
@@ -4299,9 +4375,19 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                  f"{', '.join(hits[:3])}{', ...' if len(hits) > 3 else ''}, the tracked directories ending "
                                  f"in `{'` or `'.join(tails)}`; declare it in edge_scan.computed_imports by its text as "
                                  f"written, with the directories it reaches) in {where}")
+            residual_sites.append((where, key if key is not None else value))
             return  # an entry naming no parent step, no top-level directory and no tracked directory: a residual
         if value == ".." or value.startswith("../"):
             return  # above the repository: nothing tracked is imported from there
+        # Root's B5 of the round-5 STACK CHANGES (N24, N28, and their evaluated twins N24e, N28e): a directory on the
+        # path that holds a tracked symlink or a sourceless .pyc loads what the scan does not read (the link's target,
+        # the compiled module), on every route that lands here; it refuses.
+        inner = "" if value in ("", ".") else value.rstrip("/") + "/"
+        for held in unreadable_held:
+            if held.startswith(inner):
+                form = "a symlink inside the landing" if tracked.get(held) == "120000" else "a sourceless .pyc"
+                raise ValueError(f"unresolved (the {what} {value} holds {held}, {form}: the scan reads neither a link's "
+                                 f"target nor compiled code, so what an import loads from there is unknown) in {where}")
         found = owner(value)
         if found is not None:
             # Root's B5 of the slice 3 CHANGES: an owned directory on the path imports, by name, the packages nested
@@ -4333,10 +4419,21 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # sys.path entries stay a documented residual.
             check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
             continue
-        entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+        text = read_source(repo, path, revision, environment)
+        entries, file_names, sites = python_file_facts(text, path)
         parsed_names.setdefault(package, set()).update(file_names)
+        mark = len(residual_sites)
         for kind, value, key, tail in entries:
             apply_entry(package, path, kind, value, path, key=key, tail=tail)
+        # Root's B2 of the round-5 STACK CHANGES (GENERAL, N03, N50-N53): a file is READ only when EVERY sys.path site
+        # in it resolves by a read rule. A residual entry (rule (b) above) or a site that records no entry (a
+        # reassignment, site.addsitedir, an alias of sys.path) beside an entry that resolves refuses the whole file, as
+        # main refused it; a file whose only sites are such forms stays the dated known fail-open it was.
+        unjudged = [key for _, key in residual_sites[mark:]] + unrecorded_sys_path_sites(text)
+        if unjudged and len(entries) > len(residual_sites) - mark:
+            raise ValueError(f"unresolved (the sys.path site `{unjudged[0]}` in {path} resolves by no read rule, so the "
+                             "file's other sys.path entries are not read either: a file reads only when every one of "
+                             f"its sys.path sites resolves) in {path}")
         check_python_sites(path, sites)
     # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
     # each entry relative to that config's directory, applied like a sys.path entry.
@@ -4361,7 +4458,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if d in ("", "."):
                 break
             d = posixpath.dirname(d)
-    for package in sorted(set(outside_entries) | set(free_landings)):
+    for package in sorted(outside_entries):
         entries = outside_entries.get(package, [])
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
@@ -4386,58 +4483,6 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                     if candidate in tracked or candidate in tracked_dirs:
                         edges.setdefault(source, set()).add(candidate)
                         break
-        if free_landings.get(package):
-            # Root's B4 of the slice 3 CHANGES: a package-free landing is judged by the names a PARSE of every Python
-            # file of the package imports (`import os; import vmod`, `if True: import vmod`, `try: import vmod`), the
-            # grep's names kept beside them; a file that does not parse leaves those names unknown, and refuses.
-            import ast
-            top = package_dir[package]
-            below = f"{top}/" if top not in ("", ".") else ""
-            for path in sorted(p for p in tracked if p.startswith(below) and p.endswith(".py")):
-                try:
-                    tree = ast.parse(read_source(repo, path, revision, environment))
-                except (SyntaxError, ValueError):
-                    _, landing, key, where = free_landings[package][0]
-                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, a package-free "
-                                     f"landing judged by the names {package}'s Python files import, but {path} does not "
-                                     f"parse, so its imports cannot be read) in {where}") from None
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        names |= {alias.name.split(".")[0] for alias in node.names}
-                    elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
-                        names.add(node.module.split(".")[0])
-                    elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and \
-                            isinstance(node.args[0].value, str) and getattr(node.func, "attr", getattr(
-                                node.func, "id", "")) in ("import_module", "__import__", "run_module"):
-                        if node.args[0].value and not node.args[0].value.startswith("."):
-                            names.add(node.args[0].value.split(".")[0])
-        for source, landing, key, where in free_landings.get(package, []):
-            # B1(iv), RC1A: a package-free landing is read by what the package imports from it. A module (or package
-            # directory) it resolves to that a package owns credits that package; one under a reader directory is an
-            # edge the closure follows, so its reads are credited; any other is a read nothing credits, and refuses.
-            # Root's B3 of the slice 3 CHANGES: `name.py` AND the files of a `name/` package beside it are both read
-            # (Python loads the package directory when it holds an __init__.py), so neither shadows the other here.
-            base = f"{landing}/" if landing else ""
-            for name in sorted(names):
-                stem = base + name
-                modules = sorted(({stem + ".py"} if stem + ".py" in tracked else set()) | {
-                    p for p in tracked if p.startswith(stem + "/") and p.endswith(".py")})
-                for module in modules:
-                    holder = owner(module)
-                    if holder is not None:
-                        if holder != package:
-                            deps[package].add(holder)
-                        continue
-                    if "/" in module and module.split("/")[0] in reader_dirs:
-                        edges.setdefault(source, set()).add(module)
-                        continue
-                    if module.split("/")[0] in roots:
-                        raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, where "
-                                         f"`{name}` resolves to {module}, a file under a scan root that no package owns, "
-                                         f"so its reads are not credited) in {where}")
-                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing or '.'}, "
-                                     f"a package-free landing outside every scan root and reader directory, where "
-                                     f"`{name}` resolves to {module}, whose reads are not credited) in {where}")
 
     imports: dict[str, set[str]] = {}
     unit_imports: dict[str, set[str]] = {}  # a path outside every package -> the reader units whose files reach it

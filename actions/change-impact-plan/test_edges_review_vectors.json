@@ -10467,14 +10467,14 @@
   },
   "RC1A_py_sys_path_mid_path_dotdot_through_real_directory": {
    "question": "R-c1(a) B1(ii) twin, root r4 item 5",
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../tools/../packages/shared\"]\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
    "unit": "r",
-   "note": "Root r4 item 5's ACCEPT: the mid-path `..` passes through tools, a real tracked directory (no link component), so the unnormalised walk and normpath agree: the one landing is packages/shared, credited, reads [shared]. Same files and links as RC1A_refuse_symlink_component_hidden_by_normpath; one property: the component before the `..` is a real directory, not a link.",
+   "note": "Root r4 item 5's ACCEPT: the mid-path `..` passes through tools, a real tracked directory (no link component), so the unnormalised walk and normpath agree: the one landing is packages/shared, credited, reads [shared]. Same files and links as RC1A_refuse_symlink_component_hidden_by_normpath; one property: the component before the `..` is a real directory, not a link. Round-5 B4 (2026-11-12): the walk climbs from . to ../../tools, beside the checkout, before re-entering; B4 refuses a climb beside the checkout without a seen re-entry, so this ACCEPT now reads refuse (B4 cost, truth [shared] unchanged; root to rule).",
    "cfg": {
     "edge_scan": {
      "roots": [
@@ -10499,28 +10499,8 @@
    "symlinks": {
     "tools/lnk": "../packages/shared"
    },
-   "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
-    "cfg": {
-     "edge_scan": {
-      "roots": [
-       "services",
-       "apps"
-      ],
-      "reader_dirs": [
-       "scripts",
-       "tools"
-      ],
-      "reader_job": "root",
-      "exclude": [
-       ".githooks",
-       ".github"
-      ]
-     }
-    }
-   },
-   "ablation_kind": "construct+declaration",
-   "r5": true
+   "r5": true,
+   "expected_rule": "where it may re-enter the checkout by a path the scan cannot see"
   },
   "RC1A_py_sys_path_lands_in_shared_beside_normpath_trap": {
    "question": "R-c1(a) B1(ii) twin",
@@ -10667,7 +10647,7 @@
   },
   "RC1A_refuse_package_free_landing_whose_reads_are_not_credited": {
    "question": "R-c1(a) B1(iv)",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../vendor/lib\"]\nimport vmod\n",
    "truth": [
@@ -10697,8 +10677,28 @@
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
     "tools/lib/tmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n"
    },
-   "expected_rule": "a package-free landing",
-   "r5": true
+   "r5": true,
+   "ablation": {
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport vmod\n",
+    "cfg": {
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "scripts",
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".githooks",
+       ".github"
+      ]
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
   },
   "RC1A_py_sys_path_parent_step_literal_lands_in_package_free_reader_dir": {
    "question": "R-c1(a) B1(iv) twin",
@@ -10757,7 +10757,7 @@
   },
   "RC1A_ancestor_literal_two_landings_both_credited": {
    "question": "R-c1(a) B1, root r3 item 3",
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../..\"]\nimport packages.shared.shared_mod\n",
    "truth": [
@@ -10824,65 +10824,8 @@
     "packages/shared/shared_mod.py": "X = 1\n",
     "services/packages/shared/shared_mod.py": "X = 3\n"
    },
-   "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport packages.shared.shared_mod\n",
-    "cfg": {
-     "workspace": {
-      "type": "declared",
-      "packages": {
-       "r": {
-        "dir": "services/r",
-        "deps": []
-       },
-       "a": {
-        "dir": "services/a",
-        "deps": []
-       },
-       "b": {
-        "dir": "services/b",
-        "deps": []
-       },
-       "nest": {
-        "dir": "services/b/worker",
-        "deps": []
-       },
-       "b2": {
-        "dir": "services/b2",
-        "deps": []
-       },
-       "web": {
-        "dir": "apps/web",
-        "deps": []
-       },
-       "shared": {
-        "dir": "packages/shared",
-        "deps": []
-       },
-       "pk2": {
-        "dir": "services/packages",
-        "deps": []
-       }
-      }
-     },
-     "edge_scan": {
-      "roots": [
-       "services",
-       "apps"
-      ],
-      "reader_dirs": [
-       "scripts",
-       "tools"
-      ],
-      "reader_job": "root",
-      "exclude": [
-       ".githooks",
-       ".github"
-      ]
-     }
-    }
-   },
-   "ablation_kind": "construct+declaration",
-   "r5": true
+   "r5": true,
+   "expected_rule": "the repository root or above it"
   },
   "RC1A_ancestor_literal_refuse_one_landing_uncredited": {
    "question": "R-c1(a) B1(iv), root r3 item 3",
@@ -10915,7 +10858,7 @@
     "packages/shared/shared_mod.py": "X = 1\n",
     "services/packages/shared/shared_mod.py": "X = 3\n"
    },
-   "expected_rule": "that no package owns",
+   "expected_rule": "the repository root or above it",
    "r5": true
   },
   "RC1B_bare_name_undeclared": {
@@ -16570,7 +16513,7 @@
   },
   "RC1S_py_sys_path_single_parent_literal_b1": {
    "question": "R-c1(a) B1 spelling, root r4 item 4",
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"..\"]\nimport shared.shared_mod\n",
    "truth": [
@@ -16598,32 +16541,12 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared.shared_mod\n",
-    "cfg": {
-     "edge_scan": {
-      "roots": [
-       "services",
-       "apps"
-      ],
-      "reader_dirs": [
-       "scripts",
-       "tools"
-      ],
-      "reader_job": "root",
-      "exclude": [
-       ".githooks",
-       ".github"
-      ]
-     }
-    }
-   },
-   "ablation_kind": "construct+declaration",
-   "r5": true
+   "r5": true,
+   "expected_rule": "the repository root or above it"
   },
   "RC1S_py_sys_path_three_parent_literal_b1": {
    "question": "R-c1(a) B1 spelling, root r4 item 4",
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../../..\"]\nimport packages.shared.shared_mod\n",
    "truth": [
@@ -16651,28 +16574,8 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "ablation": {
-    "src": "import os\nimport sys\nfrom pathlib import Path\nimport packages.shared.shared_mod\n",
-    "cfg": {
-     "edge_scan": {
-      "roots": [
-       "services",
-       "apps"
-      ],
-      "reader_dirs": [
-       "scripts",
-       "tools"
-      ],
-      "reader_job": "root",
-      "exclude": [
-       ".githooks",
-       ".github"
-      ]
-     }
-    }
-   },
-   "ablation_kind": "construct+declaration",
-   "r5": true
+   "r5": true,
+   "expected_rule": "the repository root or above it"
   },
   "RC1S_py_sys_path_dot_slash_parent_literal_b1": {
    "question": "R-c1(a) B1 spelling, root r4 item 4",
@@ -17062,7 +16965,7 @@
   },
   "RC1A_residual_generated_cwd_directory": {
    "question": "R-c1(a) B1, root r4 item 11",
-   "expect": "residual",
+   "expect": "refuse",
    "ext": "py",
    "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../..\"]\nimport shared_mod\n",
    "truth": [
@@ -17090,9 +16993,8 @@
    "files": {
     "packages/shared/shared_mod.py": "X = 1\n"
    },
-   "review_by": "2026-11-20",
-   "reads": [],
-   "r5": true
+   "r5": true,
+   "expected_rule": "the repository root or above it"
   },
   "RC1B_core_cost_centre_bare_app_undeclared": {
    "question": "R-c1(a) B2, DATED first rule commit (11-14)",
@@ -20812,7 +20714,7 @@
   },
   "R86S3_C12_dotdot_only_nested": {
    "question": "dotgithub-86 slice 3 CHANGES B5",
-   "expect": "read",
+   "expect": "refuse",
    "ext": "py",
    "src": "import sys\nsys.path.insert(0, \"..\")\nimport worker.m\n",
    "truth": [
@@ -20840,27 +20742,7 @@
    "files": {
     "services/b/worker/m.py": "X = 1\n"
    },
-   "ablation": {
-    "src": "import sys\nimport worker.m\n",
-    "cfg": {
-     "edge_scan": {
-      "roots": [
-       "services",
-       "apps"
-      ],
-      "reader_dirs": [
-       "scripts",
-       "tools"
-      ],
-      "reader_job": "root",
-      "exclude": [
-       ".githooks",
-       ".github"
-      ]
-     }
-    }
-   },
-   "ablation_kind": "construct+declaration"
+   "expected_rule": "the repository root or above it"
   },
   "R86S3_C3_package_dir_beats_module_in_reader_landing": {
    "question": "dotgithub-86 slice 3 CHANGES B3",
@@ -20918,7 +20800,7 @@
   },
   "R86S3_C4_sibling_semicolon_import": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
    "truth": [
@@ -20947,12 +20829,11 @@
     "services/r/y.py": "import os; import vmod\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
     "packages/shared/x.py": "X = 1\n"
-   },
-   "expected_rule": "a package-free landing"
+   }
   },
   "R86S3_C4b_sibling_if_oneliner": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
    "truth": [
@@ -20981,12 +20862,11 @@
     "services/r/y.py": "if True: import vmod\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
     "packages/shared/x.py": "X = 1\n"
-   },
-   "expected_rule": "a package-free landing"
+   }
   },
   "R86S3_C4c_sibling_try_oneliner": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
    "truth": [
@@ -21015,8 +20895,7 @@
     "services/r/y.py": "try: import vmod\nexcept ImportError: pass\n",
     "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
     "packages/shared/x.py": "X = 1\n"
-   },
-   "expected_rule": "a package-free landing"
+   }
   },
   "R86S3_C4d_reader_landing_semicolon": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
@@ -21178,7 +21057,7 @@
   },
   "R86S3_C4e_unparseable_package_file_refuses": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
-   "expect": "refuse",
+   "expect": "read",
    "ext": "py",
    "src": "import sys\nsys.path[:0] = [\"../../tools/lib\"]\n",
    "truth": [
@@ -21207,8 +21086,7 @@
     "services/r/y.py": "import os; import vmod\ndef broken(:\n    pass\n",
     "tools/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / \"packages/shared/x.py\").read_text()\n",
     "packages/shared/x.py": "X = 1\n"
-   },
-   "expected_rule": "does not parse, so its imports cannot be read"
+   }
   },
   "R86S23_declared_parent_step_literal_reads_by_landings": {
    "question": "dotgithub-86 slice 2 + slice 3 stack: parent step before no tail",
@@ -21294,6 +21172,2270 @@
     "packages/shared/shared_mod.py": "X = 1\n"
    },
    "expected_rule": "has no tail the scan reads"
+  },
+  "R86S5F_N01_declared_parent_literal_generated_cwd_reach_ignored": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../a\")\nimport amod\n",
+   "truth": [
+    "a"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../../a\"",
+       "reach": [
+        "services/a"
+       ],
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "a/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01_declared_parent_literal_generated_cwd_reach_ignored (/private/tmp/r4pr86s23/fx/N01_declared_parent_literal_generated_cwd_reach_ignored); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../../../a, the re / REFUSE: unresolved (a sys.path entry that may leave its pack / [].",
+   "ablation": {
+    "src": "import sys\nimport amod\n",
+    "cfg": {
+     "schema": 1,
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "plug": {
+        "dir": "packages/shared/plugins",
+        "deps": []
+       }
+      }
+     },
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [
+       "tools"
+      ],
+      "reader_job": "root",
+      "exclude": [
+       ".github"
+      ]
+     },
+     "jobs": {
+      "root": {
+       "packages": []
+      }
+     }
+    }
+   },
+   "ablation_kind": "construct+declaration"
+  },
+  "R86S5F_N01u_undeclared_twin": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../a\")\nimport amod\n",
+   "truth": [
+    "a"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "a/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01u_undeclared_twin (/private/tmp/r4pr86s23/fx/N01u_undeclared_twin); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../../../a, the re / [] / []."
+  },
+  "R86S5F_N01m_declared_ratified_residual_input": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../..\"]\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../..\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01m_declared_ratified_residual_input (/private/tmp/r4pr86s23/fx/N01m_declared_ratified_residual_input); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../.., the reposit / REFUSE: unresolved (a sys.path entry that may leave its pack / [].",
+   "expected_rule": "the repository root or above it"
+  },
+  "R86S5F_N01mu_ratified_residual_input_undeclared": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path[:0] = [\"../..\"]\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01mu_ratified_residual_input_undeclared (/private/tmp/r4pr86s23/fx/N01mu_ratified_residual_input_undeclared); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../.., the reposit / [] / [].",
+   "expected_rule": "the repository root or above it"
+  },
+  "R86S5F_N01d_declared_literal_reach_not_a_landing_tracked_cwd": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../a\")\nimport amod\n",
+   "truth": [],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../../a\"",
+       "reach": [
+        "services/nowhere"
+       ],
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "a/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N01d_declared_literal_reach_not_a_landing_tracked_cwd (/private/tmp/r4pr86s23/fx/N01d_declared_literal_reach_not_a_landing_tracked_cwd); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (services/r/x.py names ../../../a, the re / REFUSE: unresolved (a sys.path entry that may leave its pack / [].",
+   "expected_rule": "neither one of its landings nor a tracked directory"
+  },
+  "R86S5F_N10_declared_parent_literal_with_keyword_reach": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../packages/shared\"",
+       "reach": "package",
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N10_declared_parent_literal_with_keyword_reach (/private/tmp/r4pr86s23/fx/N10_declared_parent_literal_with_keyword_reach); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / REFUSE: unresolved (a sys.path entry that may leave its pack / ['plug', 'shared'].",
+   "expected_rule": "but a parent-step literal is declared with a reach list"
+  },
+  "R86S5F_N03_declared_literal_beside_undeclared_name": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\np = \"worker\"\nsys.path[:0] = [\"../../packages/shared\", p]\nimport shared_mod\nimport m\n",
+   "truth": [
+    "nest",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../packages/shared\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N03_declared_literal_beside_undeclared_name (/private/tmp/r4pr86s23/fx/N03_declared_literal_beside_undeclared_name); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / REFUSE: unresolved (a sys.path entry that may leave its pack / ['plug', 'shared'].",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R86S5F_N50_undeclared_literal_plus_name_kfo": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\np = \"worker\"\nsys.path.insert(0, p)\nimport shared_mod\nimport m\n",
+   "truth": [
+    "nest",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N50_undeclared_literal_plus_name_kfo (/private/tmp/r4pr86s23/fx/N50_undeclared_literal_plus_name_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared'].",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R86S5F_N51_undeclared_literal_plus_empty_kfo": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nsys.path.insert(0, \"\")\nimport shared_mod\nimport m\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N51_undeclared_literal_plus_empty_kfo (/private/tmp/r4pr86s23/fx/N51_undeclared_literal_plus_empty_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared'].",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R86S5F_N52_undeclared_literal_plus_addsitedir_kfo": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys, site\nsys.path.insert(0, \"../../packages/shared\")\nsite.addsitedir(\"worker\")\nimport shared_mod\nimport m\n",
+   "truth": [
+    "nest",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N52_undeclared_literal_plus_addsitedir_kfo (/private/tmp/r4pr86s23/fx/N52_undeclared_literal_plus_addsitedir_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared'].",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R86S5F_N53_declared_literal_plus_extend_name_kfo": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nX = [\"worker\"]\nsys.path.extend(X)\nimport shared_mod\nimport m\n",
+   "truth": [
+    "nest",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../packages/shared\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "probe",
+       "review_by": "2026-11-20"
+      }
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N53_declared_literal_plus_extend_name_kfo (/private/tmp/r4pr86s23/fx/N53_declared_literal_plus_extend_name_kfo); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / REFUSE: unresolved (a sys.path entry that may leave its pack / ['plug', 'shared'].",
+   "expected_rule": "a file reads only when every one of its sys.path sites resolves"
+  },
+  "R86S5F_N12_symlink_beside_checkout_reenters": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../repo/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "services/repo/packages/shared/keep.txt": "k\n",
+    "services/q/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N12_symlink_beside_checkout_reenters (/private/tmp/r4pr86s23/fx/N12_symlink_beside_checkout_reenters); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / [].",
+   "expected_rule": "where it may re-enter the checkout by a path the scan cannot see"
+  },
+  "R86S5F_N15_beside_dir_then_dotdot_reenters": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../other/../repo/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "services/other/keep.txt": "k\n",
+    "services/repo/packages/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N15_beside_dir_then_dotdot_reenters (/private/tmp/r4pr86s23/fx/N15_beside_dir_then_dotdot_reenters); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / [].",
+   "expected_rule": "where it may re-enter the checkout by a path the scan cannot see"
+  },
+  "R86S5F_N18_import_module_keyword_name": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys, importlib\nsys.path[:0] = [\"../../vendor/lib\"]\nimportlib.import_module(name=\"vmod\")\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N18_import_module_keyword_name (/private/tmp/r4pr86s23/fx/N18_import_module_keyword_name); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+  },
+  "R86S5F_N19_getattr_import_module": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys, importlib\nsys.path[:0] = [\"../../vendor/lib\"]\ngetattr(importlib, \"import_module\")(\"vmod\")\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N19_getattr_import_module (/private/tmp/r4pr86s23/fx/N19_getattr_import_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+  },
+  "R86S5F_N20_exec_import_string": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\nexec(\"import vmod\")\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N20_exec_import_string (/private/tmp/r4pr86s23/fx/N20_exec_import_string); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+  },
+  "R86S5F_N54_find_spec_exec_module": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\nimport importlib.util\nspec = importlib.util.find_spec(\"vmod\")\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N54_find_spec_exec_module (/private/tmp/r4pr86s23/fx/N54_find_spec_exec_module); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / []."
+  },
+  "R86S5F_N24_sourceless_pyc_in_landing": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.pyc": "not compiled code: the scan reads only that the tracked path is a sourceless .pyc\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N24_sourceless_pyc_in_landing (/private/tmp/r4pr86s23/fx/N24_sourceless_pyc_in_landing); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / [] / [].",
+   "expected_rule": "a sourceless .pyc"
+  },
+  "R86S5F_N24e_evaluated_twin_sourceless_pyc": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.pyc": "not compiled code: the scan reads only that the tracked path is a sourceless .pyc\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N24e_evaluated_twin_sourceless_pyc (/private/tmp/r4pr86s23/fx/N24e_evaluated_twin_sourceless_pyc); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: [] / [] / [].",
+   "expected_rule": "a sourceless .pyc"
+  },
+  "R86S5F_N28_symlink_inside_owned_landing": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nimport lnk.amod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "symlinks": {
+    "packages/shared/lnk": "../../services/a"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N28_symlink_inside_owned_landing (/private/tmp/r4pr86s23/fx/N28_symlink_inside_owned_landing); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: REFUSE: unresolved (a sys.path entry that may leave its pack / ['shared'] / ['plug', 'shared'].",
+   "expected_rule": "a symlink inside the landing"
+  },
+  "R86S5F_N28e_evaluated_twin_symlink_inside_owned": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport lnk.amod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "symlinks": {
+    "packages/shared/lnk": "../../services/a"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture N28e_evaluated_twin_symlink_inside_owned (/private/tmp/r4pr86s23/fx/N28e_evaluated_twin_symlink_inside_owned); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: ['shared'] / ['shared'] / ['plug', 'shared'].",
+   "expected_rule": "a symlink inside the landing"
+  },
+  "R86S5F_D04a_undeclared_join_bare_then_name": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os, sys\nPLUGIN = os.environ.get(\"PLUGIN\", \"plugins\")\nsys.path.insert(0, os.path.join(\"shared\", PLUGIN))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture D04a_undeclared_join_bare_then_name (/private/tmp/r4pr86s23/fx/D04a_undeclared_join_bare_then_name); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: None / None / REFUSE: unresolved (an undeclared sys.path entry `os.path.jo.",
+   "expected_rule": "may land in"
+  },
+  "R86S5F_D04b_undeclared_bare_concat": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os, sys\nSUFFIX = os.environ.get(\"SUFFIX\", \"\")\nsys.path.insert(0, \"shared\" + SUFFIX)\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "refuse",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12), root's fixture D04b_undeclared_bare_concat (/private/tmp/r4pr86s23/fx/D04b_undeclared_bare_concat); truth = root's T2 any-cwd runtime truth (H when T2 is absent). Main, dcf6545 and 2774a421 read: None / None / REFUSE: unresolved (an undeclared sys.path entry `\"shared\" +.",
+   "expected_rule": "may land in"
+  },
+  "KFO_S5F_N39_sys_space_bare_name": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys .path.insert(0, \"shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
+   "known_fail_open": {
+    "gap": "S5F",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   }
+  },
+  "KFO_S5F_D04c_undeclared_dirname_bare": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.dirname(\"shared/x\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
+   "known_fail_open": {
+    "gap": "S5F",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   }
+  },
+  "KFO_S5F_D04d_undeclared_Path_parent_bare": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(\"shared/x\").parent))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
+   "known_fail_open": {
+    "gap": "S5F",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   }
+  },
+  "KFO_S5F_D04e_undeclared_slice_bare": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"shared_x\"[:-2])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
+   "known_fail_open": {
+    "gap": "S5F",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   }
+  },
+  "KFO_S5F_D04f_undeclared_replace_bare": {
+   "question": "dotgithub-86 round-5 STACK CHANGES fix",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"shxred\".replace(\"x\", \"a\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "services/a/amod.py": "X = 1\n",
+    "services/b/keep.txt": "k\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n"
+   },
+   "expect": "read",
+   "note": "root's round-5 STACK CHANGES (lanes/root/reviews/dotgithub-86-1112.md, STACK CHANGES at 2774a421f815, 14:27 2026-11-12): a dated known fail-open, [] on main, dcf6545 and 2774a421; the form records no entry the scan reads (a bare name the grep and the parse set miss, or a tail form outside the listed ones), and the file has no other sys.path site, so B2 does not refuse it.",
+   "known_fail_open": {
+    "gap": "S5F",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   }
   }
  }
 }

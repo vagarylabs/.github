@@ -1031,41 +1031,90 @@ class EdgesTest(unittest.TestCase):
                           "T37_fstring_computed_prefix_not_root", "V45_py_parts_slice_head", "V46_py_regex_head",
                           "V47_py_split_head_contract", "V48_py_literal_read_then_parent"])
 
-    def main_reader(self):
-        """MAIN's edges.py as a module, from the pinned blob MAIN_EDGES_BLOB in this clone's object store. Fails, never
-        skips, when the clone cannot show it (origin/main absent: planner-tests checks out with fetch-depth 0), when
-        main's edges.py moved under this branch (re-derive the gate, re-pin), or when the pinned text equals the head's
-        (the gate would compare a reader with itself). The module's __file__ is a path beside plan.py that is never
-        written, so main's lazy `_plan()` resolves to the plan.py this suite already imported."""
+    def pinned_main_source(self, head_source, pin):
+        """The text of MAIN's edges.py the gate compares the head's with: the blob `pin` (MAIN_EDGES_BLOB) from this
+        clone's object store. Fails, never skips, when the clone cannot show it (origin/main absent: planner-tests checks
+        out with fetch-depth 0), when main's edges.py moved under this branch (re-derive the gate, re-pin), when the head
+        IS main's reader but the pin names no edges.py main ever carried, or when the pinned text equals the head's (the
+        gate would compare a reader with itself). `head_source` is the head reader's text; main_reader passes the real
+        one, test_main_pin_resolves_when_the_head_is_main drives the head == main branch with main's own.
+        Root's G1 of R6-1 (2026-11-12): `git -C <action dir> rev-list -- <path>` resolves the path against the action
+        directory and returned 0 commits for a repo-root path, so the head == main branch could never pass (the day #86
+        lands, red on main and on every PR leaving edges.py alone): the pathspec is `:(top)`-anchored."""
         here = Path(E.__file__).resolve().parent
         git = ["git", "-C", str(here)]
-        head_blob = subprocess.check_output([*git, "hash-object", "--", E.__file__], text=True).strip()
+        head_blob = subprocess.check_output([*git, "hash-object", "--stdin"], input=head_source).decode().strip()
         live = subprocess.run([*git, "rev-parse", "--verify", "-q", f"origin/main:{MAIN_EDGES_PATH}"],
                               capture_output=True, text=True)
         self.assertEqual(live.returncode, 0, "origin/main is not in this clone, so the gate cannot read main's reader: "
                                              "planner-tests checks out with fetch-depth 0")
         live_blob = live.stdout.strip()
         if live_blob != head_blob:
-            self.assertEqual(live_blob, MAIN_EDGES_BLOB, "main's edges.py moved under this branch: re-derive the "
-                                                         "no-regression gate against it and re-pin MAIN_EDGES_BLOB")
+            self.assertEqual(live_blob, pin, "main's edges.py moved under this branch: re-derive the no-regression gate "
+                                             "against it and re-pin MAIN_EDGES_BLOB")
         else:
             # The head IS main's reader (main itself, or a branch that changes no reader): the pin must name a former
             # main edges.py, so the gate still compares two real readers and the pin cannot point at nothing.
-            commits = subprocess.check_output([*git, "rev-list", "origin/main", "--", MAIN_EDGES_PATH], text=True).split()
-            former = {subprocess.check_output([*git, "rev-parse", f"{c}:{MAIN_EDGES_PATH}"], text=True).strip()
-                      for c in commits}
-            self.assertIn(MAIN_EDGES_BLOB, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
-        shown = subprocess.run([*git, "cat-file", "-p", MAIN_EDGES_BLOB], capture_output=True)
-        self.assertEqual(shown.returncode, 0, f"the pinned main blob {MAIN_EDGES_BLOB} is not in this clone's object store")
-        text = shown.stdout
-        self.assertNotEqual(text, Path(E.__file__).read_bytes(),
-                            "floor: the pinned main reader and the head's are the same source, the gate would compare a "
-                            "reader with itself")
+            former = self.former_main_blobs()
+            self.assertIn(pin, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
+        shown = subprocess.run([*git, "cat-file", "-p", pin], capture_output=True)
+        self.assertEqual(shown.returncode, 0, f"the pinned main blob {pin} is not in this clone's object store")
+        self.assertNotEqual(shown.stdout, head_source, "floor: the pinned main reader and the head's are the same source, "
+                                                       "the gate would compare a reader with itself")
+        return shown.stdout
+
+    def former_main_blobs(self):
+        """Every blob of MAIN_EDGES_PATH origin/main ever carried, in history order (the live one first): the set the
+        head == main branch of pinned_main_source resolves MAIN_EDGES_BLOB in. The pathspec is anchored at the top of
+        the work tree (`:(top)`), so the command reads the same from the action directory as from the repo root."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        commits = subprocess.check_output([*git, "rev-list", "origin/main", "--", f":(top){MAIN_EDGES_PATH}"],
+                                          text=True).split()
+        blobs = []
+        for c in commits:
+            blob = subprocess.check_output([*git, "rev-parse", f"{c}:{MAIN_EDGES_PATH}"], text=True).strip()
+            if blob not in blobs:
+                blobs.append(blob)
+        return blobs
+
+    def main_reader(self):
+        """MAIN's edges.py as a module, from the pinned blob MAIN_EDGES_BLOB (pinned_main_source). The module's __file__
+        is a path beside plan.py that is never written, so main's lazy `_plan()` resolves to the plan.py this suite
+        already imported."""
+        here = Path(E.__file__).resolve().parent
+        text = self.pinned_main_source(Path(E.__file__).read_bytes(), MAIN_EDGES_BLOB)
         module = types.ModuleType("edges_main")
         module.__file__ = str(here / f"edges_main_{MAIN_EDGES_BLOB[:12]}.py")
         exec(compile(text, module.__file__, "exec"), module.__dict__)
         module.today = E.today
         return module
+
+    def test_main_pin_resolves_when_the_head_is_main(self):
+        """Root's G1 of R6-1 (2026-11-12): the head == main branch of the pin, driven. With main's own edges.py as the
+        head source and a FORMER main blob as the pin, pinned_main_source resolves the pin (it is in origin/main's
+        history of the file) and returns its text; with a blob main never carried (the head's own, while it differs
+        from main's) it fails naming the pin; and the live pin MAIN_EDGES_BLOB is itself a blob main carried. The
+        history read from the action directory holds more than one blob: the 0-commit read of the G1 bug fails here."""
+        here = Path(E.__file__).resolve().parent
+        git = ["git", "-C", str(here)]
+        former = self.former_main_blobs()
+        self.assertGreater(len(former), 1, f"origin/main's history of {MAIN_EDGES_PATH} read from the action directory "
+                                           f"holds {len(former)} blob(s): the pathspec is not anchored at the top")
+        self.assertIn(MAIN_EDGES_BLOB, former, "MAIN_EDGES_BLOB names no edges.py main ever carried")
+        live_blob = subprocess.check_output([*git, "rev-parse", f"origin/main:{MAIN_EDGES_PATH}"], text=True).strip()
+        self.assertEqual(former[0], live_blob)
+        main_source = subprocess.check_output([*git, "cat-file", "-p", live_blob])
+        older = next(blob for blob in former if blob != live_blob)
+        self.assertEqual(self.pinned_main_source(main_source, older),
+                         subprocess.check_output([*git, "cat-file", "-p", older]))
+        head_blob = subprocess.check_output([*git, "hash-object", "--", E.__file__], text=True).strip()
+        if head_blob not in former:  # the head changes the reader (this branch does): a pin main never carried fails
+            with self.assertRaisesRegex(AssertionError, "names no edges.py main ever carried"):
+                self.pinned_main_source(main_source, head_blob)
+        # The pin equal to the head source is the floor, not a resolution.
+        with self.assertRaisesRegex(AssertionError, "compare a reader with itself"):
+            self.pinned_main_source(main_source, live_blob)
 
     # Root's round-6 inputs where main refuses and the head reads its truth: the control proving the two readers the gate
     # compares differ, so the gate cannot pass by loading the head twice.

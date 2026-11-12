@@ -2590,8 +2590,13 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #     `runpy.run_path` and `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the
 #     declaration, and one whose text holds a parent step or names a root or outside directory refuses even declared.
 #     The same holds in a reached Python file.
-# The lines a package Python file can change its import path or load a module by name or path on.
-PY_FACTS_GREP = r"sys\.path|import_module|__import__|spec_from_file_location|run_path|run_module|exec[[:space:]]*\("
+# The tokens a Python file can change its import path, or load a module by name or path, through (R6-2, root's ruling of
+# 2026-11-12, fail-closed by token): every file holding one is read by python_file_facts, whose capability scan judges
+# each occurrence (a file with the token in a comment or a string is read and found clean). POSIX ERE: `[^A-Za-z0-9_]`
+# bounds a word (git grep -E has no `\b`), so `system` and `website` are not listed; `PYTHONPATH` is listed anywhere.
+PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
+                 r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir)([^A-Za-z0-9_]|$)"
+                 r"|PYTHONPATH")
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
@@ -3079,6 +3084,14 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
 
     names: set[str] = set()
     sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None, the rule-6 text or None)
+    # R6 (root's ruling of 2026-11-12, fail-closed by token, R6-2): every node a recording branch below UNDERSTOOD, with
+    # its whole subtree (the `sys.path` it mutated, the `importlib` it called through). A capability occurrence the
+    # scan below finds outside this set is consumed by no read rule, and the file refuses at the single refuse point.
+    consumed: set[int] = set()
+
+    def consume(node) -> None:
+        consumed.update(id(sub) for sub in ast.walk(node))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
@@ -3087,67 +3100,247 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
         elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
+            consume(node)
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in node.targets):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
+            consume(node)
         elif isinstance(node, ast.Call):
             f, name = node.func, call_name(node.func)
             if isinstance(f, ast.Attribute) and is_sys_path(f.value):
                 if f.attr == "insert" and len(node.args) == 2:
                     entry(node.args[1])
+                    consume(node)
                 elif f.attr == "append" and len(node.args) == 1:
                     entry(node.args[0])
+                    consume(node)
                 elif f.attr == "extend" and len(node.args) == 1:
                     for item in (node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]):
                         entry(item)
+                    consume(node)
             elif name in ("import_module", "__import__", "run_module") and node.args:
                 arg = node.args[0]
                 looped = loop_literal_names(node, arg)
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    names.add(arg.value.split(".")[0])
+                    # A literal naming a capability module (`__import__("sys").path`) is a binding of it, judged by
+                    # the R6 scan below, never a module imported by name.
+                    if arg.value.split(".")[0] not in CAPABILITY_MODULES:
+                        names.add(arg.value.split(".")[0])
+                        consume(node)
                 elif looped is not None:
                     names |= {value.split(".")[0] for value in looped}  # resolved by name, like any import
+                    consume(node)
                 else:
                     sites.append(("module", source(arg), None, None, None))
+                    consume(node)
             elif name in ("spec_from_file_location", "run_path"):
                 arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
                     if name == "spec_from_file_location" else (node.args[0] if node.args else None)
                 if arg is not None:
                     sites.append(path_site(arg))
+                    consume(node)
             elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
                 inner = node.args[0]  # exec(open(p).read())
                 if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
                         and call_name(inner.func.value.func) == "open" and inner.func.value.args:
                     arg = inner.func.value.args[0]
                     sites.append(path_site(arg))
+                    consume(node)
+    unconsumed = capability_occurrences(tree, text, parent, consumed)
+    if unconsumed:
+        lineno, segment = unconsumed[0]
+        raise ValueError(f"unresolved (the path-mutation capability `{segment}` on line {lineno} of {path} is consumed by "
+                         f"no read rule; a file reads only when every one is) in {path}")
     return entries, names, sites
 
 
-def unrecorded_sys_path_sites(text: str) -> list[str]:
-    """The sys.path sites python_file_facts records no entry for (root's B2 of the dotgithub-86 round-5 STACK CHANGES,
-    2026-11-12): `sys.path = [...]` (a reassignment), `site.addsitedir(x)` and `p = sys.path` (an alias whose mutations
-    are not followed), each by its source text. A file that does not parse has none here (python_file_facts judges it)."""
-    import ast
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return []
+# R6-2 (root's ruling of 2026-11-12, fail-closed by token; cli's R6 design accepted 16:44): the modules whose binding is a
+# path-mutation capability, each with the family the scan judges it under. `sys` is read by rule 5 below; `site`,
+# `importlib`, `runpy` and `builtins` are read only through the recording branches of python_file_facts.
+CAPABILITY_MODULES = {"sys": "sys", "site": "site", "importlib": "loader", "runpy": "loader", "builtins": "loader"}
+# The attributes of `sys` that reach the import path (root's rule 5 twins): a use of a sys-bound name as any of these,
+# or as any dunder (`sys.__dict__`), is a path reach; every other attribute (`sys.exit`, `sys.argv`, `sys.stderr`) is not.
+SYS_PATH_ATTRS = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache"})
+# The loader calls, by name or attribute: each is a load the recording branches read (a consumed call) or a refusal.
+LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "spec_from_file_location",
+                          "module_from_spec", "SourceFileLoader", "addsitedir"})
+EXEC_CALLS = frozenset({"exec", "eval", "compile"})
 
-    def is_sys_path(node):
-        return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and \
-            node.value.id == "sys"
-    found = []
+
+def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) -> list[tuple[int, str]]:
+    """Every path-mutation capability occurrence in one parsed Python file that no read rule consumed, each as (line, the
+    source segment, whitespace collapsed), in file order (R6-2 of #86, root's ruling of 2026-11-12: a file reads only when
+    every one of them is consumed; the first one names the refusal). The kinds, root's B8 eleven forms among them:
+    - SYS-BIND: `import sys` under any alias, `from sys import ...` (any name, any alias, `*`), `__import__("sys")` and
+      `import_module("sys")`, a name literally called `sys` imported from ANY module (root's dated residual: an alias
+      re-exported under another name stays unseen), and `del` or a rebinding of a sys-bound name. Rule 5 (root's (i)):
+      the binding is consumed when the name is used at least once and EVERY use is an attribute read outside
+      SYS_PATH_ATTRS and the dunders, or sits inside a consumed recording branch (`sys.path.insert(0, x)` read by rule
+      6); a name that is aliased (`s = sys`), passed (`getattr(sys, n)`, `vars(sys)`, `dir(sys)`, `setattr(sys, ...)`),
+      subscripted, deleted, rebound or never used (a dead import, root's (ii)) is not. `from sys import argv` is the
+      attribute read itself: consumed when the bound name is used at least once; `from sys import path` (any of
+      SYS_PATH_ATTRS, any alias) and `from sys import *` never are.
+    - SYS-PATH-REACH: `.path`, `.modules`, `.meta_path`, `.path_hooks`, `.path_importer_cache` or a dunder on a
+      sys expression (a sys-bound name, `__import__("sys")`, `os.sys`) outside a consumed branch: `p = sys.path`,
+      `sys.path.remove(x)`, `sys.path.insert(*args)`, `list.insert(sys.path, 0, x)`, `sys.path.__iadd__([x])`,
+      `sys.path.__setitem__(...)`, `sys.modules["sys"].path`, `sys.path = [...]`, `getattr(sys, "path")`.
+    - SITE: `import site` under any alias, `from site import ...`, any use of a site-bound name, `addsitedir` by any
+      name or attribute. No rule reads them.
+    - LOADER: `import importlib` / `runpy` / `builtins` under any alias or submodule, `from importlib[.util] import ...`,
+      a use of a loader-bound name outside a consumed call (`importlib.util.find_spec`, `importlib.reload`,
+      `builtins.exec`), a loader call by attribute on anything (`.module_from_spec(...)`, `.run_path(...)`), and
+      `exec` / `eval` / `compile` as a bare name (`exec("import x")`, `exec(__doc__)`), outside a consumed branch
+      (`exec(open(p).read())` is read by rule 8). A loader binding is consumed when every use of it sits inside a
+      consumed call and there is at least one.
+    - ENV: a string constant holding `PYTHONPATH` anywhere (an environ key, a shell string, an `env=` mapping).
+    - SCOPE: `globals()`, `locals()` or `vars()` with no argument in a file that binds sys (root's twin (i)).
+    A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
+    import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
+    local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""
+    import ast
+
+    def segment(node) -> str:
+        return " ".join((ast.get_source_segment(text, node) or ast.dump(node)).split())
+
+    def call_name(f):
+        return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+
+    def chain_top(node):
+        """The outermost attribute / call / subscript chain this node heads (`importlib.util.find_spec("x")` for its
+        `importlib`), so the refusal names the whole use."""
+        while True:
+            p = parent.get(node)
+            if isinstance(p, ast.Attribute) and p.value is node or isinstance(p, ast.Call) and p.func is node \
+                    or isinstance(p, ast.Subscript) and p.value is node:
+                node = p
+            else:
+                return node
+
+    found: list[tuple[int, int, str]] = []
+
+    def refuse(node) -> None:
+        if id(node) not in consumed:
+            found.append((node.lineno, node.col_offset, segment(node)))
+
+    # Names the file binds by something other than an import: a bare capability name among them is a local, not the module.
+    local_bound: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(is_sys_path(t) for t in targets) or (node.value is not None and is_sys_path(node.value)):
-                found.append(ast.get_source_segment(text, node) or "sys.path")
-        elif isinstance(node, ast.NamedExpr) and is_sys_path(node.value):
-            found.append(ast.get_source_segment(text, node) or "sys.path")
-        elif isinstance(node, ast.Call) and (getattr(node.func, "attr", None) == "addsitedir" or
-                                             getattr(node.func, "id", None) == "addsitedir"):
-            found.append(ast.get_source_segment(text, node) or "addsitedir")
-    return found
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            local_bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            local_bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            local_bound.add(node.arg)
+    # bound name -> family. The bare module names are their families unless the file binds them locally; every import
+    # of a capability module (any alias, any submodule) adds its name, an import overriding a local binding (a rebinding
+    # of an imported name is then the Store below, and refuses).
+    bound: dict[str, str] = {m: f for m, f in CAPABILITY_MODULES.items() if m not in local_bound}
+    if "__builtins__" not in local_bound:
+        bound["__builtins__"] = "loader"
+    binds: list[tuple] = []  # (import statement, [bound names], [names bound from `from sys import <non-path>`])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            hit = []
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in CAPABILITY_MODULES:
+                    name = alias.asname or top
+                    bound[name] = CAPABILITY_MODULES[top]
+                    hit.append(name)
+            if hit:
+                binds.append((node, hit, []))
+        elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0] if node.level == 0 else ""
+            hit, from_sys = [], []
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if top in CAPABILITY_MODULES:
+                    family = CAPABILITY_MODULES[top]
+                    if alias.name == "*" or (family == "sys" and (alias.name in SYS_PATH_ATTRS or alias.name.startswith("__"))):
+                        refuse(node)  # `from sys import *`, `from sys import path as p`, `from importlib import *`
+                    elif family == "sys":
+                        from_sys.append(name)  # `from sys import argv`: the attribute read itself
+                    else:
+                        bound[name] = family
+                        hit.append(name)
+                elif alias.name in CAPABILITY_MODULES or name in CAPABILITY_MODULES:
+                    # A name literally called sys/site/importlib/runpy/builtins imported from any other module binds it.
+                    bound[name] = CAPABILITY_MODULES.get(alias.name) or CAPABILITY_MODULES[name]
+                    hit.append(name)
+            if hit or from_sys:
+                binds.append((node, hit, from_sys))
+    binds_sys = any(bound.get(n) == "sys" for _, names_, _ in binds for n in names_) or any(fs for _, _, fs in binds)
+    uses: dict[str, list] = {}  # bound name -> its Load uses (Name nodes)
+    safe: set[int] = set()  # id() of a Load Name whose use rule 5 reads (a non-path attribute of sys)
+
+    def sys_expression(node) -> bool:
+        """A node that stands for the sys module: a sys-bound name, `__import__("sys")`, `import_module("sys")`, `X.sys`."""
+        if isinstance(node, ast.Name):
+            return bound.get(node.id) == "sys"
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "sys":
+            return call_name(node.func) in ("__import__", "import_module")
+        return isinstance(node, ast.Attribute) and node.attr == "sys"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            family = bound.get(node.id)
+            if not isinstance(node.ctx, ast.Load):
+                if family is not None:
+                    refuse(parent.get(node, node))  # `sys = x`, `del sys`, `for site in ...`: a rebinding of a module
+                continue
+            if family is not None:
+                uses.setdefault(node.id, []).append(node)
+            if family == "sys":
+                p = parent.get(node)
+                if isinstance(p, ast.Attribute) and p.value is node:
+                    if p.attr in SYS_PATH_ATTRS or p.attr.startswith("__"):
+                        refuse(chain_top(node))
+                    else:
+                        safe.add(id(node))
+                else:
+                    refuse(node)  # aliased, passed, subscripted, compared: the module itself leaves the name
+            elif family in ("site", "loader"):
+                if id(node) not in consumed:
+                    refuse(chain_top(node))  # an alias, an argument, an attribute no recording branch read
+            elif node.id in EXEC_CALLS or node.id in LOADER_CALLS:
+                refuse(chain_top(node))
+            elif node.id in ("globals", "locals", "vars") and binds_sys:
+                p = parent.get(node)
+                if isinstance(p, ast.Call) and p.func is node and not p.args and not p.keywords:
+                    refuse(p)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in LOADER_CALLS:
+                refuse(chain_top(node))
+            elif node.attr in EXEC_CALLS and isinstance(node.value, ast.Name) and bound.get(node.value.id) == "loader":
+                refuse(chain_top(node))
+            elif not isinstance(node.value, ast.Name) and sys_expression(node.value) \
+                    and (node.attr in SYS_PATH_ATTRS or node.attr.startswith("__")):
+                refuse(chain_top(node))  # `__import__("sys").path`, `os.sys.path`: the anonymous sys reaches the path
+        elif isinstance(node, ast.Call) and sys_expression(node):
+            p = parent.get(node)
+            if not (isinstance(p, ast.Attribute) and p.value is node):
+                refuse(node)  # `s = __import__("sys")`, `f(import_module("sys"))`: the module leaves the call
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "PYTHONPATH" in node.value:
+            refuse(node)
+    # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
+    for stmt, names_, from_sys in binds:
+        ok = True
+        for name in names_:
+            used = uses.get(name, [])
+            if not used or bound[name] == "site":
+                ok = False
+            elif bound[name] == "sys":
+                ok = ok and all(id(u) in safe or id(u) in consumed for u in used)
+            else:
+                ok = ok and all(id(u) in consumed for u in used)
+        for name in from_sys:
+            if not any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) for n in ast.walk(tree)):
+                ok = False
+        if not ok:
+            refuse(stmt)
+    found.sort()
+    return [(line, seg) for line, _, seg in found]
+
 
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
     """Every tracked path at the scanned revision (the index when none is pinned), with its git mode."""
@@ -4416,7 +4609,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         package = owner(path)
         if package is None:
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
-            # sys.path entries stay a documented residual.
+            # sys.path entries stay a documented residual; a path-mutation capability no rule consumes refuses it as it
+            # refuses a package file (R6-2: python_file_facts holds the single refuse point for every Python file read).
             check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
             continue
         text = read_source(repo, path, revision, environment)
@@ -4426,10 +4620,12 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         for kind, value, key, tail in entries:
             apply_entry(package, path, kind, value, path, key=key, tail=tail)
         # Root's B2 of the round-5 STACK CHANGES (GENERAL, N03, N50-N53): a file is READ only when EVERY sys.path site
-        # in it resolves by a read rule. A residual entry (rule (b) above) or a site that records no entry (a
-        # reassignment, site.addsitedir, an alias of sys.path) beside an entry that resolves refuses the whole file, as
-        # main refused it; a file whose only sites are such forms stays the dated known fail-open it was.
-        unjudged = [key for _, key in residual_sites[mark:]] + unrecorded_sys_path_sites(text)
+        # in it resolves by a read rule. A residual entry (rule (b) above) beside an entry that resolves refuses the
+        # whole file, as main refused it. R6-2 (root's ruling of 2026-11-12): a site that records no entry (a
+        # reassignment, site.addsitedir, an alias of sys.path) and every other path-mutation capability refuse inside
+        # python_file_facts itself, whatever else the file holds; the carve-out that read a file whose sites were ALL
+        # such forms is gone with the shape list it read.
+        unjudged = [key for _, key in residual_sites[mark:]]
         if unjudged and len(entries) > len(residual_sites) - mark:
             raise ValueError(f"unresolved (the sys.path site `{unjudged[0]}` in {path} resolves by no read rule, so the "
                              "file's other sys.path entries are not read either: a file reads only when every one of "

@@ -127,6 +127,16 @@ CATCH_ALL_WHATS = ("sys.path entry", "pytest pythonpath entry")
 # rule's fragment, which test_review_vector_closed_lists_hold also pins against the text edges.py raises.
 R5_SYS_PATH_RULE = "an undeclared sys.path entry"
 R5_SYS_PATH_RULE_PINS = 25
+# Slice 2 of the rule commits (RC1B, root's dotgithub-86 review, 2026-11-12): the rules the RC1B vectors name, closed the
+# same way. Each fragment maps to (the number of pins naming it, by equality; the text of ITS raise site in edges.py).
+# The raise site, not the fragment: `stale computed_imports entry` is also assess's check-mode text, so a fragment
+# pin would hold on an edges.py without the scan() rule.
+RC1B_RULE_PINS = {
+    "a sys.path entry is declared with a reach list": (2, 'but a sys.path entry is declared with "'),
+    "trailing components": (6, 'f"trailing components are not `{tail}`'),
+    "is not a tracked directory": (2, 'f"not a tracked directory) in {where}"'),
+    "stale computed_imports entry": (3, 'raise ValueError(f"stale computed_imports entry: '),
+}
 
 
 def catch_all_fragments():
@@ -867,6 +877,11 @@ class EdgesTest(unittest.TestCase):
                          "a drop or an addition is an edit there")
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
+        for rule, (count, site) in RC1B_RULE_PINS.items():
+            named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
+            self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, RC1B_RULE_PINS says {count}: a drop "
+                                                f"or an addition is an edit there")
+            self.assertIn(site, source, f"RC1B_RULE_PINS: the raise site of {rule!r} is no longer in edges.py: re-derive it")
         self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
                                 if any(rule in part for part in fragments)), [],
                          "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")

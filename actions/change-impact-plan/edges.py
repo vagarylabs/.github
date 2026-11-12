@@ -4025,8 +4025,53 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
     parsed_names: dict[str, set[str]] = {}  # package -> names its parsed files import, loop literals included
 
+    # Every tracked directory, each ancestor of a tracked path (the RC1B reach check below and the outside-entry pass).
+    tracked_dirs = {posixpath.dirname(p) for p in tracked}
+    for d in list(tracked_dirs):
+        while d:
+            d = posixpath.dirname(d)
+            tracked_dirs.add(d)
+
+    def entry_tail(key: str) -> str | None:
+        """The one literal a sys.path entry's text as written names, normalised (`./packages/shared`, `{source}/x`
+        stripped as rule 6 reads a landing): the components every directory it lands in ends with (root's amended item
+        2 of the R-c r4 review). None for a parent step, an absolute path, or no or more than one literal: a split join
+        (`join("packages", "shared")`) is not read by its last part, which `vendor/shared` would also end with."""
+        literals = QUOTED.findall(SEP_SUBST.sub("/", key))
+        if len(literals) != 1 or PARENT_STEP.search(key) or literals[0].startswith("/"):
+            return None
+        tail = posixpath.normpath(LEADING.sub("", literals[0]))
+        return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
+
+    def ends_in(directory: str, tail: str) -> bool:
+        want = tail.split("/")
+        return directory.split("/")[-len(want):] == want
+
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
                     key: str | None = None) -> None:
+        declared = by_site.get((where, key)) if key is not None else None
+        if declared is not None:
+            used.add((where, key))  # a declaration naming a real entry is not stale, whichever branch judges it
+        tail = entry_tail(key) if kind == "unknown" and key is not None else None
+        if declared is not None and tail is not None:
+            # The RC1B rule (root's dotgithub-86 review and the R-c r4 review items 2 and 7, 2026-11-12): a DECLARED
+            # entry the scan cannot evaluate is read by its reach, a LIST of tracked directories, each ending in the
+            # entry's literal (`shared` -> packages/shared; a subset of the matches is the declarer's cwd claim). A
+            # keyword says nothing about where a cwd-relative entry lands; each reach is credited as an evaluated entry.
+            reach = declared["reach"]
+            if not isinstance(reach, list):
+                raise ValueError(f"unresolved (`{key}` is declared reach \"{reach}\", but a sys.path entry is declared with "
+                                 f"a reach list: the tracked directories ending in `{tail}` it lands in) in {where}")
+            for target in reach:
+                if not ends_in(posixpath.normpath(target), tail):
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` is declared to reach `{target}`, whose "
+                                     f"trailing components are not `{tail}`, so the entry cannot land there) in {where}")
+                if posixpath.normpath(target) not in tracked_dirs:
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` is declared to reach `{target}`, which is "
+                                     f"not a tracked directory) in {where}")
+            for target in reach:
+                apply_entry(package, source, "dir", posixpath.normpath(target), where, what)
+            return
         if kind == "unknown":
             if escapes_by_text(value):
                 # The r5 sys.path rule (root's dotgithub-86 review, 2026-11-12; vectors RC1B/RC1C/RC1I/RC1Q/RC1S): a
@@ -4040,7 +4085,16 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                      f"it in edge_scan.computed_imports by its text as written, `{key}`) in {where}")
                 raise ValueError(f"unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) "
                                  f"in {where}")
-            return  # an entry naming no parent step and no top-level directory: a documented residual
+            # The RC1B bare-name rule: an undeclared entry naming no top-level directory (`"shared"`, `"app"`,
+            # `Path.cwd() / "shared"`) still lands, relative to the process cwd, in every tracked directory ending in
+            # its literal, the caller's own unit included (vagary-core's cost_centre_checks.py:33 `"app"`): refuse.
+            hits = sorted(d for d in tracked_dirs if tail is not None and ends_in(d, tail))
+            if key is not None and declared is None and hits:
+                raise ValueError(f"unresolved (an undeclared sys.path entry `{key}` may land in "
+                                 f"{', '.join(hits[:3])}{', ...' if len(hits) > 3 else ''}, the tracked directories ending "
+                                 f"in `{tail}`; declare it in edge_scan.computed_imports by its text as written, with "
+                                 f"the directories it reaches) in {where}")
+            return  # an entry naming no parent step, no top-level directory and no tracked directory: a residual
         if value == ".." or value.startswith("../"):
             return  # above the repository: nothing tracked is imported from there
         found = owner(value)
@@ -4090,11 +4144,6 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if d in ("", "."):
                 break
             d = posixpath.dirname(d)
-    tracked_dirs = {posixpath.dirname(p) for p in tracked}
-    for d in list(tracked_dirs):
-        while d:
-            d = posixpath.dirname(d)
-            tracked_dirs.add(d)
     for package, entries in sorted(outside_entries.items()):
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
@@ -4287,6 +4336,14 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     stale = [f"{f}: {n}" for (f, n) in sorted(by_name) if (f, n) not in names_used]
     stale += [f"{f}: {d['name']}" for f, _, d in name_globs if (f, d["name"]) not in names_used]
     unused = [f"{d['file']}: {d['expr']}" for d in declared if (d["file"], " ".join(d["expr"].split())) not in used]
+    # The RC1B stale-key rule (root's R-c r4 item 2 and ruling (b), 2026-11-12): an entry naming a tracked Python file
+    # whose text matches none of its sys.path entries or loader sites (a mis-keyed twin, a glob, which computed_imports
+    # has no form for) refuses here, in scan(), with check mode's text; an entry on a file no longer tracked stays a
+    # check-mode failure only (assess, below).
+    for d in declared:
+        if d["file"].endswith(".py") and d["file"] in tracked and (d["file"], " ".join(d["expr"].split())) not in used:
+            raise ValueError(f"stale computed_imports entry: {d['file']}: {d['expr']} matches no import call (a Python "
+                             "file the scan parsed: key the entry by the site's text as written, or remove it)")
     unused += [f"unresolved_names {entry}" for entry in stale]
     # Round 3 of #33, the backstop's attribution: a tracked file -> the files outside every package whose RECORDED
     # routes (grep edges, ./ routes, a reached file's named paths) resolve to it, a directory route to everything beneath.

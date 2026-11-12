@@ -137,6 +137,16 @@ RC1B_RULE_PINS = {
     "is not a tracked directory": (2, 'f"not a tracked directory) in {where}"'),
     "stale computed_imports entry": (3, 'raise ValueError(f"stale computed_imports entry: '),
 }
+# Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
+# parent-step sys.path literal refuses by, closed the same way. `code the scan excludes` is also the closure's text (the
+# RC4 and RC5 vectors name it), so its count is every pin naming it and its site is apply_entry's RC1A raise.
+RC1A_RULE_PINS = {
+    "lands in no tracked directory": (4, 'lands in no tracked directory: from each one "'),
+    "a symlink component": (3, 'a symlink component, "'),
+    "code the scan excludes": (13, 'lands in {landing}, code the scan "'),
+    "a package-free landing": (1, 'f"a package-free landing outside every scan root and reader directory, where "'),
+    "that no package owns": (1, 'a file under a scan root that no package owns, "'),
+}
 
 
 def catch_all_fragments():
@@ -877,11 +887,14 @@ class EdgesTest(unittest.TestCase):
                          "a drop or an addition is an edit there")
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
-        for rule, (count, site) in RC1B_RULE_PINS.items():
-            named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
-            self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, RC1B_RULE_PINS says {count}: a drop "
-                                                f"or an addition is an edit there")
-            self.assertIn(site, source, f"RC1B_RULE_PINS: the raise site of {rule!r} is no longer in edges.py: re-derive it")
+        # Slices 2 and 3: each rule's pin count by equality, and its own raise site in edges.py.
+        for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS)):
+            for rule, (count, site) in pins.items():
+                named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)
+                self.assertEqual(len(named), count, f"{len(named)} pins name {rule!r}, {pins_name} says {count}: a "
+                                                    f"drop or an addition is an edit there")
+                self.assertIn(site, source,
+                              f"{pins_name}: the raise site of {rule!r} is no longer in edges.py: re-derive it")
         self.assertEqual(sorted(f"{k}:{field}" for (k, field), rule in rules.items()
                                 if any(rule in part for part in fragments)), [],
                          "a pinned rule the catch-all refusal also prints cannot tell its rule from the catch-all")

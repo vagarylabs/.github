@@ -79,6 +79,9 @@ REVIEW_CONTROLS = (
     "SP06_route_control", "SP07_escape_control", "T12_triple_quote_prose_control",
     "T15_jsx_text_braces_prose", "T44_ts_union_type", "T45_py_enum_member",
     "W08_invalid_escape_nonraw", "W10_newline_escape_precision_control",
+    # Root's round-6 inputs (github-86-r5fix-1112.md, 2026-11-12): the two with truth [], root's own `control` and the
+    # nested-package control judged on unit b, both reading [] on main, the parent and the head.
+    "N00_nested_control_unit_b", "U_K_no_syspath_negative",
 )
 
 # Root's ruling change on #84 (dotgithub-84-1112.md:27, 2026-11-12): the dated known fail-opens, each pinned by a vector
@@ -111,6 +114,33 @@ KNOWN_FAIL_OPEN = {
     "KFO_S5F_N39_sys_space_bare_name": "S5F", "KFO_S5F_D04c_undeclared_dirname_bare": "S5F",
     "KFO_S5F_D04d_undeclared_Path_parent_bare": "S5F", "KFO_S5F_D04e_undeclared_slice_bare": "S5F",
     "KFO_S5F_D04f_undeclared_replace_bare": "S5F",
+    # Root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b,
+    # 16:13 2026-11-12) and its R6 ruling: root's 111 inputs enter the vectors verbatim (R6-1); the 49 below truth on
+    # main, the parent and the head are pinned at the head's reading, each under the record's blocker: B5 (:4387
+    # startswith misses the link as the landing, as an intermediate component, link then `..`; a zip on the path), B6
+    # (:4380 a value normalising to `../` returns without refuse or credit), B7 (:4461-4485 the evaluated route narrows
+    # by names: nine rows), B8 (ruling B2 not general: the eleven unseen forms beside one resolvable entry), K04 (a
+    # PYTHONPATH in a workflow env) and B2 (the conftest landing credited only to the owning package). R6-2 to R6-5
+    # remove each pin as its slice reads or refuses the input.
+    "A01_eval_parents3_reenter_own_name": "R6B6", "U_A_dirname4_beside_linked_sibling": "R6B6",
+    "U_A_dirname4_reenter_own_name": "R6B6",
+    "K04_workflow_pythonpath_env": "R6K04",
+    "N13e_conftest_evaluated_unit_rsub": "R6B2",
+    "P04_eval_zip_on_path": "R6B5", "P04b_eval_zip_on_path_parents2": "R6B5", "U_P01_landing_is_tracked_symlink": "R6B5",
+    "U_P02_symlink_intermediate": "R6B5", "U_P03_symlink_then_dotdot": "R6B5", "U_P04_zip_on_path": "R6B5",
+    "U_E_C4_semicolon": "R6B7", "U_E_C4b_if_oneliner": "R6B7", "U_E_C4c_try_oneliner": "R6B7",
+    "U_E_C4e_unparseable_sibling": "R6B7", "U_E_N18_import_module_kw": "R6B7", "U_E_N19_getattr_import_module": "R6B7",
+    "U_E_N20_exec_string": "R6B7", "U_E_N54_find_spec": "R6B7", "U_E_exec_same_file": "R6B7",
+    "U_S_addsitedir_alias_alone": "R6B8", "U_S_addsitedir_alias_mixed": "R6B8", "U_S_addsitedir_plain_alone": "R6B8",
+    "U_S_alias_assign_alone": "R6B8", "U_S_dunder_iadd_alone": "R6B8", "U_S_dunder_iadd_mixed": "R6B8",
+    "U_S_dunder_import_sys_alone": "R6B8", "U_S_dunder_import_sys_mixed": "R6B8", "U_S_dunder_setitem_alone": "R6B8",
+    "U_S_dunder_setitem_mixed": "R6B8", "U_S_exec_string_mixed": "R6B8", "U_S_from_sys_import_path_alone": "R6B8",
+    "U_S_from_sys_import_path_mixed": "R6B8", "U_S_getattr_sys_path_alone": "R6B8", "U_S_getattr_sys_path_mixed": "R6B8",
+    "U_S_list_insert_unbound_alone": "R6B8", "U_S_list_insert_unbound_mixed": "R6B8", "U_S_reassign_alone": "R6B8",
+    "U_S_residual_plus_addsitedir": "R6B8", "U_S_residual_plus_reassign": "R6B8", "U_S_starred_insert_alone": "R6B8",
+    "U_S_starred_insert_mixed": "R6B8", "U_S_sys_as_alias_alone": "R6B8", "U_S_sys_as_alias_mixed": "R6B8",
+    "U_S_sys_modules_sys_alone": "R6B8", "U_S_sys_modules_sys_mixed": "R6B8", "U_S_two_file_conftest_addsitedir": "R6B8",
+    "U_S_two_file_conftest_alias": "R6B8", "U_S_two_residuals": "R6B8",
 }
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
@@ -609,13 +639,30 @@ class EdgesTest(unittest.TestCase):
 
     FIXTURE_DIRS = ("services/r", "services/a", "services/b/worker", "services/b2", "apps/web", "packages/shared", ".github")
 
-    def vector_scan(self, repo, case, revision=False):
+    def case_repo(self, repo, label, case):
+        """The fixture a case runs in: the shared one, unless the case names its checkout's parent directory
+        (`fixture_parent`, root's round-6 harness layout fx/<label>/<checkout>, 2026-11-12: C06 and C07 re-enter the
+        checkout through that name) or links beside its checkout (`outside_links`) or beside the checkout's parent
+        (`grand_links`): such a case gets its own <fixture_parent>/<checkout> fixture, so the parent directory is the
+        name the input or the grand link uses and its links collide with no other case's."""
+        if "fixture_parent" in case or "outside_links" in case or "grand_links" in case:
+            return self.vector_repo(f"{case.get('fixture_parent', label)}/{case.get('checkout', 'vectors')}")
+        return repo
+
+    def vector_scan(self, repo, case, revision=False, module=None):
         """One reviewer input in the fixture repo, through the working tree or (as action.yml runs `edges.py check
         --revision`) through an immutable commit whose working tree has since changed. Root's A2 of the R-c vectors
         (2026-11-12): a case's `files` {path: text} are written too (the second tracked file a vector needs: an excluded
         hook, the sources a loader lands in) and removed after it, with the input, so no case reads another's files; its
         `unit` names what is judged, the package that owns the caller (default `r`) or a reader directory's unit
-        (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander."""
+        (`readers:scripts`), so an accept vector is judged on the unit that imports, never on a bystander.
+        Root's round-6 inputs (2026-11-12) add: a `files` value {"hex": ...} for bytes a JSON string cannot hold (a zip
+        on the path); `outside_links` {name: target}, a link beside the checkout naming it by its directory name;
+        `grand_links` {name: target}, a link beside the checkout's parent naming that parent; `env`, the case's own
+        environment for the scan. Every scan runs without GITHUB_REPOSITORY (root's harness removes it, so the fixture
+        never takes the runner's repository name as its own) and then with the case's `env`. `module` is the reader to
+        run, the head's edges by default; the no-regression gate passes main's."""
+        reader = module or E
         # Root's S4 of dotgithub-86 (2026-11-12): a vector whose input re-enters the checkout through the checkout's own
         # directory name (`../vectors/packages/shared`) holds only in a fixture of that name. It names it in `checkout`,
         # asserted here, so a fixture under another name fails loudly instead of the vector testing something else.
@@ -631,10 +678,22 @@ class EdgesTest(unittest.TestCase):
         links = dict(case.get("symlinks") or {})  # {link path: target}, as the round-4 harness writes them (X08b)
         self.assertNotIn(rel, extra, "a vector's `files` cannot rewrite its own input")
         written = [rel, *sorted(extra), *sorted(links)]
+        # A link beside the checkout names the checkout (its directory name); one beside the checkout's parent names
+        # that parent. Asserted so a fixture under another name fails loudly (as `checkout` does above).
+        beside = {}
+        for name, target in dict(case.get("outside_links") or {}).items():
+            self.assertEqual(target, repo.name, f"outside link {name!r} -> {target!r}: it names the checkout, which is {repo.name!r}")
+            beside[repo.parent / name] = target
+        for name, target in dict(case.get("grand_links") or {}).items():
+            self.assertEqual(target, repo.parent.name,
+                             f"grand link {name!r} -> {target!r}: it names the checkout's parent, which is {repo.parent.name!r}")
+            beside[repo.parent.parent / name] = target
         # No path a vector writes may exist in the fixture, checked BEFORE the try: inside it, the cleanup would delete
         # the fixture file the guard refused to overwrite (root's K3 of #84's R4, 2026-11-12).
         for path in written:
             self.assertFalse((repo / path).exists(), f"{path}: a vector cannot write over a fixture path")
+        for link in beside:
+            self.assertFalse(link.exists() or link.is_symlink(), f"{link}: a vector cannot write over a path beside the fixture")
         # Root's C2 of #84 (2026-11-12): every write sits inside the try, so a failed one still cleans up.
         try:
             for path in written:
@@ -642,9 +701,14 @@ class EdgesTest(unittest.TestCase):
             # `src_hex` holds raw bytes a JSON string cannot (an invalid UTF-8 byte, R7V14).
             (repo / rel).write_bytes(bytes.fromhex(case["src_hex"]) if "src_hex" in case else case["src"].encode("utf-8"))
             for path, text in extra.items():
-                (repo / path).write_text(text)
+                if isinstance(text, dict):  # {"hex": ...}: bytes a JSON string cannot hold (root's P04, a zip on the path)
+                    (repo / path).write_bytes(bytes.fromhex(text["hex"]))
+                else:
+                    (repo / path).write_text(text)
             for path, target in links.items():
                 os.symlink(target, repo / path)
+            for link, target in beside.items():
+                os.symlink(target, link)
             subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
             cfg = {**self.REVIEW_CFG, **(case.get("cfg") or {})}
             rev = None
@@ -654,7 +718,10 @@ class EdgesTest(unittest.TestCase):
                 rev = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
                 (repo / rel).write_text("# the working tree differs from the scanned revision\n")
             try:
-                deps, readers = E.scan(repo, cfg, revision=rev)[:2]
+                with patch.dict(os.environ):
+                    os.environ.pop("GITHUB_REPOSITORY", None)
+                    os.environ.update(case.get("env") or {})
+                    deps, readers = reader.scan(repo, cfg, revision=rev)[:2]
             except ValueError as err:
                 return Refusal(str(err))  # == "REFUSE"; .message is the rule that refused (root's item 7, r4 review)
             unit = case.get("unit") or "r"
@@ -667,6 +734,8 @@ class EdgesTest(unittest.TestCase):
             # Per-case cleanup: the input and every `files` entry leave the index and the tree, and the directories they
             # alone created go too, so the next case starts from the bare fixture.
             subprocess.run(["git", "-C", str(repo), "rm", "-rq", "--cached", "--ignore-unmatch", "--", *written], check=True)
+            for link in beside:
+                link.unlink(missing_ok=True)
             for path in written:
                 (repo / path).unlink(missing_ok=True)
                 parent = (repo / path).parent
@@ -844,7 +913,7 @@ class EdgesTest(unittest.TestCase):
         repo = self.vector_repo("vectors")
         for label, case in sorted(self.REVIEW_VECTORS.items()):
             with self.subTest(label):
-                self.judge(label, case, self.vector_scan(repo, case))
+                self.judge(label, case, self.vector_scan(self.case_repo(repo, label, case), case))
         self.assertEqual(sorted(k for k, c in self.REVIEW_VECTORS.items() if c["expect"] == "residual" and "reads" not in c),
                          [], "every residual vector pins its reading")
         # Root's B2 of #84 (2026-11-12): the precision controls are a closed list and each pins its reading, so a new

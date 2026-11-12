@@ -23436,6 +23436,4458 @@
     "today": [],
     "record": "lanes/root/reviews/dotgithub-86-1112.md"
    }
+  },
+  "A01_eval_parents3_reenter_own_name": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).resolve().parents[3] / \"vectors\" / \"packages\" / \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "A01_eval_parents3_reenter_own_name",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B6",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input A01_eval_parents3_reenter_own_name of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/A01_eval_parents3_reenter_own_name/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B6): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "A02_eval_join_reenter_own_name": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../../vectors/packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "A02_eval_join_reenter_own_name",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input A02_eval_join_reenter_own_name of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/A02_eval_join_reenter_own_name/<checkout>, cfg.json). The head refuses (main refuse, parent refuse): sound, judged refuse-or-truth."
+  },
+  "A03_eval_join_beside_linked_sibling": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../../sib/packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "outside_links": {
+    "sib": "vectors"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "A03_eval_join_beside_linked_sibling",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input A03_eval_join_beside_linked_sibling of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/A03_eval_join_beside_linked_sibling/<checkout>, cfg.json). The head refuses (main refuse, parent refuse): sound, judged refuse-or-truth."
+  },
+  "A04_loader_run_path_reenter_own_name": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(__file__), \"../../../vectors/packages/shared/shared_mod.py\"))\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "A04_loader_run_path_reenter_own_name",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input A04_loader_run_path_reenter_own_name of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/A04_loader_run_path_reenter_own_name/<checkout>, cfg.json). The head refuses (main refuse, parent refuse): sound, judged refuse-or-truth."
+  },
+  "A05_literal_reenter_own_name_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../vectors/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "A05_literal_reenter_own_name_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input A05_literal_reenter_own_name_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/A05_literal_reenter_own_name_control/<checkout>, cfg.json). At truth on the head (main refuse, parent at)."
+  },
+  "C01_case_variant_empty_rest": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../Vectors\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/Vectors/keep.txt": "k\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C01_case_variant_empty_rest",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C01_case_variant_empty_rest of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C01_case_variant_empty_rest/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "C02_case_variant_tracked_rest": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../Vectors/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/Vectors/packages/shared/keep.txt": "k\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C02_case_variant_tracked_rest",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C02_case_variant_tracked_rest of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C02_case_variant_tracked_rest/<checkout>, cfg.json). The head refuses (main refuse, parent BELOW): sound, judged refuse-or-truth."
+  },
+  "C03_linked_sibling_empty_rest": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../sib\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/sib/keep.txt": "k\n"
+   },
+   "outside_links": {
+    "sib": "vectors"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C03_linked_sibling_empty_rest",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C03_linked_sibling_empty_rest of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C03_linked_sibling_empty_rest/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "C04_prefix_name_empty_rest": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../vector\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/vector/keep.txt": "k\n"
+   },
+   "outside_links": {
+    "vector": "vectors"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C04_prefix_name_empty_rest",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C04_prefix_name_empty_rest of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C04_prefix_name_empty_rest/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "C05_suffix_name_empty_rest": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../vectors-old\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/vectors-old/keep.txt": "k\n"
+   },
+   "outside_links": {
+    "vectors-old": "vectors"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C05_suffix_name_empty_rest",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C05_suffix_name_empty_rest of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C05_suffix_name_empty_rest/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "C06_deeper_reentry_by_path_M07c": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../C06_deeper_reentry_by_path_M07c/vectors/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "C06_deeper_reentry_by_path_M07c/vectors/packages/shared/keep.txt": "k\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C06_deeper_reentry_by_path_M07c",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C06_deeper_reentry_by_path_M07c of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C06_deeper_reentry_by_path_M07c/<checkout>, cfg.json). At truth on the head (main refuse, parent at)."
+  },
+  "C07_deeper_beside_linked_parent": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../c07alias/vectors/packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "c07alias/vectors/packages/shared/keep.txt": "k\n"
+   },
+   "grand_links": {
+    "c07alias": "C07_deeper_beside_linked_parent"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C07_deeper_beside_linked_parent",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C07_deeper_beside_linked_parent of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C07_deeper_beside_linked_parent/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "C08_github_repository_name_empty_rest_M07b": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../repo\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "repo/keep.txt": "k\n"
+   },
+   "outside_links": {
+    "repo": "vectors"
+   },
+   "env": {
+    "GITHUB_REPOSITORY": "o/repo"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "C08_github_repository_name_empty_rest_M07b",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input C08_github_repository_name_empty_rest_M07b of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/C08_github_repository_name_empty_rest_M07b/<checkout>, cfg.json). The head refuses (main refuse, parent at): sound, judged refuse-or-truth."
+  },
+  "D01_declared_literal_reach_other_tracked_dir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"../../packages/shared\"",
+       "reach": [
+        "services/a"
+       ],
+       "reason": "review fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "D01_declared_literal_reach_other_tracked_dir",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input D01_declared_literal_reach_other_tracked_dir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/D01_declared_literal_reach_other_tracked_dir/<checkout>, cfg.json). At truth on the head (main refuse, parent at)."
+  },
+  "D02_declared_evaluated_entry_M03": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(os.path.dirname(__file__), \"../../packages/shared\")",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "review fixture",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "D02_declared_evaluated_entry_M03",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input D02_declared_evaluated_entry_M03 of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/D02_declared_evaluated_entry_M03/<checkout>, cfg.json). The head refuses (main at, parent refuse): sound, judged refuse-or-truth."
+  },
+  "E_C4_semicolon_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import os; import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_C4_semicolon_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_C4_semicolon_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_C4_semicolon_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_C4_semicolon_literal_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import os; import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_C4_semicolon_literal_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_C4_semicolon_literal_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_C4_semicolon_literal_control/<checkout>, cfg.json). At truth on the head (main refuse, parent refuse)."
+  },
+  "E_C4b_if_oneliner_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "if True: import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_C4b_if_oneliner_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_C4b_if_oneliner_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_C4b_if_oneliner_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_C4c_try_oneliner_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "try: import vmod\nexcept ImportError: pass\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_C4c_try_oneliner_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_C4c_try_oneliner_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_C4c_try_oneliner_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_N18_import_module_kw_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib\nimportlib.import_module(name='vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_N18_import_module_kw_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N18_import_module_kw_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N18_import_module_kw_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_N19_getattr_import_module_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib\ngetattr(importlib, 'import_module')('vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_N19_getattr_import_module_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N19_getattr_import_module_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N19_getattr_import_module_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_N20_exec_string_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "exec('import vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_N20_exec_string_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N20_exec_string_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N20_exec_string_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_N54_find_spec_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib.util\nspec = importlib.util.find_spec('vmod')\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_N54_find_spec_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_N54_find_spec_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_N54_find_spec_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "E_exec_same_file_evaluated": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\nexec('import vmod')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "E_exec_same_file_evaluated",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input E_exec_same_file_evaluated of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/E_exec_same_file_evaluated/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "G01_literal_unowned_dir_under_root": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../lib\")\nimport libmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/lib/libmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "G01_literal_unowned_dir_under_root",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input G01_literal_unowned_dir_under_root of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/G01_literal_unowned_dir_under_root/<checkout>, cfg.json). At truth on the head (main refuse, parent refuse)."
+  },
+  "G02_generated_depth_root_landing": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../..\")\nimport packages.shared.shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "G02_generated_depth_root_landing",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input G02_generated_depth_root_landing of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/G02_generated_depth_root_landing/<checkout>, cfg.json). At truth on the head (main refuse, parent refuse)."
+  },
+  "G03_generated_start_excluded_landing_dropped": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../../../.github/scripts\")\nimport helper\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/x.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    ".github/scripts/helper.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "services/.github/scripts/keep.txt": "k\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "G03_generated_start_excluded_landing_dropped",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input G03_generated_start_excluded_landing_dropped of root's 111 (/tmp/r4pr86r5/cases3.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/G03_generated_start_excluded_landing_dropped/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "K01_eval_resolvable_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "K01_eval_resolvable_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input K01_eval_resolvable_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/K01_eval_resolvable_control/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "K02_literal_resolvable_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "K02_literal_resolvable_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input K02_literal_resolvable_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/K02_literal_resolvable_control/<checkout>, cfg.json). At truth on the head (main refuse, parent at)."
+  },
+  "K03_pytest_ini_pythonpath_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "file": "services/r/test_x.py",
+   "src": "import shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/pytest.ini": "[pytest]\npythonpath = ../../packages/shared\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "K03_pytest_ini_pythonpath_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input K03_pytest_ini_pythonpath_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/K03_pytest_ini_pythonpath_control/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "K04_workflow_pythonpath_env": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "file": "services/r/test_x.py",
+   "src": "import shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    ".github/workflows/t.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env:\n      PYTHONPATH: packages/shared\n    steps:\n      - run: pytest services/r\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "K04_workflow_pythonpath_env",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6K04",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input K04_workflow_pythonpath_env of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/K04_workflow_pythonpath_env/<checkout>, cfg.json). Below truth on main, the parent and the head (root's K04): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "N00_nested_control_unit_b": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "file": "services/b/x.py",
+   "src": "X = 1\n",
+   "truth": [],
+   "unit": "b",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/b/worker/m.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "N00_nested_control_unit_b",
+   "expect": "read",
+   "control": true,
+   "reads": [],
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input N00_nested_control_unit_b of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/N00_nested_control_unit_b/<checkout>, cfg.json). Truth [] (root's harness `control`, or N00's nested-package control judged on unit b): admitted as a precision control pinning []."
+  },
+  "N13b_D13b_unit_r": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "rsub": {
+       "dir": "services/r/sub",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/a/amod.py": "X = 1\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "services/r/sub/y.py": "import importlib\nimportlib.import_module(\n    \"vmod\")\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "N13b_D13b_unit_r",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input N13b_D13b_unit_r of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/N13b_D13b_unit_r/<checkout>, cfg.json). At truth on the head (main refuse, parent refuse)."
+  },
+  "N13b_D13b_unit_rsub": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "rsub",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "rsub": {
+       "dir": "services/r/sub",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/a/amod.py": "X = 1\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "services/r/sub/y.py": "import importlib\nimportlib.import_module(\n    \"vmod\")\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "N13b_D13b_unit_rsub",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input N13b_D13b_unit_rsub of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/N13b_D13b_unit_rsub/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "N13c_conftest_literal_unit_rsub": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "file": "services/a/amod.py",
+   "src": "X = 1\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "rsub",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "rsub": {
+       "dir": "services/r/sub",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "services/r/sub/test_y.py": "import vmod\n",
+    "services/r/conftest.py": "import sys\nsys.path[:0] = [\"../../vendor/lib\"]\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "N13c_conftest_literal_unit_rsub",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input N13c_conftest_literal_unit_rsub of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/N13c_conftest_literal_unit_rsub/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "N13e_conftest_evaluated_unit_rsub": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "file": "services/a/amod.py",
+   "src": "X = 1\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "rsub",
+   "cfg": {
+    "schema": 1,
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "rsub": {
+       "dir": "services/r/sub",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    },
+    "jobs": {
+     "root": {
+      "packages": []
+     }
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/b/worker/m.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n",
+    "services/r/sub/test_y.py": "import vmod\n",
+    "services/r/conftest.py": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(__file__), \"../../vendor/lib\")]\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "N13e_conftest_evaluated_unit_rsub",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B2",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input N13e_conftest_evaluated_unit_rsub of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/N13e_conftest_evaluated_unit_rsub/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B2): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "P01_eval_landing_is_tracked_symlink": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../tools/lnk\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "symlinks": {
+    "tools/lnk": "../packages/shared"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P01_eval_landing_is_tracked_symlink",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P01_eval_landing_is_tracked_symlink of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P01_eval_landing_is_tracked_symlink/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "P02_eval_symlink_intermediate": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../lnkdir/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "symlinks": {
+    "lnkdir": "packages"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P02_eval_symlink_intermediate",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P02_eval_symlink_intermediate of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P02_eval_symlink_intermediate/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "P03_eval_symlink_then_dotdot_normpath": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../tools/lnk/../packages/x\"))\nimport xmod\n",
+   "truth": [
+    "b"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/b/packages/x/xmod.py": "X = 1\n",
+    "tools/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "tools/lnk": "../services/b/worker"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P03_eval_symlink_then_dotdot_normpath",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P03_eval_symlink_then_dotdot_normpath of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P03_eval_symlink_then_dotdot_normpath/<checkout>, cfg.json). The head refuses (main refuse, parent refuse): sound, judged refuse-or-truth."
+  },
+  "P04_eval_zip_on_path": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib.zip\"))\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib.zip": {
+     "hex": "504b0304140000000000d57e6c5d175e19746a0000006a00000007000000766d6f642e707966726f6d20706174686c696220696d706f727420506174680a535243203d202850617468285f5f66696c655f5f292e7265736f6c766528292e706172656e74735b335d202f20277061636b616765732f7368617265642f782e707927292e726561645f7465787428290a504b01021403140000000000d57e6c5d175e19746a0000006a000000070000000000000000000000800100000000766d6f642e7079504b05060000000001000100350000008f0000000000"
+    }
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P04_eval_zip_on_path",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P04_eval_zip_on_path of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P04_eval_zip_on_path/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "P04b_eval_zip_on_path_parents2": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../vendor/lib.zip\"))\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib.zip": {
+     "hex": "504b030414000000000073816c5db6ce0e9c6a0000006a00000007000000766d6f642e707966726f6d20706174686c696220696d706f727420506174680a535243203d202850617468285f5f66696c655f5f292e7265736f6c766528292e706172656e74735b325d202f20277061636b616765732f7368617265642f782e707927292e726561645f7465787428290a504b0102140314000000000073816c5db6ce0e9c6a0000006a000000070000000000000000000000800100000000766d6f642e7079504b05060000000001000100350000008f0000000000"
+    }
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P04b_eval_zip_on_path_parents2",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P04b_eval_zip_on_path_parents2 of root's 111 (/tmp/r4pr86r5/cases4.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P04b_eval_zip_on_path_parents2/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "P05_generated_start_symlink": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../lnk\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/lnk/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "services/r/lnk": "../../packages/shared"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P05_generated_start_symlink",
+   "expect": "refuse",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P05_generated_start_symlink of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P05_generated_start_symlink/<checkout>, cfg.json). One of the nine of root's ruling (16:13): main refuses, the head reads below truth; a refuse vector, RED on the head by design until the R6 slice that gives it a read rule or the refuse point (R6-2 to R6-4) lands; expected_rule is pinned by that slice."
+  },
+  "P06_literal_landing_is_symlink_dir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../tools/lnk\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "tools/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "tools/lnk": "../packages/shared"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "P06_literal_landing_is_symlink_dir",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input P06_literal_landing_is_symlink_dir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/P06_literal_landing_is_symlink_dir/<checkout>, cfg.json). The head refuses (main refuse, parent refuse): sound, judged refuse-or-truth."
+  },
+  "S_addsitedir_alias_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nfrom site import addsitedir as asd\nasd(os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_addsitedir_alias_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_addsitedir_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_dunder_iadd_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nsys.path.__iadd__([os.path.join(os.path.dirname(__file__), \"../../packages/shared\")])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_dunder_iadd_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_iadd_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_dunder_import_sys_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\n__import__('sys').path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_dunder_import_sys_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_import_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_dunder_setitem_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nsys.path.__setitem__(slice(0, 0), [os.path.join(os.path.dirname(__file__), \"../../packages/shared\")])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_dunder_setitem_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_dunder_setitem_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_exec_string_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nexec('sys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))')\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_exec_string_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_exec_string_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_from_sys_import_path_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nfrom sys import path\npath.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_from_sys_import_path_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_from_sys_import_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_getattr_sys_path_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\ngetattr(sys, 'path').insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_getattr_sys_path_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_getattr_sys_path_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_list_insert_unbound_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nlist.insert(sys.path, 0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_list_insert_unbound_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_list_insert_unbound_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_reassign_mixed_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nsys.path = [os.path.join(os.path.dirname(__file__), \"../../packages/shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_reassign_mixed_control",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_reassign_mixed_control of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_reassign_mixed_control/<checkout>, cfg.json). The head refuses (main at, parent at): sound, judged refuse-or-truth."
+  },
+  "S_residual_plus_addsitedir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\nsite.addsitedir(os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_residual_plus_addsitedir",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_residual_plus_reassign": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\nsys.path = [os.path.join(os.path.dirname(__file__), \"../../packages/shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_residual_plus_reassign",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_residual_plus_reassign/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_starred_insert_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nsys.path.insert(*(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\")))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_starred_insert_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_starred_insert_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_sys_as_alias_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os\nimport sys as s\ns.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_sys_as_alias_alone",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_alone/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_sys_as_alias_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nimport sys as s\ns.path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_sys_as_alias_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_as_alias_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_sys_modules_sys_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nsys.modules['sys'].path.insert(0, os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_sys_modules_sys_mixed",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_sys_modules_sys_mixed/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_two_file_conftest_addsitedir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"../a\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/conftest.py": "import os, site\nsite.addsitedir(os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_two_file_conftest_addsitedir",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_file_conftest_addsitedir/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "S_two_residuals": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\ndef g(q):\n    sys.path.append(q)\nf(os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "S_two_residuals",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input S_two_residuals of root's 111 (/tmp/r4pr86r5/cases.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/S_two_residuals/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "U_A_dirname4_beside_linked_sibling": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), \"sib\", \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "outside_links": {
+    "sib": "vectors"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_A_dirname4_beside_linked_sibling",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B6",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_A_dirname4_beside_linked_sibling of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_A_dirname4_beside_linked_sibling/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B6): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_A_dirname4_reenter_own_name": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), \"vectors\", \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_A_dirname4_reenter_own_name",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B6",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_A_dirname4_reenter_own_name of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_A_dirname4_reenter_own_name/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B6): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_C4_semicolon": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import os; import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_C4_semicolon",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4_semicolon of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4_semicolon/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_C4b_if_oneliner": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "if True: import vmod\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_C4b_if_oneliner",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4b_if_oneliner of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4b_if_oneliner/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_C4c_try_oneliner": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "try: import vmod\nexcept ImportError: pass\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_C4c_try_oneliner",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4c_try_oneliner of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4c_try_oneliner/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_C4e_unparseable_sibling": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import os; import vmod\ndef broken(:\n    pass\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_C4e_unparseable_sibling",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4e_unparseable_sibling of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4e_unparseable_sibling/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_N18_import_module_kw": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib\nimportlib.import_module(name='vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_N18_import_module_kw",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N18_import_module_kw of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N18_import_module_kw/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_N19_getattr_import_module": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib\ngetattr(importlib, 'import_module')('vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_N19_getattr_import_module",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N19_getattr_import_module of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N19_getattr_import_module/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_N20_exec_string": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "exec('import vmod')\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_N20_exec_string",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N20_exec_string of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N20_exec_string/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_N54_find_spec": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/y.py": "import importlib.util\nspec = importlib.util.find_spec('vmod')\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_N54_find_spec",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_N54_find_spec of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_N54_find_spec/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_E_exec_same_file": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\nexec('import vmod')\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_E_exec_same_file",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B7",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_exec_same_file of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_exec_same_file/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_K_eval_shared_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_K_eval_shared_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_K_eval_shared_control of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_K_eval_shared_control/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "U_K_eval_vendor_control": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path[:0] = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\")]\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.py": "from pathlib import Path\nSRC = (Path(__file__).resolve().parents[2] / 'packages/shared/x.py').read_text()\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_K_eval_vendor_control",
+   "expect": "read",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_K_eval_vendor_control of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_K_eval_vendor_control/<checkout>, cfg.json). At truth on the head (main at, parent at)."
+  },
+  "U_K_no_syspath_negative": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os\nP = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")\nimport shared_mod\n",
+   "truth": [],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_K_no_syspath_negative",
+   "expect": "read",
+   "control": true,
+   "reads": [],
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_K_no_syspath_negative of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_K_no_syspath_negative/<checkout>, cfg.json). Truth [] (root's harness `control`, or N00's nested-package control judged on unit b): admitted as a precision control pinning []."
+  },
+  "U_P01_landing_is_tracked_symlink": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"tools\", \"lnk\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "tools/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "tools/lnk": "../packages/shared"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_P01_landing_is_tracked_symlink",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_P01_landing_is_tracked_symlink of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_P01_landing_is_tracked_symlink/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_P02_symlink_intermediate": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"lnkdir\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "symlinks": {
+    "lnkdir": "packages"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_P02_symlink_intermediate",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_P02_symlink_intermediate of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_P02_symlink_intermediate/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_P03_symlink_then_dotdot": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"tools\", \"lnk\", \"..\", \"packages\", \"x\"))\nimport xmod\n",
+   "truth": [
+    "b"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/b/packages/x/xmod.py": "X = 1\n",
+    "tools/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "tools/lnk": "../services/b/worker"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_P03_symlink_then_dotdot",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_P03_symlink_then_dotdot of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_P03_symlink_then_dotdot/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_P04_zip_on_path": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib.zip\"))\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib.zip": "PK-not-a-real-zip placeholder\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_P04_zip_on_path",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B5",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_P04_zip_on_path of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_P04_zip_on_path/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B5): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_P07_pyc_eval": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"vendor\", \"lib\"))\nimport vmod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "vendor/lib/vmod.pyc": "placeholder sourceless pyc\n",
+    "vendor/lib/keep.txt": "k\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_P07_pyc_eval",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_P07_pyc_eval of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_P07_pyc_eval/<checkout>, cfg.json). The head refuses (main BELOW, parent BELOW): sound, judged refuse-or-truth."
+  },
+  "U_S_addsitedir_alias_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nfrom site import addsitedir as asd\nasd(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_addsitedir_alias_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_addsitedir_alias_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nfrom site import addsitedir as asd\nasd(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_addsitedir_alias_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_addsitedir_plain_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nimport site\nsite.addsitedir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_addsitedir_plain_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_plain_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_plain_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_addsitedir_plain_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nimport site\nsite.addsitedir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_addsitedir_plain_mixed",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_addsitedir_plain_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_addsitedir_plain_mixed/<checkout>, cfg.json). The head refuses (main BELOW, parent BELOW): sound, judged refuse-or-truth."
+  },
+  "U_S_alias_assign_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\np = sys.path\np.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_alias_assign_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_alias_assign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_alias_assign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_alias_assign_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\np = sys.path\np.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_alias_assign_mixed",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_alias_assign_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_alias_assign_mixed/<checkout>, cfg.json). The head refuses (main BELOW, parent BELOW): sound, judged refuse-or-truth."
+  },
+  "U_S_dunder_iadd_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.__iadd__([os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_iadd_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_dunder_iadd_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nsys.path.__iadd__([os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")])\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_iadd_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_iadd_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_iadd_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_dunder_import_sys_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\n__import__('sys').path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_import_sys_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_dunder_import_sys_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\n__import__('sys').path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_import_sys_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_import_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_import_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_dunder_setitem_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.__setitem__(slice(0, 0), [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_setitem_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_dunder_setitem_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nsys.path.__setitem__(slice(0, 0), [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")])\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_dunder_setitem_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_dunder_setitem_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_dunder_setitem_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_exec_string_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nexec('sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))')\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_exec_string_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_exec_string_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_exec_string_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_from_sys_import_path_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nfrom sys import path\npath.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_from_sys_import_path_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_from_sys_import_path_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nfrom sys import path\npath.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_from_sys_import_path_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_from_sys_import_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_from_sys_import_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_getattr_sys_path_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\ngetattr(sys, 'path').insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_getattr_sys_path_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_getattr_sys_path_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\ngetattr(sys, 'path').insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_getattr_sys_path_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_getattr_sys_path_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_getattr_sys_path_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_list_insert_unbound_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nlist.insert(sys.path, 0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_list_insert_unbound_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_list_insert_unbound_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nlist.insert(sys.path, 0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_list_insert_unbound_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_list_insert_unbound_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_list_insert_unbound_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_reassign_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_reassign_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_reassign_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_reassign_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_reassign_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nsys.path = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_reassign_mixed",
+   "expect": "sound",
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_reassign_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_reassign_mixed/<checkout>, cfg.json). The head refuses (main BELOW, parent BELOW): sound, judged refuse-or-truth."
+  },
+  "U_S_residual_plus_addsitedir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\nsite.addsitedir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_residual_plus_addsitedir",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_residual_plus_reassign": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\nsys.path = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_residual_plus_reassign",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_residual_plus_reassign of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_residual_plus_reassign/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_starred_insert_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(*(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_starred_insert_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_starred_insert_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nsys.path.insert(*(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\")))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_starred_insert_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_starred_insert_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_starred_insert_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_sys_as_alias_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nimport sys as s\ns.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_sys_as_alias_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_sys_as_alias_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nimport sys as s\ns.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_sys_as_alias_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_as_alias_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_as_alias_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_sys_modules_sys_alone": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.modules['sys'].path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_sys_modules_sys_alone",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_alone of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_alone/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_sys_modules_sys_mixed": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nsys.modules['sys'].path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_sys_modules_sys_mixed",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_sys_modules_sys_mixed of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_sys_modules_sys_mixed/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_two_file_conftest_addsitedir": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/conftest.py": "import os, site\nsite.addsitedir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_two_file_conftest_addsitedir",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_addsitedir of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_addsitedir/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_two_file_conftest_alias": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"services\", \"a\"))\nimport shared_mod\n",
+   "truth": [
+    "a",
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n",
+    "services/r/conftest.py": "import os\nimport sys as s\ns.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_two_file_conftest_alias",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [
+     "a"
+    ],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_file_conftest_alias of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_file_conftest_alias/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "U_S_two_residuals": {
+   "question": "dotgithub-86 round-6 CHANGES (root's 111 inputs)",
+   "ext": "py",
+   "src": "import os, sys, site\ndef f(p):\n    sys.path.insert(0, p)\ndef g(q):\n    sys.path.append(q)\nf(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), \"packages\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".githooks",
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/x.py": "X = 1\n"
+   },
+   "checkout": "vectors",
+   "fixture_parent": "U_S_two_residuals",
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "R6B8",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
+   },
+   "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_S_two_residuals of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_S_two_residuals/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B8): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
+  },
+  "R6G1_unparsable_python_with_sys_path_refuses": {
+   "question": "dotgithub-86 R6-1 (root's 16:44 ruling: what the reader does with an unparsable file)",
+   "ext": "py",
+   "src": "import sys\nsys.path.insert(0, \"../../packages/shared\"\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "expect": "refuse",
+   "expected_rule": "a Python file the scan must read does not parse",
+   "note": "A Python file the scan must read (it carries a sys.path site) that does not parse refuses, today and under R6 (python_file_facts raises): 16 of the 1,314 fixture files of the 897 vectors are unparsable by design and refuse the same way; this vector pins the rule by name."
   }
  }
 }

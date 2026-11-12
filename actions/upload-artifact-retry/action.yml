@@ -11,11 +11,20 @@
 # WHY A BUDGET INSIDE THE PROCESS (attempt-budget.cjs, loaded through NODE_OPTIONS=--require). A hung upload can run
 # about 15 minutes inside upload-artifact before it fails on its own (5 CreateArtifact attempts x a 3-min socket
 # timeout; a 5-min blob-chunk stall timer). A composite's inner steps cannot carry timeout-minutes, and the CALLING
-# step's timeout-minutes CANCELS the composite: a cancel is not converted by continue-on-error, so the retry is skipped
-# and the job is cancelled: no retry exactly when the fault is a stall (vagaris run 43094998692 attempt 1: a 309 s
-# hang, then the 7-min job limit). The preload turns the stall into a node exit 1 at the budget: a plain step failure,
-# which continue-on-error converts, so the retry runs. The runner copies the step's env into the node process and
-# sets no NODE_OPTIONS of its own (actions/runner NodeScriptActionHandler.cs); a job-level NODE_OPTIONS is kept.
+# step's timeout-minutes fires on the whole composite: measured in the control run (README), attempt one ends
+# outcome=failure ("The action has timed out"), the retry step starts into the already-fired timeout and is timed out
+# after 23 ms, before it makes a request, and the calling step fails: no real retry exactly when the fault is a stall
+# (vagaris run 43094998692 attempt 1: a 309 s hang, then the 7-min job limit). The preload turns the stall into a node
+# exit 1 at the budget: a plain step failure, which continue-on-error converts, so the retry runs with its whole budget
+# ahead of it. The runner copies the step's env into the node process and sets no NODE_OPTIONS of its own
+# (actions/runner NodeScriptActionHandler.cs); a job-level NODE_OPTIONS is kept.
+#
+# WHY THE PRELOAD PATH GOES THROUGH A BASH STEP. Inside the double quotes of a NODE_OPTIONS value node reads a
+# backslash as an escape, so a Windows action path (D:\a\_actions\...) written straight into `--require "..."` loses
+# its separators and node exits 1 with MODULE_NOT_FOUND before the upload starts, on both attempts. The first step
+# writes the slash-normalised path to GITHUB_OUTPUT (root's R4 of #85: an output, not GITHUB_ENV, so nothing leaks
+# into later steps of the calling job) and both attempts read that output. Windows is UNPROVEN until a Windows run
+# shows it (README); no Windows workflow adopts this composite before that.
 #
 # WHY A COMPOSITE AND NOT TWO WORKFLOW STEPS. vagary-core's service-build roster binds one step id per rostered step
 # and its partition receipt grades every rostered outcome as success or skipped (scripts/core-service-partition.py),
@@ -75,15 +84,23 @@ inputs:
     description: The retry's budget in milliseconds, as attempt-budget-ms. "0" disables it (control runs only).
     required: false
     default: '150000'
+# No outputs: the composite exposes nothing of upload-artifact's artifact-id / artifact-url / artifact-digest (no
+# consumer reads them today). If outputs are added later they must read the RETRY's values when it ran.
 runs:
   using: composite
   steps:
+    - name: Preload path (slash-normalised; inside NODE_OPTIONS quotes a backslash is an escape)
+      id: preload
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: printf 'file=%s/attempt-budget.cjs\n' "${ACTION_PATH//\\//}" >> "$GITHUB_OUTPUT"
     - name: Upload (first attempt, bounded by attempt-budget-ms)
       id: first
       continue-on-error: true
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       env:
-        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ github.action_path }}/attempt-budget.cjs"
+        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ steps.preload.outputs.file }}"
         UPLOAD_ATTEMPT_BUDGET_MS: ${{ inputs.attempt-budget-ms }}
         UPLOAD_ATTEMPT_LABEL: upload attempt one (${{ inputs.name }})
       with:
@@ -96,7 +113,7 @@ runs:
       if: ${{ steps.first.outcome == 'failure' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       env:
-        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ github.action_path }}/attempt-budget.cjs"
+        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ steps.preload.outputs.file }}"
         UPLOAD_ATTEMPT_BUDGET_MS: ${{ inputs.retry-budget-ms }}
         UPLOAD_ATTEMPT_LABEL: upload retry (${{ inputs.name }})
       with:

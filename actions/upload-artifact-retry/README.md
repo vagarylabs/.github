@@ -16,6 +16,32 @@ when it hangs, and a failed attempt one is retried **exactly once, with overwrit
     retry-budget-ms: '150000'
 ```
 
+## Two bounds the caller sets
+
+**The step's `timeout-minutes`** covers both attempts: at least `attempt-budget-ms + retry-budget-ms + 60 s`, rounded up
+to whole minutes. **The job's `timeout-minutes`** must cover every step before the upload **plus** that step bound: a job
+limit fires on the job, not on the step, and nothing retries after it. In the incident the upload began with 308 s of
+the 7-minute job left; with the default budgets (150 s + 150 s + 60 s = 360 s) that job would have had about 8 s to
+spare, and a job whose tests run a little longer would be cancelled inside the retry. Set the job limit from the
+measured job, not from the step bound alone. A budget is a decimal integer of milliseconds up to 2147483647 (node's
+largest timer delay; a larger value is refused at load, since node would clamp it to 1 ms and cut a healthy upload).
+
+## No outputs
+
+The composite exposes none of `upload-artifact`'s outputs (`artifact-id`, `artifact-url`, `artifact-digest`): it is
+not a drop-in for a step whose outputs are read, and no consumer reads them today. If outputs are added later they must
+read the **retry's** values when the retry ran (attempt one's id names an artifact the retry replaced).
+
+## Windows: unproven
+
+Inside the double quotes of a `NODE_OPTIONS` value node reads a backslash as an escape, so a Windows action path
+(`D:\a\_actions\...`) written straight into `--require "..."` loses its separators and node exits 1 with
+`MODULE_NOT_FOUND` before the upload starts, on both attempts, healthy or not (root's R4 of #85, probe P1b; the test
+holds the hazard with a backslash in the directory name). The composite's first step therefore writes the
+slash-normalised path to `GITHUB_OUTPUT` under `bash` and both attempts read that output; the test runs the step's own
+`run:` line on a Windows-shaped path. **No Windows run has exercised the composite.** Windows stays UNPROVEN here until
+one does, and no Windows workflow (vagaris `vagary-node-windows.yml` uploads at `:64` and `:99`) adopts it before that.
+
 ## Why a budget inside the process
 
 A hung upload can run about 15 minutes inside `upload-artifact` before it fails on its own: 5 `CreateArtifact`
@@ -30,8 +56,10 @@ run 43094998692 attempt 1: a 309 s hang, then the 7-minute job limit).
 (the runner copies the step env into the process and sets no `NODE_OPTIONS` of its own,
 `NodeScriptActionHandler.cs`; a job-level `NODE_OPTIONS` is kept). It arms one unref'd timer: at the budget it prints
 an `::error::` line and exits 1, a plain step failure, which `continue-on-error` converts, so the retry runs inside a
-budget the caller knows. Its contract (unset or mistyped budget: fail at load; `0`: no timer, control runs only) is
-held by `attempt-budget.test.mjs`, which runs real node processes under `NODE_OPTIONS` the way the runner does.
+budget the caller knows. Its contract (unset, mistyped or over-large budget: fail at load; `0`: no timer, control runs
+only; a budget exit that does not depend on the message write reaching a full pipe) is held by
+`attempt-budget.test.mjs`, which runs real node processes under `NODE_OPTIONS` the way the runner does, on Node 20 and
+24 in CI (the runner forced the node20 action onto Node 24 in the proof run).
 
 ## Why a composite, hosted here, pinned by sha
 
@@ -51,6 +79,8 @@ across repositories.
 - A name that existed **before** the step: the retry's `overwrite: true` replaces it, indistinguishable from attempt
   one's half-created artifact. Two steps writing one name is a static defect; the consumers' gates assert unique
   artifact names per workflow run.
+- A child node process started by the upload would inherit `NODE_OPTIONS` and arm a timer of its own from the same
+  budget; moot for v4.6.2, which starts no workers and no children.
 
 ## Proof runs
 

@@ -138,15 +138,20 @@ jobs:
   upload-artifact-retry-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 6  # the completion floor (trusted timeout-floor); the suite itself runs in seconds
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      # upload-artifact runs as a node20 action, so the preload is tested under node 20, not whatever node the host
-      # carries (the light runners have no reliable node on PATH; vagaris pr.yml sets one up for the same reason).
+      # upload-artifact is a node20 action, but the runner forces node20 actions onto Node 24 where it is configured to
+      # (the vl-light proof run ran the preload on Node 24), so the preload is tested under both, never under whatever
+      # node the host carries (the light runners have no reliable node on PATH; vagaris pr.yml sets one up likewise).
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node }}
       - name: upload-artifact-retry preload contract and composite shape (real node processes under NODE_OPTIONS)
         run: node --test actions/upload-artifact-retry/attempt-budget.test.mjs
 

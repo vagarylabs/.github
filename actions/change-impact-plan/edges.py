@@ -2592,7 +2592,8 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #     The same holds in a reached Python file.
 # The tokens a Python file can change its import path, or load a module by name or path, through (R6-2, root's ruling of
 # 2026-11-12, fail-closed by token): every file holding one is read by python_file_facts, whose capability scan judges
-# each occurrence (a file with the token in a comment or a string is read and found clean). POSIX ERE: `[^A-Za-z0-9_]`
+# each occurrence (a file with the token only in a comment or a string is read and found clean, except `PYTHONPATH`, which
+# refuses in any string constant: an environ key, a shell string, an `env=` mapping). POSIX ERE: `[^A-Za-z0-9_]`
 # bounds a word (git grep -E has no `\b`), so `system` and `website` are not listed; `PYTHONPATH` is listed anywhere.
 PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
                  r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir)([^A-Za-z0-9_]|$)"
@@ -2642,8 +2643,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
       `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
       name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
-      `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). module_from_spec loads
-      what spec_from_file_location built, so the path is read at the latter.
+      `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). `module_from_spec` is
+      a loader call no rule reads (R6-2): a file calling it refuses at the capability scan.
     Raises ValueError when the file does not parse."""
     import ast
     try:
@@ -3169,8 +3170,10 @@ EXEC_CALLS = frozenset({"exec", "eval", "compile"})
 
 def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) -> list[tuple[int, str]]:
     """Every path-mutation capability occurrence in one parsed Python file that no read rule consumed, each as (line, the
-    source segment, whitespace collapsed), in file order (R6-2 of #86, root's ruling of 2026-11-12: a file reads only when
-    every one of them is consumed; the first one names the refusal). The kinds, root's B8 eleven forms among them:
+    source segment, whitespace collapsed), in file order with the import bindings LAST and no duplicates (R6-2 of #86,
+    root's ruling of 2026-11-12: a file reads only when every one of them is consumed; the first one names the refusal,
+    so the message names the use that was not consumed before the `import sys` it hangs from, and a dead import only
+    when nothing else refuses). The kinds, root's B8 eleven forms among them:
     - SYS-BIND: `import sys` under any alias, `from sys import ...` (any name, any alias, `*`), `__import__("sys")` and
       `import_module("sys")`, a name literally called `sys` imported from ANY module (root's dated residual: an alias
       re-exported under another name stays unseen), and `del` or a rebinding of a sys-bound name. Rule 5 (root's (i)):
@@ -3216,11 +3219,11 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             else:
                 return node
 
-    found: list[tuple[int, int, str]] = []
+    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding; line; column; segment)
 
-    def refuse(node) -> None:
+    def refuse(node, binding: bool = False) -> None:
         if id(node) not in consumed:
-            found.append((node.lineno, node.col_offset, segment(node)))
+            found.append((1 if binding else 0, node.lineno, node.col_offset, segment(node)))
 
     # Names the file binds by something other than an import: a bare capability name among them is a local, not the module.
     local_bound: set[str] = set()
@@ -3337,9 +3340,15 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             if not any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) for n in ast.walk(tree)):
                 ok = False
         if not ok:
-            refuse(stmt)
+            refuse(stmt, binding=True)
     found.sort()
-    return [(line, seg) for line, _, seg in found]
+    seen: set[tuple[int, str]] = set()
+    out: list[tuple[int, str]] = []
+    for _, line, _, seg in found:  # a node reached by two walks (a chain top and its name) is one occurrence
+        if (line, seg) not in seen:
+            seen.add((line, seg))
+            out.append((line, seg))
+    return out
 
 
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:

@@ -135,6 +135,21 @@ jobs:
           python3 -I actions/test-bounds/check.py self-test
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s actions/test-bounds -p 'test_*.py' -v
 
+  upload-artifact-retry-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 6  # the completion floor (trusted timeout-floor); the suite itself runs in seconds
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # upload-artifact runs as a node20 action, so the preload is tested under node 20, not whatever node the host
+      # carries (the light runners have no reliable node on PATH; vagaris pr.yml sets one up for the same reason).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - name: upload-artifact-retry preload contract and composite shape (real node processes under NODE_OPTIONS)
+        run: node --test actions/upload-artifact-retry/attempt-budget.test.mjs
+
   fetch-release-asset-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 6  # the completion floor: CompleteJob can stall 100 s and retry (trusted timeout-floor)

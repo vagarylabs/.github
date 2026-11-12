@@ -2589,7 +2589,9 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `spec_from_file_location`,
 #     `runpy.run_path` and `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the
 #     declaration, and one whose text holds a parent step or names a root or outside directory refuses even declared.
-#     The same holds in a reached Python file.
+#     The same holds in a reached Python file. N2 / N3 (root's ruling of 2026-11-12 21:32): a literal-name loader call
+#     is read through its chain (`__import__("json").loads(x)`), a literal `importlib.resources` anchor is an import of
+#     that name, and `importlib.metadata.version` / `.files` are reads, not loads.
 # The tokens a Python file can change its import path, or load a module by name or path, through (R6-2, root's ruling of
 # 2026-11-12, fail-closed by token): every file holding one is read by python_file_facts, whose capability scan judges
 # each occurrence (a file with the token only in a comment or a string is read and found clean, except `PYTHONPATH`, which
@@ -2640,7 +2642,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
       Each entry carries a fourth item, the literal text an "unknown" entry's path ends with (literal_tail, from the
       AST), else None.
     - The names are every top-level module imported by name: `import x`, `from x import y`, and a LITERAL
-      `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
+      `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`, and (N3, root's ruling of 2026-11-12
+      21:32) a LITERAL `importlib.resources.files("x")` or `read_text("x", ...)` anchor.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
       name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
       `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). `module_from_spec` is

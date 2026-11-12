@@ -100,6 +100,11 @@ KNOWN_FAIL_OPEN = {
     "KFO_C01_js_name_indirection": "C01", "KFO_C02_js_two_leading_subst": "C02", "KFO_C03_js_pkg_holding_top_subst": "C03",
     "KFO_C04_js_prefix_of_pkg_name": "C04",
     "KFO_N3_A6_unowned_free_top_landing_external": "N3",
+    # Root's ROWs of dotgithub-86 slice 2 (rule (b) reads only the key; reassign and addsitedir record no entry): an
+    # undeclared entry with no literal tail, and every other rule-(b) case below truth (root's 13:01 condition (b)).
+    "KFO_S2R_B1_name_undecl": "S2R", "KFO_S2R_B4_empty_undecl": "S2R", "KFO_S2R_C_reassign_undecl": "S2R",
+    "KFO_S2R_C_addsitedir_undecl": "S2R", "KFO_S2R_C_extend_name_undecl": "S2R", "KFO_S2R_F_symlink_undecl": "S2R",
+    "KFO_S2R_D_case_undecl": "S2R", "KFO_S2R_D_abs_undecl": "S2R", "KFO_S2R_D_expanduser_undecl": "S2R",
 }
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
@@ -109,7 +114,7 @@ KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
 # (equality, so an addition is a deliberate edit here), and they are exactly the `RC` labels outside the five #84
 # vectors below that predate round 5, so dropping the flag from one vector (or swapping a drop for an addition) cannot
 # take it out of the ablation and expected_rule checks.
-R5_VECTOR_COUNT = 141
+R5_VECTOR_COUNT = 166  # slice 2 FIX: + the 25 RC1T vectors (root's A/B/P probe cases)
 R5_PREFIX = "RC"
 RC_LABELS_BEFORE_R5 = ("RC1I_f1_fstring", "RC1I_f1_os_path_join", "RC1I_f1_str_concat", "RC1I_f1_str_path_div",
                        "RC4G_f2_unreached_scripts_template_starts_no_unit")
@@ -136,6 +141,10 @@ RC1B_RULE_PINS = {
     "trailing components": (6, 'f"trailing components are not `{tail}`'),
     "is not a tracked directory": (2, 'f"not a tracked directory) in {where}"'),
     "stale computed_imports entry": (3, 'raise ValueError(f"stale computed_imports entry: '),
+    # Root's B1/B2 of slice 2 (2026-11-12): a declared entry whose path has no literal tail of a listed form refuses
+    # (the RC1T vectors), and rule (b), apply_entry's undeclared-tail refusal, pinned by its own raise site.
+    "has no tail the scan reads": (16, 'has no tail the scan reads: its last path "'),
+    "may land in": (3, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
 }
 # Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
 # parent-step sys.path literal refuses by, closed the same way. `code the scan excludes` is also the closure's text (the

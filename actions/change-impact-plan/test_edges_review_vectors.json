@@ -17191,6 +17191,3021 @@
    "ablation_kind": "declaration",
    "ablation_expected_rule": "an undeclared sys.path entry",
    "r5": true
+  },
+  "RC1T_A0_ctrl_literal_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"packages/shared\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A0_ctrl_literal_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "r5": true,
+   "ablation": {
+    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "cfg": {
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "plug": {
+        "dir": "packages/shared/plugins",
+        "deps": []
+       },
+       "sv2": {
+        "dir": "packages/shared_v2",
+        "deps": []
+       }
+      }
+     },
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [],
+      "reader_job": "root"
+     }
+    },
+    "files": {
+     "services/a/y.py": "X = 1\n",
+     "packages/shared/shared_mod.py": "X = 1\n",
+     "packages/shared/plugins/__init__.py": "",
+     "packages/shared/plugins/plug_mod.py": "X = 1\n",
+     "packages/shared_v2/__init__.py": "",
+     "packages/shared_v2/v2_mod.py": "X = 1\n",
+     "vendor/shared/keep.txt": "k\n"
+    }
+   },
+   "ablation_kind": "construct+declaration",
+   "note": "Root's probe case A0_ctrl_literal_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Reads its truth by the declared reach; ablation: the import alone, undeclared, reads nothing."
+  },
+  "RC1T_A1_join_child_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"packages/shared\", PLUGIN)",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A1_join_child_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A1_join_child_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A2_div_child_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, str(Path(\"packages/shared\") / PLUGIN))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "str(Path(\"packages/shared\") / PLUGIN)",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A2_div_child_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A2_div_child_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A3_concat_child_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, \"packages/shared/\" + PLUGIN)\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"packages/shared/\" + PLUGIN",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A3_concat_child_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A3_concat_child_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A4_concat_sibling_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"packages/shared\" + SUFFIX",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A4_concat_sibling_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A4_concat_sibling_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A5_dirname_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.dirname(\"packages/shared\")",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A5_dirname_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A5_dirname_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A6_parent_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, str(Path(\"packages/shared\").parent))\nimport shared_v2\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "str(Path(\"packages/shared\").parent)",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A6_parent_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A6_parent_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A7_argv_fallback_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1] if sys.argv[1:] else \"packages/shared\")\nimport v2_mod\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "sys.argv[1] if sys.argv[1:] else \"packages/shared\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A7_argv_fallback_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A7_argv_fallback_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A8_slice_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared_v2\"[:-3])\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"packages/shared_v2\"[:-3]",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A8_slice_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A8_slice_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_A9_bare_join_child_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"shared\", PLUGIN))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"shared\", PLUGIN)",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A9_bare_join_child_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A9_bare_join_child_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_B1_name_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case B1_name_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case B1_name_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "KFO_S2R_B1_name_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case B1_name_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Root's ROW (rule (b) reads only the key): an undeclared entry with no literal tail (a name, the empty string) reads [] today; truth is the cwd's landing."
+  },
+  "RC1T_B2_adjacent_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"sha\" \"red\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case B2_adjacent_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "r5": true,
+   "ablation": {
+    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "cfg": {
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "plug": {
+        "dir": "packages/shared/plugins",
+        "deps": []
+       },
+       "sv2": {
+        "dir": "packages/shared_v2",
+        "deps": []
+       }
+      }
+     },
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [],
+      "reader_job": "root"
+     }
+    },
+    "files": {
+     "services/a/y.py": "X = 1\n",
+     "packages/shared/shared_mod.py": "X = 1\n",
+     "packages/shared/plugins/__init__.py": "",
+     "packages/shared/plugins/plug_mod.py": "X = 1\n",
+     "packages/shared_v2/__init__.py": "",
+     "packages/shared_v2/v2_mod.py": "X = 1\n",
+     "vendor/shared/keep.txt": "k\n"
+    }
+   },
+   "ablation_kind": "construct+declaration",
+   "note": "Root's probe case B2_adjacent_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Reads its truth by the declared reach; ablation: the import alone, undeclared, reads nothing."
+  },
+  "RC1T_B2_adjacent_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "may land in",
+   "r5": true,
+   "note": "Root's probe case B2_adjacent_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'may land in'."
+  },
+  "RC1T_B3_triple_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"\"\"shared\"\"\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case B3_triple_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "r5": true,
+   "ablation": {
+    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "cfg": {
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "plug": {
+        "dir": "packages/shared/plugins",
+        "deps": []
+       },
+       "sv2": {
+        "dir": "packages/shared_v2",
+        "deps": []
+       }
+      }
+     },
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [],
+      "reader_job": "root"
+     }
+    },
+    "files": {
+     "services/a/y.py": "X = 1\n",
+     "packages/shared/shared_mod.py": "X = 1\n",
+     "packages/shared/plugins/__init__.py": "",
+     "packages/shared/plugins/plug_mod.py": "X = 1\n",
+     "packages/shared_v2/__init__.py": "",
+     "packages/shared_v2/v2_mod.py": "X = 1\n",
+     "vendor/shared/keep.txt": "k\n"
+    }
+   },
+   "ablation_kind": "construct+declaration",
+   "note": "Root's probe case B3_triple_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Reads its truth by the declared reach; ablation: the import alone, undeclared, reads nothing."
+  },
+  "RC1T_B3_triple_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "may land in",
+   "r5": true,
+   "note": "Root's probe case B3_triple_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'may land in'."
+  },
+  "RC1T_B4_dot_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \".\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\".\"",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case B4_dot_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case B4_dot_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "KFO_S2R_B4_empty_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case B4_empty_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Root's ROW (rule (b) reads only the key): an undeclared entry with no literal tail (a name, the empty string) reads [] today; truth is the cwd's landing."
+  },
+  "KFO_S2R_C_reassign_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path = [\"shared\"] + sys.path\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case C_reassign_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (`sys.path = [...] + sys.path` records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_C_addsitedir_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsite.addsitedir(\"shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case C_addsitedir_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (site.addsitedir records no entry) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_C_extend_name_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nL = [\"shared\"]\nsys.path.extend(L)\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case C_extend_name_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (rule (b) reads only the key: `sys.path.extend(L)` of a name) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_F_symlink_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"link\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "packages/link": "shared"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case F_symlink_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (rule (b) reads only the key: an entry through a symlinked directory) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_D_case_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"Shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case D_case_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (rule (b) family (below truth in root's db92bfe table, not named in its ROWS): a case-folded literal) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_D_abs_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"/abs/shared\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case D_abs_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (rule (b) family (below truth in root's db92bfe table, not named in its ROWS): an absolute literal) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "KFO_S2R_D_expanduser_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, os.path.expanduser(\"~/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "known_fail_open": {
+    "gap": "S2R",
+    "until": "2026-11-28",
+    "today": [],
+    "record": "lanes/root/reviews/dotgithub-86-1112.md"
+   },
+   "note": "Root's probe case D_expanduser_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field as KFO_S2R_B4_empty_undecl is. Root's ROW (rule (b) family (below truth in root's db92bfe table, not named in its ROWS): os.path.expanduser) reads [] today; truth is the cwd's landing (root's 13:01 condition (b): every rule-(b) below-truth case is a dated known fail-open)."
+  },
+  "RC1T_B5_join2_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"shared\", \"plugins\")",
+       "reach": [
+        "packages/shared/plugins"
+       ],
+       "reason": "root's probe case B5_join2_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "read",
+   "r5": true,
+   "ablation": {
+    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport plug_mod\n",
+    "cfg": {
+     "workspace": {
+      "type": "declared",
+      "packages": {
+       "r": {
+        "dir": "services/r",
+        "deps": []
+       },
+       "a": {
+        "dir": "services/a",
+        "deps": []
+       },
+       "b": {
+        "dir": "services/b",
+        "deps": []
+       },
+       "nest": {
+        "dir": "services/b/worker",
+        "deps": []
+       },
+       "b2": {
+        "dir": "services/b2",
+        "deps": []
+       },
+       "web": {
+        "dir": "apps/web",
+        "deps": []
+       },
+       "shared": {
+        "dir": "packages/shared",
+        "deps": []
+       },
+       "plug": {
+        "dir": "packages/shared/plugins",
+        "deps": []
+       },
+       "sv2": {
+        "dir": "packages/shared_v2",
+        "deps": []
+       }
+      }
+     },
+     "edge_scan": {
+      "roots": [
+       "services",
+       "apps"
+      ],
+      "reader_dirs": [],
+      "reader_job": "root"
+     }
+    },
+    "files": {
+     "services/a/y.py": "X = 1\n",
+     "packages/shared/shared_mod.py": "X = 1\n",
+     "packages/shared/plugins/__init__.py": "",
+     "packages/shared/plugins/plug_mod.py": "X = 1\n",
+     "packages/shared_v2/__init__.py": "",
+     "packages/shared_v2/v2_mod.py": "X = 1\n",
+     "vendor/shared/keep.txt": "k\n"
+    }
+   },
+   "ablation_kind": "construct+declaration",
+   "note": "Root's probe case B5_join2_decl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Reads its truth by the declared reach; ablation: the import alone, undeclared, reads nothing."
+  },
+  "RC1T_B5_join2_undecl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root"
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "may land in",
+   "r5": true,
+   "note": "Root's probe case B5_join2_undecl (/tmp/r4pr86s2/probe/cases.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'may land in'."
+  },
+  "RC1T_A10_parent_step_in_name_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nBASE = \"../..\"\nsys.path.insert(0, os.path.join(BASE, \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(BASE, \"shared\")",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A10_parent_step_in_name_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "the repository root or above it",
+   "r5": true,
+   "note": "Root's probe case A10_parent_step_in_name_decl (/tmp/r4pr86s2/probe/cases2.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'the repository root or above it'."
+  },
+  "RC1T_A10_parent_step_literal_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"../..\", \"shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"../..\", \"shared\")",
+       "reach": [
+        "packages/shared"
+       ],
+       "reason": "root's probe case A10_parent_step_literal_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "the repository root or above it",
+   "r5": true,
+   "note": "Root's probe case A10_parent_step_literal_decl (/tmp/r4pr86s2/probe/cases2.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'the repository root or above it'."
+  },
+  "RC1T_A11_join_child_bare_top_decl": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"packages\", PLUGIN)",
+       "reach": [
+        "packages"
+       ],
+       "reason": "root's probe case A11_join_child_bare_top_decl: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case A11_join_child_bare_top_decl (/tmp/r4pr86s2/probe/cases2.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_P5_dirname_true_reach": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.dirname(\"packages/shared\")",
+       "reach": [
+        "packages"
+       ],
+       "reason": "root's probe case P5_dirname_true_reach: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case P5_dirname_true_reach (/tmp/r4pr86s2/probe/cases3.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_P1_join_child_true_reach": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
+   "truth": [
+    "plug"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"packages/shared\", PLUGIN)",
+       "reach": [
+        "packages/shared/plugins"
+       ],
+       "reason": "root's probe case P1_join_child_true_reach: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case P1_join_child_true_reach (/tmp/r4pr86s2/probe/cases3.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_P11_join_top_true_reach": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "os.path.join(\"packages\", PLUGIN)",
+       "reach": [
+        "packages/shared_v2"
+       ],
+       "reason": "root's probe case P11_join_top_true_reach: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case P11_join_top_true_reach (/tmp/r4pr86s2/probe/cases3.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
+  },
+  "RC1T_P4_sibling_true_reach": {
+   "question": "dotgithub-86 slice 2 CHANGES B1/B2",
+   "ext": "py",
+   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
+   "truth": [
+    "sv2"
+   ],
+   "unit": "r",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "plug": {
+       "dir": "packages/shared/plugins",
+       "deps": []
+      },
+      "sv2": {
+       "dir": "packages/shared_v2",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "\"packages/shared\" + SUFFIX",
+       "reach": [
+        "packages/shared_v2"
+       ],
+       "reason": "root's probe case P4_sibling_true_reach: the reach root ran it with",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/a/y.py": "X = 1\n",
+    "packages/shared/shared_mod.py": "X = 1\n",
+    "packages/shared/plugins/__init__.py": "",
+    "packages/shared/plugins/plug_mod.py": "X = 1\n",
+    "packages/shared_v2/__init__.py": "",
+    "packages/shared_v2/v2_mod.py": "X = 1\n",
+    "vendor/shared/keep.txt": "k\n"
+   },
+   "expect": "refuse",
+   "expected_rule": "has no tail the scan reads",
+   "r5": true,
+   "note": "Root's probe case P4_sibling_true_reach (/tmp/r4pr86s2/probe/cases3.json, R4 of db92bfe, lanes/root/reviews/dotgithub-86-1112.md SLICE 2 CHANGES), converted field for field (probe.py's BASE files, its six packages beside the fixture's own). Refuses: 'has no tail the scan reads'."
   }
  }
 }

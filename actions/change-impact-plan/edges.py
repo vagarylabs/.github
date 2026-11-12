@@ -2625,11 +2625,13 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str]], set[str], list[tuple]]:
+def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
       the text rule 6 reads, key), `key` the entry's own source as written (whitespace collapsed): the text an
       edge_scan.computed_imports `expr` names it by (the r5 sys.path rule, root's dotgithub-86 review, 2026-11-12).
+      Each entry carries a fourth item, the literal text an "unknown" entry's path ends with (literal_tail, from the
+      AST), else None.
     - The names are every top-level module imported by name: `import x`, `from x import y`, and a LITERAL
       `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
@@ -2925,7 +2927,57 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str]],
                              f"scan does not read) in {path}; bind it by a plain assignment, or write it from __file__ "
                              "with literal parts, which the scan maps")
         value = resolved(node)
-        entries.append(("unknown", text_of(node), source(node)) if value is None else ("dir", value, source(node)))
+        entries.append(("unknown", text_of(node), source(node), literal_tail(node)) if value is None
+                       else ("dir", value, source(node), None))
+
+    def is_sep(part) -> bool:
+        """`{os.sep}` / `{os.path.sep}` in an f-string: a separator, literal text (root's S05)."""
+        return isinstance(part, ast.FormattedValue) and part.conversion == -1 and part.format_spec is None \
+            and isinstance(part.value, ast.Attribute) and ast.unparse(part.value) in ("os.sep", "os.path.sep")
+
+    def literal_tail(node) -> str | None:
+        """The literal text a sys.path entry's path ENDS with, from its AST (root's B1 of dotgithub-86 slice 2,
+        2026-11-12): the trailing components every directory it lands in ends with, or None. A CLOSED list of forms,
+        each with a literal as its LAST component: a string literal (adjacent and triple-quoted literals are one
+        constant); str() / Path() / abspath() / realpath() / normpath() / fspath() around exactly one such form, or
+        `.resolve()` on one; `X / "literal"`; os.path.join(X..., "literal"); an f-string whose placeholders all come
+        before its literal text, which then starts at a separator. A literal run before the last literal is kept
+        (`join("packages", "shared")` ends in `packages/shared`, never only `shared`, which `vendor/shared` also ends
+        with); an unknown part resets it. Anything else (a name, a concatenation, dirname, `.parent`, a slice, a
+        ternary, a literal followed by a computed part) has no tail."""
+        def joined(prefix: str | None, literal: str) -> str:
+            return literal if literal.startswith("/") or not prefix else prefix.rstrip("/") + "/" + literal
+
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.JoinedStr):
+            parts = node.values
+            first = next((i for i, part in enumerate(parts) if isinstance(part, ast.Constant) or is_sep(part)), len(parts))
+            if first == len(parts) or not all(isinstance(part, ast.Constant) or is_sep(part) for part in parts[first:]):
+                return None
+            text = "".join("/" if is_sep(part) else str(part.value) for part in parts[first:])
+            if first == 0:
+                return text  # no placeholder: a plain literal
+            return text.lstrip("/") if text.startswith("/") else None  # `f"{ROOT}shared"` ends in ROOT's last part
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+                return None
+            return joined(literal_tail(node.left), node.right.value)
+        if isinstance(node, ast.Call) and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr == "resolve" and not node.args:
+                return literal_tail(f.value)
+            if call_name(f) in ("str", "Path", "abspath", "realpath", "normpath", "fspath") and len(node.args) == 1:
+                return literal_tail(node.args[0])
+            is_join = (isinstance(f, ast.Name) and f.id == "join") or (
+                isinstance(f, ast.Attribute) and f.attr == "join" and ast.unparse(f.value) in ("os.path", "posixpath", "path"))
+            if is_join and node.args and isinstance(node.args[-1], ast.Constant) and isinstance(node.args[-1].value, str):
+                run = None
+                for arg in node.args:
+                    literal = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    run = joined(run, arg.value) if literal else None
+                return run
+        return None
 
     def is_sys_path(node):
         return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
@@ -4078,11 +4130,21 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             d = posixpath.dirname(d)
             tracked_dirs.add(d)
 
-    def entry_tail(key: str) -> str | None:
-        """The one literal a sys.path entry's text as written names, normalised (`./packages/shared`, `{source}/x`
-        stripped as rule 6 reads a landing): the components every directory it lands in ends with (root's amended item
-        2 of the R-c r4 review). None for a parent step, an absolute path, or no or more than one literal: a split join
-        (`join("packages", "shared")`) is not read by its last part, which `vendor/shared` would also end with."""
+    def entry_tail(raw: str | None, key: str) -> str | None:
+        """A sys.path entry's tail: the literal its path ENDS with, from the AST (python_file_facts' literal_tail, a
+        closed list of forms; root's B1 of dotgithub-86 slice 2, 2026-11-12), normalised (`./packages/shared`,
+        `{source}/x` stripped as rule 6 reads a landing): the components every directory it lands in ends with (root's
+        amended item 2 of the R-c r4 review). None for no listed form, a parent step anywhere in the key, an absolute
+        path, `.` or the empty string. The key's lone quoted literal is NOT a tail: in `join("packages/shared", PLUGIN)`
+        it is not the last component (A1, A11), in `os.path.dirname("packages/shared")` not the landing (A5)."""
+        if raw is None or raw.startswith("/") or PARENT_STEP.search(key) or PARENT_STEP.search(raw):
+            return None
+        tail = posixpath.normpath(LEADING.sub("", raw))
+        return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
+
+    def key_tail(key: str) -> str | None:
+        """The key's one quoted literal, normalised: the tail before root's B1 of slice 2. Rule (b) below still refuses
+        by it as well as by the AST tail, so no undeclared entry it refused reads now (`"shared" + X`)."""
         literals = QUOTED.findall(SEP_SUBST.sub("/", key))
         if len(literals) != 1 or PARENT_STEP.search(key) or literals[0].startswith("/"):
             return None
@@ -4125,11 +4187,18 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
         return sorted(landings), sorted(set(links))
 
     def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
-                    key: str | None = None) -> None:
+                    key: str | None = None, tail: str | None = None) -> None:
         declared = by_site.get((where, key)) if key is not None else None
-        if declared is not None:
-            used.add((where, key))  # a declaration naming a real entry is not stale, whichever branch judges it
-        tail = entry_tail(key) if kind == "unknown" and key is not None else None
+        tail = entry_tail(tail, key) if kind == "unknown" and key is not None else None
+        if declared is not None and kind == "unknown" and tail is None:
+            # Root's B1 and B2 of dotgithub-86 slice 2 (2026-11-12): a declared entry with no tail has no reach the scan
+            # can check (`os.path.join("packages/shared", PLUGIN)` declared to packages/shared once read shared, truth
+            # its child; `p` declared once read nothing and its declaration counted as used). It refuses, unused.
+            raise ValueError(f"unresolved (the declared sys.path entry `{key}` has no tail the scan reads: its last path "
+                             "component is not a literal of a read form (a literal; str, Path, abspath, realpath, "
+                             "normpath or fspath of one, or its .resolve(); X / literal; os.path.join(..., literal); an "
+                             "f-string whose placeholders all come first), or it holds a parent step or an absolute path, "
+                             f"so the directories it reaches cannot be checked) in {where}")
         if declared is not None and tail is not None:
             # The RC1B rule (root's dotgithub-86 review and the R-c r4 review items 2 and 7, 2026-11-12): a DECLARED
             # entry the scan cannot evaluate is read by its reach, a LIST of tracked directories, each ending in the
@@ -4146,6 +4215,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 if posixpath.normpath(target) not in tracked_dirs:
                     raise ValueError(f"unresolved (the sys.path entry `{key}` is declared to reach `{target}`, which is "
                                      f"not a tracked directory) in {where}")
+            used.add((where, key))  # root's B2 of slice 2: a key is used only in the branch that honours it, here
             for target in reach:
                 apply_entry(package, source, "dir", posixpath.normpath(target), where, what)
             return
@@ -4179,8 +4249,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # Python sys.path entry that may leave its package and that no edge_scan.computed_imports entry names
                 # (its `file` this file, its `expr` the entry's text as written, `key`) refuses by its own rule. A
                 # different text (quotes, an r prefix, adjacent literals, inner parentheses, a trailing slash) is a
-                # different key, so a twin's declaration does not cover it (RC1Q). A DECLARED entry, and a pytest
-                # pythonpath entry (no key), fall to the catch-all below until a rule commit honours the declaration.
+                # different key, so a twin's declaration does not cover it (RC1Q). A pytest pythonpath entry (no key)
+                # falls to the catch-all below; a DECLARED entry never reaches here (RC1B honours or refuses it above).
                 if key is not None and (where, key) not in by_site:
                     raise ValueError(f"unresolved (an undeclared sys.path entry `{value}` may leave its package; declare "
                                      f"it in edge_scan.computed_imports by its text as written, `{key}`) in {where}")
@@ -4189,12 +4259,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # The RC1B bare-name rule: an undeclared entry naming no top-level directory (`"shared"`, `"app"`,
             # `Path.cwd() / "shared"`) still lands, relative to the process cwd, in every tracked directory ending in
             # its literal, the caller's own unit included (vagary-core's cost_centre_checks.py:33 `"app"`): refuse.
-            hits = sorted(d for d in tracked_dirs if tail is not None and ends_in(d, tail))
+            # Rule (b) reads the AST tail AND the key's lone literal (key_tail), so `"sha" "red"`, `"""shared"""`,
+            # `"\u0073hared"` and `join("shared", "plugins")` refuse while nothing it refused before reads.
+            tails = sorted({t for t in (tail, key_tail(key) if key is not None else None) if t is not None})
+            hits = sorted(d for d in tracked_dirs if any(ends_in(d, t) for t in tails))
             if key is not None and declared is None and hits:
                 raise ValueError(f"unresolved (an undeclared sys.path entry `{key}` may land in "
                                  f"{', '.join(hits[:3])}{', ...' if len(hits) > 3 else ''}, the tracked directories ending "
-                                 f"in `{tail}`; declare it in edge_scan.computed_imports by its text as written, with "
-                                 f"the directories it reaches) in {where}")
+                                 f"in `{'` or `'.join(tails)}`; declare it in edge_scan.computed_imports by its text as "
+                                 f"written, with the directories it reaches) in {where}")
             return  # an entry naming no parent step, no top-level directory and no tracked directory: a residual
         if value == ".." or value.startswith("../"):
             return  # above the repository: nothing tracked is imported from there
@@ -4219,8 +4292,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             continue
         entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
         parsed_names.setdefault(package, set()).update(file_names)
-        for kind, value, key in entries:
-            apply_entry(package, path, kind, value, path, key=key)
+        for kind, value, key, tail in entries:
+            apply_entry(package, path, kind, value, path, key=key, tail=tail)
         check_python_sites(path, sites)
     # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
     # each entry relative to that config's directory, applied like a sys.path entry.

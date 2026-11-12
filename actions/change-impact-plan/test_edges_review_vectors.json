@@ -9644,7 +9644,7 @@
   "R84_B15_exec_open_walrus": {
    "ext": "py",
    "file": "services/r/x.py",
-   "src": "import runpy\ndef f(source):\n    exec(open(p := f\"{source}/packages/shared/m.py\").read())\n",
+   "src": "def f(source):\n    exec(open(p := f\"{source}/packages/shared/m.py\").read())\n",
    "truth": [
     "shared"
    ],
@@ -17201,7 +17201,7 @@
   "RC1T_A0_ctrl_literal_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -17280,7 +17280,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -17348,7 +17348,7 @@
   "RC1T_A1_join_child_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -17432,7 +17432,7 @@
   "RC1T_A2_div_child_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, str(Path(\"packages/shared\") / PLUGIN))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, str(Path(\"packages/shared\") / PLUGIN))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -17516,7 +17516,7 @@
   "RC1T_A3_concat_child_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, \"packages/shared/\" + PLUGIN)\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, \"packages/shared/\" + PLUGIN)\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -17600,7 +17600,7 @@
   "RC1T_A4_concat_sibling_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
    "truth": [
     "sv2"
    ],
@@ -17684,7 +17684,7 @@
   "RC1T_A5_dirname_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
    "truth": [
     "sv2"
    ],
@@ -17768,7 +17768,7 @@
   "RC1T_A6_parent_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, str(Path(\"packages/shared\").parent))\nimport shared_v2\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(\"packages/shared\").parent))\nimport shared_v2\n",
    "truth": [
     "sv2"
    ],
@@ -17852,7 +17852,7 @@
   "RC1T_A7_argv_fallback_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1] if sys.argv[1:] else \"packages/shared\")\nimport v2_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1] if sys.argv[1:] else \"packages/shared\")\nimport v2_mod\n",
    "truth": [
     "sv2"
    ],
@@ -17936,7 +17936,7 @@
   "RC1T_A8_slice_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared_v2\"[:-3])\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"packages/shared_v2\"[:-3])\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18020,7 +18020,7 @@
   "RC1T_A9_bare_join_child_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"shared\", PLUGIN))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"shared\", PLUGIN))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -18104,7 +18104,7 @@
   "RC1T_B1_name_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18188,7 +18188,7 @@
   "KFO_S2R_B1_name_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\np = \"shared\"\nsys.path.insert(0, p)\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18265,7 +18265,7 @@
   "RC1T_B2_adjacent_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18344,7 +18344,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -18412,7 +18412,7 @@
   "RC1T_B2_adjacent_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"sha\" \"red\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18485,7 +18485,7 @@
   "RC1T_B3_triple_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18564,7 +18564,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport shared_mod\n",
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport shared_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -18632,7 +18632,7 @@
   "RC1T_B3_triple_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"\"\"shared\"\"\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18705,7 +18705,7 @@
   "RC1T_B4_dot_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \".\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \".\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18789,7 +18789,7 @@
   "KFO_S2R_B4_empty_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -18866,7 +18866,7 @@
   "KFO_S2R_C_reassign_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path = [\"shared\"] + sys.path\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path = [\"shared\"] + sys.path\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19020,7 +19020,7 @@
   "KFO_S2R_C_extend_name_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nL = [\"shared\"]\nsys.path.extend(L)\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nL = [\"shared\"]\nsys.path.extend(L)\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19097,7 +19097,7 @@
   "KFO_S2R_F_symlink_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, \"link\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, \"link\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19177,7 +19177,7 @@
   "KFO_S2R_D_case_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"Shared\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"Shared\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19254,7 +19254,7 @@
   "KFO_S2R_D_abs_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"/abs/shared\")\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, \"/abs/shared\")\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19331,7 +19331,7 @@
   "KFO_S2R_D_expanduser_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, os.path.expanduser(\"~/shared\"))\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nROOT = os.getcwd()\nsys.path.insert(0, os.path.expanduser(\"~/shared\"))\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19408,7 +19408,7 @@
   "RC1T_B5_join2_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -19487,7 +19487,7 @@
    "expect": "read",
    "r5": true,
    "ablation": {
-    "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nimport plug_mod\n",
+    "src": "import os\nimport sys\nfrom pathlib import Path\nimport plug_mod\n",
     "cfg": {
      "workspace": {
       "type": "declared",
@@ -19555,7 +19555,7 @@
   "RC1T_B5_join2_undecl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"shared\", \"plugins\"))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -19628,7 +19628,7 @@
   "RC1T_A10_parent_step_in_name_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nBASE = \"../..\"\nsys.path.insert(0, os.path.join(BASE, \"shared\"))\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nBASE = \"../..\"\nsys.path.insert(0, os.path.join(BASE, \"shared\"))\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19712,7 +19712,7 @@
   "RC1T_A10_parent_step_literal_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"../..\", \"shared\"))\nimport shared_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, os.path.join(\"../..\", \"shared\"))\nimport shared_mod\n",
    "truth": [
     "shared"
    ],
@@ -19796,7 +19796,7 @@
   "RC1T_A11_join_child_bare_top_decl": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
    "truth": [
     "sv2"
    ],
@@ -19880,7 +19880,7 @@
   "RC1T_P5_dirname_true_reach": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nsys.path.insert(0, os.path.dirname(\"packages/shared\"))\nimport shared_v2\n",
    "truth": [
     "sv2"
    ],
@@ -19964,7 +19964,7 @@
   "RC1T_P1_join_child_true_reach": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages/shared\", PLUGIN))\nimport plug_mod\n",
    "truth": [
     "plug"
    ],
@@ -20048,7 +20048,7 @@
   "RC1T_P11_join_top_true_reach": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nPLUGIN = os.environ[\"PLUGIN\"]\nsys.path.insert(0, os.path.join(\"packages\", PLUGIN))\nimport v2_mod\n",
    "truth": [
     "sv2"
    ],
@@ -20132,7 +20132,7 @@
   "RC1T_P4_sibling_true_reach": {
    "question": "dotgithub-86 slice 2 CHANGES B1/B2",
    "ext": "py",
-   "src": "import os\nimport sys\nimport site\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
+   "src": "import os\nimport sys\nfrom pathlib import Path\nSUFFIX = os.environ[\"SUFFIX\"]\nsys.path.insert(0, \"packages/shared\" + SUFFIX)\nimport v2_mod\n",
    "truth": [
     "sv2"
    ],

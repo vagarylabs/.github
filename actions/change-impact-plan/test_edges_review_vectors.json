@@ -7452,6 +7452,1576 @@
     "shared"
    ],
    "note": "C2: LIB = join(dirname(__file__), \"../../packages/shared\"); def setup(LIB=LIB): sys.path.insert(0, LIB): the entry is the parameter (shadowed inside setup), whose text carries the module assignment's parent step: refuses (main read [shared]); the default `LIB=LIB` itself reads the module's LIB (C3), which changes no reading here"
+  },
+  "R84_A1_link_in_pk_to_own_pkg": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n",
+    "services/r/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "../../services/r"
+   },
+   "note": "K1: services/r/x.py run_path(f\"{source}/packages/pk/link/m.py\") declared \"external\", packages/pk/link -> ../../services/r (the caller's own package): pk, the package holding the link, is credited (read [] before: the target's owner, the caller's own, REPLACED the holder's)"
+  },
+  "R84_A2_link_in_pk_to_free_top": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n",
+    "tools/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "../../tools"
+   },
+   "note": "K1: the link's target is a package-free top (../../tools): pk is credited (read [] before)"
+  },
+  "R84_A3_unowned_link_in_pk_to_scripts": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n",
+    "scripts/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "../../scripts"
+   },
+   "unit": "readers:scripts",
+   "note": "K1: an unowned caller (scripts/x.py) through a link into its own reader directory (../../scripts): pk is credited on the scripts unit (read [] before)"
+  },
+  "R84_A4_two_landings_one_link_resolves_none": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source, k):\n    runpy.run_path(f\"{source}/packages/shared/m.py\" if k else f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk",
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/m.py\" if k else f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n",
+    "packages/shared/m.py": "X=1\n",
+    "tools/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "../../tools"
+   },
+   "note": "K1: two landings, f\"{source}/packages/shared/m.py\" if k else f\"{source}/packages/pk/link/m.py\" (link -> ../../tools): both pk and shared (read [shared] before)"
+  },
+  "R84_A5_link_out_of_repo": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "/tmp"
+   },
+   "note": "K1: the link leaves the repository (-> /tmp): pk, the holder, is credited (read [] before)"
+  },
+  "R84_A6_link_in_pk_to_shared": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/pk/link/m.py\")\n",
+   "truth": [
+    "pk",
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "workspace": {
+     "type": "declared",
+     "packages": {
+      "r": {
+       "dir": "services/r",
+       "deps": []
+      },
+      "a": {
+       "dir": "services/a",
+       "deps": []
+      },
+      "b": {
+       "dir": "services/b",
+       "deps": []
+      },
+      "nest": {
+       "dir": "services/b/worker",
+       "deps": []
+      },
+      "b2": {
+       "dir": "services/b2",
+       "deps": []
+      },
+      "web": {
+       "dir": "apps/web",
+       "deps": []
+      },
+      "shared": {
+       "dir": "packages/shared",
+       "deps": []
+      },
+      "pk": {
+       "dir": "packages/pk",
+       "deps": []
+      }
+     }
+    },
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/pk/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/pk/keep.txt": "k\n",
+    "packages/shared/m.py": "X=1\n"
+   },
+   "symlinks": {
+    "packages/pk/link": "../shared"
+   },
+   "note": "K1: the link's target is another package (-> ../shared): pk AND shared (read [shared] before, the holder dropped)"
+  },
+  "R84_F1_shared_link_to_own_pkg_default_cfg": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/link/m.py\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "services/r/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/shared/link": "../../services/r"
+   },
+   "note": "K1 under the suite's default packages: packages/shared/link -> ../../services/r (the caller's own): shared is credited (read [] before)"
+  },
+  "R84_F2_shared_link_to_free_top_default_cfg": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    runpy.run_path(f\"{source}/packages/shared/link/m.py\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shared/link/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "tools/m.py": "Y=1\n"
+   },
+   "symlinks": {
+    "packages/shared/link": "../../tools"
+   },
+   "note": "K1 under the suite's default packages: packages/shared/link -> ../../tools: shared is credited (read [] before)"
+  },
+  "R84_D01_default_site_module_root": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: LIB = join(dirname(__file__), \"../../packages/shared\"); def setup(LIB=None, _=sys.path.insert(0, LIB)): the default reads the module's LIB, its single binding, a plain module-level assignment: reads shared (399d7fe refused)"
+  },
+  "R84_D05_kwonly_default_site": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\ndef setup(*, LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: the same through a keyword-only parameter's default"
+  },
+  "R84_D06_default_lambda_body_reads_module": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\ndef setup(LIB, cb=lambda: sys.path.insert(0, LIB)):\n    cb()\nsetup(\"/x\")\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: def setup(LIB, cb=lambda: sys.path.insert(0, LIB)): the lambda in the default reads the module's LIB (single plain binding): reads shared"
+  },
+  "R84_D07_path_site_in_default_module_root": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, runpy\nM = os.path.join(os.path.dirname(__file__), \"../../packages/shared/shared_mod.py\")\ndef go(M=None, _=runpy.run_path(M)):\n    pass\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: M = join(dirname(__file__), \"../../packages/shared/shared_mod.py\"); def go(M=None, _=runpy.run_path(M)): the loader in the default evaluates the module's M: reads shared"
+  },
+  "R84_D02_default_reads_enclosing_param": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nLIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\ndef outer(LIB):\n    def setup(_=sys.path.insert(0, LIB)):\n        pass\nouter(os.path.join(os.path.dirname(__file__), \"../../packages/shared\"))\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: def outer(LIB): def setup(_=sys.path.insert(0, LIB)): the default's LIB is the ENCLOSING function's parameter, shadowed there, so the entry is its text, which carries the module assignment's parent step: refuses (main read [a, shared])"
+  },
+  "R84_E01_default_imported_LIB_local_elsewhere": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nfrom conf import LIB\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "services/r/conf.py": "import os\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\n",
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: from conf import LIB; a helper-local LIB = join(..., \"../../services/a\"); def setup(LIB=None, _=sys.path.insert(0, LIB)): LIB's single Name binding is the helper's local, not a module-level assignment, so the default stays shadowed and the text (the helper's parent step) refuses (da529ed read [a, shared]: ev read the helper's local for the module's name)"
+  },
+  "R84_E02_decorator_imported_LIB_local_elsewhere": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nfrom conf import LIB\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef deco(x):\n    return lambda f: f\n@deco(sys.path.insert(0, LIB))\ndef setup(LIB=None):\n    pass\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "services/r/conf.py": "import os\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\n",
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: the same through a decorator argument, @deco(sys.path.insert(0, LIB)) (da529ed read [a, shared])"
+  },
+  "R84_E03_default_global_rebound_in_fn": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import os, sys\nLIB = None\ndef init():\n    global LIB\n    LIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "services/r/conf.py": "import os\nLIB = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\n",
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "note": "K2: LIB = None at module level and `global LIB; LIB = ...` in a function: two bindings, the default stays shadowed, refuses (main read [shared])"
+  },
+  "R84_G03_c3_env_walrus_default_site": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "src": "import os, sys\n(LIB := os.environ[\"SHARED_DIR\"])\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "note": "K2: (LIB := os.environ[\"SHARED_DIR\"]) at module level, a helper-local LIB = join(..., \"../../services/a\"), def setup(LIB=None, _=sys.path.insert(0, LIB)): the walrus is a binding the scan does not read, the default stays shadowed, the text refuses (da529ed read [a], below the truth)"
+  },
+  "R84_G03d_c3_env_walrus_decorator_site": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "src": "import os, sys\n(LIB := os.environ[\"SHARED_DIR\"])\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef deco(x):\n    return lambda f: f\n@deco(sys.path.insert(0, LIB))\ndef setup(LIB=None):\n    pass\nimport shared_mod\n",
+   "note": "K2: the same through a decorator argument (da529ed read [a])"
+  },
+  "R84_G03m_module_level_twin": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "src": "import os, sys\n(LIB := os.environ[\"SHARED_DIR\"])\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\nsys.path.insert(0, LIB)\nimport shared_mod\n",
+   "note": "K2/K3 (root's N5, closed here): the module-level twin, sys.path.insert(0, LIB) with LIB bound by a module walrus and a helper-local assignment: LIB is unreadable (K3), so it is never evaluated from the helper's local; the text refuses (main, 399d7fe and da529ed all read [a], below the truth)"
+  },
+  "R84_G04_c3_env_for_default_site": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "src": "import os, sys\nfor LIB in os.environ[\"SHARED_DIRS\"].split(\":\"):\n    pass\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "note": "K2: for LIB in os.environ[...].split(\":\") at module level beside the helper-local LIB and the default site: the loop binding is unreadable, refuses (da529ed read [a])"
+  },
+  "R84_G01m_module_level_twin": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n"
+   },
+   "src": "import os, sys\nfrom pathlib import Path\n(LIB := str(Path(__file__).parents[2] / \"packages\" / \"shared\"))\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\nsys.path.insert(0, LIB)\nimport shared_mod\n",
+   "note": "K3 (moved on this push, safe direction): (LIB := str(Path(__file__).parents[2] / \"packages\" / \"shared\")) at module level, a helper-local LIB = join(..., \"../../services/a\"), sys.path.insert(0, LIB) at module level: the walrus makes LIB unreadable, so the helper's local is no longer evaluated for it (main and da529ed read [a, shared], above the truth by the wrong binding); the text refuses"
+  },
+  "R84_G02_c3_imported_LIB_default_site": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n",
+    "services/r/conf.py": "from pathlib import Path\nLIB = str(Path(__file__).parents[2] / \"packages\" / \"shared\")\n"
+   },
+   "src": "import os, sys\nfrom conf import LIB\ndef helper():\n    LIB = os.path.join(os.path.dirname(__file__), \"../../services/a\")\n    return LIB\ndef setup(LIB=None, _=sys.path.insert(0, LIB)):\n    pass\nimport shared_mod\n",
+   "note": "K2 (moved on this push, safe direction): from conf import LIB (conf.py binds it to packages/shared), a helper-local LIB = join(..., \"../../services/a\"), def setup(LIB=None, _=sys.path.insert(0, LIB)): the single Name binding is the helper's local, the default stays shadowed, the text refuses (main and da529ed read [a, shared] by the helper's local)"
+  },
+  "R84_B01_walrus": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    if (p := f\"{source}/packages/shared/m.py\"):\n        runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: if (p := f\"{source}/packages/shared/m.py\"): runpy.run_path(p), declared \"p\" external: p is bound by a walrus, which the scan does not read: refuses (read [] on all three readers)"
+  },
+  "R84_B02_for_loop": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    for p in (f\"{source}/packages/shared/m.py\",):\n        runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: for p in (f\"{source}/packages/shared/m.py\",): run_path(p), declared: a loop binding refuses"
+  },
+  "R84_B03_param_default": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\nSOURCE = __import__(\"os\").environ[\"S\"]\ndef f(p=f\"{SOURCE}/packages/shared/m.py\"):\n    runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: def f(p=f\"{SOURCE}/packages/shared/m.py\"): run_path(p), declared: a read of a parameter that carries a default refuses (a bare parameter is the S08 residual)"
+  },
+  "R84_B04_with_as": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source, ctx):\n    with ctx(f\"{source}/packages/shared\") as d:\n        runpy.run_path(d + \"/m.py\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "d + \"/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: with ctx(f\"{source}/packages/shared\") as d: run_path(d + \"/m.py\"), declared: a `with ... as` binding refuses"
+  },
+  "R84_B05_comprehension": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    return [runpy.run_path(p) for p in [f\"{source}/packages/shared/m.py\"]]\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: [run_path(p) for p in [f\"{source}/packages/shared/m.py\"]], declared: a comprehension binding refuses"
+  },
+  "R84_B06_function_return": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef where(source):\n    return f\"{source}/packages/shared/m.py\"\ndef f(source):\n    runpy.run_path(where(source))\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "where(source)",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: run_path(where(source)) with def where(source): return f\"{source}/packages/shared/m.py\", declared: `where` is bound by a def; a call's return is not a path the scan reads: refuses"
+  },
+  "R84_B07_attribute": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\nclass L:\n    def __init__(self, source):\n        self.p = f\"{source}/packages/shared/m.py\"\n    def go(self):\n        runpy.run_path(self.p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "self.p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: self.p = f\"{source}/packages/shared/m.py\" in __init__; run_path(self.p), declared: an attribute assigned anywhere on the same base refuses"
+  },
+  "R84_B08_starred": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    *ps, = [f\"{source}/packages/shared/m.py\"]\n    runpy.run_path(ps[0])\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "ps[0]",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: *ps, = [f\"{source}/packages/shared/m.py\"]; run_path(ps[0]), declared: a starred target refuses"
+  },
+  "R84_B09_nested_tuple": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    (p, q), r = (f\"{source}/packages/shared/m.py\", 1), 2\n    runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3: (p, q), r = (f\"{source}/packages/shared/m.py\", 1), 2; run_path(p), declared: a nested unpacking refuses"
+  },
+  "R84_B16_unowned_walrus": {
+   "ext": "py",
+   "file": "scripts/x.py",
+   "src": "import runpy\ndef f(source):\n    if (p := f\"{source}/packages/shared/m.py\"):\n        runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "scripts/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "unit": "readers:scripts",
+   "note": "K3: the walrus form from a caller outside every package (scripts/x.py, judged on the scripts unit) refuses too"
+  },
+  "R84_B10_assigned_after_site_ctl": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f():\n    runpy.run_path(P)\nP = f\"{SOURCE}/packages/shared/m.py\"\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "P",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 control: P = f\"{SOURCE}/packages/shared/m.py\" at module level AFTER the function that loads it: a plain assignment is read wherever it stands: reads shared (kept)"
+  },
+  "R84_B12_global_ctl": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef init(source):\n    global P\n    P = f\"{source}/packages/shared/m.py\"\ndef run():\n    runpy.run_path(P)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "P",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 control: `global P; P = f\"{source}/packages/shared/m.py\"` in one function, run_path(P) in another: a plain assignment under `global` is read: reads shared (kept)"
+  },
+  "R84_B13_conditional_two_scopes_ctl": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef a(source):\n    p = f\"{source}/packages/shared/m.py\"\ndef b(k):\n    p = \"/opt/x.py\" if k else None\n    runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 control: p = f\"{source}/packages/shared/m.py\" in one function and p = \"/opt/x.py\" if k else None in the loading one: both texts are read, the landing is credited (kept)"
+  },
+  "R84_B14_augassign_ctl": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    p = source\n    p += \"/packages/shared/m.py\"\n    runpy.run_path(p)\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 control: p = source; p += \"/packages/shared/m.py\"; run_path(p): the augmentation is read (S02): reads shared (kept)"
+  },
+  "R84_B15_exec_open_walrus": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source):\n    exec(open(p := f\"{source}/packages/shared/m.py\").read())\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p := f\"{source}/packages/shared/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 control: exec(open(p := f\"{source}/packages/shared/m.py\").read()): the walrus IS the argument (p is its Store, not a read), the f-string's landing is credited (kept)"
+  },
+  "R84_B17_import_alias_name": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\nfrom cfg import SHARED as p\ndef f():\n    runpy.run_path(p + \"/m.py\")\n",
+   "truth": [],
+   "expect": "read",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p + \"/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 precision control: from cfg import SHARED as p; run_path(p + \"/m.py\"), declared: an imported name has no binding and no text in this file, so it is not an unreadable name and the site reads nothing (the declaration stands for it)",
+   "control": true,
+   "reads": []
+  },
+  "R84_B11_nested_fn_param_shadow": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\np = \"/opt/ext/m.py\"\ndef f(source):\n    def g(p):\n        runpy.run_path(p)\n    g(f\"{source}/packages/shared/m.py\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "residual",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3 observed residual (the S08 class, review by 2026-12-10): p = \"/opt/ext/m.py\" at module level; def g(p): run_path(p) called as g(f\"{source}/packages/shared/m.py\"): the argument is a bare parameter of the enclosing function, whose text is its name; the call-site argument is not read. Reads [] on main and every head",
+   "reads": [],
+   "review_by": "2026-12-10"
+  },
+  "R84_C03p_py_pkg_holding_top_subst": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source, name):\n    runpy.run_path(f\"{source}/packages/{name}/m.py\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/{name}/m.py\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3-adjacent pin: run_path(f\"{source}/packages/{name}/m.py\") declared: a substitution under the package-holding top may reach any package: refuses (main read [])"
+  },
+  "R84_C04p_py_prefix_of_pkg_name": {
+   "ext": "py",
+   "file": "services/r/x.py",
+   "src": "import runpy\ndef f(source, rest):\n    runpy.run_path(f\"{source}/packages/shar{rest}\")\n",
+   "truth": [
+    "shared"
+   ],
+   "expect": "refuse",
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "tools"
+     ],
+     "reader_job": "root",
+     "exclude": [
+      ".github"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "f\"{source}/packages/shar{rest}\"",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "files": {
+    "packages/shared/m.py": "X=1\n"
+   },
+   "note": "K3-adjacent pin: run_path(f\"{source}/packages/shar{rest}\") declared: a partial package name refuses (main read [])"
+  },
+  "R84_Y03_aug_computed_loader_declared": {
+   "ext": "py",
+   "src": "import os, runpy\ndef load(name):\n    p = os.path.join(os.path.dirname(__file__), \"../../packages/shared\")\n    p += os.sep + name\n    runpy.run_path(p)\n",
+   "files": {
+    "packages/shared/shared_mod.py": "X=1\n",
+    "packages/shared/m.py": "X=1\n"
+   },
+   "cfg": {
+    "edge_scan": {
+     "roots": [
+      "services",
+      "apps"
+     ],
+     "reader_dirs": [],
+     "reader_job": "root",
+     "computed_imports": [
+      {
+       "file": "services/r/x.py",
+       "expr": "p",
+       "reach": "external",
+       "reason": "R84 vector: root's third delta R4 of #84 (K1 symlinked landings, K2 the scoped un-shadow, K3 unreadable names refuse)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "expect": "refuse",
+   "truth": [
+    "shared"
+   ],
+   "note": "N4 of root's third delta R4: the declared twin of Y03b, p = join(dirname(__file__), \"../../packages/shared\"); p += os.sep + name; run_path(p) declared \"p\" external: the augmentation is not `+= \"<literal>\"`, so p is unevaluated and its text carries a parent step, which no declaration lifts: refuses (main and 2cc10d8 read [shared] from the evaluated prefix alone; moved on 399d7fe, pinned here)"
   }
  }
 }

@@ -2609,37 +2609,104 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         raise ValueError(f"unresolved (a Python file the scan must read does not parse: {path}: {error})") from None
     assigned: dict[str, list] = {}
     augmented: dict[str, list] = {}  # name -> its `name += ...` statements (root's S02 of #84, 2026-11-12)
-    opaque: set[str] = set()  # names bound by an unpacking the parse cannot pair (`p, q = f(x)`): never evaluated
-    shadowed: set[int] = set()  # id() of a Name read where a parameter of the enclosing function binds it (root's S08)
+    # Root's K3 of #84's third delta R4 (2026-11-12): the scan reads a name through a plain assignment (`p = ...`, an
+    # annotated one, a pairwise tuple, `p += ...`) and nothing else. A name bound by anything else is UNREADABLE: its
+    # text is empty, so a loader site reading it refuses (never a reading of [] under a declaration), and `ev` never
+    # evaluates it (a module `for LIB in ...` beside a helper-local `LIB = ...` once evaluated the helper's, G03m).
+    # name -> the kind of binding the scan does not read (the first one met names the refusal).
+    unreadable: dict[str, str] = {}
+    assigned_attrs: set[tuple[str, str]] = set()  # (`self`, `p`) for `self.p = ...` anywhere (K3's B07)
+    shadowed: set[int] = set()  # id() of a Name read inside a function whose parameter binds it (root's S08)
+    defaulted: set[int] = set()  # those of them whose parameter carries a default (K3's B03): a loader site refuses
+    # id() -> name for a parameter-named Name in the function's own defaults or decorators (root's C3 of #84's second
+    # delta R4): it evaluates in the ENCLOSING scope, so it is un-shadowed below only when the name's single binding
+    # in the file is a plain module-level assignment (root's K2 of the third delta R4), else it stays shadowed.
+    enclosing: dict[int, str] = {}
+
+    def unread(name: str, kind: str) -> None:
+        unreadable.setdefault(name, kind)
+
+    def unread_names(target, kind: str) -> None:
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                unread(sub.id, kind)
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Store) and isinstance(sub.value, ast.Name):
+                assigned_attrs.add((sub.value.id, sub.attr))
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            augmented.setdefault(node.target.id, []).append(node)
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name):
+                augmented.setdefault(node.target.id, []).append(node)
+            elif isinstance(node.target, ast.Attribute) and isinstance(node.target.value, ast.Name):
+                assigned_attrs.add((node.target.value.id, node.target.attr))
             continue
+        if isinstance(node, ast.NamedExpr):
+            unread_names(node.target, "a walrus (`:=`)")
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            unread_names(node.target, "a `for` loop")
+        elif isinstance(node, ast.comprehension):
+            unread_names(node.target, "a comprehension")
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            unread_names(node.optional_vars, "a `with ... as`")
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            unread(node.name, "an `except ... as`")
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            unread(node.name, "a `match` pattern")
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            unread(node.rest, "a `match` pattern")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            unread(node.name, "a `def` (a call's return is not a path the scan reads)")
+        elif isinstance(node, ast.ClassDef):
+            unread(node.name, "a `class`")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             a = node.args
             params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs} | {x.arg for x in (a.vararg, a.kwarg) if x}
+            # A parameter WITH a default is a binding the scan does not read (K3's B03: `def f(p=f"{S}/packages/...")`):
+            # a read of it in the body is `defaulted`, and a loader site reading it refuses. A bare parameter's read is
+            # the S08 residual (its text is its name, which names nothing). Both are per read (by id), since the same
+            # name at module level is another binding (D01 reads the module's LIB through the default, K2).
+            positional = a.posonlyargs + a.args
+            with_default = {x.arg for x in positional[len(positional) - len(a.defaults):]} if a.defaults else set()
+            with_default |= {x.arg for x, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None}
             # Argument defaults and decorators evaluate in the ENCLOSING scope (`def setup(LIB=LIB)` reads the module's
-            # LIB), so a Name there is not the parameter's (root's C3 of #84's second delta R4, 2026-11-12).
+            # LIB), so a Name there is not the parameter's (root's C3 of #84's second delta R4, 2026-11-12): recorded
+            # as a candidate, decided once the file's bindings are known (K2).
             outer = {id(n) for d in (*a.defaults, *[x for x in a.kw_defaults if x], *getattr(node, "decorator_list", ()))
                      for n in ast.walk(d)}
-            shadowed.update(id(n) for n in ast.walk(node) if isinstance(n, ast.Name) and n.id in params and
-                            isinstance(n.ctx, ast.Load) and id(n) not in outer)
+            for n in ast.walk(node):
+                if isinstance(n, ast.Name) and n.id in params and isinstance(n.ctx, ast.Load):
+                    if id(n) in outer:
+                        enclosing[id(n)] = n.id
+                    else:
+                        shadowed.add(id(n))
+                        if n.id in with_default:
+                            defaulted.add(id(n))
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
         value = getattr(node, "value", None)
         for t in targets:
             if isinstance(t, ast.Name) and value is not None:
                 assigned.setdefault(t.id, []).append(value)
+            elif isinstance(t, ast.Name):
+                unread(t.id, "an annotation without a value")
+            elif isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
+                assigned_attrs.add((t.value.id, t.attr))
             elif isinstance(t, (ast.Tuple, ast.List)) and value is not None:
                 # Root's S11: `p, q = f"{source}/packages/shared", 1` binds each name to its own element. Unpacked from
                 # anything else (a call, a starred target), each name carries the whole right side as text and never
-                # evaluates.
+                # evaluates (K3: it is unreadable, so a loader site reading it refuses).
                 pairwise = isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(t.elts) and \
                     not any(isinstance(e, ast.Starred) for e in t.elts + value.elts)
                 for i, e in enumerate(t.elts):
                     if isinstance(e, ast.Name):
                         assigned.setdefault(e.id, []).append(value.elts[i] if pairwise else value)
                         if not pairwise:
-                            opaque.add(e.id)
+                            unread(e.id, "an unpacking the scan cannot pair")
+                    elif isinstance(e, ast.Starred):
+                        unread_names(e, "a starred target")
+                    elif isinstance(e, (ast.Tuple, ast.List)):
+                        unread_names(e, "a nested unpacking")  # `(p, q), r = ...` (K3's B09)
+                    elif isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name):
+                        assigned_attrs.add((e.value.id, e.attr))
     here = posixpath.dirname(path)
     FILE, UNKNOWN = ("file",), None
 
@@ -2658,7 +2725,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
             if node.id == "__file__":
                 return FILE
             values = assigned.get(node.id, [])
-            if len(values) != 1 or node.id in opaque or id(node) in shadowed:
+            if len(values) != 1 or node.id in unreadable or id(node) in shadowed:
                 return UNKNOWN
             value = ev(values[0], depth + 1)
             # `p = dirname(__file__); p += "/../../packages/shared"` evaluates as the concatenation (root's S13 reads
@@ -2745,7 +2812,17 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         """("path", expr, resolved target, (evaluated prefix, a step after it) or None, the rule-6 text): the text is
         what rule 8 reads when nothing evaluates, the argument's source AND every assignment of the names it reads
         (text_of), so `p = f"{source}/packages/shared/m.py"; runpy.run_path(p)` lands where the f-string lands (root's
-        B2 of #84's second delta R4, 2026-11-12: the source `p` alone named no top and read nothing)."""
+        B2 of #84's second delta R4, 2026-11-12: the source `p` alone named no top and read nothing). A name the
+        argument reads that is bound by something the scan does not read (a walrus, a loop, a comprehension, a
+        `with ... as`, a parameter default, a starred or nested unpacking, a `def`, an assigned attribute) has no text
+        to land anywhere, so the site REFUSES, declared or not (root's K3 of the third delta R4: `(p := f"{source}/
+        packages/shared/m.py"); run_path(p)` declared "external" read [] on main and on both earlier heads)."""
+        bad = unreadable_in(arg)
+        if bad:
+            name, kind = bad[0]
+            raise ValueError(f"unresolved (a computed Python load `{source(arg)}` reads `{name}`, bound by {kind}, which "
+                             f"the scan does not read) in {path}; bind it by a plain assignment, or write it from "
+                             "__file__ with literal parts, which the scan maps")
         target = resolved(arg)
         if target is not None:
             return ("path", source(arg), target, None, None)
@@ -2776,6 +2853,29 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 for aug in augmented.get(name, []):
                     parts.append(f"{name} += {text_of(aug.value, seen | {name})}")
         return "; ".join(parts)
+
+    def unreadable_in(node, seen: frozenset = frozenset()) -> list[tuple[str, str]]:
+        """Root's K3 of #84's third delta R4 (2026-11-12): every name a loader-site argument reads, directly or through
+        the assignments text_of walks, that is bound by something the scan does not read (`unreadable`), and every
+        `base.attr` it reads that is assigned as an attribute anywhere (`self.p = ...; run_path(self.p)`), each with
+        the kind of binding. A Store-context name (`exec(open(p := f"...").read())`) is the site's own binding, not a
+        read; an imported name has no binding here and no text, so it reads nothing (B17) and is not listed."""
+        found: list[tuple[str, str]] = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load) and sub.id not in seen:
+                if sub.id in unreadable:
+                    found.append((sub.id, unreadable[sub.id]))
+                elif id(sub) in defaulted:
+                    found.append((sub.id, "a parameter default"))
+                if len(seen) < 8:
+                    for value in assigned.get(sub.id, []):
+                        found.extend(unreadable_in(value, seen | {sub.id}))
+                    for aug in augmented.get(sub.id, []):
+                        found.extend(unreadable_in(aug.value, seen | {sub.id}))
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Load) and isinstance(sub.value, ast.Name) \
+                    and (sub.value.id, sub.attr) in assigned_attrs:
+                found.append((f"{sub.value.id}.{sub.attr}", "an attribute assignment"))
+        return found
 
     def entry(node):
         value = resolved(node)
@@ -2870,8 +2970,16 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 return values
         return None
 
+    # Root's K2 of #84's third delta R4 (2026-11-12): a parameter-named Name in the function's own defaults or
+    # decorators reads the ENCLOSING scope, but `ev` looks a name up in the file's assignments whatever their scope, so
+    # the un-shadow holds only when that name's single binding in the whole file is one plain, unmutated module-level
+    # assignment (the loop-literal pattern): `LIB = join(dirname(__file__), "../../packages/shared"); def setup(LIB=None,
+    # _=sys.path.insert(0, LIB))` reads shared (D01); the same default beside a module `(LIB := os.environ[...])` or
+    # `for LIB in ...` and a helper-local `LIB = ...` stays shadowed, so the entry is its text and refuses (G03, G04).
+    shadowed.update(ident for ident, name in enclosing.items() if unmutated_module_literal(name) is None)
+
     names: set[str] = set()
-    sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None)
+    sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None, the rule-6 text or None)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
@@ -3872,9 +3980,15 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # caller OUTSIDE every package too (root's B1 of the second delta R4): its landings on a package-free top
                 # (`tools/t.py`, its own `scripts/`) are the paths its reach declares, and its landing in a package is
                 # credited, so `declarable` (which asks every landing to be in another package) does not gate the credit.
-                # A symlinked landing (`packages/link/m.py`, link -> shared) is credited to its target's owner (X08b);
-                # from a PACKAGE caller the link still refuses above, as before (X08).
-                landed = {owner(resolve_links(x)) for x in landings} - {None, owner(path)}
+                # A symlinked landing credits BOTH the package holding the link and the package its target is in
+                # (`packages/pk/link/m.py`, link -> ../shared: pk and shared), never one instead of the other: the
+                # literal names pk's directory, which the load reads through, and the file read is shared's. A link
+                # whose target is the caller's own package, a package-free top or outside the repository credits the
+                # holder alone (root's K1 of #84's third delta R4, 2026-11-12: the target's owner once REPLACED the
+                # holder's, so `packages/pk/link/m.py` with link -> ../../services/r read [] from services/r/x.py).
+                # X08b (`packages/link`, a link under no package, -> shared) credits shared, the target's owner; from a
+                # PACKAGE caller that link still refuses above, as before (X08).
+                landed = {found for x in landings for found in (owner(x), owner(resolve_links(x)))} - {None, owner(path)}
             else:
                 landed = set()
             entry = by_site.get((path, expr))

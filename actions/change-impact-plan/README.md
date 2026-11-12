@@ -20,6 +20,8 @@ The reader assessment must cover the configured reader directories and bind the 
 
 Planner 1.4 adds `source_answer` and `source_answer_meta` to every record; both are bound into `plan_id`.
 
+Planner 1.7.6 closes two reader holes root found on main (2026-11-12, F1, F2 and F4 of the R-c review) and tightens the vector harness. F1/F4: rule 6 refused an unevaluable `sys.path` entry only when its literal named a scan root or a top-level directory outside every package, so `sys.path.insert(0, str(source / "packages/shared"))` (and the `os.path.join`, `+ "/packages/shared"` and f-string forms), `sys.path.insert(0, "packages/shared")`, `"./packages/shared"`, `str(Path.cwd() / "packages/shared")`, `os.path.abspath("packages/shared")` and `ROOT / "packages/shared"` with `ROOT` imported each read as a documented residual (nothing credited) while the module was imported from `packages/shared`. A PACKAGE top is a named top now, and a leading `./`, `/` or substitution (`{source}/`, `${x}/`) is stripped before the top-level name is read, so every one of those forms refuses. F2: the dot-route grep needed a word character after `../`, so `` `../${p}` `` in a file outside every package that nothing reached started no unit and its reader directory read nothing; `${` is accepted after the step, so the template starts its unit and, as a whole-checkout route, reads every package (or refuses on excluded code, rule 3). Harness: a review vector may carry `files` (a second tracked file, removed with the input after the case) and `unit` (the package or `readers:<dir>` judged); an accept vector with an empty truth is refused unless it is a declared precision control (`control: true`, the 26 existing ones, a closed list in the test, each with its reading pinned as `reads`); every write of a case sits inside its cleanup, and no case may write over a fixture path. Ten vectors pin the readings (RC1I x4, F4a-F4e, RC4G). Root's R4 of the first head (B1, B3, C1): the strip had hidden a tracked top-level directory literally named `{tpl}` or `${tpl}` (main refused, the first head read nothing), so each literal is compared as written and stripped; a declared computed load whose literal lands inside another package (`runpy.run_path(f"{source}/packages/shared/mod.py")`, rule 8) is honoured first instead of refusing before the declaration lookup; the strip covers `%s/`, `%(x)s/`, `$VAR/` and `{{x}}/`, a substitution holding quotes, and a name with one assignment, and the dot-route grep lists `../{p}` and `'../' + p` (both refuse or read the checkout, as `../${p}` does). Seventeen `R84_` vectors pin those readings (582 review vectors). Root's R4 of the second head (F1, K1-K3): the declaration-first route honoured a declared load without crediting the package its text lands in (`reach: "external"` read nothing, a reach list read only its own packages); the landing's owner is credited whatever the reach says. B3 does not only move readings toward refuse: `runpy.run_path(f"{source}/packages/shared/shared_mod.py".replace("packages/shared", "services/a"))`, declared, refused on main and reads `[a, shared]` now, every literal landing credited, which is sound by the literal-path rule (a literal naming a package is a load into it). Of eleven forms that read nothing on main and on both heads, ten are fixed: nested braces, `+=`, a two-level name chain, a name assigned in two branches, tuple unpacking, a `%-10s/` field, `{os.sep}`, and the dot-route grep's `` `../` + p ``, `'../'.concat(p)` (both refuse on the `.` route) and `"../%s" % p` (a template, read as `f"../{p}"` is); one is a dated residual, a bare parameter as the entry (`R84_S08`, review by 2026-12-10). Sixteen more `R84_` vectors pin those readings (598 review vectors). Root's R4 of the third head (B1, B2, C1-C3): the landing credit skipped a caller outside every package whose literals land one in a package and one on a package-free top (`scripts/x.py` loading `f"{source}/packages/shared/m.py" if k else f"{source}/tools/t.py"`, declared, read nothing: the credit was gated on every landing being in another package, a condition meant for the refusal of a PACKAGE caller), so the landing's owner is credited for every caller, and through a symlink; a name hid the landing at a loader site (`p = f"{source}/packages/shared/m.py"; runpy.run_path(p)`, declared as `p`, read nothing) since the loader read the argument's source alone, so it reads the text rule 6 reads, the name's assignments included; the JS twin (`` import(`${source}/packages/shared/m.mjs`) `` declared `"external"`) read nothing on main and every head, so rule 4 credits a template literal's landing package as rule 8 does; two forms that moved from `[shared]` to refuse (an augmentation that is not `+= "<literal>"` before a loader, a `sys.path` entry that is a parameter with a module-level default) are pinned; a name in an argument default or a decorator is the enclosing scope's, not the parameter's (no reading moves). Nine more `R84_` vectors pin those readings (607 review vectors). Root's R4 of the fourth head (K1-K3, N4): the symlink credit replaced the holder's owner with the target's (a package symlink `packages/a/m.py -> ../shared/m.py` loaded by name credited `shared` alone), so both are credited; the un-shadow of a parameter-named name in a default or decorator read the enclosing scope's name whatever its binding (`def f(p=p)` with a module `p` assigned in two branches read below truth), so it reads the enclosing name only when that name has one plain module literal binding, and refuses otherwise; a name a computed load reads that the scan cannot read (bound by a walrus, a `for`, a comprehension, `with ... as`, `except ... as`, a `match` pattern, a `def`, a `class`, a bare annotation, an unpacking the scan cannot pair, a starred or nested target, a parameter default that is not a plain module literal, or an attribute assignment) read `[]` under a declaration and refuses now, declared or not, naming the binding; an augmented computed loader that is declared (`p += f"/{x}"` before `runpy.run_path(p)`) refuses as the undeclared form does. A name alone as a `sys.path` entry inside a nested function (`R84_B11`) is a dated residual with `R84_S08`. Forty-two more `R84_` vectors pin those readings (649 review vectors). Root's R4 of that head (R1): a name the file also binds by something the scan does not read (`root = dirname(dirname(abspath(__file__)))` at module level and `for root, d, f in os.walk(t)` inside a function, or a method, a `with ... as`, an `except ... as`, a comprehension variable, a later module-level `for`) was unknown file-wide, so a `sys.path` entry reading it fell to the read-nothing residual and read `[]` where main read the package; such an entry refuses now, declared or not, naming the binding, as a loader site does; a name bound once by a plain assignment still evaluates. Eight more `R84_R6` vectors pin those readings, one of them the control (657 review vectors). Every other reading over the review vectors, the round-3/4 vectors and the R-c vectors is unchanged except where a reading moved toward refuse or toward a larger read by these rules (the both-readings table in the PR).
+
 Planner 1.7.5 bounds a package.json's nesting before it is parsed at the two sites that were still unbounded: the planner's pnpm workspace graph (a manifest deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is refused as unreadable, candidate and base alike) and edges.py's directory-runner read (deeper than `PACKAGE_JSON_MAX_DEPTH` (64) is read whole, like any unparsable manifest). CPython 3.14 parses depths 3.11-3.13 refuse with `RecursionError`, so the bound is the planner's own.
 
 Planner 1.7.4 bounds a plan config's nesting before it is parsed: a config deeper than `PLAN_CONFIG_MAX_DEPTH` (64) levels is red with "the plan config nests too deeply to parse", as the candidate and as the base. Until 1.7.3 that refusal came only from `json.loads` raising `RecursionError`, which depends on the interpreter: CPython 3.13 raises at 100000 levels, 3.14 (the `ubuntu-26.04` runner image) parses them, and the 100000-level config then planned reduced. `RecursionError` stays a backstop.
@@ -329,7 +331,10 @@ job, and a change to `b` never selected `a`'s tests. A package now reads what th
    - `"fixture"`: a test temp directory;
    - a list of repo paths, each of which then becomes an edge.
 
-   A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal.
+   Whatever the reach says, the package a literal of the expression lands in is credited (`` import(`${source}/packages/shared/m.mjs`) ``
+   declared `"external"` credits `shared`, the leading `./`, `/` and substitutions stripped as the floor strips them):
+   the reach adds to the landing, never replaces it, as rule 8 reads the Python loaders (root's C1 of #84's second
+   delta R4, 2026-11-12). A plain literal under a TypeScript cast (`import("redis" as string)`) is a literal.
 
    **Both declaration lists are a registry** (root's ruling on #33 round 3). Each `computed_imports` and
    `unresolved_names` entry also carries `reason`, non-empty text (for reach `"none"`: why the name never runs), and
@@ -466,8 +471,27 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      the names come from the whole package.
 
    **Fail closed:**
-   - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root or a top-level
-     directory outside every package. A cwd-relative string literal like `"../../shared-sdks/py"` is one;
+   - an entry that cannot be evaluated refuses when its text holds a parent step, or names a scan root, a PACKAGE top
+     (`packages` of `packages/shared`) or a top-level directory outside every package. A cwd-relative string literal
+     like `"../../shared-sdks/py"` is one. Each quoted literal is read as written AND stripped of what may stand before
+     its top-level name (`./`, `/`, a `{...}`, `{{...}}` or `${...}` substitution, a `%s` or `%(x)s` field, a bare
+     `$VAR`, in any number), and the literals of the text with every `{...}` collapsed to `{}` are read too (a
+     substitution holding quotes, `f"{d['root']}/packages/shared"`), so `"${X}/packages/shared"`, `"/packages/shared"`,
+     `".//packages/shared"`, `"%s/packages/shared" % x`, `os.path.expandvars("$ROOT/packages/shared")` and a tracked
+     top-level directory literally named `{tpl}` or `${tpl}` all refuse. Braces nest (`f"{d[f'{k}']}/packages/shared"`),
+     a `%` field may carry flags, a width and a precision (`"%-10s/packages/shared" % x`), and `{os.sep}` reads as `/`.
+     A name stands for the text of EVERY assignment and augmented assignment of it, recursively through the names
+     those read: `p = f"{source}/packages/shared"; sys.path.insert(0, p)`, `base = f"{source}/packages"; p = base +
+     "/shared"`, `p = source; p += "/packages/shared"`, a name assigned in two branches (both texts), and `p, q =
+     f"{source}/packages/shared", 1` (each name its own element; unpacked from anything else, the whole right side).
+     A name that a parameter of the enclosing function binds is not evaluated from a module-level assignment (its own
+     name stays beside that assignment's text), so a bare parameter as the entry is the residual named below; a name in
+     an argument default or a decorator (`def setup(LIB=LIB)`) is the enclosing scope's, not the parameter's, but it
+     is read as the module's ONLY when its single binding in the whole file is one plain, unmutated module-level
+     assignment (root's K2 of #84's third delta R4: the scan looks a name up in the file's assignments whatever their
+     scope, so beside a module `(LIB := ...)`, a `for LIB in ...`, an import of `LIB` or a second assignment in a
+     helper the default stays the parameter's, and the entry is its text, which refuses when that text names a parent
+     step or a top);
    - a package Python file that changes `sys.path` and does not parse refuses.
 7. **pytest's `pythonpath` is a `sys.path` entry**, added in spine's pre-review of 1.5.2.
    - It is read from the config pytest would read: the nearest directory walking up from the package that holds one of
@@ -487,7 +511,34 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - a prefix inside ANOTHER package is declarable, and that package becomes a dep;
        - a prefix outside every package refuses even when declared;
        - with no evaluated prefix, text holding a parent step or naming a scan root or an outside top-level
-         directory refuses even when declared.
+         directory refuses even when declared; text whose literals (read as rule 6 reads them) land only INSIDE
+         another package (`runpy.run_path(f"{source}/packages/shared/mod.py")`) is a load into that package, declared
+         with the paths it loads, and refuses undeclared. The package each literal lands in is credited WHATEVER the
+         declaration's reach says (`"external"`, `"fixture"`, `"package"` or a list: the reach adds to the landing,
+         never replaces it, as an evaluated prefix inside another package credits that package), so a reach of
+         `"external"` on such a site is not a way to read nothing. A literal into the caller's own package, or onto a
+         package-free top, refuses even when declared. A caller OUTSIDE every package has no package to leave: its
+         literals onto a package-free top (`tools/t.py`, its own `scripts/`) are the paths its reach declares, and a
+         literal into a package is credited to the caller's unit all the same (`scripts/x.py` loading
+         `f"{source}/packages/shared/m.py" if k else f"{source}/tools/t.py"` credits `shared`, root's B1 of #84's second
+         delta R4). The literals are read THROUGH names, as rule 6 reads them: `p = f"{source}/packages/shared/m.py";
+         runpy.run_path(p)`, declared as `p`, lands in `shared` (root's B2). A symlinked landing credits BOTH the
+         package holding the link and the package its target is in (`packages/pk/link/m.py`, link -> `../shared`:
+         `pk` and `shared`); a link into the caller's own package, onto a package-free top or out of the repository
+         credits the holder alone (root's K1 of the third delta R4: the target's owner once replaced the holder's, so
+         a link back into the caller's package read nothing).
+       - **A name the argument reads that the scan cannot read refuses the site, declared or not** (root's K3 of the
+         third delta R4). The scan reads a name through a plain assignment, an annotated one, a pairwise tuple
+         (`p, q = f"...", 1`) and `+=`; a name bound by anything else has no text, so a declaration of the site would
+         stand for a path nobody read. Those bindings: a walrus (`(p := f"{source}/packages/shared/m.py");
+         run_path(p)`), a `for` or comprehension variable, a `with ... as`, an `except ... as`, a `match` capture, a
+         parameter that carries a default (`def f(p=f"{S}/packages/shared/m.py"): run_path(p)`), a starred or nested
+         unpacking (`*ps, = [...]`, `(p, q), r = ...`), a `def` or `class` name (`run_path(where(source))`: a call's
+         return is not a path the scan reads), and an attribute assigned anywhere on the same base
+         (`self.p = ...; run_path(self.p)`), read directly or through the assignments of the names it reads. An
+         imported name has no binding here and no text, so it is not one of these (the declaration stands for it, as
+         before); a bare parameter is the S08 residual. The same unreadable names are never evaluated for a `sys.path`
+         entry either (a module `(LIB := ...)` beside a helper's local `LIB = ...` once evaluated the helper's).
        A `scripts` segment under an in-package prefix is that package's own subdirectory. pathlib's `with_name`,
        `with_suffix` and `joinpath` with literals evaluate, like `/` (vagary-core's evidence app vendors
        `Path(__file__).with_name("_qualification_contract")`).
@@ -524,7 +575,8 @@ drops they are:
 - an unanchored `".."` chain (`join(base, "..", "x")` with a computed base): not resolved, and the backstop still
   needs the basename;
 - an unresolved `sys.path` entry that names no parent step and no top-level directory (`os.getcwd()`, an environment
-  variable);
+  variable, or a bare parameter of the enclosing function, `def prepare(p): sys.path.insert(0, p)`: `R84_S08`, a dated
+  residual, review by 2026-12-10);
 - a `sys.path` entry or pytest config inside a reached file outside every package (only its loaders are checked
   there);
 - `PYTHONPATH` set in a workflow step's `env:` or inline on a `run:` line: workflows are not scanned (`.github` is a
@@ -600,6 +652,20 @@ pinned, and the suite asserts it exactly, so a residual that reads less (or more
   - a working directory set through a string or substitution of a tainted name (`os.chdir(f"{d}")`), or through a
     quoted JS `"cwd"` or `'cwd'` key (R7B1a, R7B1c, R8T02, R8T03).
 - **A YAML key used as a path** (R5V17, R6V02, R6V03): rule 4 makes a `.yml`/`.yaml` key metadata.
+- **R84_S08, review by 2026-12-10** (root's K1 of #84's R4, 2026-11-12): a `sys.path` entry that is a bare parameter
+  of the enclosing function (`p = "harmless"` at module level, `def prepare(p): sys.path.insert(0, p)`) names no
+  parent step and no top-level directory, so it reads nothing against a truth of `[shared]`; the module-level
+  assignment no longer stands for it (rule 6), the bare name is the documented residual above. **R84_B11** (root's K3
+  of the third delta R4) is the loader-site twin: `def g(p): runpy.run_path(p)` called as
+  `g(f"{source}/packages/shared/m.py")` reads nothing, the call-site argument is not read; same review date.
+- **Dated residuals of #84's third delta R4, review by 2026-11-14** (root's N2 and N3; their vectors ride the r5
+  reader PR, not this one, and each reads `[]` on main and on every head of #84; none is a regression):
+  - N2, JS: a template whose literal lands in a package through a name (`const p = \`${source}/packages/shared/m.mjs\`;
+    import(p)`), two leading substitutions (`` `${a}${b}/packages/shared/m.mjs` ``), a substitution under the
+    package-holding top (`` `${source}/packages/${name}/m.mjs` ``) and a partial package name
+    (`` `${source}/packages/shar${rest}` ``) read `[]` where the Python twins refuse or credit the landing;
+  - N3: a caller outside every package whose literal lands on a package-free top (`tools/t.py`) that itself loads a
+    package reads `[]` unless its reach names that path (`A6`/`A6b`); the reached file's own loads are not followed.
 - **Shapes outside the list, each counted on vagary-core** (occurrences carrying a root path / all occurrences):
   - a command string in a variable passed to an exec call (R5V03): 0 / 11;
   - a Make target-specific variable (R5V13): 0 / 0;

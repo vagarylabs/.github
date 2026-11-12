@@ -21,10 +21,10 @@ when it hangs, and a failed attempt one is retried **exactly once, with overwrit
 A hung upload can run about 15 minutes inside `upload-artifact` before it fails on its own: 5 `CreateArtifact`
 attempts at a 3-minute socket timeout, and a 5-minute stall timer per blob chunk (v4.6.2 `dist/upload/index.js`
 `:2731`, `:12583`, `:2944`). A composite's inner steps cannot carry `timeout-minutes`, and the **calling** step's
-`timeout-minutes` **cancels** the composite: `continue-on-error` converts a failure only (`actions/runner`
-`ExecutionContext.cs`, `ApplyContinueOnError`), so the retry's `if: steps.first.outcome == 'failure'` reads a cancel,
-is skipped, and the job is cancelled with it. That is no retry exactly when the fault is a stall (vagaris run
-43094998692 attempt 1: a 309 s hang, then the 7-minute job limit).
+`timeout-minutes` fires on the whole composite: measured in the control run below, attempt one ends `outcome=failure`
+("The action has timed out"), the retry step starts into the already-fired timeout and is timed out after 23 ms,
+before it makes a request, and the calling step fails. That is no retry exactly when the fault is a stall (vagaris
+run 43094998692 attempt 1: a 309 s hang, then the 7-minute job limit).
 
 `attempt-budget.cjs` is loaded into `upload-artifact`'s node process by `NODE_OPTIONS=--require` on both attempts
 (the runner copies the step env into the process and sets no `NODE_OPTIONS` of its own,
@@ -54,7 +54,11 @@ across repositories.
 
 ## Proof runs
 
-Recorded in the PR that introduced this action (vagarylabs/.github, 2026-11-12): on a self-hosted light runner, a
-local proxy that holds the first `CONNECT` open and tunnels later ones, `https_proxy` on the calling step; attempt one
-hung at `CreateArtifact`, the budget failed it, the retry succeeded through the proxy and the artifact exists. The
-control run (budgets `0`, calling step `timeout-minutes: 2`) ran to the calling step's bound and the retry was skipped.
+vagaris run 43132501977 (vagarylabs/.github #85; a self-hosted `vl-light` runner, a local proxy that holds the first
+`CONNECT` open and tunnels later ones, `https_proxy` on the calling step). Job `hang-then-retry` (budgets 45 s / 90 s):
+attempt one hung at the results service, the budget failed it at 45 s, the retry tunnelled through the proxy to the
+results service and to the blob host (both clients take the proxy) and the artifact exists (id 13906101161, 168 bytes);
+the calling step read `success` in 54 s. Job `control-no-budget` (budgets `0`, calling step `timeout-minutes: 2`):
+attempt one hung to the calling step's bound, "The action has timed out" ended it as `failure`, the retry step started
+and was timed out after 23 ms with no second `CONNECT`; the calling step read `failure`. The runner forced the node20
+action onto Node.js 24; the preload ran there.

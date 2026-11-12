@@ -106,14 +106,17 @@ KNOWN_FAIL_OPEN = {
     "KFO_N3_A6_unowned_free_top_landing_external": "N3",
     # Root's ROWs of dotgithub-86 slice 2 (rule (b) reads only the key; reassign and addsitedir record no entry): an
     # undeclared entry with no literal tail, and every other rule-(b) case below truth (root's 13:01 condition (b)).
-    "KFO_S2R_B1_name_undecl": "S2R", "KFO_S2R_B4_empty_undecl": "S2R", "KFO_S2R_C_reassign_undecl": "S2R",
-    "KFO_S2R_C_addsitedir_undecl": "S2R", "KFO_S2R_C_extend_name_undecl": "S2R", "KFO_S2R_F_symlink_undecl": "S2R",
-    "KFO_S2R_D_case_undecl": "S2R", "KFO_S2R_D_abs_undecl": "S2R", "KFO_S2R_D_expanduser_undecl": "S2R",
+    "KFO_S2R_B1_name_undecl": "S2R", "KFO_S2R_B4_empty_undecl": "S2R", "KFO_S2R_C_extend_name_undecl": "S2R",
+    "KFO_S2R_F_symlink_undecl": "S2R", "KFO_S2R_D_case_undecl": "S2R", "KFO_S2R_D_abs_undecl": "S2R",
+    "KFO_S2R_D_expanduser_undecl": "S2R",
     # Root's round-5 STACK CHANGES of dotgithub-86 (2774a421f815, 14:27 2026-11-12): `sys .path` spacing with a bare
     # name (N39), and the bare tail forms outside the listed ones (D04c dirname, D04d Path(..).parent, D04e a slice,
     # D04f str.replace): [] on main, dcf6545 and 2774a421, each the only sys.path site of its file, so B2 leaves it.
-    "KFO_S5F_N39_sys_space_bare_name": "S5F", "KFO_S5F_D04c_undeclared_dirname_bare": "S5F",
-    "KFO_S5F_D04d_undeclared_Path_parent_bare": "S5F", "KFO_S5F_D04e_undeclared_slice_bare": "S5F",
+    # R6-2 (measured on ed22d7d8782b, 2026-11-12): N39 and the slice-2 C_reassign / C_addsitedir pins left this map, and
+    # with them root's B8 eleven (U_S_*) and five of B7's nine (U_E_N18/N19/N20/N54, U_E_exec_same_file): each now
+    # refuses (N39 by rule (b) once the widened listing parses it, the rest at the single refuse point) and is a refuse
+    # vector pinned to its rule.
+    "KFO_S5F_D04c_undeclared_dirname_bare": "S5F", "KFO_S5F_D04d_undeclared_Path_parent_bare": "S5F", "KFO_S5F_D04e_undeclared_slice_bare": "S5F",
     "KFO_S5F_D04f_undeclared_replace_bare": "S5F",
     # Root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b,
     # 16:13 2026-11-12) and its R6 ruling: root's 111 inputs enter the vectors verbatim (R6-1); the 49 below truth on
@@ -130,18 +133,7 @@ KNOWN_FAIL_OPEN = {
     "P04_eval_zip_on_path": "R6B5", "P04b_eval_zip_on_path_parents2": "R6B5", "U_P01_landing_is_tracked_symlink": "R6B5",
     "U_P02_symlink_intermediate": "R6B5", "U_P03_symlink_then_dotdot": "R6B5", "U_P04_zip_on_path": "R6B5",
     "U_E_C4_semicolon": "R6B7", "U_E_C4b_if_oneliner": "R6B7", "U_E_C4c_try_oneliner": "R6B7",
-    "U_E_C4e_unparseable_sibling": "R6B7", "U_E_N18_import_module_kw": "R6B7", "U_E_N19_getattr_import_module": "R6B7",
-    "U_E_N20_exec_string": "R6B7", "U_E_N54_find_spec": "R6B7", "U_E_exec_same_file": "R6B7",
-    "U_S_addsitedir_alias_alone": "R6B8", "U_S_addsitedir_alias_mixed": "R6B8", "U_S_addsitedir_plain_alone": "R6B8",
-    "U_S_alias_assign_alone": "R6B8", "U_S_dunder_iadd_alone": "R6B8", "U_S_dunder_iadd_mixed": "R6B8",
-    "U_S_dunder_import_sys_alone": "R6B8", "U_S_dunder_import_sys_mixed": "R6B8", "U_S_dunder_setitem_alone": "R6B8",
-    "U_S_dunder_setitem_mixed": "R6B8", "U_S_exec_string_mixed": "R6B8", "U_S_from_sys_import_path_alone": "R6B8",
-    "U_S_from_sys_import_path_mixed": "R6B8", "U_S_getattr_sys_path_alone": "R6B8", "U_S_getattr_sys_path_mixed": "R6B8",
-    "U_S_list_insert_unbound_alone": "R6B8", "U_S_list_insert_unbound_mixed": "R6B8", "U_S_reassign_alone": "R6B8",
-    "U_S_residual_plus_addsitedir": "R6B8", "U_S_residual_plus_reassign": "R6B8", "U_S_starred_insert_alone": "R6B8",
-    "U_S_starred_insert_mixed": "R6B8", "U_S_sys_as_alias_alone": "R6B8", "U_S_sys_as_alias_mixed": "R6B8",
-    "U_S_sys_modules_sys_alone": "R6B8", "U_S_sys_modules_sys_mixed": "R6B8", "U_S_two_file_conftest_addsitedir": "R6B8",
-    "U_S_two_file_conftest_alias": "R6B8", "U_S_two_residuals": "R6B8",
+    "U_E_C4e_unparseable_sibling": "R6B7",
 }
 
 # Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
@@ -163,8 +155,10 @@ KNOWN_FAIL_OPEN_UNTIL = "2026-11-28"
 # label no vector carries each fail by name, and the suite is GREEN exactly when the set matches. The sets are the
 # R6-1 head's (bd87cffc7f7f: local 742 s run and hosted run 43217057338 read the same 46).
 DESIGNED_RED = {
-    # test_review_vectors_read_their_truth_or_refuse: the 28 of ff414447 (round-5 rule pins that wait on the R6-2
-    # refuse point and rule 5) and root's nine of the 16:13 ruling (main refuses, the head reads [] below truth).
+    # test_review_vectors_read_their_truth_or_refuse: the 28 of ff414447 (round-5 rule pins) and root's nine of the
+    # 16:13 ruling (main refuses, the head reads [] below truth). Re-judged on the R6-2 scanner (ed22d7d8782b, 2026-11-12):
+    # all 37 stay red and none moves; the 28 do not wait on the refuse point after all, each fails on its own rule (a
+    # reach list, code the scan excludes, a name that names no tracked file), none on a path-mutation capability.
     "review": frozenset({
         "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
         "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
@@ -229,7 +223,8 @@ RC1B_RULE_PINS = {
     # (the RC1T vectors), and rule (b), apply_entry's undeclared-tail refusal, pinned by its own raise site.
     # 16 + R86S23_declared_prefixed_parent_step_refuses_no_tail (the s2+s3 stack: no tail after the parent-step route).
     "has no tail the scan reads": (17, 'has no tail the scan reads: its last path "'),
-    "may land in": (5, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
+    # R6-2 (2026-11-12): + KFO_S5F_N39_sys_space_bare_name, which the widened Python listing now parses and rule (b) refuses.
+    "may land in": (6, 'f"unresolved (an undeclared sys.path entry `{key}` may land in "'),
 }
 # Slice 3 (RC1A, root's R-c r2 B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): the rules an undeclared
 # parent-step sys.path literal refuses by, closed the same way. `code the scan excludes` is also the closure's text (the
@@ -252,7 +247,8 @@ RC1A_RULE_PINS = {
 R5F_RULE_PINS = {
     "but a parent-step literal is declared with a reach list": (1, '"but a parent-step literal is declared with a reach list: the tracked directories "', "R86S5F_N10_declared_parent_literal_with_keyword_reach"),
     "neither one of its landings nor a tracked directory": (1, "which is neither one of its landings nor a tracked directory) in ", "R86S5F_N01d_declared_literal_reach_not_a_landing_tracked_cwd"),
-    "a file reads only when every one of its sys.path sites resolves": (5, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
+    # R6-2 (2026-11-12): 5 -> 4, R86S5F_N52's `site.addsitedir` now refuses first at the single refuse point (R6 rule).
+    "a file reads only when every one of its sys.path sites resolves": (4, 'its sys.path sites resolves) in {path}"', "R86S5F_N03_declared_literal_beside_undeclared_name"),
     "where it may re-enter the checkout by a path the scan cannot see": (3, '"checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "', "R86S5F_N15_beside_dir_then_dotdot_reenters"),
     "a sourceless .pyc": (2, 'else "a sourceless .pyc"', "R86S5F_N24_sourceless_pyc_in_landing"),
     "a symlink inside the landing": (2, '"a symlink inside the landing" if tracked.get(held)', "R86S5F_N28_symlink_inside_owned_landing"),
@@ -260,6 +256,14 @@ R5F_RULE_PINS = {
 }
 RC1A_FIX_RULE_PINS = {
 }
+# R6-2 of dotgithub-86 (root's R6 acceptance 16:44 2026-11-12, decisions (i)-(iii); cli's scanner draft ed22d7d8782b):
+# python_file_facts' single refuse point, the first path-mutation capability occurrence no read rule consumes. Every
+# vector it refuses pins this clause (a twin may pin the named occurrence before it), closed by equality on the count as
+# the rules above are. The template is split over two f-strings in edges.py, so both halves are pinned as raise sites.
+R6_CAPABILITY_RULE = "is consumed by no read rule; a file reads only when every one is"
+R6_CAPABILITY_RULE_PINS = 63
+R6_CAPABILITY_SITES = ('raise ValueError(f"unresolved (the path-mutation capability `{segment}` on line {lineno} of {path} '
+                       'is consumed by "', 'f"no read rule; a file reads only when every one is) in {path}")')
 
 
 def catch_all_fragments():
@@ -1312,9 +1316,13 @@ class EdgesTest(unittest.TestCase):
                          "a drop or an addition is an edit there")
         self.assertIn(f"unresolved ({R5_SYS_PATH_RULE} `", source,
                       "R5_SYS_PATH_RULE is no longer the text edges.py raises: re-derive it")
-        # Slices 2 and 3: each rule's pin count by equality, and its own raise site in edges.py.
+        # Slices 2 and 3 and R6-2: each rule's pin count by equality, and its own raise site in edges.py.
+        for site in R6_CAPABILITY_SITES:
+            self.assertIn(site, source, f"R6_CAPABILITY_SITES: {site!r} is no longer in edges.py: re-derive it")
         for pins_name, pins in (("RC1B_RULE_PINS", RC1B_RULE_PINS), ("RC1A_RULE_PINS", RC1A_RULE_PINS),
                                 ("RC1A_FIX_RULE_PINS", RC1A_FIX_RULE_PINS),
+                                ("R6_CAPABILITY_RULE_PINS",
+                                 {R6_CAPABILITY_RULE: (R6_CAPABILITY_RULE_PINS, R6_CAPABILITY_SITES[1])}),
                                 ("R5F_RULE_PINS", {rule: pin[:2] for rule, pin in R5F_RULE_PINS.items()})):
             for rule, (count, site) in pins.items():
                 named = sorted(f"{k}:{field}" for (k, field), pinned_rule in rules.items() if rule in pinned_rule)

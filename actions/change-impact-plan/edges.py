@@ -3209,7 +3209,8 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
         elif isinstance(node, ast.MatchMapping) and node.rest:
             binders.setdefault(node.rest, []).append(node)
 
-    # cli's read of 02137ba (MF1, MF2, 2026-11-14 17:57): the spec name is resolved outward as Python resolves it, so
+    # cli's read of 02137ba (MF1, MF2, 2026-11-14 17:57): the spec name is resolved outward through the enclosing
+    # function scopes, so
     # a closure, a lambda, a default or a decorator over an enclosing function's `spec` is judged by THAT binding,
     # never by a module-level one. Defaults, annotations, decorators and bases evaluate in the scope enclosing their
     # def, lambda or class; a class scope is skipped from a function nested in it. The call reads only when the first
@@ -3671,7 +3672,11 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     unbinds and literal reads, and `sys.path` as a right operand of in / ==, indexed or copied (capability keys,
     computed read keys, `p = sys.path`, `sys.path in y`, a bind in a file naming `__path__` / `__spec__` /
     `submodule_search_locations` / `__dict__`, a receiver other than `monkeypatch`, and every such use in any other
-    file still refuse).
+    file still refuse); `sys.path` reads as a right operand of in / not in / == / != and a left operand of == / !=.
+    Round 3 (cli's read of 7001655, root's 18:29 scope): F1 refuses in a class body, beside a star import or a
+    non-read `globals()` / `vars()` / `locals()`, on any spec use but the listed reads, and in a file naming
+    `__spec__`, `__loader__` or `__dict__`; the F3 test files a non-test file may import come from the AST; an F3
+    bind takes only a value this file shows carries no `__path__`.
     A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
     import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
     local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""

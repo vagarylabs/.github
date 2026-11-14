@@ -609,8 +609,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **N1:** `x in sys.path` and `x not in sys.path` read the list: the attribute is a comparator of an `in` /
        `not in` compare. A guarded insert, append or remove in the same file is judged on its own, so
        `if p not in sys.path: sys.path.insert(0, p)` reads by rule 6 and the twin with `sys.path.remove(x)` in the
-       guarded block refuses. `sys.path in y` in every file, `'m' in sys.modules` outside a test file F3 reads (F3) and the
-       `__import__("sys")` binding form stay refusals. Twins: `R6_N1_guard_not_in_insert_reads`; `R6_N1_guard_in_remove_refuses`,
+       guarded block refuses. These stay refusals: `sys.path in y` in every file; `'m' in sys.modules` in every file
+       except as the last operand in a test file where F3 applies; and the `__import__("sys")` binding form. Twins: `R6_N1_guard_not_in_insert_reads`; `R6_N1_guard_in_remove_refuses`,
        `R6_N1_left_operand_refuses`, `R6_N1_modules_membership_refuses`.
      - **N2:** a loader call with a LITERAL module name that the recording branch consumed (`__import__("json")`,
        `import_module("server")`, `run_module("m")`) is read through the chain that follows it (`.loads(x)`,
@@ -628,19 +628,31 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). Each is a recording branch
      in `python_file_facts`, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps refusing:
      - **F1:** `module_from_spec(spec)` reads when `spec` is the `spec_from_file_location` call itself, or a name
-       resolved as Python resolves it: outward from the scope the call evaluates in (a default, an annotation, a
-       decorator or a base evaluates in the scope enclosing its def, lambda or class; a class scope is skipped from a
-       function nested in it), to the first scope that binds the name. It reads only when that scope is the call's own
-       or the module's, every binding there is a plain assignment of a `spec_from_file_location` call, and every one
+       resolved outward from the scope the call evaluates in (a default, an annotation, a decorator or a base
+       evaluates in the scope enclosing its def, lambda or class; a class scope is skipped from a function nested in
+       it), to the first scope that binds the name. A call whose own scope is a class body, or a comprehension or
+       generator directly in one, refuses: Python reads a name the class has not yet assigned from the module, and
+       such a comprehension cannot see the class's names, which the reader does not model. It reads only when that
+       scope is the call's own or the module's, every binding there is a plain assignment of a `spec_from_file_location` call, and every one
        of those calls has a path the reader evaluated inside the repository and no keyword but `location=`. That load
        is already the file's edge by rule 8. These refuse: a computed path or a path above the root; a closure, a
        lambda or a default over an enclosing function's `spec` (a parameter or any assignment there), even beside a
        good module-level `spec`; any other binding of the name in the resolved scope (a parameter, a second
        assignment of another value, a loop, an import, a `def`); `global` or `nonlocal` on it; a spec call with
        `loader=` (an inline `SourceFileLoader` the consumed call would hide), `submodule_search_locations=` or
-       `**kwargs`; an attribute store or `setattr` / `delattr` on the spec name (`spec.loader = ...`,
-       `spec.submodule_search_locations = [...]`); a `module_from_spec` call with keywords or a second argument.
-       Twins `M1`-`M8` (closure `M4`, lambda `M5`, `loader=` `M6`, default `M7`, attribute store `M8`).
+       `**kwargs`; a `module_from_spec` call with keywords or a second argument. A named spec also refuses in a file
+       that may rebind it behind the reader: one with a star import, or with any `globals()` / `vars()` / `locals()`
+       call that is not a read (a load subscript, `.get` / `.keys` / `.items` / `.values`, a loop, an `in`, `sorted` /
+       `list` / `len`). Every use of the name bound where the call's is must be the call's argument, an `is` /
+       `is not` comparison or a truth test, `spec.loader.exec_module(...)`, `spec.loader` tested, or a read of
+       `name`, `origin`, `parent`, `cached` or `has_location`; any other use refuses, among them an attribute
+       store, `setattr` / `delattr`, an alias (`s = spec`), a call argument, `del`, `loader = spec.loader` and
+       `cast(..., spec.loader)`. A file naming `__spec__`, `__loader__` or `__dict__` (an attribute, a name or a
+       string) refuses F1 in both forms, since the module's `__spec__` is the same object. Twins `M1`-`M13`
+       (closure `M4`, lambda `M5`, `loader=` `M6`, default `M7`, attribute store `M8`, class body `M9`, `globals()`
+       write `M10`, star import `M11`, alias `M12`, `mod.__spec__` `M13`). Open limit: another module that imports
+       this one may assign its `spec` (`tool.spec = ...`) before a function here runs; the reader judges one file
+       and does not see that write.
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every
@@ -657,11 +669,15 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **F3:** in a test file only. A test file is one `plan.is_test_file(path, [])` accepts (`test_*.py`, `*_test.py`,
        anything under `test/`, `tests/` or `__tests__/`; no config `test_globs`) AND that no non-test Python file may
        import (root's ruling (b) of 2026-11-14: a name alone is not enough). `code_imported_test_files` decides the
-       second from one `git grep -E` of the import and loader lines of every tracked Python file. A test file's
-       module word is its stem, or its directory's name for an `__init__.py`. A non-test line holding the word marks
-       the file, and a marked file's own lines mark further test files, to a fixed point. This over-approximates (a
-       word, not a resolved import), which only refuses more. A test file whose name is no identifier is always
-       marked. On core main 9cea8193, 754 Python files are test files by name and 3 of them are marked. In such a
+       second from the AST of every tracked non-test Python file: every identifier and every string or bytes literal
+       word in it (an import's names on any line of a multi-line import, an attribute, a loop literal fed to
+       `importlib.import_module`, a path). A test file's module word is its stem, or its directory's name for an
+       `__init__.py`. A non-test file holding the word marks the file, and a marked file's own words mark further
+       test files, to a fixed point. A file that does not parse counts every word of its text, and a test file whose
+       name is no identifier is always marked. The check matches a word, not a resolved import, so it marks more
+       files than Python would import. It misses only a name the source computes (`"test_" + "utils"`, which the
+       loader rules refuse at the import) and an importer outside Python (a workflow's `python -m`, a packaging
+       entry point). On core main 9cea8193, 754 Python files are test files by name and 193 of them are marked. In such a
        file these forms bind or name a module for the test's own process: `sys.modules[k] = v`, `del sys.modules[k]`,
        a discarded `sys.modules.pop(k[, d])`, `monkeypatch.setitem(sys.modules, "m", v)`,
        `monkeypatch.delitem(sys.modules, "m"[, ...])`, `"m" in sys.modules` (the last operand only) and
@@ -673,7 +689,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, or a string such as
          `"pkg.__path__"`), or calls `setattr` with a computed name or `vars` with an argument, because a stub with a
          `__path__` sends `import m.sub` to a directory no edge names;
-       - a bound value that is not a call, a constant or a name no import binds;
+       - a bound value that is not a constant, `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` with no
+         `spec`, `spec_set`, `wraps`, positional or `**` argument, or a name every binding of which in this file is a
+         plain assignment of one of those (another file may hand back a stub with a `__path__`);
        - `setitem` / `delitem` on any receiver but `monkeypatch`;
        - `sys.path in y`, and `sys.modules` as a left operand;
        - a key naming `sys`, `site`, `importlib`, `runpy` or `builtins`, and a computed key on a read;
@@ -682,8 +700,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - `len`, `list` or `tuple` bound by the file;
        - every one of these forms in a non-test file, a test file a non-test file may import, or a file the caller
          passes no `test_only` for.
-       Twins `S1`-`S8` (`__path__` stub `S5`, `sys.path in y` `S6`, another receiver `S7`, and `S8`:
-       `services/b/test_utils.py` imported by `services/b/app.py`).
+       Twins `S1`-`S10` (`__path__` stub `S5`, `sys.path in y` `S6`, another receiver `S7`, `S8`:
+       `services/b/test_utils.py` imported by `services/b/app.py`, `S9`: the same file named on a continuation line,
+       in a parenthesised from-import and by a loop literal, `S10`: a stub another file builds).
    - **A dead import refuses** (root's decision (ii)). `import sys`, `import site`, `import importlib` or
      `from sys import argv`, bound and never used, is consumed by no rule.
    - **A local is not the module.** A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is

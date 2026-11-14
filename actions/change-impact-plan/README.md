@@ -599,8 +599,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **exec:** `exec`, `eval` or `compile` as a bare name (`exec("import x")`, `eval("1")`, `exec(__doc__)`), or as an
        attribute of a loader-bound name (`builtins.exec(s)`). `exec(open(p).read())` is consumed by rule 8.
        `re.compile(...)` is not an occurrence.
-     - **environment:** a string constant holding `PYTHONPATH`: an environ key, a shell string, an `env=` mapping, a
-       docstring.
+     - **environment:** a str or bytes constant holding `PYTHONPATH`: an environ key (`os.environb[b"PYTHONPATH"]`
+       too, twin `E1`), a shell string, an `env=` mapping, a docstring.
      - **scope:** `globals()`, `locals()` or `vars()` with no argument, in a file that binds sys by an import.
      - **package path** (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any
        context, or as a word in a str or bytes constant (`setattr(m, "__path__", d)`, `m.__dict__["__path__"]`),

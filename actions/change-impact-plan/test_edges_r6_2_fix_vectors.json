@@ -1480,6 +1480,18 @@
    "must_run": "test-a",
    "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/a/test/test_s10.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s10.py",
    "verdict": "REFUSE"
+  },
+  "E1 twin PYTHONPATH as a bytes environ key refuses (root's R6-2 round 4 SHOULD 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "import os\n\nos.environb[b\"PYTHONPATH\"] = b\"/opt/plugins\"\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `b\"PYTHONPATH\"` on line 3 of services/a/x.py is consumed by no read rule; a file reads only when every one is) in services/a/x.py",
+   "verdict": "REFUSE"
   }
  }
 }

@@ -3579,7 +3579,8 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
       `exec` / `eval` / `compile` as a bare name (`exec("import x")`, `exec(__doc__)`), outside a consumed branch
       (`exec(open(p).read())` is read by rule 8). A loader binding is consumed when every use of it sits inside a
       consumed call and there is at least one.
-    - ENV: a string constant holding `PYTHONPATH` anywhere (an environ key, a shell string, an `env=` mapping).
+    - ENV: a str or bytes constant holding `PYTHONPATH` anywhere (an environ key, `os.environb[b"PYTHONPATH"]`, a
+      shell string, an `env=` mapping).
     - SCOPE: `globals()`, `locals()` or `vars()` with no argument in a file that binds sys (root's twin (i)).
     - PKG-PATH (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any context, or
       as a word in a str or bytes constant, WHEREVER it sits, a consumed node too. No rule reads it: a write sends
@@ -3775,8 +3776,10 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             p = parent.get(node)
             if not (isinstance(p, ast.Attribute) and p.value is node):
                 refuse(node)  # `s = __import__("sys")`, `f(import_module("sys"))`: the module leaves the call
-        elif isinstance(node, ast.Constant) and (isinstance(node.value, str) and "PYTHONPATH" in node.value
+        elif isinstance(node, ast.Constant) and ("PYTHONPATH" in (node.value.decode("latin-1") if isinstance(node.value, bytes)
+                                                                  else node.value if isinstance(node.value, str) else "")
                                                  or unread_loader_word(node.value)):
+            # A bytes key counts, decoded (the record's SHOULD 4: `os.environb[b"PYTHONPATH"]`).
             refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `methodcaller("load_module", n)(z)`, `b"exec_module"`
     # PKG-PATH (root's MUST-2): every `__path__`, consumed or not (`sys.path.insert(0, m.__path__.pop())` sits in a
     # consumed entry), named by the chain it heads (`email.__path__.append(d)`).

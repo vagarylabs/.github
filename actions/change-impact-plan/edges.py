@@ -3355,6 +3355,65 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                     ok = False
             if ok:
                 consume(core.func.value)
+    # R6-2 fix (3), root's S2 of 2026-11-14 (cause 3 of cli's census, SYS-PATH-REACH): in a TEST file, by the planner's
+    # own classification (plan.is_test_file with no config test_globs: test_*.py, *_test.py, any file under test/,
+    # tests/ or __tests__/, so conftest.py there too), the `sys.modules` and `sys.path` uses that load no file are read.
+    # `sys.modules[k] = v`, `del sys.modules[k]`, a discarded `sys.modules.pop(k[, d])`, `<x>.setitem(sys.modules,
+    # "<m>", v)` and `<x>.delitem(sys.modules, "<m>"[, ...])` bind or unbind a module name for the test's own process
+    # (a later `import m` is judged as an import); `"m" in sys.modules` and `for m in sys.modules` read names;
+    # `sys.modules["m"]` and `sys.modules.get("m"[, d])` read module m, recorded as this file's dependency edge like
+    # `import_module("m")`. `sys.path` compared, indexed, or under len / list / tuple is a read of the list. A key naming
+    # a capability module (sys, site, importlib, runpy, builtins) in any of these forms, a computed key on a read, a
+    # use chained past the access (`sys.modules["m"].x`), `sys.modules.items()` / `.update(...)`, `p = sys.path`, any
+    # other use, and every one of these outside a test file, still refuse.
+    if _plan.is_test_file(path, []):
+        def take(*nodes) -> None:
+            consumed.update(id(n) for n in nodes)
+
+        def capability_key(node) -> bool:
+            return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.split(".")[0] in CAPABILITY_MODULES
+
+        def module_key(node):
+            return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value \
+                and not capability_key(node) else None
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Attribute) and node.attr in ("modules", "path") and isinstance(node.value, ast.Name)
+                    and node.value.id == "sys" and isinstance(node.ctx, ast.Load)):
+                continue
+            up1 = parent.get(node)
+            up2 = parent.get(up1)
+            if node.attr == "path":
+                if isinstance(up1, ast.Compare):
+                    take(node.value, node)
+                elif isinstance(up1, ast.Subscript) and up1.value is node and isinstance(up1.ctx, ast.Load):
+                    take(node.value, node, up1)
+                elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Name) and up1.func.id in ("len", "list", "tuple") \
+                        and up1.func.id not in binders and len(up1.args) == 1 and up1.args[0] is node and not up1.keywords:
+                    take(node.value, node)
+            elif isinstance(up1, ast.Subscript) and up1.value is node:
+                if capability_key(up1.slice):
+                    continue
+                if isinstance(up1.ctx, ast.Store) and isinstance(up2, ast.Assign) and len(up2.targets) == 1 and up2.targets[0] is up1 \
+                        or isinstance(up1.ctx, ast.Del):
+                    take(node.value, node, up1)
+                elif isinstance(up1.ctx, ast.Load) and module_key(up1.slice):
+                    names.add(module_key(up1.slice).split(".")[0])
+                    take(node.value, node, up1)
+            elif isinstance(up1, ast.Attribute) and up1.value is node and isinstance(up2, ast.Call) and up2.func is up1 \
+                    and 1 <= len(up2.args) <= 2 and not up2.keywords:
+                if up1.attr == "get" and module_key(up2.args[0]):
+                    names.add(module_key(up2.args[0]).split(".")[0])
+                    take(node.value, node, up1, up2)
+                elif up1.attr == "pop" and isinstance(parent.get(up2), ast.Expr) and not capability_key(up2.args[0]):
+                    take(node.value, node, up1, up2)
+            elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Attribute) and up1.func.attr in ("setitem", "delitem") \
+                    and isinstance(up1.func.value, ast.Name) and len(up1.args) >= 2 and up1.args[0] is node and module_key(up1.args[1]):
+                take(node.value, node)
+            elif isinstance(up1, ast.Compare) and any(c is node for c in up1.comparators) \
+                    and all(isinstance(op, (ast.In, ast.NotIn)) for op in up1.ops) \
+                    or isinstance(up1, (ast.For, ast.AsyncFor, ast.comprehension)) and up1.iter is node:
+                take(node.value, node)
     unconsumed = capability_occurrences(tree, text, parent, consumed)
     if unconsumed:
         lineno, segment = unconsumed[0]

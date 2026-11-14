@@ -235,6 +235,102 @@
    "must_run": "test-a",
    "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 6 of services/a/test/test_m3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m3c.py",
    "verdict": "REFUSE"
+  },
+  "S1 read sys.modules bound, unbound and named in a test file (startup_ddl_pg.py:227, test_signup_fixture_probes.py:42 forms)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s1.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nfor m in (\"tool\", \"config\"):\n    sys.modules.pop(m, None)\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\nimport tool  # noqa: E402\n\nassert \"openai\" in sys.modules and tool.X == 1\nassert not any(m.startswith(\"backend.\") for m in sys.modules)\n\n\ndef test_patch(monkeypatch):\n    monkeypatch.setitem(sys.modules, \"requests\", fake)\n    monkeypatch.delitem(sys.modules, \"cache\", raising=False)\n    del sys.modules[\"openai\"]\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "S1 twin the same uses outside a test file refuse": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/s1_tool.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nfor m in (\"tool\", \"config\"):\n    sys.modules.pop(m, None)\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\nimport tool  # noqa: E402\n\nassert \"openai\" in sys.modules and tool.X == 1\nassert not any(m.startswith(\"backend.\") for m in sys.modules)\n\n\ndef test_patch(monkeypatch):\n    monkeypatch.setitem(sys.modules, \"requests\", fake)\n    monkeypatch.delitem(sys.modules, \"cache\", raising=False)\n    del sys.modules[\"openai\"]\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.modules.pop(m, None)` on line 7 of services/a/s1_tool.py is consumed by no read rule; a file reads only when every one is) in services/a/s1_tool.py",
+   "verdict": "REFUSE"
+  },
+  "S2 read sys.modules[\"m\"] and .get(\"m\") in a test file record m as the file's dependency edge": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s2.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nmod = sys.modules.get(\"tool\")\nsame = sys.modules[\"tool\"]\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "S2 twin a computed sys.modules key read refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s2c.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nmod = sys.modules[sys.argv[1]]\nimport tool  # noqa: E402,F401\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[sys.argv[1]]` on line 6 of services/a/test/test_s2c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s2c.py",
+   "verdict": "REFUSE"
+  },
+  "S3 twin a sys.modules key naming a capability module refuses in a test file": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s3c.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nloader = sys.modules[\"importlib\"]\nimport tool  # noqa: E402,F401\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"importlib\"]` on line 6 of services/a/test/test_s3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s3c.py",
+   "verdict": "REFUSE"
+  },
+  "S4 read sys.path compared, indexed and copied in a test file (conftest.py:10 form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s4.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402,F401\n\nassert sys.path[0] != \"\" and len(sys.path) > 0\nsaved = list(sys.path)\nassert saved == sys.path\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "S4 twin sys.path bound to a name in a test file refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s4c.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402,F401\n\nalias = sys.path\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.path` on line 8 of services/a/test/test_s4c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s4c.py",
+   "verdict": "REFUSE"
   }
  }
 }

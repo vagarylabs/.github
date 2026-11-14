@@ -2656,6 +2656,14 @@ UNREAD_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec", 
 UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD_LOADER_CALLS)) + r")(?![A-Za-z0-9_])")
 
 
+def unread_loader_word(value) -> bool:
+    """A str or bytes constant holding an UNREAD_LOADER_CALLS word (MUST-D; bytes, cli's read of 37f77d2:
+    `getattr(loader, b"exec_module".decode())`), wherever it sits, a docstring too."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and UNREAD_LOADER_WORD.search(value) is not None
+
+
 def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
@@ -3488,7 +3496,7 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
     # sits (a recording branch above consumes its whole subtree, a sys.path entry or a run_path path holding one too).
     # The chain each heads, and each such string, is unconsumed again here, so the capability scan below refuses at it.
     for n in ast.walk(tree):
-        if isinstance(n, ast.Constant) and isinstance(n.value, str) and UNREAD_LOADER_WORD.search(n.value):
+        if isinstance(n, ast.Constant) and unread_loader_word(n.value):
             consumed.discard(id(n))
             continue
         if isinstance(n, ast.Name) and n.id in UNREAD_LOADER_CALLS \
@@ -3748,9 +3756,9 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             p = parent.get(node)
             if not (isinstance(p, ast.Attribute) and p.value is node):
                 refuse(node)  # `s = __import__("sys")`, `f(import_module("sys"))`: the module leaves the call
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and ("PYTHONPATH" in node.value
-                                                                                 or UNREAD_LOADER_WORD.search(node.value)):
-            refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `operator.methodcaller("load_module", n)(z)`
+        elif isinstance(node, ast.Constant) and (isinstance(node.value, str) and "PYTHONPATH" in node.value
+                                                 or unread_loader_word(node.value)):
+            refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `methodcaller("load_module", n)(z)`, `b"exec_module"`
     # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
     for stmt, names_, from_sys in binds:
         ok = True

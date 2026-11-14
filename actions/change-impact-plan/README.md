@@ -655,7 +655,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - MUST-D (cli's read of 63e1cb5): a string constant refused only when it held `PYTHONPATH`, so
          `getattr(loader, "exec_module")(m)`, `operator.methodcaller("exec_module", m)(loader)` and
          `getattr(z, "load_module")("m")` read. A string holding an unread loader call as a word now refuses wherever
-         it sits, inside a consumed node too, as the call does by name or by attribute. cli's round-6 should-fixes are
+         it sits, a docstring or a message too (a docstring that mentions `exec_module` refuses its file), and inside a
+         consumed node too, as the call does by name or by attribute. A bytes constant counts, decoded
+         (`getattr(loader, b"exec_module".decode())`, cli's read of 37f77d2). cli's round-6 should-fixes are
          folded in: `importfile` and `resolve_name` are unread loader calls, and `imp` is a loader module
          (`imp.load_source`, `load_compiled`, `load_dynamic`, `load_package`). `load_source` by name is not one: four
          scripts on core main 9cea8193 define their own `load_source()`, and they would refuse.
@@ -666,7 +668,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        loader changed before `exec_module`, and an inline `loader=`, each with no `module_from_spec`); `M23` is MUST-B;
        `M24` is MUST-C (`pkgutil.iter_modules` with `finder.find_spec`, `zipimport.zipimporter(p).load_module`, and
        `pkgutil.resolve_name` naming the spec call in a string); `M25` is MUST-D (`getattr(loader, "exec_module")`,
-       `operator.methodcaller("exec_module", m)`, `getattr(z, "load_module")`); `M26` is the folded should-fixes
+       `operator.methodcaller("exec_module", m)`, `getattr(z, "load_module")`, and a bytes
+       constant, `b"exec_module".decode()`); `M26` is the folded should-fixes
        (`pkgutil.resolve_name("runpy:run_path")`, `pydoc.importfile`, `imp.load_source`, `imp.load_compiled`).
        Known limits, from cli's round-4 should-fixes (none is a one-line refusal, so none is folded in):
        - doctest text: pytest's `--doctest-glob` runs tracked `.md`, `.rst` or `.txt` text in the test process, and the
@@ -678,7 +681,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - string-target patchers (`mock.patch("m.name")`, `monkeypatch.setattr("m.name", v)`) name their target only in
          a string, which no rule resolves;
        - an OPEN class, not a closed list: any function that imports or runs code from a name or a text it is given,
-         in a file with no scan word and no unread loader call. Examples: code-text runners
+         whether or not the file holds a scan word (a file with `import sys` and `pydoc.locate("plugins.x")` reads),
+         and any unread loader call whose name is built at run time (`getattr(loader, "exec_" + "module")`,
+         `"".join(...)`, an f-string). Examples: code-text runners
          (`code.InteractiveInterpreter().runsource`, `cProfile.run` / `profile.run`, `pdb.run`,
          `timeit.timeit(stmt=...)`, `trace.Trace().run`); `pickle.loads`, which imports by name; `pkg_resources`
          entry points' `.load()`; `types.FunctionType(marshal.loads(...))`; `pydoc.locate("m")`.

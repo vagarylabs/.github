@@ -1,5 +1,5 @@
 {
- "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only. M24 is cli's MUST-C (round 5): exec_module and load_module refuse, however the spec or loader was got. M25 is cli's MUST-D (round 6): an unread loader call spelled in a string refuses; M26 the folded should-fixes.",
+ "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only. M24 is cli's MUST-C (round 5): exec_module and load_module refuse, however the spec or loader was got. M25 is cli's MUST-D (round 6): an unread loader call spelled in a string refuses; M26 the folded should-fixes. A bytes constant counts, decoded (cli round 7).",
  "base_config": {
   "edge_scan": {
    "exclude": [
@@ -1238,6 +1238,18 @@
    "must_run": "test-a",
    "verdict": "REFUSE",
    "refusal": "unresolved (the path-mutation capability `imp.load_compiled(\"tool\", str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.pyc\"))` on line 4 of services/a/test/test_m26d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m26d.py"
+  },
+  "M25 twin getattr(loader, b\"exec_module\".decode()) over a finder.find_spec loader refuses (cli round 7 should-fix)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m25d.py": "import pkgutil\nimport types\nfrom pathlib import Path\n\nfor finder, name, _ in pkgutil.iter_modules([str(Path(__file__).resolve().parents[2] / \"b\")]):\n    loader = finder.find_spec(name).loader\n    getattr(loader, b\"exec_module\".decode())(types.ModuleType(name))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `b\"exec_module\"` on line 7 of services/a/test/test_m25d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m25d.py"
   }
  }
 }

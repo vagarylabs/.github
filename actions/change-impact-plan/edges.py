@@ -2813,8 +2813,9 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
       name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
       `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). `module_from_spec` is
-      read only over a spec whose site evaluated (R6-2 fix (1)): it adds no site, the spec's is its edge; any other
-      `module_from_spec` refuses at the capability scan.
+      read only in F1's one allow-listed form over a spec whose site evaluated (R6-2 fix (1), round 4; `cross_module`
+      from import_closure, none passed refuses): it adds no site, the spec's is its edge; any other `module_from_spec`
+      refuses at the capability scan.
     Raises ValueError when the file does not parse."""
     import ast
     try:
@@ -3821,10 +3822,11 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     `read_text(anchor, ...)` import the anchor package: a literal anchor is recorded as this file's dependency edge and
     read through its chain, a non-literal one refuses; `entry_points(...).load()` stays a loader.
     Three reads of root's S2 of 2026-11-14 (the census's top three causes), each a recording branch in
-    `python_file_facts` with twin vectors in test_edges_r6_2_fix_vectors.json: F1 `module_from_spec(spec)` over a
-    spec name resolved outward to the call's own or the module's scope, bound there only by `spec_from_file_location`
-    calls whose path evaluated and with no keyword but `location=` (a computed path still refuses at LOADER; a closure,
-    lambda or default over an enclosing function's spec, `loader=` and an attribute store on the spec refuse); F2
+    `python_file_facts` with twin vectors in test_edges_r6_2_fix_vectors.json: F1 `module_from_spec(S)` in the ONE
+    allow-listed form of root's ruling of 2026-11-14 19:00 (round 4): every occurrence of `S` in the file is (a) its
+    one module-level `spec_from_file_location` assignment with an evaluated in-repository path, (b) the argument of
+    importlib's `module_from_spec`, or (c) `S.loader.exec_module` of that module; and no other tracked file spells `S`
+    or holds an F1 hazard (f1_cross_module); everything else refuses at LOADER; F2
     SCOPE `globals()["n"]` / `globals().get("n")` for a module-level name the file binds, and the test-runner loop
     over `globals()` under a literal `startswith` prefix (dynamic keys, writes, comprehensions, `globals()` passed
     out, a star import and a gated call inside a lambda, nested def or generator still refuse); F3 SYS-PATH-REACH in

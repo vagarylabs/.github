@@ -627,32 +627,45 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **The fixes F1-F3** (root's S2 of 2026-11-14: the census of core main 9cea8193 refused 154 files, and its top
      three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). Each is a recording branch
      in `python_file_facts`, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps refusing:
-     - **F1:** `module_from_spec(spec)` reads when `spec` is the `spec_from_file_location` call itself, or a name
-       resolved outward from the scope the call evaluates in (a default, an annotation, a decorator or a base
-       evaluates in the scope enclosing its def, lambda or class; a class scope is skipped from a function nested in
-       it), to the first scope that binds the name. A call whose own scope is a class body, or a comprehension or
-       generator directly in one, refuses: Python reads a name the class has not yet assigned from the module, and
-       such a comprehension cannot see the class's names, which the reader does not model. It reads only when that
-       scope is the call's own or the module's, every binding there is a plain assignment of a `spec_from_file_location` call, and every one
-       of those calls has a path the reader evaluated inside the repository and no keyword but `location=`. That load
-       is already the file's edge by rule 8. These refuse: a computed path or a path above the root; a closure, a
-       lambda or a default over an enclosing function's `spec` (a parameter or any assignment there), even beside a
-       good module-level `spec`; any other binding of the name in the resolved scope (a parameter, a second
-       assignment of another value, a loop, an import, a `def`); `global` or `nonlocal` on it; a spec call with
-       `loader=` (an inline `SourceFileLoader` the consumed call would hide), `submodule_search_locations=` or
-       `**kwargs`; a `module_from_spec` call with keywords or a second argument. A named spec also refuses in a file
-       that may rebind it behind the reader: one with a star import, or with any `globals()` / `vars()` / `locals()`
-       call that is not a read (a load subscript, `.get` / `.keys` / `.items` / `.values`, a loop, an `in`, `sorted` /
-       `list` / `len`). Every use of the name bound where the call's is must be the call's argument, an `is` /
-       `is not` comparison or a truth test, `spec.loader.exec_module(...)`, `spec.loader` tested, or a read of
-       `name`, `origin`, `parent`, `cached` or `has_location`; any other use refuses, among them an attribute
-       store, `setattr` / `delattr`, an alias (`s = spec`), a call argument, `del`, `loader = spec.loader` and
-       `cast(..., spec.loader)`. A file naming `__spec__`, `__loader__` or `__dict__` (an attribute, a name or a
-       string) refuses F1 in both forms, since the module's `__spec__` is the same object. Twins `M1`-`M13`
-       (closure `M4`, lambda `M5`, `loader=` `M6`, default `M7`, attribute store `M8`, class body `M9`, `globals()`
-       write `M10`, star import `M11`, alias `M12`, `mod.__spec__` `M13`). Open limit: another module that imports
-       this one may assign its `spec` (`tool.spec = ...`) before a function here runs; the reader judges one file
-       and does not see that write.
+     - **F1:** root's ruling of 2026-11-14 19:00 (round 4) made F1 an allow-list with ONE form, and that form is the only
+       way a `module_from_spec` call reads (`python_file_facts`: `allowed` and `spec_of`). The call is importlib's own
+       `module_from_spec(S)`, one argument, no keyword, and it reads only when EVERY occurrence of the name `S` in the
+       file, in any scope, is one of: (a) the target of the one module-level statement `S = spec_from_file_location(name,
+       <path>)` (an annotated one too), with importlib's own spec function, a `<path>` the reader evaluated to one file
+       inside the repository, and no keyword but `location=`; (b) the sole argument of importlib's own
+       `module_from_spec(S)`; (c) `S.loader.exec_module(M)`, where `M` is a (b) call or the name that the statement just
+       before, in the same block, binds as its one target to a (b) call. That load is already the file's edge by rule 8.
+       importlib's own function (`importlib_fn`) is `<i>.util.<f>` with `i` bound only by `import importlib` (or
+       `import importlib.<x>`, or `import importlib as i`), `<u>.<f>` with `u` bound only by `import importlib.util as u`
+       or `from importlib import util`, or a name bound only by `from importlib.util import <f>`. A name the file binds
+       any other way (a `def`, an assignment, a parameter) is not importlib's. An occurrence is a name, an attribute,
+       an import name, a `def` / `class` / parameter / `except` / `match` name, a `global` / `nonlocal` name or a dotted
+       part of a string literal. A (b) or (c) in a class body, or in a comprehension directly in one, is not one of
+       them. The inline `module_from_spec(spec_from_file_location(...))` of rounds 1-3 refuses. In the file, F1 is off
+       with a star import; with `__spec__`, `__loader__` or `__dict__` named anywhere (the module's spec is the same
+       object); with a reflective handle (`globals`, `vars`, `locals`, `f_globals`, `f_locals`, `_getframe`,
+       `currentframe` or `__main__`, a string holding a frame word too, `getmembers`, `getmodule`, `get_objects`,
+       `get_referrers`, `get_referents`, `ctypes`, `__getattribute__`, `attrgetter`, or a `getattr` / `setattr` /
+       `delattr` without a string-literal name); or with a hazard (`f1_tree_hazard`). Across modules
+       (`f1_cross_module`, once per scan), F1 is off when any other tracked Python file spells `S` (`tool.spec`,
+       `from tool import spec`, `getattr(m, "spec")`, a string `"spec"`). This is a word match, not a resolved
+       reference, so it refuses more than Python would reach. F1 is off in every file when any tracked file holds a
+       hazard: a reflective handle; `exec`, `eval`, `compile`, `runpy`, `imp`, `zipimport`, a loader class, an import
+       hook (`meta_path`, `path_hooks`), `reload`, or a function's internals (`__code__`, `__globals__`); or
+       importlib's machinery named anywhere but as the callee of a call (`mock.patch("importlib.util.module_from_spec")`,
+       `patch.object(x.importlib.util, "module_from_spec", ...)`, `monkeypatch.setattr(util, "module_from_spec", ...)`,
+       an assignment). These are hazards too: a tracked Python path that is not a regular file; a file that does not
+       parse and holds a hazard word; and a tracked `.pyc`, `.pyo`, `.pyd`, `.so`, `.zip`, `.egg`, `.whl` or `.pth` file.
+       Item 5 of the round-4 brief: a file that patches importlib refuses F1 everywhere, and the standard library is
+       not assumed to be unpatched. On core main 9cea8193, 809 tracked files hold a hazard, among them
+       `services/evidence/test/test_qualification_packaging.py:85` (`patch.object(loader.importlib.util,
+       "module_from_spec", ...)`), so F1 reads nothing there. It read nothing in the 114-file subset before this either:
+       the subset reads 34 files and refuses 80, with F1 and without it. Open assumption for root: the reader relies
+       on code outside the tracked files not to rebind importlib or the spec. That code is the interpreter, the
+       standard library (`pathlib`'s `Path.resolve` evaluates the (a) path), installed packages, pytest plugins and
+       `sitecustomize`. No tracked file shows that code. Twins `M1`-`M21`: `M15` reflective handles, `M16` class bodies,
+       `M17` importlib's own function, `M18` the exact (a) / (b) / (c) shapes, `M19` another file's reference, `M20` a
+       hazard or a patch in another file, and `M21` an opaque tracked file and the inline form.
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every
@@ -675,9 +688,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        `__init__.py`. A non-test file holding the word marks the file, and a marked file's own words mark further
        test files, to a fixed point. A file that does not parse counts every word of its text, and a test file whose
        name is no identifier is always marked. The check matches a word, not a resolved import, so it marks more
-       files than Python would import. It misses only a name the source computes (`"test_" + "utils"`, which the
-       loader rules refuse at the import) and an importer outside Python (a workflow's `python -m`, a packaging
-       entry point). On core main 9cea8193, 754 Python files are test files by name and 193 of them are marked. In such a
+       files than Python would import. A computed import is a load the scan cannot name. Undeclared, the loader
+       rules refuse it (`"test_" + "utils"`). A declared one reads, and every test file its `computed_imports` entry
+       may reach is marked as well (cli's round-3 should-fix 1, `test_files_computed_imports_reach`). Reach "package"
+       marks each test file of the declaring file's package, or every test file when that file is outside every
+       package. A list of paths marks each test file at or under one of the paths. "external" and "fixture" mark none.
+       The check misses only an importer outside Python (a workflow's `python -m`, a packaging entry point). On core
+       main 9cea8193, which declares no computed import, 754 Python files are test files by name and 193 of them are
+       marked. That over-match is the accepted price of ruling (b). In such a
        file these forms bind or name a module for the test's own process: `sys.modules[k] = v`, `del sys.modules[k]`,
        a discarded `sys.modules.pop(k[, d])`, `monkeypatch.setitem(sys.modules, "m", v)`,
        `monkeypatch.delitem(sys.modules, "m"[, ...])`, `"m" in sys.modules` (the last operand only) and

@@ -570,26 +570,29 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    2026-11-12, fail closed by token; cli's R6 design, accepted by root at 16:44).
    - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
      `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
-     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`. It
-     also parses every file holding `PYTHONPATH` anywhere. A word in a comment or a string is read and found clean,
-     except `PYTHONPATH` in a string.
+     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`,
+     `imp`, `importfile`, `resolve_name`. It also parses every file holding `PYTHONPATH` anywhere. A word
+     in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word in a string, a
+     loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`, `load_module`,
+     `importfile`, `resolve_name`; MUST-D below).
    - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
      it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
    - **The kinds.** Each of these, outside a consumed node, is an occurrence:
      - **sys binding:** `import sys` under any alias, `from sys import ...` (any name, any alias, `*`),
-       `__import__("sys")` and `import_module("sys")`. A name literally called `sys`, `site`, `importlib`, `runpy` or
-       `builtins` imported from ANY module binds that module, as the imported name or as the alias (`from helpers
+       `__import__("sys")` and `import_module("sys")`. A name literally called `sys`, `site`, `importlib`, `runpy`,
+       `builtins` or `imp` imported from ANY module binds that module, as the imported name or as the alias (`from helpers
        import sys`, `from os import sys as s`). A `del` or a rebinding of a bound name is an occurrence too.
      - **sys path reach:** `.path`, `.modules`, `.meta_path`, `.path_hooks`, `.path_importer_cache` or any dunder on a
        sys expression (a sys-bound name, `__import__("sys")`, `os.sys`): `p = sys.path`, `sys.path.remove(x)`,
        `sys.modules["sys"].path`, `sys.__dict__`. The one exception is N1's membership test below.
      - **site:** `import site` under any alias, `from site import ...`, any use of a site-bound name, and `addsitedir`
        by any name or attribute. No rule reads them, so each one refuses.
-     - **loader:** an import of `importlib`, `runpy` or `builtins` under any alias, or of any submodule of them; a use
+     - **loader:** an import of `importlib`, `runpy`, `builtins` or `imp` under any alias, or of any submodule of them; a use
        of a loader-bound name outside a consumed call (`importlib.util.find_spec("m")`, `importlib.reload(m)`); a
        loader call by attribute on anything (`x.module_from_spec(spec)`). Submodules count: `from importlib.metadata
        import version` binds a loader name, consumed only when every use is an N3 read below; bound and unused, it
-       refuses. `exec_module` and `load_module` are loader calls too, by name or attribute (R6-2 fix MUST-C).
+       refuses. `exec_module`, `load_module`, `importfile` and `resolve_name` are loader calls too, by name, by
+       attribute or as a word in a string (R6-2 fix MUST-C, MUST-D).
      - **exec:** `exec`, `eval` or `compile` as a bare name (`exec("import x")`, `eval("1")`, `exec(__doc__)`), or as an
        attribute of a loader-bound name (`builtins.exec(s)`). `exec(open(p).read())` is consumed by rule 8.
        `re.compile(...)` is not an occurrence.
@@ -631,10 +634,11 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      keeps refusing. F1 is refuse-all, with twins only:
      - **F1: refuse-all.** No rule reads `spec_from_file_location` or `module_from_spec`. By name or by attribute,
        wherever it sits (inside a consumed `sys.path` entry or `run_path` path too), each refuses at rule 9, and so does
-       every file that holds one outside a comment or a string. A spec or loader got any other way (`finder.find_spec`
-       over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, or the call spelled in a string,
+       every file that holds one outside a comment; a word in a string refuses too (MUST-D, below). A spec or loader got
+       any other way (`finder.find_spec` over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, or
        `pkgutil.resolve_name("importlib.util:spec_from_file_location")`) runs a file only through `exec_module` or
-       `load_module`, which are scan words and loader calls no rule reads, so that file refuses too (MUST-C, below).
+       `load_module`, which no rule reads by name, by attribute or as a word in a string, so that file refuses too
+       (MUST-C and MUST-D, below).
        Root's ruling of 2026-11-14 19:00 made F1 a one-form allow-list, and said that a
        must-fix left on this class after round 4 sends it to refuse-all. cli's round-4 read of 5e8606e found two:
        - MUST-A, present since the base 9118236: rule 8 consumed the `spec_from_file_location` site whatever the spec
@@ -648,13 +652,22 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - MUST-C, present since the base 9118236 (cli's read of 825d064): neither `exec_module` nor `load_module` was a
          scan word, so a file that got its spec or loader without `importlib`, `runpy` or `sys` was never parsed and
          read while it ran another file. Both are now scan words and loader calls that no rule reads.
+       - MUST-D (cli's read of 63e1cb5): a string constant refused only when it held `PYTHONPATH`, so
+         `getattr(loader, "exec_module")(m)`, `operator.methodcaller("exec_module", m)(loader)` and
+         `getattr(z, "load_module")("m")` read. A string holding an unread loader call as a word now refuses wherever
+         it sits, inside a consumed node too, as the call does by name or by attribute. cli's round-6 should-fixes are
+         folded in: `importfile` and `resolve_name` are unread loader calls, and `imp` is a loader module
+         (`imp.load_source`, `load_compiled`, `load_dynamic`, `load_package`). `load_source` by name is not one: four
+         scripts on core main 9cea8193 define their own `load_source()`, and they would refuse.
        On core main 9cea8193 this costs nothing measured: F1 already read 0 of its 48 subset files, the 114-file subset
        reads 34 files and refuses 80 before and after (`module_from_spec` 0 / 48, SCOPE 30 / 11, SYS-PATH-REACH 4 /
        21), and each of the 61 tracked Python files holding `spec_from_file_location` refused before this commit as
-       well. Twins `M1`-`M24`: the four former reads `M1`, `M4`, `M17` and `M18` now refuse; `M22` is MUST-A (a
+       well. Twins `M1`-`M26`: the four former reads `M1`, `M4`, `M17` and `M18` now refuse; `M22` is MUST-A (a
        loader changed before `exec_module`, and an inline `loader=`, each with no `module_from_spec`); `M23` is MUST-B;
        `M24` is MUST-C (`pkgutil.iter_modules` with `finder.find_spec`, `zipimport.zipimporter(p).load_module`, and
-       `pkgutil.resolve_name` naming the spec call in a string).
+       `pkgutil.resolve_name` naming the spec call in a string); `M25` is MUST-D (`getattr(loader, "exec_module")`,
+       `operator.methodcaller("exec_module", m)`, `getattr(z, "load_module")`); `M26` is the folded should-fixes
+       (`pkgutil.resolve_name("runpy:run_path")`, `pydoc.importfile`, `imp.load_source`, `imp.load_compiled`).
        Known limits, from cli's round-4 should-fixes (none is a one-line refusal, so none is folded in):
        - doctest text: pytest's `--doctest-glob` runs tracked `.md`, `.rst` or `.txt` text in the test process, and the
          reader parses no such file;
@@ -664,9 +677,11 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          literal;
        - string-target patchers (`mock.patch("m.name")`, `monkeypatch.setattr("m.name", v)`) name their target only in
          a string, which no rule resolves;
-       - a load through a wrapper that holds no scan word, and no spec or loader object in the file: a string resolver
-         for a by-path or by-name loader (`pkgutil.resolve_name("runpy:run_path")(p)`, `pydoc.locate("m")`),
-         `pydoc.importfile(p)`, and `imp.load_source(n, p)` on Python 3.11 or older.
+       - an OPEN class, not a closed list: any function that imports or runs code from a name or a text it is given,
+         in a file with no scan word and no unread loader call. Examples: code-text runners
+         (`code.InteractiveInterpreter().runsource`, `cProfile.run` / `profile.run`, `pdb.run`,
+         `timeit.timeit(stmt=...)`, `trace.Trace().run`); `pickle.loads`, which imports by name; `pkg_resources`
+         entry points' `.load()`; `types.FunctionType(marshal.loads(...))`; `pydoc.locate("m")`.
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every

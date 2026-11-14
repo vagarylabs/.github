@@ -2602,10 +2602,12 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 # bounds a word (git grep -E has no `\b`), so `system` and `website` are not listed; `PYTHONPATH` is listed anywhere.
 # `exec_module` and `load_module` (R6-2 fix MUST-C, cli's read of 825d064): a spec or loader got with none of the other
 # words (`finder.find_spec(n)` over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, `pkgutil.resolve_name("...")`)
-# runs a file only through one of the two, so a file holding either is parsed, and refuses (LOADER_CALLS).
+# runs a file only through one of the two, so a file holding either is parsed, and refuses (LOADER_CALLS), by name,
+# by attribute or as a word in a string constant (MUST-D, cli's read of 63e1cb5: UNREAD_LOADER_CALLS). `imp`,
+# `importfile` and `resolve_name` (cli's round-6 should-fixes) are parsed and refuse the same way.
 PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
                  r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
-                 r"exec_module|load_module)([^A-Za-z0-9_]|$)"
+                 r"exec_module|load_module|imp|importfile|resolve_name)([^A-Za-z0-9_]|$)"
                  r"|PYTHONPATH")
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
@@ -2643,8 +2645,15 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
 
 # R6-2 fix F1, REFUSE-ALL (root's rule of 2026-11-14 19:00: a must-fix left on the spec-loader class after round 4
 # sends the class to refuse-all; cli's round-4 read found two, MUST-A and MUST-B). No read rule consumes these loader
-# calls, by name or attribute, wherever they sit, so a Python file holding one refuses at the capability scan.
-SPEC_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec"})
+# calls, by name, by attribute or as a word in a string constant, wherever they sit, so a Python file holding one
+# refuses at the capability scan. `exec_module` and `load_module` end every load through a spec or loader object,
+# however it was got (MUST-C, cli's read of 825d064); a string spelling refuses too (MUST-D, cli's read of 63e1cb5:
+# `getattr(loader, "exec_module")(m)`, `operator.methodcaller("exec_module", m)(loader)`); `importfile` and
+# `resolve_name` are cli's round-6 should-fixes. `load_source` is not one by name (four scripts on core main 9cea8193
+# define their own `load_source()` and would refuse): `imp.load_source` refuses through `imp` (CAPABILITY_MODULES).
+UNREAD_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec", "exec_module", "load_module",
+                                 "importfile", "resolve_name"})
+UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD_LOADER_CALLS)) + r")(?![A-Za-z0-9_])")
 
 
 def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
@@ -3474,12 +3483,16 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
             elif cmp_side(up1, node, (ast.In, ast.NotIn), ()) \
                     or isinstance(up1, (ast.For, ast.AsyncFor, ast.comprehension)) and up1.iter is node:
                 take(node.value, node)
-    # R6-2 fix F1 refuse-all (root's rule of 2026-11-14 19:00, on cli's round-4 MUST-A and MUST-B): no read rule
-    # consumes `spec_from_file_location` or `module_from_spec`, by name or attribute, wherever it sits (a recording
-    # branch above consumes its whole subtree, a sys.path entry or a run_path path holding one too). The chain each
-    # heads is unconsumed again here, so the capability scan below refuses the file at it.
+    # R6-2 fix F1 refuse-all (root's rule of 2026-11-14 19:00, on cli's round-4 MUST-A and MUST-B), MUST-C and MUST-D:
+    # no read rule consumes an UNREAD_LOADER_CALLS call, by name, by attribute or as a word in a string, wherever it
+    # sits (a recording branch above consumes its whole subtree, a sys.path entry or a run_path path holding one too).
+    # The chain each heads, and each such string, is unconsumed again here, so the capability scan below refuses at it.
     for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and n.id in SPEC_LOADER_CALLS or isinstance(n, ast.Attribute) and n.attr in SPEC_LOADER_CALLS:
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and UNREAD_LOADER_WORD.search(n.value):
+            consumed.discard(id(n))
+            continue
+        if isinstance(n, ast.Name) and n.id in UNREAD_LOADER_CALLS \
+                or isinstance(n, ast.Attribute) and n.attr in UNREAD_LOADER_CALLS:
             while True:
                 consumed.discard(id(n))
                 up = parent.get(n)
@@ -3497,16 +3510,17 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
 
 # R6-2 (root's ruling of 2026-11-12, fail-closed by token; cli's R6 design accepted 16:44): the modules whose binding is a
 # path-mutation capability, each with the family the scan judges it under. `sys` is read by rule 5 below; `site`,
-# `importlib`, `runpy` and `builtins` are read only through the recording branches of python_file_facts.
-CAPABILITY_MODULES = {"sys": "sys", "site": "site", "importlib": "loader", "runpy": "loader", "builtins": "loader"}
+# `importlib`, `runpy` and `builtins` are read only through the recording branches of python_file_facts. `imp` (Python
+# 3.11 or older: `load_source`, `load_compiled`, `load_dynamic`, `load_package`; cli's round-6 should-fix) is read by no rule.
+CAPABILITY_MODULES = {"sys": "sys", "site": "site", "importlib": "loader", "runpy": "loader", "builtins": "loader",
+                      "imp": "loader"}
 # The attributes of `sys` that reach the import path (root's rule 5 twins): a use of a sys-bound name as any of these,
 # or as any dunder (`sys.__dict__`), is a path reach; every other attribute (`sys.exit`, `sys.argv`, `sys.stderr`) is not.
 SYS_PATH_ATTRS = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache"})
 # The loader calls, by name or attribute: each is a load the recording branches read (a consumed call) or a refusal.
-# `exec_module` and `load_module` are read by no rule (R6-2 fix MUST-C): every load through a spec or loader object ends
-# in one of them, however the spec or loader was got.
-LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "spec_from_file_location",
-                          "module_from_spec", "SourceFileLoader", "addsitedir", "exec_module", "load_module"})
+# Every UNREAD_LOADER_CALLS call is one, read by no rule (R6-2 fix F1, MUST-C, MUST-D).
+LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "SourceFileLoader", "addsitedir"}) \
+    | UNREAD_LOADER_CALLS
 EXEC_CALLS = frozenset({"exec", "eval", "compile"})
 # N2 / N3 (root's ruling of 2026-11-12 21:32): the loader calls read through their chain when the first argument is a literal
 # the recording branch consumed, the importlib.metadata reads that are not loads, the importlib.resources anchors recorded as edges.
@@ -3734,8 +3748,9 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             p = parent.get(node)
             if not (isinstance(p, ast.Attribute) and p.value is node):
                 refuse(node)  # `s = __import__("sys")`, `f(import_module("sys"))`: the module leaves the call
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "PYTHONPATH" in node.value:
-            refuse(node)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and ("PYTHONPATH" in node.value
+                                                                                 or UNREAD_LOADER_WORD.search(node.value)):
+            refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `operator.methodcaller("load_module", n)(z)`
     # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
     for stmt, names_, from_sys in binds:
         ok = True

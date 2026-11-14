@@ -1,5 +1,5 @@
 {
- "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only. M24 is cli's MUST-C (round 5): exec_module and load_module refuse, however the spec or loader was got.",
+ "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only. M24 is cli's MUST-C (round 5): exec_module and load_module refuse, however the spec or loader was got. M25 is cli's MUST-D (round 6): an unread loader call spelled in a string refuses; M26 the folded should-fixes.",
  "base_config": {
   "edge_scan": {
    "exclude": [
@@ -904,7 +904,7 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "REFUSE",
-   "refusal": "unresolved (the path-mutation capability `importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")` on line 4 of services/a/test/test_m1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m1.py"
+   "refusal": "unresolved (the path-mutation capability `\"importlib.util.module_from_spec\"` on line 3 of services/a/test/helper.py is consumed by no read rule; a file reads only when every one is) in services/a/test/helper.py"
   },
   "M20 twin patch.object on a module's importlib.util (test_qualification_packaging.py:85 form) refuses (brief item 5), round 4": {
    "cfg_set": {},
@@ -917,7 +917,7 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "REFUSE",
-   "refusal": "unresolved (the path-mutation capability `importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")` on line 4 of services/a/test/test_m1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m1.py"
+   "refusal": "unresolved (the path-mutation capability `\"module_from_spec\"` on line 5 of services/a/test/helper.py is consumed by no read rule; a file reads only when every one is) in services/a/test/helper.py"
   },
   "M20 twin monkeypatch.setattr of module_from_spec refuses (brief item 5), round 4": {
    "cfg_set": {},
@@ -930,7 +930,7 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "REFUSE",
-   "refusal": "unresolved (the path-mutation capability `importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")` on line 4 of services/a/test/test_m1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m1.py"
+   "refusal": "unresolved (the path-mutation capability `\"module_from_spec\"` on line 2 of services/a/test/helper.py is consumed by no read rule; a file reads only when every one is) in services/a/test/helper.py"
   },
   "M21 twin a tracked .pyc beside the loader refuses (no source to scan), round 4": {
    "cfg_set": {},
@@ -1153,7 +1153,91 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "REFUSE",
-   "refusal": "unresolved (the path-mutation capability `spec.loader.exec_module(types.ModuleType(\"tool\"))` on line 6 of services/a/test/test_m24c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m24c.py"
+   "refusal": "unresolved (the path-mutation capability `pkgutil.resolve_name(\"importlib.util:spec_from_file_location\")(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")` on line 5 of services/a/test/test_m24c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m24c.py"
+  },
+  "M25 twin getattr(loader, \"exec_module\") over a finder.find_spec loader refuses (cli round 6 MUST-D)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m25.py": "import pkgutil\nimport types\nfrom pathlib import Path\n\nfor finder, name, _ in pkgutil.iter_modules([str(Path(__file__).resolve().parents[2] / \"b\")]):\n    loader = finder.find_spec(name).loader\n    getattr(loader, \"exec_module\")(types.ModuleType(name))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"exec_module\"` on line 7 of services/a/test/test_m25.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m25.py"
+  },
+  "M25 twin operator.methodcaller(\"exec_module\", m) over a finder.find_spec loader refuses (cli round 6 MUST-D)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m25b.py": "import operator\nimport pkgutil\nimport types\nfrom pathlib import Path\n\nfor finder, name, _ in pkgutil.iter_modules([str(Path(__file__).resolve().parents[2] / \"b\")]):\n    operator.methodcaller(\"exec_module\", types.ModuleType(name))(finder.find_spec(name).loader)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"exec_module\"` on line 7 of services/a/test/test_m25b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m25b.py"
+  },
+  "M25 twin getattr(z, \"load_module\") over a zipimport.zipimporter refuses (cli round 6 MUST-D)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m25c.py": "import zipimport\nfrom pathlib import Path\n\nz = zipimport.zipimporter(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.zip\"))\ngetattr(z, \"load_module\")(\"tool\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"load_module\"` on line 5 of services/a/test/test_m25c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m25c.py"
+  },
+  "M26 twin pkgutil.resolve_name(\"runpy:run_path\")(p) refuses (cli round 6 should-fix)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m26.py": "import pkgutil\nfrom pathlib import Path\n\npkgutil.resolve_name(\"runpy:run_path\")(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `pkgutil.resolve_name(\"runpy:run_path\")(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))` on line 4 of services/a/test/test_m26.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m26.py"
+  },
+  "M26 twin pydoc.importfile(p) refuses (cli round 6 should-fix)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m26b.py": "import pydoc\nfrom pathlib import Path\n\npydoc.importfile(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `pydoc.importfile(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))` on line 4 of services/a/test/test_m26b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m26b.py"
+  },
+  "M26 twin imp.load_source(n, p) refuses (cli round 6 should-fix)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m26c.py": "import imp\nfrom pathlib import Path\n\nimp.load_source(\"tool\", str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `imp.load_source(\"tool\", str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))` on line 4 of services/a/test/test_m26c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m26c.py"
+  },
+  "M26 twin imp.load_compiled(n, p) refuses (cli round 6 should-fix)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m26d.py": "import imp\nfrom pathlib import Path\n\nimp.load_compiled(\"tool\", str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.pyc\"))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `imp.load_compiled(\"tool\", str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.pyc\"))` on line 4 of services/a/test/test_m26d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m26d.py"
   }
  }
 }

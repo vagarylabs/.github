@@ -3096,7 +3096,7 @@ class R62FixVectors(VectorHarness, unittest.TestCase):
     selects the runner its load reaches, and each refusing `twin`, the unresolvable form beside it, refuses at R6-2."""
 
     CASES = json.loads((Path(__file__).with_name("test_edges_r6_2_fix_vectors.json")).read_text())
-    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10")
+    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M15", "M16", "M17", "M18", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10")
 
     def test_every_r6_2_fix_vector_is_pinned_exactly(self):
         for name, case in sorted(self.CASES["cases"].items()):

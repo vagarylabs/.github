@@ -3177,14 +3177,6 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
                     arg = inner.func.value.args[0]
                     sites.append(path_site(arg))
                     consume(node)
-    # R6-2 fix (1), root's S2 of 2026-11-14 (the first refusal cause of cli's census of vagary-core, 48 files):
-    # `module_from_spec(spec)` builds the module of ONE spec, so it loads exactly the file that spec names. It is read
-    # when its one argument is the `spec_from_file_location` call itself, or a name whose every binding in the call's
-    # own scope (the module's, when that function binds none) is a plain `name = spec_from_file_location(...)` the
-    # branch above recorded with an EVALUATED path inside the repository: that site is the file-load edge, so the call
-    # adds none. A computed or unevaluable path, a path above the repository, a parameter, a loop, an import, a
-    # `global`, an unpacking or any other binding of the name in that scope, a name bound only in an enclosing function,
-    # or an argument that is not a name, still refuses at the capability scan below.
     def scope_of(node):
         while not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             node = parent[node]
@@ -3209,17 +3201,28 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
         elif isinstance(node, ast.MatchMapping) and node.rest:
             binders.setdefault(node.rest, []).append(node)
 
-    # cli's read of 02137ba (MF1, MF2, 2026-11-14 17:57): the spec name is resolved outward through the enclosing
-    # function scopes, so
-    # a closure, a lambda, a default or a decorator over an enclosing function's `spec` is judged by THAT binding,
-    # never by a module-level one. Defaults, annotations, decorators and bases evaluate in the scope enclosing their
-    # def, lambda or class; a class scope is skipped from a function nested in it. The call reads only when the first
-    # scope that binds the name is the call's own or the module's. The spec call itself carries only `location=`: a
-    # `loader=` (an inline `SourceFileLoader` the consumed call would hide), a `submodule_search_locations=` or a
-    # `**kwargs` refuses, and so does any attribute store on the spec name (`spec.loader = ...`,
-    # `spec.submodule_search_locations = [...]`) or `setattr` on it. cli's read of 7001655 (MF4): a class body is not
-    # resolved: it reads a name it has not yet assigned from the module, and a comprehension or generator directly in
-    # it cannot see its names, so a call whose own scope is a class body (or such a comprehension) refuses.
+    # R6-2 fix F1 (root's S2 of 2026-11-14; the ALLOW-LIST of root's ruling of 2026-11-14 19:00, round 4, which
+    # replaced the forbidden forms of rounds 1-3): `module_from_spec(...)` builds the module of ONE spec, so it loads
+    # exactly the file that spec names, and that site (recorded by the branch above) is the file-load edge. The call is
+    # consumed in exactly two forms, and in no other:
+    #   - INLINE: importlib's `module_from_spec(<importlib's spec_from_file_location(name, <path>)>)`;
+    #   - NAMED: `module_from_spec(S)`, where EVERY occurrence of the name S in the file, in any scope, is one of
+    #       (a) the target of THE ONE statement `S = <importlib's spec_from_file_location>(name, <path>)` in the module
+    #           body (an annotated one too);
+    #       (b) the sole argument of importlib's `module_from_spec(S)`;
+    #       (c) `S.loader.exec_module(M)`, M being a (b) call or the name the statement just before (in the same block)
+    #           binds, as its one target, to a (b) call: nothing runs between building that module and executing it.
+    #     An occurrence is a name, an attribute, an import name, a def / class / parameter / except / match name, a
+    #     `global` / `nonlocal` name or a dotted part of a string literal spelling S. A (b) or (c) in a class body, or in
+    #     a comprehension directly in one, is not one of them: a class body reads its names through its namespace.
+    # `<path>` is a path the branch above evaluated to one file inside the repository, and the spec call carries no
+    # keyword but `location=`. importlib's own function (cli's MF8): importlib_fn. Neither form is consumed in a file
+    # with a star import (it binds names the file does not show, `importlib` among them), that names `__spec__`,
+    # `__loader__` or `__dict__` (the module's spec, the same object), or that holds a reflective handle (cli's MF6):
+    # any `globals`, `vars` or `locals`; any `f_globals`, `f_locals`, `_getframe`, `currentframe` or `__main__` (a
+    # string holding one too); any `getmembers`, `getmodule`, `get_objects`, `get_referrers`, `get_referents`,
+    # `ctypes`, `__getattribute__` or `attrgetter`; or a `getattr` / `setattr` / `delattr` that is not called with a
+    # string-literal name. Everything else refuses at the capability scan below.
     def loads_one_file(call) -> bool:
         site = spec_sites.get(id(call))
         return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../")) \
@@ -3234,107 +3237,134 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
             child, up = up, parent.get(up)
         return tree
 
-    def bind_scope(b):
-        return parent[parent[b]] if isinstance(b, ast.arg) else eval_scope(b)
+    def importlib_fn(f, fname: str) -> bool:
+        """`f` is importlib's own `fname` (cli's MF8): `<i>.util.<fname>` with `i` bound only by `import importlib`
+        (or `import importlib.<x>`, or `import importlib as i`); `<u>.<fname>` with `u` bound only by `import
+        importlib.util as u` or `from importlib import util [as u]`; or a name bound only by `from importlib.util import
+        <fname> [as n]`. A name the file binds in any other way (a def, an assignment, a parameter) never is."""
+        def only(name: str, ok) -> bool:
+            every = binders.get(name, [])
+            return bool(every) and all(isinstance(b, (ast.Import, ast.ImportFrom)) and all(
+                ok(b, a) for a in b.names if (a.asname or a.name).split(".")[0] == name) for b in every)
 
-    def resolve(name: str, at):
-        own = here = eval_scope(at)
-        every = binders.get(name, [])
-        while True:
-            if here is own or not isinstance(here, ast.ClassDef):
-                found = [b for b in every if bind_scope(b) is here]
-                if found:
-                    return own, here, found
-            if here is tree:
-                return own, None, []
-            here = eval_scope(here)
+        if isinstance(f, ast.Name):
+            return only(f.id, lambda b, a: isinstance(b, ast.ImportFrom) and b.level == 0 and b.module == "importlib.util"
+                        and a.name == fname)
+        if not isinstance(f, ast.Attribute) or f.attr != fname:
+            return False
+        v = f.value
+        if isinstance(v, ast.Name):
+            return only(v.id, lambda b, a: isinstance(b, ast.Import) and a.name == "importlib.util" and a.asname == v.id
+                        or isinstance(b, ast.ImportFrom) and b.level == 0 and b.module == "importlib" and a.name == "util")
+        return isinstance(v, ast.Attribute) and v.attr == "util" and isinstance(v.value, ast.Name) and only(
+            v.value.id, lambda b, a: isinstance(b, ast.Import) and (a.name == "importlib" or a.asname is None
+                                                                     and a.name.startswith("importlib.")))
 
-    # Root's ruling of 2026-11-14 18:29 on cli's read of 7001655 (F1 stale spec, a MUST) and cli's should-fix 3:
-    # a module-level `spec` can be rebound behind the reader's back by a star import or a write through `globals()` /
-    # `vars()` / `locals()`, so F1 reads a named spec only in a file with no star import and with every such call a
-    # read (a load subscript, `.get` / `.keys` / `.items` / `.values`, a loop, an `in`, `sorted` / `list` / `len`).
-    # The spec object can be changed through any other handle, so every use of the name bound where the call's is
-    # must be: the call's argument, an `is` / `is not` comparison or a truth test, `spec.loader.exec_module(...)`,
-    # `spec.loader` tested, or a read of `name`, `origin`, `parent`, `cached` or `has_location`. An alias
-    # (`s = spec`), a call argument (`f(spec)`, `setattr(spec, ...)`), a store or `del`, `cast(..., spec.loader)` and
-    # `loader = spec.loader` refuse. A file naming `__spec__`, `__loader__` or `__dict__` (an attribute, a name or a
-    # string) refuses F1 in both forms: the module's `__spec__` is the same object.
+    def spelled(n) -> list[str]:
+        """Every name the node spells: identifiers, and the dotted parts of a string or bytes literal."""
+        if isinstance(n, ast.Name):
+            return [n.id]
+        if isinstance(n, ast.Attribute):
+            return [n.attr]
+        if isinstance(n, ast.alias):
+            return n.name.split(".") + ([n.asname] if n.asname else [])
+        if isinstance(n, ast.ImportFrom):
+            return (n.module or "").split(".")
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return [n.name]
+        if isinstance(n, ast.arg):
+            return [n.arg]
+        if isinstance(n, (ast.Global, ast.Nonlocal)):
+            return list(n.names)
+        if isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            return [n.name] if n.name else []
+        if isinstance(n, ast.MatchMapping):
+            return [n.rest] if n.rest else []
+        if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
+            return (n.value if isinstance(n.value, str) else n.value.decode("latin-1")).split(".")
+        return []
+
+    frame_words = ("f_globals", "f_locals", "_getframe", "currentframe", "__main__")
+    reflect_words = frozenset(frame_words + ("globals", "vars", "locals", "getmembers", "getmodule", "get_objects",
+                                             "get_referrers", "get_referents", "ctypes", "__getattribute__", "attrgetter"))
+
+    def reflective(n) -> bool:
+        if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
+            text = n.value if isinstance(n.value, str) else n.value.decode("latin-1")
+            if any(w in text for w in frame_words):
+                return True
+        if any(w in reflect_words for w in spelled(n)):
+            return True
+        if isinstance(n, (ast.Name, ast.Attribute)) and (n.id if isinstance(n, ast.Name) else n.attr) in ("getattr", "setattr", "delattr"):
+            up = parent.get(n)
+            return not (isinstance(up, ast.Call) and up.func is n and len(up.args) >= 2 and isinstance(up.args[1], ast.Constant)
+                        and isinstance(up.args[1].value, str))
+        return False
+
     star_import = any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree))
     spec_dunders = ("__spec__", "__loader__", "__dict__")
-
-    def namespace_read(c) -> bool:
-        up = parent.get(c)
-        return isinstance(c, ast.Call) and not c.args and not c.keywords and (
-            isinstance(up, ast.Subscript) and up.value is c and isinstance(up.ctx, ast.Load)
-            or isinstance(up, ast.Attribute) and up.value is c and up.attr in ("get", "keys", "items", "values")
-            and isinstance(parent.get(up), ast.Call) and parent[up].func is up
-            or isinstance(up, (ast.For, ast.comprehension)) and up.iter is c
-            or isinstance(up, ast.Compare) and any(x is c for x in up.comparators)
-            or isinstance(up, ast.Call) and isinstance(up.func, ast.Name) and up.func.id in ("sorted", "list", "len")
-            and len(up.args) == 1 and up.args[0] is c)
-
-    rebinds_module = star_import or any(
-        isinstance(n, ast.Name) and n.id in ("globals", "vars", "locals")
-        and not (isinstance(parent.get(n), ast.Call) and parent[n].func is n and namespace_read(parent[n]))
-        for n in ast.walk(tree))
     names_spec = any(isinstance(n, ast.Attribute) and n.attr in spec_dunders or isinstance(n, ast.Name) and n.id in spec_dunders
                      or isinstance(n, ast.Constant) and isinstance(n.value, str) and any(w in n.value for w in spec_dunders)
                      for n in ast.walk(tree))
+    f1_off = star_import or names_spec or any(reflective(n) for n in ast.walk(tree))
 
-    def tested(n) -> bool:
+    def built_by(call, name: str) -> bool:  # (b): importlib's module_from_spec(name), its one argument
+        return isinstance(call, ast.Call) and len(call.args) == 1 and not call.keywords and importlib_fn(call.func, "module_from_spec") \
+            and isinstance(call.args[0], ast.Name) and call.args[0].id == name
+
+    def previous_statement(stmt):
+        holder = parent.get(stmt)
+        for _, value in ast.iter_fields(holder) if holder is not None else ():
+            if isinstance(value, list):
+                for i, s in enumerate(value):
+                    if s is stmt:
+                        return value[i - 1] if i else None
+        return None
+
+    def allowed(n, name: str) -> str | None:
+        """Which of (a), (b), (c) the occurrence `n` of `name` is, or None."""
         up = parent.get(n)
-        if isinstance(up, ast.Compare):
-            return all(isinstance(o, (ast.Is, ast.IsNot)) for o in up.ops)
-        while isinstance(up, ast.BoolOp) or isinstance(up, ast.UnaryOp) and isinstance(up.op, ast.Not):
-            if isinstance(up, ast.UnaryOp):
-                return True
-            n, up = up, parent.get(up)
-        return isinstance(up, (ast.If, ast.While, ast.Assert, ast.IfExp)) and up.test is n
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and parent.get(up) is tree and (
+                isinstance(up, ast.Assign) and len(up.targets) == 1 and up.targets[0] is n
+                or isinstance(up, ast.AnnAssign) and up.target is n and up.value is not None) \
+                and isinstance(up.value, ast.Call) and importlib_fn(up.value.func, "spec_from_file_location") and loads_one_file(up.value):
+            return "a"
+        if not isinstance(n, ast.Name) or not isinstance(n.ctx, ast.Load) or isinstance(eval_scope(n), ast.ClassDef):
+            return None
+        if built_by(up, name) and up.args[0] is n:
+            return "b"
+        q = parent.get(up)
+        run = parent.get(q)
+        if isinstance(up, ast.Attribute) and up.value is n and up.attr == "loader" and isinstance(up.ctx, ast.Load) \
+                and isinstance(q, ast.Attribute) and q.value is up and q.attr == "exec_module" and isinstance(q.ctx, ast.Load) \
+                and isinstance(run, ast.Call) and run.func is q and len(run.args) == 1 and not run.keywords:
+            m = run.args[0]
+            if built_by(m, name):
+                return "c"
+            stmt = parent.get(run)
+            prev = previous_statement(stmt) if isinstance(stmt, ast.Expr) and stmt.value is run else None
+            if isinstance(m, ast.Name) and isinstance(prev, ast.Assign) and len(prev.targets) == 1 \
+                    and isinstance(prev.targets[0], ast.Name) and prev.targets[0].id == m.id and built_by(prev.value, name):
+                return "c"
+        return None
 
-    def spec_use_ok(n) -> bool:
-        up = parent.get(n)
-        if isinstance(n.ctx, ast.Load) and tested(n):
-            return True
-        if isinstance(up, ast.Call) and call_name(up.func) == "module_from_spec" and up.args and up.args[0] is n:
-            return True
-        if isinstance(up, ast.Attribute) and up.value is n and isinstance(up.ctx, ast.Load):
-            q = parent.get(up)
-            if up.attr in ("name", "origin", "parent", "cached", "has_location"):
-                return not (isinstance(q, ast.Call) and q.func is up)
-            if up.attr == "loader":
-                return tested(up) or isinstance(q, ast.Attribute) and q.value is up and q.attr == "exec_module" \
-                    and isinstance(q.ctx, ast.Load) and isinstance(parent.get(q), ast.Call) and parent[q].func is q
-        return False
+    named_ok: dict[str, bool] = {}
 
-    def spec_of(arg, call) -> bool:
+    def spec_of(arg) -> bool:
+        if f1_off:
+            return False
         if isinstance(arg, ast.Call):
-            return not names_spec and loads_one_file(arg)
-        if not isinstance(arg, ast.Name) or arg.id in unreadable or names_spec or rebinds_module:
+            return importlib_fn(arg.func, "spec_from_file_location") and loads_one_file(arg)
+        if not isinstance(arg, ast.Name) or arg.id in unreadable:
             return False
-        every = binders.get(arg.id, [])
-        if any(isinstance(b, (ast.Global, ast.Nonlocal)) for b in every):
-            return False
-        own, scope, mine = resolve(arg.id, call)
-        if isinstance(own, ast.ClassDef):
-            return False
-        if scope is None or scope is not own and scope is not tree:
-            return False
-        if any(isinstance(n, ast.Name) and n.id == arg.id and not isinstance(n.ctx, ast.Store)
-               and resolve(n.id, n)[1] is scope and not spec_use_ok(n) for n in ast.walk(tree)):
-            return False
-        for b in mine:
-            stmt = parent.get(b)
-            plain = isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is b \
-                or isinstance(stmt, ast.AnnAssign) and stmt.target is b and stmt.value is not None
-            if not (isinstance(b, ast.Name) and plain and isinstance(stmt.value, ast.Call) and loads_one_file(stmt.value)):
-                return False
-        return True
+        if arg.id not in named_ok:
+            kinds = [allowed(n, arg.id) for n in ast.walk(tree) if arg.id in spelled(n)]
+            named_ok[arg.id] = None not in kinds and kinds.count("a") == 1
+        return named_ok[arg.id]
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and call_name(node.func) == "module_from_spec" and len(node.args) == 1 \
-                and not node.keywords and (isinstance(node.func, ast.Name) or isinstance(node.func.value, ast.Name)
-                                           or isinstance(node.func.value, ast.Attribute) and isinstance(node.func.value.value, ast.Name)) \
-                and spec_of(node.args[0], node):
+        if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords \
+                and importlib_fn(node.func, "module_from_spec") and spec_of(node.args[0]):
             consume(node)
     # R6-2 fix (2), root's S2 of 2026-11-14 (cause 2 of cli's census, SCOPE): `globals()[<literal>]` and
     # `globals().get(<literal>[, default])` read the module-level name the literal spells, the same object a read of that

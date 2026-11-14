@@ -236,6 +236,82 @@
    "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 6 of services/a/test/test_m3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m3c.py",
    "verdict": "REFUSE"
   },
+  "M4 read a closure over the module's own spec resolves to the module binding": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m4.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n\n\ndef build():\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\nbuild()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "M4 twin a closure over the enclosing function's spec parameter refuses beside a module spec (cli MF1)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m4c.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n\n\ndef load(spec):\n    def build():\n        mod = importlib.util.module_from_spec(spec)\n        spec.loader.exec_module(mod)\n        return mod\n    return build()\n\n\nload(spec)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 9 of services/a/test/test_m4c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m4c.py",
+   "verdict": "REFUSE"
+  },
+  "M5 twin a lambda over the enclosing function's spec parameter refuses beside a module spec (cli MF1)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m5c.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n\n\ndef load(spec):\n    return (lambda: importlib.util.module_from_spec(spec))()\n\n\nload(spec)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 8 of services/a/test/test_m5c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m5c.py",
+   "verdict": "REFUSE"
+  },
+  "M6 twin a spec call with a loader keyword refuses (cli MF2)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m6c.py": "import importlib.machinery\nimport importlib.util\nimport os\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\",\n                                              loader=importlib.machinery.SourceFileLoader(\"tool\", os.environ[\"TOOL\"]))\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 8 of services/a/test/test_m6c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m6c.py",
+   "verdict": "REFUSE"
+  },
+  "M7 twin a default evaluated in the enclosing function over its spec parameter refuses (cli MF1)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m7c.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n\n\ndef outer(spec):\n    def inner(mod=importlib.util.module_from_spec(spec)):\n        return mod\n    return inner()\n\n\nouter(spec)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 8 of services/a/test/test_m7c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m7c.py",
+   "verdict": "REFUSE"
+  },
+  "M8 twin an attribute store on the spec name refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m8c.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\nspec.submodule_search_locations = [str(Path(__file__).resolve().parents[2] / \"c\")]\nmod = importlib.util.module_from_spec(spec)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 6 of services/a/test/test_m8c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m8c.py",
+   "verdict": "REFUSE"
+  },
   "S1 read sys.modules bound, unbound and named in a test file (startup_ddl_pg.py:227, test_signup_fixture_probes.py:42 forms)": {
    "cfg_set": {},
    "change": "services/b/tool.py",

@@ -3202,10 +3202,49 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 binders.setdefault((alias.asname or alias.name).split(".")[0], []).append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            binders.setdefault(node.name, []).append(node)  # a def or class binds its name in the enclosing scope
+        elif isinstance(node, ast.ExceptHandler) and node.name or isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            binders.setdefault(node.name, []).append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            binders.setdefault(node.rest, []).append(node)
 
+    # cli's read of 02137ba (MF1, MF2, 2026-11-14 17:57): the spec name is resolved outward as Python resolves it, so
+    # a closure, a lambda, a default or a decorator over an enclosing function's `spec` is judged by THAT binding,
+    # never by a module-level one. Defaults, annotations, decorators and bases evaluate in the scope enclosing their
+    # def, lambda or class; a class scope is skipped from a function nested in it. The call reads only when the first
+    # scope that binds the name is the call's own or the module's. The spec call itself carries only `location=`: a
+    # `loader=` (an inline `SourceFileLoader` the consumed call would hide), a `submodule_search_locations=` or a
+    # `**kwargs` refuses, and so does any attribute store on the spec name (`spec.loader = ...`,
+    # `spec.submodule_search_locations = [...]`) or `setattr` on it.
     def loads_one_file(call) -> bool:
         site = spec_sites.get(id(call))
-        return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../"))
+        return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../")) \
+            and len(call.args) <= 2 and all(k.arg == "location" for k in call.keywords)
+
+    def eval_scope(node):
+        child, up = node, parent.get(node)
+        while up is not None and not isinstance(up, ast.Module):
+            if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and any(st is child for st in up.body) \
+                    or isinstance(up, ast.Lambda) and up.body is child:
+                return up
+            child, up = up, parent.get(up)
+        return tree
+
+    def bind_scope(b):
+        return parent[parent[b]] if isinstance(b, ast.arg) else eval_scope(b)
+
+    def resolve(name: str, at):
+        own = here = eval_scope(at)
+        every = binders.get(name, [])
+        while True:
+            if here is own or not isinstance(here, ast.ClassDef):
+                found = [b for b in every if bind_scope(b) is here]
+                if found:
+                    return own, here, found
+            if here is tree:
+                return own, None, []
+            here = eval_scope(here)
 
     def spec_of(arg, call) -> bool:
         if isinstance(arg, ast.Call):
@@ -3215,17 +3254,22 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
         every = binders.get(arg.id, [])
         if any(isinstance(b, (ast.Global, ast.Nonlocal)) for b in every):
             return False
-        scope = scope_of(parent[call])
-        mine = [b for b in every if scope_of(parent[b]) is scope]
-        if not mine and not isinstance(scope, ast.Module):
-            mine = [b for b in every if scope_of(parent[b]) is tree]
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == arg.id \
+                    and not isinstance(n.ctx, ast.Load) \
+                    or isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("setattr", "delattr") \
+                    and n.args and isinstance(n.args[0], ast.Name) and n.args[0].id == arg.id:
+                return False
+        own, scope, mine = resolve(arg.id, call)
+        if scope is None or scope is not own and scope is not tree:
+            return False
         for b in mine:
             stmt = parent.get(b)
             plain = isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is b \
                 or isinstance(stmt, ast.AnnAssign) and stmt.target is b and stmt.value is not None
             if not (isinstance(b, ast.Name) and plain and isinstance(stmt.value, ast.Call) and loads_one_file(stmt.value)):
                 return False
-        return bool(mine)
+        return True
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and call_name(node.func) == "module_from_spec" and len(node.args) == 1 \

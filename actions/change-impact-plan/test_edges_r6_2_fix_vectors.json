@@ -1,5 +1,5 @@
 {
- "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only.",
+ "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal. F1 (the M teachings) is refuse-all since root's 19:00 rule on round 4 (cli's MUST-A and MUST-B): twins only. M24 is cli's MUST-C (round 5): exec_module and load_module refuse, however the spec or loader was got.",
  "base_config": {
   "edge_scan": {
    "exclude": [
@@ -1118,6 +1118,42 @@
    "must_run": "test-a",
    "verdict": "REFUSE",
    "refusal": "unresolved (the path-mutation capability `importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")` on line 6 of services/a/test/test_m23.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m23.py"
+  },
+  "M24 twin a spec from finder.find_spec over pkgutil.iter_modules run by exec_module refuses (cli round 5 MUST-C)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m24.py": "import pkgutil\nimport types\nfrom pathlib import Path\n\nfor finder, name, _ in pkgutil.iter_modules([str(Path(__file__).resolve().parents[2] / \"b\")]):\n    spec = finder.find_spec(name)\n    spec.loader.exec_module(types.ModuleType(name))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `spec.loader.exec_module(types.ModuleType(name))` on line 7 of services/a/test/test_m24.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m24.py"
+  },
+  "M24 twin zipimport.zipimporter(p).load_module refuses (cli round 5 MUST-C)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m24b.py": "import zipimport\nfrom pathlib import Path\n\nzipimport.zipimporter(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.zip\")).load_module(\"tool\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `zipimport.zipimporter(str(Path(__file__).resolve().parents[2] / \"b\" / \"tool.zip\")).load_module(\"tool\")` on line 4 of services/a/test/test_m24b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m24b.py"
+  },
+  "M24 twin pkgutil.resolve_name naming spec_from_file_location in a string, run by exec_module, refuses (cli round 5 MUST-C)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m24c.py": "import pkgutil\nimport types\nfrom pathlib import Path\n\nspec = pkgutil.resolve_name(\"importlib.util:spec_from_file_location\")(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\nspec.loader.exec_module(types.ModuleType(\"tool\"))\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `spec.loader.exec_module(types.ModuleType(\"tool\"))` on line 6 of services/a/test/test_m24c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m24c.py"
   }
  }
 }

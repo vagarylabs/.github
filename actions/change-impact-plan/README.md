@@ -570,8 +570,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    2026-11-12, fail closed by token; cli's R6 design, accepted by root at 16:44).
    - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
      `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
-     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`. It also parses every file holding
-     `PYTHONPATH` anywhere. A word in a comment or a string is read and found clean, except `PYTHONPATH` in a string.
+     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`. It
+     also parses every file holding `PYTHONPATH` anywhere. A word in a comment or a string is read and found clean,
+     except `PYTHONPATH` in a string.
    - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
      it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
    - **The kinds.** Each of these, outside a consumed node, is an occurrence:
@@ -588,7 +589,7 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        of a loader-bound name outside a consumed call (`importlib.util.find_spec("m")`, `importlib.reload(m)`); a
        loader call by attribute on anything (`x.module_from_spec(spec)`). Submodules count: `from importlib.metadata
        import version` binds a loader name, consumed only when every use is an N3 read below; bound and unused, it
-       refuses.
+       refuses. `exec_module` and `load_module` are loader calls too, by name or attribute (R6-2 fix MUST-C).
      - **exec:** `exec`, `eval` or `compile` as a bare name (`exec("import x")`, `eval("1")`, `exec(__doc__)`), or as an
        attribute of a loader-bound name (`builtins.exec(s)`). `exec(open(p).read())` is consumed by rule 8.
        `re.compile(...)` is not an occurrence.
@@ -625,12 +626,16 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        `R6_N3_metadata_version_reads`; `R6_N3_resources_files_nonliteral_refuses`,
        `R6_N3_resources_read_text_nonliteral_refuses`, `R6_N3_metadata_entry_points_load_refuses`.
    - **The fixes F1-F3** (root's S2 of 2026-11-14: the census of core main 9cea8193 refused 154 files, and its top
-     three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). Each is a recording branch
-     in `python_file_facts` for F2 and F3, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps
-     refusing. F1 is refuse-all:
+     three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). F2 and F3 are recording
+     branches in `python_file_facts`, and each of their reads has a twin in `test_edges_r6_2_fix_vectors.json` that
+     keeps refusing. F1 is refuse-all, with twins only:
      - **F1: refuse-all.** No rule reads `spec_from_file_location` or `module_from_spec`. By name or by attribute,
        wherever it sits (inside a consumed `sys.path` entry or `run_path` path too), each refuses at rule 9, and so does
-       every file that holds one. Root's ruling of 2026-11-14 19:00 made F1 a one-form allow-list, and said that a
+       every file that holds one outside a comment or a string. A spec or loader got any other way (`finder.find_spec`
+       over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, or the call spelled in a string,
+       `pkgutil.resolve_name("importlib.util:spec_from_file_location")`) runs a file only through `exec_module` or
+       `load_module`, which are scan words and loader calls no rule reads, so that file refuses too (MUST-C, below).
+       Root's ruling of 2026-11-14 19:00 made F1 a one-form allow-list, and said that a
        must-fix left on this class after round 4 sends it to refuse-all. cli's round-4 read of 5e8606e found two:
        - MUST-A, present since the base 9118236: rule 8 consumed the `spec_from_file_location` site whatever the spec
          was later used for, and nothing outside F1 judged `exec_module`. So a file with no `module_from_spec` read
@@ -639,12 +644,17 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - MUST-B: the allow-list did not count keyword names as occurrences, so `mock.patch.multiple(__name__,
          spec=FAKE)` rebound the module's spec unseen.
        Refuse-all for `module_from_spec` alone would not close MUST-A, so rule 8 no longer consumes the spec site
-       either. The allow-list, its hazard words and the cross-module scan (`f1_cross_module`) are gone with it. On
-       core main 9cea8193 this costs nothing measured: F1 already read 0 of its 48 subset files, the 114-file subset
+       either. The allow-list, its hazard words and the cross-module scan (`f1_cross_module`) are gone with it.
+       - MUST-C, present since the base 9118236 (cli's read of 825d064): neither `exec_module` nor `load_module` was a
+         scan word, so a file that got its spec or loader without `importlib`, `runpy` or `sys` was never parsed and
+         read while it ran another file. Both are now scan words and loader calls that no rule reads.
+       On core main 9cea8193 this costs nothing measured: F1 already read 0 of its 48 subset files, the 114-file subset
        reads 34 files and refuses 80 before and after (`module_from_spec` 0 / 48, SCOPE 30 / 11, SYS-PATH-REACH 4 /
        21), and each of the 61 tracked Python files holding `spec_from_file_location` refused before this commit as
-       well. Twins `M1`-`M23`: the four former reads `M1`, `M4`, `M17` and `M18` now refuse; `M22` is MUST-A (a
-       loader changed before `exec_module`, and an inline `loader=`, each with no `module_from_spec`); `M23` is MUST-B.
+       well. Twins `M1`-`M24`: the four former reads `M1`, `M4`, `M17` and `M18` now refuse; `M22` is MUST-A (a
+       loader changed before `exec_module`, and an inline `loader=`, each with no `module_from_spec`); `M23` is MUST-B;
+       `M24` is MUST-C (`pkgutil.iter_modules` with `finder.find_spec`, `zipimport.zipimporter(p).load_module`, and
+       `pkgutil.resolve_name` naming the spec call in a string).
        Known limits, from cli's round-4 should-fixes (none is a one-line refusal, so none is folded in):
        - doctest text: pytest's `--doctest-glob` runs tracked `.md`, `.rst` or `.txt` text in the test process, and the
          reader parses no such file;
@@ -653,7 +663,10 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          the file or rebound from another module, so an evaluated `run_path` or `sys.path` path is evaluated, not
          literal;
        - string-target patchers (`mock.patch("m.name")`, `monkeypatch.setattr("m.name", v)`) name their target only in
-         a string, which no rule resolves.
+         a string, which no rule resolves;
+       - a load through a wrapper that holds no scan word, and no spec or loader object in the file: a string resolver
+         for a by-path or by-name loader (`pkgutil.resolve_name("runpy:run_path")(p)`, `pydoc.locate("m")`),
+         `pydoc.importfile(p)`, and `imp.load_source(n, p)` on Python 3.11 or older.
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every

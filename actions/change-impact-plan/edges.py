@@ -2399,8 +2399,9 @@ def parent_step_literal(text: str) -> str | None:
 
 def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[int, int]]:
     """Character spans of the Python expressions 1.5.2's evaluator judges itself (python_file_facts): every sys.path
-    entry (insert/append/extend, `+=`, slice assignment) and every loader path (spec_from_file_location, run_path,
-    exec(open(p))). A chain inside one is that evaluator's to judge, never a route of its own. With `parent_literals`,
+    entry (insert/append/extend, `+=`, slice assignment) and every loader path (run_path, exec(open(p)); and a
+    spec_from_file_location path, though python_file_facts refuses any file holding that call since R6-2 fix F1 went
+    refuse-all). A chain inside one is that evaluator's to judge, never a route of its own. With `parent_literals`,
     only the sys.path entries B1 reads by their landings (parent_step_literal), each element alone."""
     import ast
     try:
@@ -2599,8 +2600,12 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 # each occurrence (a file with the token only in a comment or a string is read and found clean, except `PYTHONPATH`, which
 # refuses in any string constant: an environ key, a shell string, an `env=` mapping). POSIX ERE: `[^A-Za-z0-9_]`
 # bounds a word (git grep -E has no `\b`), so `system` and `website` are not listed; `PYTHONPATH` is listed anywhere.
+# `exec_module` and `load_module` (R6-2 fix MUST-C, cli's read of 825d064): a spec or loader got with none of the other
+# words (`finder.find_spec(n)` over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, `pkgutil.resolve_name("...")`)
+# runs a file only through one of the two, so a file holding either is parsed, and refuses (LOADER_CALLS).
 PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
-                 r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir)([^A-Za-z0-9_]|$)"
+                 r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
+                 r"exec_module|load_module)([^A-Za-z0-9_]|$)"
                  r"|PYTHONPATH")
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
@@ -3498,8 +3503,10 @@ CAPABILITY_MODULES = {"sys": "sys", "site": "site", "importlib": "loader", "runp
 # or as any dunder (`sys.__dict__`), is a path reach; every other attribute (`sys.exit`, `sys.argv`, `sys.stderr`) is not.
 SYS_PATH_ATTRS = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache"})
 # The loader calls, by name or attribute: each is a load the recording branches read (a consumed call) or a refusal.
+# `exec_module` and `load_module` are read by no rule (R6-2 fix MUST-C): every load through a spec or loader object ends
+# in one of them, however the spec or loader was got.
 LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "spec_from_file_location",
-                          "module_from_spec", "SourceFileLoader", "addsitedir"})
+                          "module_from_spec", "SourceFileLoader", "addsitedir", "exec_module", "load_module"})
 EXEC_CALLS = frozenset({"exec", "eval", "compile"})
 # N2 / N3 (root's ruling of 2026-11-12 21:32): the loader calls read through their chain when the first argument is a literal
 # the recording branch consumed, the importlib.metadata reads that are not loads, the importlib.resources anchors recorded as edges.

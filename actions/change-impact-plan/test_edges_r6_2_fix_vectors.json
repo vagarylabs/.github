@@ -76,6 +76,30 @@
    "must_run": "test-a",
    "verdict": "SELECT"
   },
+  "G1 twin a del at a literal globals() key refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g1x.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\ndef test_one():\n    assert tool.X == 1\n\n\ndel globals()[\"helper\"]\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_g1x.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g1x.py",
+   "verdict": "REFUSE"
+  },
+  "G1 twin a write at a literal globals() key refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g1w.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nglobals()[\"helper\"] = test_one\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_g1w.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g1w.py",
+   "verdict": "REFUSE"
+  },
   "G1 twin globals() with a computed key refuses": {
    "cfg_set": {},
    "change": "services/b/tool.py",
@@ -166,6 +190,30 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "refusal": "unresolved (the path-mutation capability `globals()` on line 14 of services/a/test/test_g4c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g4c.py",
+   "verdict": "REFUSE"
+  },
+  "G5 twin the prefix loop beside a star import refuses (cli, root's ruling (a))": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g5c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\nfrom tool import *  # noqa: E402,F401,F403\n\n\ndef helper():\n    return tool.X\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nif __name__ == \"__main__\":\n    for name, fn in sorted(globals().items()):\n        if name.startswith(\"test_\") and callable(fn):\n            fn()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 18 of services/a/test/test_g5c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g5c.py",
+   "verdict": "REFUSE"
+  },
+  "G6 twin a gated call inside a lambda in the loop refuses (cli, root's ruling (a))": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g6c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nlater = []\nif __name__ == \"__main__\":\n    for name, fn in sorted(globals().items()):\n        if name.startswith(\"test_\") and callable(fn):\n            later.append(lambda: fn())\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 18 of services/a/test/test_g6c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g6c.py",
    "verdict": "REFUSE"
   },
   "M1 read module_from_spec over a spec whose path evaluates (engine_accept.py:34 form)": {

@@ -3285,6 +3285,9 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     # `patch.dict(globals(), ...)`, `monkeypatch.setitem(globals(), ...)`), globals() passed out or bound to a name, and
     # `locals()` / `vars()` still refuse.
     capability_names: set[str] = set(CAPABILITY_MODULES) | {"__builtins__"}
+
+    def builtin(name: str) -> bool:  # cli's read of 02137ba (c): a def, class or any binding of the name shadows it
+        return name not in binders and name not in unreadable
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             top = (node.module or "").split(".")[0] if isinstance(node, ast.ImportFrom) and node.level == 0 else ""
@@ -3304,7 +3307,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
 
     def is_globals(node) -> bool:
         return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "globals" \
-            and not node.args and not node.keywords and "globals" not in binders
+            and not node.args and not node.keywords and builtin("globals")
 
     def literal(node):
         return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
@@ -3330,7 +3333,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     # `.values()`), a comprehension over `.items()` and every other use of `v` still refuse.
     def unwrap(node):
         while isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("sorted", "list") \
-                and node.func.id not in binders and len(node.args) == 1 and not node.keywords:
+                and builtin(node.func.id) and len(node.args) == 1 and not node.keywords:
             node = node.args[0]
         return node
 
@@ -3343,10 +3346,15 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                     return True
         return False
 
+    # cli's read of 02137ba, made MUST by root's ruling (a) of 17:58: a use inside a lambda, a nested def or class, or a
+    # generator expression in the loop runs later, with the loop's LAST value, so the gate does not hold for it; and a
+    # file with a star import may hold any name the prefix admits, so neither loop form reads there.
     def gated(use, loop, key: str) -> bool:
         node = use
         while node is not loop:
             up_ = parent[node]
+            if isinstance(up_, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.GeneratorExp)):
+                return False
             if isinstance(up_, ast.If) and any(stmt is node for stmt in up_.body) and prefix_gate(up_.test, key):
                 return True
             node = up_
@@ -3355,7 +3363,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     def no_arg_call(call, func) -> bool:
         return isinstance(call, ast.Call) and call.func is func and not call.args and not call.keywords
 
-    for loop in ast.walk(tree):
+    star = any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree))
+    for loop in ([] if star else ast.walk(tree)):
         if not isinstance(loop, (ast.For, ast.AsyncFor)):
             continue
         core = unwrap(loop.iter)
@@ -3392,7 +3401,7 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                 elif no_arg_call(use, n):
                     ok = ok and gated(use, loop, key)
                 elif not (isinstance(use, ast.Attribute) and use.attr == "__name__"
-                          or isinstance(use, ast.Call) and isinstance(use.func, ast.Name) and use.func.id not in binders
+                          or isinstance(use, ast.Call) and isinstance(use.func, ast.Name) and builtin(use.func.id)
                           and use.args and use.args[0] is n and not use.keywords
                           and (use.func.id == "callable" and len(use.args) == 1
                                or use.func.id == "getattr" and len(use.args) in (2, 3) and literal(use.args[1]) == "__name__")):

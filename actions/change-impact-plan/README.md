@@ -609,8 +609,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **N1:** `x in sys.path` and `x not in sys.path` read the list: the attribute is a comparator of an `in` /
        `not in` compare. A guarded insert, append or remove in the same file is judged on its own, so
        `if p not in sys.path: sys.path.insert(0, p)` reads by rule 6 and the twin with `sys.path.remove(x)` in the
-       guarded block refuses. `sys.path in y`, `'m' in sys.modules` outside a test file (F3) and the `__import__("sys")`
-       binding form stay refusals. Twins: `R6_N1_guard_not_in_insert_reads`; `R6_N1_guard_in_remove_refuses`,
+       guarded block refuses. `sys.path in y` in every file, `'m' in sys.modules` outside a test file F3 reads (F3) and the
+       `__import__("sys")` binding form stay refusals. Twins: `R6_N1_guard_not_in_insert_reads`; `R6_N1_guard_in_remove_refuses`,
        `R6_N1_left_operand_refuses`, `R6_N1_modules_membership_refuses`.
      - **N2:** a loader call with a LITERAL module name that the recording branch consumed (`__import__("json")`,
        `import_module("server")`, `run_module("m")`) is read through the chain that follows it (`.loads(x)`,
@@ -627,29 +627,63 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **The fixes F1-F3** (root's S2 of 2026-11-14: the census of core main 9cea8193 refused 154 files, and its top
      three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). Each is a recording branch
      in `python_file_facts`, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps refusing:
-     - **F1:** `module_from_spec(spec)` reads when `spec` is the `spec_from_file_location` call itself, or a name bound
-       only by plain assignments of such calls in the call's own scope (module scope when the function binds none),
-       and every one of those calls has a path the reader evaluated inside the repository. That load is already the
-       file's edge by rule 8. A computed path, a path above the root, a spec name also bound another way (a parameter,
-       a second assignment of another value, `global`) and a call with keywords or extra arguments refuse. Twins `M1`-`M3`.
+     - **F1:** `module_from_spec(spec)` reads when `spec` is the `spec_from_file_location` call itself, or a name
+       resolved as Python resolves it: outward from the scope the call evaluates in (a default, an annotation, a
+       decorator or a base evaluates in the scope enclosing its def, lambda or class; a class scope is skipped from a
+       function nested in it), to the first scope that binds the name. It reads only when that scope is the call's own
+       or the module's, every binding there is a plain assignment of a `spec_from_file_location` call, and every one
+       of those calls has a path the reader evaluated inside the repository and no keyword but `location=`. That load
+       is already the file's edge by rule 8. These refuse: a computed path or a path above the root; a closure, a
+       lambda or a default over an enclosing function's `spec` (a parameter or any assignment there), even beside a
+       good module-level `spec`; any other binding of the name in the resolved scope (a parameter, a second
+       assignment of another value, a loop, an import, a `def`); `global` or `nonlocal` on it; a spec call with
+       `loader=` (an inline `SourceFileLoader` the consumed call would hide), `submodule_search_locations=` or
+       `**kwargs`; an attribute store or `setattr` / `delattr` on the spec name (`spec.loader = ...`,
+       `spec.submodule_search_locations = [...]`); a `module_from_spec` call with keywords or a second argument.
+       Twins `M1`-`M8` (closure `M4`, lambda `M5`, `loader=` `M6`, default `M7`, attribute store `M8`).
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every
        call of a looked-up value is a no-argument call under `if k.startswith("<prefix>")`, the prefix is a literal
        with no leading underscore that no capability-bound name starts with, and `v` is otherwise used only as
-       `callable(v)` or `v.__name__`. A computed key, a write (`globals()[k] = v`, `monkeypatch.setitem(globals(),
-       ...)`), a comprehension over `.items()`, `.values()` gated on a runtime `__name__`, and `globals()` passed out
-       refuse. Twins `G1`-`G4`. The census held no literal-key site; 38 of its 41 SCOPE sites are the loop.
-     - **F3:** in a test file only, by the planner's own classification `plan.is_test_file(path, [])` (`test_*.py`,
-       `*_test.py`, anything under `test/`, `tests/` or `__tests__/`, so `conftest.py` there; no config `test_globs`),
-       `sys.modules[k] = v`, `del sys.modules[k]`, a discarded `sys.modules.pop(k[, d])`, `<x>.setitem(sys.modules,
-       "m", v)`, `<x>.delitem(sys.modules, "m"[, ...])`, `"m" in sys.modules` and `for m in sys.modules` bind or name
-       a module for the test's own process: no import edge into the repository, and a later `import m` is judged as
-       an import. `sys.modules["m"]` and `sys.modules.get("m"[, d])` record `m` as the file's dependency edge.
-       `sys.path` compared, indexed (load) or under `len` / `list` / `tuple` is a read of the list; insert and append
-       are rule 6 as before. A key naming `sys`, `site`, `importlib`, `runpy` or `builtins`, a computed key on a read,
-       a use chained past the access (`sys.path[0].endswith(x)`, `sys.modules["m"].x`), `sys.modules.items()` /
-       `.update(...)`, `p = sys.path`, and every one of these forms outside a test file refuse. Twins `S1`-`S4`.
+       `callable(v)`, `v.__name__` or `getattr(v, "__name__"[, d])`. These refuse: a computed key; a write or a `del`
+       at any key (`globals()["n"] = v`, `del globals()["n"]`, `monkeypatch.setitem(globals(), ...)`); a
+       comprehension over `.items()`; `.values()` gated on a runtime `__name__`; `globals()` passed out; either loop
+       form in a file with any star import (it may bring in any name the prefix admits); a gated call inside a
+       lambda, a nested def or class, or a generator expression in the loop (it runs later, with the loop's last
+       value); `globals`, `sorted`, `list`, `callable` or `getattr` bound by the file (a `def`, an assignment, a
+       parameter), which is then not the builtin. Twins `G1`-`G6` (write and `del` `G1`, star import `G5`, lambda
+       `G6`). The census held no literal-key site; 38 of its 41 SCOPE sites are the loop.
+     - **F3:** in a test file only. A test file is one `plan.is_test_file(path, [])` accepts (`test_*.py`, `*_test.py`,
+       anything under `test/`, `tests/` or `__tests__/`; no config `test_globs`) AND that no non-test Python file may
+       import (root's ruling (b) of 2026-11-14: a name alone is not enough). `code_imported_test_files` decides the
+       second from one `git grep -E` of the import and loader lines of every tracked Python file. A test file's
+       module word is its stem, or its directory's name for an `__init__.py`. A non-test line holding the word marks
+       the file, and a marked file's own lines mark further test files, to a fixed point. This over-approximates (a
+       word, not a resolved import), which only refuses more. A test file whose name is no identifier is always
+       marked. On core main 9cea8193, 754 Python files are test files by name and 3 of them are marked. In such a
+       file these forms bind or name a module for the test's own process: `sys.modules[k] = v`, `del sys.modules[k]`,
+       a discarded `sys.modules.pop(k[, d])`, `monkeypatch.setitem(sys.modules, "m", v)`,
+       `monkeypatch.delitem(sys.modules, "m"[, ...])`, `"m" in sys.modules` (the last operand only) and
+       `for m in sys.modules`. None is an import edge into the repository, and a later `import m` is judged as an
+       import. `sys.modules["m"]` and `sys.modules.get("m"[, d])` record `m` as the file's dependency edge. `sys.path`
+       on the right of `in`, `not in`, `==` or `!=`, on the left of `==` or `!=`, indexed (load) or under `len` /
+       `list` / `tuple` is a read of the list. Insert and append are rule 6 as before. These refuse:
+       - a bind (`sys.modules[k] = v`, `setitem`) in a file that names `__path__`, `__spec__`,
+         `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, or a string such as
+         `"pkg.__path__"`), or calls `setattr` with a computed name or `vars` with an argument, because a stub with a
+         `__path__` sends `import m.sub` to a directory no edge names;
+       - a bound value that is not a call, a constant or a name no import binds;
+       - `setitem` / `delitem` on any receiver but `monkeypatch`;
+       - `sys.path in y`, and `sys.modules` as a left operand;
+       - a key naming `sys`, `site`, `importlib`, `runpy` or `builtins`, and a computed key on a read;
+       - a use chained past the access (`sys.path[0].endswith(x)`, `sys.modules["m"].x`), `sys.modules.items()`,
+         `.update(...)` and `p = sys.path`;
+       - `len`, `list` or `tuple` bound by the file;
+       - every one of these forms in a non-test file, a test file a non-test file may import, or a file the caller
+         passes no `test_only` for.
+       Twins `S1`-`S8` (`__path__` stub `S5`, `sys.path in y` `S6`, another receiver `S7`, and `S8`:
+       `services/b/test_utils.py` imported by `services/b/app.py`).
    - **A dead import refuses** (root's decision (ii)). `import sys`, `import site`, `import importlib` or
      `from sys import argv`, bound and never used, is consumed by no rule.
    - **A local is not the module.** A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is

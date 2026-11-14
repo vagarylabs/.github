@@ -2586,9 +2586,11 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #     [tool:pytest]; the nearest config walking up from the package, pytest.ini first in one directory) is an entry
 #     relative to its config's directory, for every package that holds Python files. An unreadable one refuses.
 #   - Python's loaders (spine's pre-review): `importlib.import_module`, `__import__` and `runpy.run_module` with a
-#     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `spec_from_file_location`,
-#     `runpy.run_path` and `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the
-#     declaration, and one whose text holds a parent step or names a root or outside directory refuses even declared.
+#     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `runpy.run_path` and
+#     `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the declaration, and one
+#     whose text holds a parent step or names a root or outside directory refuses even declared.
+#     `spec_from_file_location` and `module_from_spec` are read by no rule and refuse (R6-2 fix F1 refuse-all, root's
+#     rule of 2026-11-14 19:00 on round 4's MUST-A and MUST-B).
 #     The same holds in a reached Python file. N2 / N3 (root's ruling of 2026-11-12 21:32): a literal-name loader call
 #     is read through its chain (`__import__("json").loads(x)`), a literal `importlib.resources` anchor is an import of
 #     that name, and `importlib.metadata.version` / `.files` are reads, not loads.
@@ -2634,173 +2636,13 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-# R6-2 fix F1, root's ruling of 2026-11-14 19:00 (round 4): the named form reads only when nothing outside its allow-list
-# can reach or change the spec, in this file or in any other tracked file (cli's round-3 should-fix 2, "refuse any use of
-# the name from another module"), and when no tracked file patches importlib (item 5 of the round-4 brief: refused, not
-# assumed away). F1_REFLECT_WORDS: a reflective handle on a namespace or a frame (cli's MF6). F1_HAZARD_WORDS add the
-# module's spec through its dunders, a function's internals, an import-system hook, a reload, and every way to run code
-# text or a non-Python file in-process (exec / eval / compile, runpy, a loader class, imp, zipimport): code run that way
-# is in no file this check parses. F1_PATCH_WORDS: importlib's machinery, patched wherever it is named other than as the
-# callee of a call (f1_tree_hazard). F1_OPAQUE_EXT: a tracked file Python may import that is no source (bytecode, an
-# extension, an archive, a .pth).
-F1_FRAME_WORDS = ("f_globals", "f_locals", "_getframe", "currentframe", "__main__")
-F1_REFLECT_WORDS = frozenset(F1_FRAME_WORDS + ("globals", "vars", "locals", "getmembers", "getmodule", "get_objects",
-                                               "get_referrers", "get_referents", "ctypes", "__getattribute__", "attrgetter"))
-F1_HAZARD_WORDS = F1_REFLECT_WORDS | frozenset({
-    "getmembers_static", "getattr_static", "__setattr__", "__delattr__", "__dict__", "__spec__", "__loader__",
-    "__code__", "__globals__", "__closure__", "__defaults__", "__kwdefaults__", "reload", "meta_path", "path_hooks",
-    "path_importer_cache", "exec", "eval", "compile", "execfile", "runpy", "run_path", "run_module", "imp",
-    "load_source", "load_module", "spec_from_loader", "zipimport", "zipimporter", "SourceFileLoader",
-    "SourcelessFileLoader", "ExtensionFileLoader", "FileLoader", "SourceLoader"})
-F1_PATCH_WORDS = frozenset({
-    "importlib", "util", "machinery", "_bootstrap", "_bootstrap_external", "module_from_spec", "spec_from_file_location",
-    "exec_module", "create_module", "get_code", "get_data", "get_filename", "get_source", "source_to_code", "path_stats",
-    "set_data", "cache_from_source", "decode_source", "ModuleSpec", "loader", "open_code", "builtins", "__builtins__",
-    "__import__"})
-F1_OPAQUE_EXT = frozenset({"pyc", "pyo", "pyd", "so", "zip", "egg", "whl", "pth"})
-F1_WORD = re.compile(r"[A-Za-z_]\w*")
+# R6-2 fix F1, REFUSE-ALL (root's rule of 2026-11-14 19:00: a must-fix left on the spec-loader class after round 4
+# sends the class to refuse-all; cli's round-4 read found two, MUST-A and MUST-B). No read rule consumes these loader
+# calls, by name or attribute, wherever they sit, so a Python file holding one refuses at the capability scan.
+SPEC_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec"})
 
 
-def f1_spelled(n) -> list[str]:
-    """Every name the node spells: identifiers, and the dotted parts of a string or bytes literal."""
-    import ast
-    if isinstance(n, ast.Name):
-        return [n.id]
-    if isinstance(n, ast.Attribute):
-        return [n.attr]
-    if isinstance(n, ast.alias):
-        return n.name.split(".") + ([n.asname] if n.asname else [])
-    if isinstance(n, ast.ImportFrom):
-        return (n.module or "").split(".")
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [n.name]
-    if isinstance(n, ast.arg):
-        return [n.arg]
-    if isinstance(n, (ast.Global, ast.Nonlocal)):
-        return list(n.names)
-    if isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
-        return [n.name] if n.name else []
-    if isinstance(n, ast.MatchMapping):
-        return [n.rest] if n.rest else []
-    if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
-        return (n.value if isinstance(n.value, str) else n.value.decode("latin-1")).split(".")
-    return []
-
-
-def f1_words(n) -> set[str]:
-    """Every word the node holds: each identifier field (a list of them too) and every word of a str or bytes value."""
-    import ast
-    found: set[str] = set()
-    for _, value in ast.iter_fields(n):
-        for v in value if isinstance(value, list) else (value,):
-            if isinstance(v, bytes):
-                v = v.decode("latin-1")
-            if isinstance(v, str):
-                found.update(F1_WORD.findall(v))
-    return found
-
-
-def f1_reflective(n, parent: dict) -> bool:
-    """cli's MF6: a reflective handle. A word of F1_REFLECT_WORDS, a string holding a frame word, or a `getattr` /
-    `setattr` / `delattr` that is not called with a string-literal name."""
-    import ast
-    if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
-        text = n.value if isinstance(n.value, str) else n.value.decode("latin-1")
-        if any(w in text for w in F1_FRAME_WORDS):
-            return True
-    if any(w in F1_REFLECT_WORDS for w in f1_spelled(n)):
-        return True
-    if isinstance(n, (ast.Name, ast.Attribute)) and (n.id if isinstance(n, ast.Name) else n.attr) in ("getattr", "setattr", "delattr"):
-        up = parent.get(n)
-        return not (isinstance(up, ast.Call) and up.func is n and len(up.args) >= 2 and isinstance(up.args[1], ast.Constant)
-                    and isinstance(up.args[1].value, str))
-    return False
-
-
-def f1_tree_hazard(tree, parent: dict) -> bool:
-    """Root's ruling of 2026-11-14 19:00 (round 4): a parsed file holding any of these turns F1 off in EVERY file of the
-    repository: a reflective handle (f1_reflective); a word of F1_HAZARD_WORDS, in an identifier or a string or bytes
-    literal; a star import from importlib; or importlib's machinery named where it may be patched, a word of
-    F1_PATCH_WORDS (or a name the file binds from importlib) in a string or bytes literal, as a keyword's name, or in a
-    name / attribute chain that is not the callee of a call: a store or `del` target, a call's argument, an assigned or
-    returned value (`patch.object(x.importlib.util, "module_from_spec")`, `mock.patch("importlib.util.module_from_spec")`,
-    `importlib.util.module_from_spec = f`, `x.loader = L`, `sys.modules["importlib"] = m`, `u = importlib.util`)."""
-    import ast
-    patch = set(F1_PATCH_WORDS)
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Import):
-            patch.update((a.asname or a.name).split(".")[0] for a in n.names if a.name.split(".")[0] == "importlib")
-        elif isinstance(n, ast.ImportFrom) and n.level == 0 and (n.module or "").split(".")[0] == "importlib":
-            if any(a.name == "*" for a in n.names):
-                return True
-            patch.update(a.asname or a.name for a in n.names)
-    for n in ast.walk(tree):
-        if f1_reflective(n, parent) or F1_HAZARD_WORDS.intersection(f1_words(n)):
-            return True
-        if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)) and patch.intersection(f1_words(n)):
-            return True
-        if isinstance(n, ast.keyword) and n.arg in patch:
-            return True
-        if isinstance(n, (ast.Name, ast.Attribute)):
-            up = parent.get(n)
-            if isinstance(up, ast.Attribute) and up.value is n or isinstance(up, ast.Call) and up.func is n:
-                continue  # a link of a longer chain, or the callee of a call
-            chain, x = set(), n
-            while isinstance(x, ast.Attribute):
-                chain.add(x.attr)
-                x = x.value
-            if isinstance(x, ast.Name):
-                chain.add(x.id)
-            if patch.intersection(chain):
-                return True
-    return False
-
-
-def f1_cross_module(repo, revision, environment, tracked) -> tuple[set[str], dict[str, list[str]]]:
-    """Root's ruling of 2026-11-14 19:00 on the R6-2 fix F1 (round 4), cross-module: ANY reference to the spec's name
-    from another module refuses, and so does anything that may patch importlib. Every tracked Python source (.py, .pyw,
-    .pyi) is parsed. Returns (the hazard files: each holding f1_tree_hazard, each that does not parse and holds a word of
-    F1_HAZARD_WORDS, F1_PATCH_WORDS, getattr, setattr or delattr, each Python path that is no regular file, and each
-    F1_OPAQUE_EXT file; {word: up to two Python files that spell it}). A file's words are f1_words over its tree: every
-    identifier (an attribute, an import name, a parameter, a keyword) and every word of every string or bytes literal, in
-    any context; a file that does not parse gives every word of its text. A word, not a resolved reference: it refuses
-    more than Python would reach, never less, short of a name computed from parts, which needs a reflective handle
-    (a hazard), and code outside the tracked files. Python imports no other suffix, so a file of any other type runs
-    in-process only through a hazard word of the file that runs it."""
-    import ast
-
-    hazards: set[str] = set()
-    spelled_in: dict[str, list[str]] = {}
-    for p in sorted(tracked):
-        ext = posixpath.splitext(p)[1].lstrip(".").lower()
-        if ext in F1_OPAQUE_EXT:
-            hazards.add(p)
-            continue
-        if ext not in ("py", "pyw", "pyi"):
-            continue
-        if tracked[p] not in ("100644", "100755"):
-            hazards.add(p)  # a symlink or a submodule: not the text the parse below would see
-            continue
-        text = read_source(repo, p, revision, environment)
-        try:
-            tree = ast.parse(text)
-        except (SyntaxError, ValueError):
-            words = set(F1_WORD.findall(text))
-            if words & (F1_HAZARD_WORDS | F1_PATCH_WORDS | {"getattr", "setattr", "delattr"}):
-                hazards.add(p)
-        else:
-            parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
-            if f1_tree_hazard(tree, parent):
-                hazards.add(p)
-            words = set().union(*(f1_words(n) for n in ast.walk(tree)))
-        for w in words:
-            seen = spelled_in.setdefault(w, [])
-            if len(seen) < 2:
-                seen.append(p)
-    return hazards, spelled_in
-
-
-def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
+def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
       the text rule 6 reads, key), `key` the entry's own source as written (whitespace collapsed): the text an
@@ -2811,11 +2653,10 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
       `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`, and (N3, root's ruling of 2026-11-12
       21:32) a LITERAL `importlib.resources.files("x")` or `read_text("x", ...)` anchor.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
-      name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
-      `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). `module_from_spec` is
-      read only in F1's one allow-listed form over a spec whose site evaluated (R6-2 fix (1), round 4; `cross_module`
-      from import_closure, none passed refuses): it adds no site, the spec's is its edge; any other `module_from_spec`
-      refuses at the capability scan.
+      name, or ("path", expr, resolved) for `runpy.run_path(p)` and `exec(open(p).read())`, with `p` evaluated like a
+      sys.path entry (None when it cannot be). `spec_from_file_location` and `module_from_spec` record nothing and
+      refuse at the capability scan wherever they sit (R6-2 fix F1 refuse-all: root's rule of 2026-11-14 19:00 on
+      round 4's MUST-A and MUST-B).
     Raises ValueError when the file does not parse."""
     import ast
     try:
@@ -3264,8 +3105,6 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
     def consume(node) -> None:
         consumed.update(id(sub) for sub in ast.walk(node))
 
-    spec_sites: dict[int, tuple] = {}  # id() of a recorded spec_from_file_location call -> its path site (R6-2 fix (1))
-
     # N3 (root's ruling of 2026-11-12 21:32): `importlib.resources.files(anchor)` / `.read_text(anchor, ...)` import the
     # anchor package. The receivers and bound names this file reaches them by, so `p.read_text("utf-8")` is never one.
     res_mods = {"importlib.resources"}
@@ -3329,14 +3168,15 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.split(".")[0] not in CAPABILITY_MODULES:
                     names.add(arg.value.split(".")[0])
                     consume(node)
-            elif name in ("spec_from_file_location", "run_path"):
-                arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
-                    if name == "spec_from_file_location" else (node.args[0] if node.args else None)
+            elif name == "run_path":
+                # Rule 8 by path. `spec_from_file_location` is no longer read here (R6-2 fix F1 refuse-all, root's rule of
+                # 2026-11-14 19:00; cli's round-4 MUST-A): the spec it returns may be changed or run in ways its site does
+                # not show (`spec.loader.path = x` before `spec.loader.exec_module(m)`, an inline `loader=`), so it
+                # stays unconsumed and refuses.
+                arg = node.args[0] if node.args else None
                 if arg is not None:
                     sites.append(path_site(arg))
                     consume(node)
-                    if name == "spec_from_file_location":
-                        spec_sites[id(node)] = sites[-1]
             elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
                 inner = node.args[0]  # exec(open(p).read())
                 if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
@@ -3368,135 +3208,6 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
         elif isinstance(node, ast.MatchMapping) and node.rest:
             binders.setdefault(node.rest, []).append(node)
 
-    # R6-2 fix F1 (root's S2 of 2026-11-14; the ALLOW-LIST of root's ruling of 2026-11-14 19:00, round 4, which
-    # replaced the forbidden forms of rounds 1-3): `module_from_spec(...)` builds the module of ONE spec, so it loads
-    # exactly the file that spec names, and that site (recorded by the branch above) is the file-load edge. The call is
-    # consumed in exactly ONE form, and in no other (the inline `module_from_spec(spec_from_file_location(...))` of
-    # rounds 1-3 refuses, round 4):
-    #   - NAMED: `module_from_spec(S)`, where EVERY occurrence of the name S in the file, in any scope, is one of
-    #       (a) the target of THE ONE statement `S = <importlib's spec_from_file_location>(name, <path>)` in the module
-    #           body (an annotated one too);
-    #       (b) the sole argument of importlib's `module_from_spec(S)`;
-    #       (c) `S.loader.exec_module(M)`, M being a (b) call or the name the statement just before (in the same block)
-    #           binds, as its one target, to a (b) call: nothing runs between building that module and executing it.
-    #     An occurrence is a name, an attribute, an import name, a def / class / parameter / except / match name, a
-    #     `global` / `nonlocal` name or a dotted part of a string literal spelling S. A (b) or (c) in a class body, or in
-    #     a comprehension directly in one, is not one of them: a class body reads its names through its namespace.
-    # `<path>` is a path the branch above evaluated to one file inside the repository, and the spec call carries no
-    # keyword but `location=`. importlib's own function (cli's MF8): importlib_fn. The form is not consumed in a file
-    # with a star import (it binds names the file does not show, `importlib` among them), that names `__spec__`,
-    # `__loader__` or `__dict__` (the module's spec, the same object), or that holds a reflective handle (cli's MF6):
-    # any `globals`, `vars` or `locals`; any `f_globals`, `f_locals`, `_getframe`, `currentframe` or `__main__` (a
-    # string holding one too); any `getmembers`, `getmodule`, `get_objects`, `get_referrers`, `get_referents`,
-    # `ctypes`, `__getattribute__` or `attrgetter`; or a `getattr` / `setattr` / `delattr` that is not called with a
-    # string-literal name. Nor where the file holds f1_tree_hazard (exec / eval / compile among its words: rule 8's
-    # `exec(open(p).read())` runs another file's text in this module), nor, cross-module (`cross_module`, passed by the
-    # scan from f1_cross_module; none passed refuses), where ANY tracked file holds f1_tree_hazard or ANY other tracked
-    # Python file spells S. Everything else refuses at the capability scan below.
-    def loads_one_file(call) -> bool:
-        site = spec_sites.get(id(call))
-        return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../")) \
-            and len(call.args) <= 2 and all(k.arg == "location" for k in call.keywords)
-
-    def eval_scope(node):
-        child, up = node, parent.get(node)
-        while up is not None and not isinstance(up, ast.Module):
-            if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and any(st is child for st in up.body) \
-                    or isinstance(up, ast.Lambda) and up.body is child:
-                return up
-            child, up = up, parent.get(up)
-        return tree
-
-    def importlib_fn(f, fname: str) -> bool:
-        """`f` is importlib's own `fname` (cli's MF8): `<i>.util.<fname>` with `i` bound only by `import importlib`
-        (or `import importlib.<x>`, or `import importlib as i`); `<u>.<fname>` with `u` bound only by `import
-        importlib.util as u` or `from importlib import util [as u]`; or a name bound only by `from importlib.util import
-        <fname> [as n]`. A name the file binds in any other way (a def, an assignment, a parameter) never is."""
-        def only(name: str, ok) -> bool:
-            every = binders.get(name, [])
-            return bool(every) and all(isinstance(b, (ast.Import, ast.ImportFrom)) and all(
-                ok(b, a) for a in b.names if (a.asname or a.name).split(".")[0] == name) for b in every)
-
-        if isinstance(f, ast.Name):
-            return only(f.id, lambda b, a: isinstance(b, ast.ImportFrom) and b.level == 0 and b.module == "importlib.util"
-                        and a.name == fname)
-        if not isinstance(f, ast.Attribute) or f.attr != fname:
-            return False
-        v = f.value
-        if isinstance(v, ast.Name):
-            return only(v.id, lambda b, a: isinstance(b, ast.Import) and a.name == "importlib.util" and a.asname == v.id
-                        or isinstance(b, ast.ImportFrom) and b.level == 0 and b.module == "importlib" and a.name == "util")
-        return isinstance(v, ast.Attribute) and v.attr == "util" and isinstance(v.value, ast.Name) and only(
-            v.value.id, lambda b, a: isinstance(b, ast.Import) and (a.name == "importlib" or a.asname is None
-                                                                     and a.name.startswith("importlib.")))
-
-    spelled = f1_spelled
-
-    def reflective(n) -> bool:
-        return f1_reflective(n, parent)
-
-    star_import = any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree))
-    spec_dunders = ("__spec__", "__loader__", "__dict__")
-    names_spec = any(isinstance(n, ast.Attribute) and n.attr in spec_dunders or isinstance(n, ast.Name) and n.id in spec_dunders
-                     or isinstance(n, ast.Constant) and isinstance(n.value, str) and any(w in n.value for w in spec_dunders)
-                     for n in ast.walk(tree))
-    f1_off = star_import or names_spec or any(reflective(n) for n in ast.walk(tree))
-
-    def built_by(call, name: str) -> bool:  # (b): importlib's module_from_spec(name), its one argument
-        return isinstance(call, ast.Call) and len(call.args) == 1 and not call.keywords and importlib_fn(call.func, "module_from_spec") \
-            and isinstance(call.args[0], ast.Name) and call.args[0].id == name
-
-    def previous_statement(stmt):
-        holder = parent.get(stmt)
-        for _, value in ast.iter_fields(holder) if holder is not None else ():
-            if isinstance(value, list):
-                for i, s in enumerate(value):
-                    if s is stmt:
-                        return value[i - 1] if i else None
-        return None
-
-    def allowed(n, name: str) -> str | None:
-        """Which of (a), (b), (c) the occurrence `n` of `name` is, or None."""
-        up = parent.get(n)
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and parent.get(up) is tree and (
-                isinstance(up, ast.Assign) and len(up.targets) == 1 and up.targets[0] is n
-                or isinstance(up, ast.AnnAssign) and up.target is n and up.value is not None) \
-                and isinstance(up.value, ast.Call) and importlib_fn(up.value.func, "spec_from_file_location") and loads_one_file(up.value):
-            return "a"
-        if not isinstance(n, ast.Name) or not isinstance(n.ctx, ast.Load) or isinstance(eval_scope(n), ast.ClassDef):
-            return None
-        if built_by(up, name) and up.args[0] is n:
-            return "b"
-        q = parent.get(up)
-        run = parent.get(q)
-        if isinstance(up, ast.Attribute) and up.value is n and up.attr == "loader" and isinstance(up.ctx, ast.Load) \
-                and isinstance(q, ast.Attribute) and q.value is up and q.attr == "exec_module" and isinstance(q.ctx, ast.Load) \
-                and isinstance(run, ast.Call) and run.func is q and len(run.args) == 1 and not run.keywords:
-            m = run.args[0]
-            if built_by(m, name):
-                return "c"
-            stmt = parent.get(run)
-            prev = previous_statement(stmt) if isinstance(stmt, ast.Expr) and stmt.value is run else None
-            if isinstance(m, ast.Name) and isinstance(prev, ast.Assign) and len(prev.targets) == 1 \
-                    and isinstance(prev.targets[0], ast.Name) and prev.targets[0].id == m.id and built_by(prev.value, name):
-                return "c"
-        return None
-
-    named_ok: dict[str, bool] = {}
-
-    def spec_of(arg) -> bool:
-        if f1_off or not isinstance(arg, ast.Name) or arg.id in unreadable:
-            return False
-        if arg.id not in named_ok:
-            kinds = [allowed(n, arg.id) for n in ast.walk(tree) if arg.id in spelled(n)]
-            named_ok[arg.id] = None not in kinds and kinds.count("a") == 1 and not f1_tree_hazard(tree, parent) \
-                and cross_module is not None and not cross_module(path, arg.id)
-        return named_ok[arg.id]
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords \
-                and importlib_fn(node.func, "module_from_spec") and spec_of(node.args[0]):
-            consume(node)
     # R6-2 fix (2), root's S2 of 2026-11-14 (cause 2 of cli's census, SCOPE): `globals()[<literal>]` and
     # `globals().get(<literal>[, default])` read the module-level name the literal spells, the same object a read of that
     # name reaches, when this module binds it at its top level by a `def`, a `class` or a plain assignment and it is no
@@ -3758,6 +3469,19 @@ def python_file_facts(text: str, path: str, test_only=None, cross_module=None) -
             elif cmp_side(up1, node, (ast.In, ast.NotIn), ()) \
                     or isinstance(up1, (ast.For, ast.AsyncFor, ast.comprehension)) and up1.iter is node:
                 take(node.value, node)
+    # R6-2 fix F1 refuse-all (root's rule of 2026-11-14 19:00, on cli's round-4 MUST-A and MUST-B): no read rule
+    # consumes `spec_from_file_location` or `module_from_spec`, by name or attribute, wherever it sits (a recording
+    # branch above consumes its whole subtree, a sys.path entry or a run_path path holding one too). The chain each
+    # heads is unconsumed again here, so the capability scan below refuses the file at it.
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in SPEC_LOADER_CALLS or isinstance(n, ast.Attribute) and n.attr in SPEC_LOADER_CALLS:
+            while True:
+                consumed.discard(id(n))
+                up = parent.get(n)
+                if not (isinstance(up, ast.Attribute) and up.value is n or isinstance(up, ast.Call) and up.func is n
+                        or isinstance(up, ast.Subscript) and up.value is n):
+                    break
+                n = up
     unconsumed = capability_occurrences(tree, text, parent, consumed)
     if unconsumed:
         lineno, segment = unconsumed[0]
@@ -3821,12 +3545,10 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     `importlib.metadata.files(...)` read installed metadata and are not loads, `importlib.resources.files(anchor)` and
     `read_text(anchor, ...)` import the anchor package: a literal anchor is recorded as this file's dependency edge and
     read through its chain, a non-literal one refuses; `entry_points(...).load()` stays a loader.
-    Three reads of root's S2 of 2026-11-14 (the census's top three causes), each a recording branch in
-    `python_file_facts` with twin vectors in test_edges_r6_2_fix_vectors.json: F1 `module_from_spec(S)` in the ONE
-    allow-listed form of root's ruling of 2026-11-14 19:00 (round 4): every occurrence of `S` in the file is (a) its
-    one module-level `spec_from_file_location` assignment with an evaluated in-repository path, (b) the argument of
-    importlib's `module_from_spec`, or (c) `S.loader.exec_module` of that module; and no other tracked file spells `S`
-    or holds an F1 hazard (f1_cross_module); everything else refuses at LOADER; F2
+    Root's S2 of 2026-11-14 (the census's top three causes), with twin vectors in test_edges_r6_2_fix_vectors.json: F1
+    is REFUSE-ALL (root's rule of 2026-11-14 19:00, applied on cli's round-4 MUST-A and MUST-B): no rule reads
+    `spec_from_file_location` or `module_from_spec`, by name or attribute, wherever it sits, and each refuses at
+    LOADER; two reads, each a recording branch in `python_file_facts`: F2
     SCOPE `globals()["n"]` / `globals().get("n")` for a module-level name the file binds, and the test-runner loop
     over `globals()` under a literal `startswith` prefix (dynamic keys, writes, comprehensions, `globals()` passed
     out, a star import and a gated call inside a lambda, nested def or generator still refuse); F3 SYS-PATH-REACH in
@@ -3835,10 +3557,8 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     computed read keys, `p = sys.path`, `sys.path in y`, a bind in a file naming `__path__` / `__spec__` /
     `submodule_search_locations` / `__dict__`, a receiver other than `monkeypatch`, and every such use in any other
     file still refuse); `sys.path` reads as a right operand of in / not in / == / != and a left operand of == / !=.
-    Round 3 (cli's read of 7001655, root's 18:29 scope): F1 refuses in a class body, beside a star import or a
-    non-read `globals()` / `vars()` / `locals()`, on any spec use but the listed reads, and in a file naming
-    `__spec__`, `__loader__` or `__dict__`; the F3 test files a non-test file may import come from the AST; an F3
-    bind takes only a value this file shows carries no `__path__`.
+    Round 3 (cli's read of 7001655, root's 18:29 scope): the F3 test files a non-test file may import come from the
+    AST; an F3 bind takes only a value this file shows carries no `__path__`.
     A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
     import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
     local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""
@@ -4655,14 +4375,6 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             code_imported.append(code_imported_test_files(repo, revision, environment, tracked,
                                                           test_files_computed_imports_reach(declared, owner, tracked)))
         return path not in code_imported[0]
-    f1_scan: list = []  # root's ruling of 2026-11-14 19:00 (round 4): computed once, on the first F1 candidate
-
-    def cross_module(path: str, name: str) -> bool:
-        """F1 refuses: a tracked file holds a hazard, or a tracked Python file other than `path` spells `name`."""
-        if not f1_scan:
-            f1_scan.append(f1_cross_module(repo, revision, environment, tracked))
-        hazards, spelled_in = f1_scan[0]
-        return bool(hazards) or any(p != path for p in spelled_in.get(name, ()))
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
     # F1 (root, 2026-11-12): a PACKAGE top too (`packages/shared` holds a package but is not a scan root), else an
@@ -4958,7 +4670,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                      "for anything; write the path out, or declare the load in edge_scan.computed_imports)")
                 found.update(hits)
             if src.py:
-                _, loaded, sites = python_file_facts(src.text, path, test_only, cross_module)
+                _, loaded, sites = python_file_facts(src.text, path, test_only)
                 check_python_sites(path, sites)
                 for name in sorted(loaded):
                     sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
@@ -5393,10 +5105,10 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
             # sys.path entries stay a documented residual; a path-mutation capability no rule consumes refuses it as it
             # refuses a package file (R6-2: python_file_facts holds the single refuse point for every Python file read).
-            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path, test_only, cross_module)[2])
+            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path, test_only)[2])
             continue
         text = read_source(repo, path, revision, environment)
-        entries, file_names, sites = python_file_facts(text, path, test_only, cross_module)
+        entries, file_names, sites = python_file_facts(text, path, test_only)
         parsed_names.setdefault(package, set()).update(file_names)
         mark = len(residual_sites)
         for kind, value, key, tail in entries:

@@ -1913,10 +1913,15 @@ class ImportAttributionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "undeclared computed import"):
                     self.scan()
         # A path from __file__ with literal parts is a literal load: an edge, credited, with no declaration.
-        self.files(**{"services__a__load.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
-                                               '"m", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "m.py"))\n',
+        self.files(**{"services__a__load.py": "import os, runpy\nrunpy.run_path("
+                                               'os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "m.py"))\n',
                       "scripts__m.py": 'P = "services/b/m.json"\n'})
         self.assertEqual(self.scan()[0]["a"], {"b"})
+        # spec_from_file_location over the same path refuses: R6-2 fix F1 is refuse-all (root's rule of 2026-11-14 19:00).
+        self.files(**{"services__a__load.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
+                                               '"m", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "m.py"))\n'})
+        with self.assertRaisesRegex(ValueError, "capability `importlib.util.spec_from_file_location.*is consumed by no read rule"):
+            self.scan()
         # An unevaluated path naming a parent step or an outside top-level directory refuses even when declared.
         for escaping in ('runpy.run_path(os.path.join(ROOT, "scripts", "x.py"))', 'runpy.run_path("../../x.py")'):
             with self.subTest(escaping):
@@ -1932,8 +1937,8 @@ class ImportAttributionTest(unittest.TestCase):
         self.files(**{"scripts__x.py": "import importlib\nm = importlib.import_module(name)\n"})
         with self.assertRaisesRegex(ValueError, "undeclared computed import `name`"):
             self.scan()
-        self.files(**{"scripts__x.py": "import os, importlib.util\nspec = importlib.util.spec_from_file_location("
-                                       '"m", os.path.join(os.path.dirname(__file__), "..", "services", "b", "m.py"))\n',
+        self.files(**{"scripts__x.py": "import os, runpy\nrunpy.run_path("
+                                       'os.path.join(os.path.dirname(__file__), "..", "services", "b", "m.py"))\n',
                       "services__b__m.py": "M = 1\n",
                       "services__a__run.sh": "#!/bin/bash\npython3 ../../scripts/x.py\n"})
         deps, readers, report = self.scan()
@@ -1987,16 +1992,16 @@ class ImportAttributionTest(unittest.TestCase):
     def test_pathlib_edits_evaluate_and_the_floor_judges_the_evaluated_prefix(self):
         # vagary-core's evidence app vendors a package INSIDE itself: PACKAGE / "scripts/..." is its own subdirectory,
         # not the top-level scripts/ (spine, 2026-10-27; a rewrite to the repo-root copy would have broken the service).
-        self.files(**{"services__a__app__contract.py": "import importlib.util\nfrom pathlib import Path\n"
+        self.files(**{"services__a__app__contract.py": "import runpy\nfrom pathlib import Path\n"
                                                         'PACKAGE = Path(__file__).with_name("_vendored")\n'
-                                                        'spec = importlib.util.spec_from_file_location("m", PACKAGE / "scripts/x.py")\n',
+                                                        'runpy.run_path(PACKAGE / "scripts/x.py")\n',
                       "services__a__app___vendored__scripts__x.py": 'P = "services/b/x.json"\n'})
         deps, _, report = self.scan()
         self.assertEqual(report["computed_imports_unused"], [])
         self.assertNotIn("services/a/app/_vendored/scripts/x.py", report["imports"], "inside the importing package: no edge")
         # The same shape with a prefix that does not evaluate still refuses: nothing says where "scripts" is.
-        self.files(**{"services__a__app__contract.py": "import importlib.util\n"
-                                                        'spec = importlib.util.spec_from_file_location("m", PKG / "scripts/x.py")\n'})
+        self.files(**{"services__a__app__contract.py": "import runpy\n"
+                                                        'runpy.run_path(PKG / "scripts/x.py")\n'})
         with self.assertRaisesRegex(ValueError, "may leave its package"):
             self.scan()
         # An evaluated prefix OUTSIDE the package (the repo root's scripts/) with a computed tail refuses, even declared.
@@ -3096,7 +3101,7 @@ class R62FixVectors(VectorHarness, unittest.TestCase):
     selects the runner its load reaches, and each refusing `twin`, the unresolvable form beside it, refuses at R6-2."""
 
     CASES = json.loads((Path(__file__).with_name("test_edges_r6_2_fix_vectors.json")).read_text())
-    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M15", "M16", "M17", "M18", "M19", "M20", "M21", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11")
+    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M15", "M16", "M17", "M18", "M19", "M20", "M21", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "M22", "M23")
 
     def test_every_r6_2_fix_vector_is_pinned_exactly(self):
         for name, case in sorted(self.CASES["cases"].items()):

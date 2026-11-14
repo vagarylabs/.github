@@ -516,10 +516,10 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      Each such call is consumed (rule 9). A literal naming `sys`, `site`, `importlib`, `runpy` or `builtins`
      (`__import__("sys").path`, `import_module("sys")`) is not an import by name. It is that module, judged by rule 9,
      and it refuses in every form, `__import__("sys").argv` included.
-   - **By path:** `importlib.util.spec_from_file_location(name, p)` (or `location=p`), `runpy.run_path(p)` and
-     `exec(open(p).read())`. Each such call is consumed (rule 9). `importlib.util.module_from_spec(spec)` is consumed
-     only over a spec whose path evaluated (rule 9, fix F1); any other call of it refuses. A
-     loader call with no path argument (`run_path()`) refuses too. The path `p` is evaluated as in rule 6:
+   - **By path:** `runpy.run_path(p)` and `exec(open(p).read())`. Each such call is consumed (rule 9). A loader call
+     with no path argument (`run_path()`) refuses too. `importlib.util.spec_from_file_location(name, p)` and
+     `importlib.util.module_from_spec(spec)` are consumed by no rule, by name or attribute, wherever they sit, so a file
+     holding either refuses at rule 9 (fix F1, refuse-all). The path `p` is evaluated as in rule 6:
      - evaluated, it is a literal load, an edge with no declaration;
      - not evaluated, the floor judges its longest EVALUATED prefix:
        - a prefix inside the importing package (no parent step after it) is declarable, as `reach: "package"`;
@@ -626,46 +626,34 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        `R6_N3_resources_read_text_nonliteral_refuses`, `R6_N3_metadata_entry_points_load_refuses`.
    - **The fixes F1-F3** (root's S2 of 2026-11-14: the census of core main 9cea8193 refused 154 files, and its top
      three causes held 114 of them: `module_from_spec` 48, SCOPE 41, SYS-PATH-REACH 25). Each is a recording branch
-     in `python_file_facts`, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps refusing:
-     - **F1:** root's ruling of 2026-11-14 19:00 (round 4) made F1 an allow-list with ONE form, and that form is the only
-       way a `module_from_spec` call reads (`python_file_facts`: `allowed` and `spec_of`). The call is importlib's own
-       `module_from_spec(S)`, one argument, no keyword, and it reads only when EVERY occurrence of the name `S` in the
-       file, in any scope, is one of: (a) the target of the one module-level statement `S = spec_from_file_location(name,
-       <path>)` (an annotated one too), with importlib's own spec function, a `<path>` the reader evaluated to one file
-       inside the repository, and no keyword but `location=`; (b) the sole argument of importlib's own
-       `module_from_spec(S)`; (c) `S.loader.exec_module(M)`, where `M` is a (b) call or the name that the statement just
-       before, in the same block, binds as its one target to a (b) call. That load is already the file's edge by rule 8.
-       importlib's own function (`importlib_fn`) is `<i>.util.<f>` with `i` bound only by `import importlib` (or
-       `import importlib.<x>`, or `import importlib as i`), `<u>.<f>` with `u` bound only by `import importlib.util as u`
-       or `from importlib import util`, or a name bound only by `from importlib.util import <f>`. A name the file binds
-       any other way (a `def`, an assignment, a parameter) is not importlib's. An occurrence is a name, an attribute,
-       an import name, a `def` / `class` / parameter / `except` / `match` name, a `global` / `nonlocal` name or a dotted
-       part of a string literal. A (b) or (c) in a class body, or in a comprehension directly in one, is not one of
-       them. The inline `module_from_spec(spec_from_file_location(...))` of rounds 1-3 refuses. In the file, F1 is off
-       with a star import; with `__spec__`, `__loader__` or `__dict__` named anywhere (the module's spec is the same
-       object); with a reflective handle (`globals`, `vars`, `locals`, `f_globals`, `f_locals`, `_getframe`,
-       `currentframe` or `__main__`, a string holding a frame word too, `getmembers`, `getmodule`, `get_objects`,
-       `get_referrers`, `get_referents`, `ctypes`, `__getattribute__`, `attrgetter`, or a `getattr` / `setattr` /
-       `delattr` without a string-literal name); or with a hazard (`f1_tree_hazard`). Across modules
-       (`f1_cross_module`, once per scan), F1 is off when any other tracked Python file spells `S` (`tool.spec`,
-       `from tool import spec`, `getattr(m, "spec")`, a string `"spec"`). This is a word match, not a resolved
-       reference, so it refuses more than Python would reach. F1 is off in every file when any tracked file holds a
-       hazard: a reflective handle; `exec`, `eval`, `compile`, `runpy`, `imp`, `zipimport`, a loader class, an import
-       hook (`meta_path`, `path_hooks`), `reload`, or a function's internals (`__code__`, `__globals__`); or
-       importlib's machinery named anywhere but as the callee of a call (`mock.patch("importlib.util.module_from_spec")`,
-       `patch.object(x.importlib.util, "module_from_spec", ...)`, `monkeypatch.setattr(util, "module_from_spec", ...)`,
-       an assignment). These are hazards too: a tracked Python path that is not a regular file; a file that does not
-       parse and holds a hazard word; and a tracked `.pyc`, `.pyo`, `.pyd`, `.so`, `.zip`, `.egg`, `.whl` or `.pth` file.
-       Item 5 of the round-4 brief: a file that patches importlib refuses F1 everywhere, and the standard library is
-       not assumed to be unpatched. On core main 9cea8193, 809 tracked files hold a hazard, among them
-       `services/evidence/test/test_qualification_packaging.py:85` (`patch.object(loader.importlib.util,
-       "module_from_spec", ...)`), so F1 reads nothing there. It read nothing in the 114-file subset before this either:
-       the subset reads 34 files and refuses 80, with F1 and without it. Open assumption for root: the reader relies
-       on code outside the tracked files not to rebind importlib or the spec. That code is the interpreter, the
-       standard library (`pathlib`'s `Path.resolve` evaluates the (a) path), installed packages, pytest plugins and
-       `sitecustomize`. No tracked file shows that code. Twins `M1`-`M21`: `M15` reflective handles, `M16` class bodies,
-       `M17` importlib's own function, `M18` the exact (a) / (b) / (c) shapes, `M19` another file's reference, `M20` a
-       hazard or a patch in another file, and `M21` an opaque tracked file and the inline form.
+     in `python_file_facts` for F2 and F3, and each read has a twin in `test_edges_r6_2_fix_vectors.json` that keeps
+     refusing. F1 is refuse-all:
+     - **F1: refuse-all.** No rule reads `spec_from_file_location` or `module_from_spec`. By name or by attribute,
+       wherever it sits (inside a consumed `sys.path` entry or `run_path` path too), each refuses at rule 9, and so does
+       every file that holds one. Root's ruling of 2026-11-14 19:00 made F1 a one-form allow-list, and said that a
+       must-fix left on this class after round 4 sends it to refuse-all. cli's round-4 read of 5e8606e found two:
+       - MUST-A, present since the base 9118236: rule 8 consumed the `spec_from_file_location` site whatever the spec
+         was later used for, and nothing outside F1 judged `exec_module`. So a file with no `module_from_spec` read
+         while it ran another file: `spec.loader.path = os.environ["TOOL"]` then
+         `spec.loader.exec_module(types.ModuleType("tool"))`, or an inline `loader=` keyword.
+       - MUST-B: the allow-list did not count keyword names as occurrences, so `mock.patch.multiple(__name__,
+         spec=FAKE)` rebound the module's spec unseen.
+       Refuse-all for `module_from_spec` alone would not close MUST-A, so rule 8 no longer consumes the spec site
+       either. The allow-list, its hazard words and the cross-module scan (`f1_cross_module`) are gone with it. On
+       core main 9cea8193 this costs nothing measured: F1 already read 0 of its 48 subset files, the 114-file subset
+       reads 34 files and refuses 80 before and after (`module_from_spec` 0 / 48, SCOPE 30 / 11, SYS-PATH-REACH 4 /
+       21), and each of the 61 tracked Python files holding `spec_from_file_location` refused before this commit as
+       well. Twins `M1`-`M23`: the four former reads `M1`, `M4`, `M17` and `M18` now refuse; `M22` is MUST-A (a
+       loader changed before `exec_module`, and an inline `loader=`, each with no `module_from_spec`); `M23` is MUST-B.
+       Known limits, from cli's round-4 should-fixes (none is a one-line refusal, so none is folded in):
+       - doctest text: pytest's `--doctest-glob` runs tracked `.md`, `.rst` or `.txt` text in the test process, and the
+         reader parses no such file;
+       - git submodules: a gitlink's Python files are not tracked here, so the reader never sees them;
+       - path evaluation does not check bindings: `Path`, `dirname`, `join` or a name like `HERE` may be shadowed in
+         the file or rebound from another module, so an evaluated `run_path` or `sys.path` path is evaluated, not
+         literal;
+       - string-target patchers (`mock.patch("m.name")`, `monkeypatch.setattr("m.name", v)`) name their target only in
+         a string, which no rule resolves.
      - **F2:** `globals()["n"]` (load) and `globals().get("n"[, d])` read a module-level name the file binds by `def`,
        `class` or a plain assignment, not a capability-bound name or a dunder. The test-runner loop over `globals()`
        (`for k in globals()`, `.keys()`, `for k, v in globals().items()`, under `sorted` / `list`) reads when every

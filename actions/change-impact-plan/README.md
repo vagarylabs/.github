@@ -681,7 +681,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        `pkgutil.resolve_name` naming the spec call in a string); `M25` is MUST-D (`getattr(loader, "exec_module")`,
        `operator.methodcaller("exec_module", m)`, `getattr(z, "load_module")`, and a bytes
        constant, `b"exec_module".decode()`); `M26` is the folded should-fixes
-       (`pkgutil.resolve_name("runpy:run_path")`, `pydoc.importfile`, `imp.load_source`, `imp.load_compiled`).
+       (`pkgutil.resolve_name("runpy:run_path")`, `pydoc.importfile`, `imp.load_source`, `imp.load_compiled`), and a file whose only
+       scan word is `resolve_name`). `M27` pins the re-refuse step: an unread loader name, attribute or string inside a
+       consumed `run_path` call or `sys.path` entry still refuses (root's R6-2 round-four record, SHOULD 1).
        Known limits, from cli's round-4 should-fixes (none is a one-line refusal, so none is folded in):
        - doctest text: pytest's `--doctest-glob` runs tracked `.md`, `.rst` or `.txt` text in the test process, and the
          reader parses no such file;

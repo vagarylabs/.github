@@ -60,6 +60,46 @@
   }
  },
  "cases": {
+  "G1 read globals() with a literal key the module binds by def": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g1.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\nassert globals()[\"helper\"]() == 1\nassert globals().get(\"helper\", None) is helper\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "G1 twin globals() with a computed key refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g1d.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\nassert globals()[sys.argv[1]]() == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_g1d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g1d.py",
+   "verdict": "REFUSE"
+  },
+  "G1 twin globals() with a literal key naming the sys binding refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g1c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef helper():\n    return tool.X\n\n\nassert globals()[\"sys\"].argv is not None\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_g1c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g1c.py",
+   "verdict": "REFUSE"
+  },
   "M1 read module_from_spec over a spec whose path evaluates (engine_accept.py:34 form)": {
    "cfg_set": {},
    "change": "services/b/tool.py",

@@ -3233,6 +3233,47 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                                            or isinstance(node.func.value, ast.Attribute) and isinstance(node.func.value.value, ast.Name)) \
                 and spec_of(node.args[0], node):
             consume(node)
+    # R6-2 fix (2), root's S2 of 2026-11-14 (cause 2 of cli's census, SCOPE): `globals()[<literal>]` and
+    # `globals().get(<literal>[, default])` read the module-level name the literal spells, the same object a read of that
+    # name reaches, when this module binds it at its top level by a `def`, a `class` or a plain assignment and it is no
+    # dunder and no name bound to a capability module or one of its names (`import sys as k`, `from importlib import
+    # util`): those reach what rule 5 and the loader rules judge by name. A computed key, a write (`globals()[k] = v`,
+    # `patch.dict(globals(), ...)`, `monkeypatch.setitem(globals(), ...)`), globals() passed out or bound to a name, and
+    # `locals()` / `vars()` still refuse.
+    capability_names: set[str] = set(CAPABILITY_MODULES) | {"__builtins__"}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            top = (node.module or "").split(".")[0] if isinstance(node, ast.ImportFrom) and node.level == 0 else ""
+            for alias in node.names:
+                bound_as = alias.asname or alias.name.split(".")[0]
+                if top in CAPABILITY_MODULES or alias.name.split(".")[0] in CAPABILITY_MODULES or bound_as in CAPABILITY_MODULES:
+                    capability_names.add(bound_as)
+    module_names: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_names.add(stmt.name)
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            module_names.add(stmt.targets[0].id)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            module_names.add(stmt.target.id)
+    module_names = {n for n in module_names if n not in capability_names and not n.startswith("__")}
+
+    def is_globals(node) -> bool:
+        return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "globals" \
+            and not node.args and not node.keywords and "globals" not in binders
+
+    def literal(node):
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    for node in ast.walk(tree):
+        if is_globals(node):
+            p = parent.get(node)
+            g = parent.get(p)
+            if isinstance(p, ast.Subscript) and p.value is node and isinstance(p.ctx, ast.Load) and literal(p.slice) in module_names:
+                consume(node)
+            elif isinstance(p, ast.Attribute) and p.value is node and p.attr == "get" and isinstance(g, ast.Call) \
+                    and g.func is p and 1 <= len(g.args) <= 2 and not g.keywords and literal(g.args[0]) in module_names:
+                consume(node)
     unconsumed = capability_occurrences(tree, text, parent, consumed)
     if unconsumed:
         lineno, segment = unconsumed[0]

@@ -4566,7 +4566,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     return deps, readers
 
 
-def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
+def code_imported_test_files(repo, revision, environment, tracked, seeds=frozenset()) -> set[str]:
     """Root's ruling (b) of 2026-11-14 17:58 on the R6-2 fix (3): `plan.is_test_file` is a path regex, so a production
     helper named `test_utils.py`, or anything under a `tests/` directory, passes it by name alone. The test files a
     non-test Python file may import lose the F3 reads. cli's read of 7001655 (MF5): the importers come from the AST,
@@ -4578,11 +4578,12 @@ def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
     counts every word of its text. This is a word, not a resolved import: it marks more than Python would import,
     never less, short of a name the source computes (`"test_" + "utils"`, which the reader's own loader rules refuse)
     and an importer outside Python (a workflow's `python -m`, an entry point). A test file whose name is no
-    identifier is marked outright."""
+    identifier is marked outright, and so is each of `seeds` (cli's round-3 should-fix 1: the test files a declared
+    computed import may reach, test_files_computed_imports_reach); a seed's words mark further test files too."""
     import ast
 
     words: dict[str, set[str]] = {}
-    marked: set[str] = set()
+    marked: set[str] = set(seeds)
     for p in tracked:
         if p.endswith(".py") and _plan.is_test_file(p, []):
             stem = posixpath.basename(p)[:-3]
@@ -4610,12 +4611,33 @@ def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
         return found & words.keys()
 
     frontier = sorted((p for p in tracked if p.endswith(".py") and not _plan.is_test_file(p, [])), reverse=True)
+    frontier += sorted(seeds, reverse=True)
     while frontier:
         for word in sorted(words_of(frontier.pop())):
             for hit in sorted(words[word] - marked):
                 marked.add(hit)
                 frontier.append(hit)
     return marked
+
+
+def test_files_computed_imports_reach(declared: list, owner, tracked) -> set[str]:
+    """cli's round-3 should-fix 1 on the R6-2 fix (3) (round 4): a computed import is a load the scan cannot name, so
+    every test file a declared `computed_imports` entry may reach is one code may import (whichever file declares it):
+    reach "package", each test file of the declaring file's package (every test file when that file is outside every
+    package); a list of repo paths, each test file at or under one of them; "external" (npm or stdlib) and "fixture"
+    (a test temp directory) reach no tracked file."""
+    tests = [p for p in tracked if p.endswith(".py") and _plan.is_test_file(p, [])]
+    reached: set[str] = set()
+    for entry in declared:
+        reach = entry["reach"]
+        if reach == "package":
+            home = owner(entry["file"])
+            reached.update(t for t in tests if home is None or owner(t) == home)
+        elif isinstance(reach, list):
+            for target in reach:
+                base = posixpath.normpath(target.strip()).strip("/")
+                reached.update(t for t in tests if base in ("", ".") or t == base or t.startswith(base + "/"))
+    return reached
 
 
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
@@ -4626,9 +4648,10 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
     code_imported: list[set[str]] = []  # root's ruling (b) of 2026-11-14: computed once, on the first test file parsed
 
-    def test_only(path: str) -> bool:
+    def test_only(path: str) -> bool:  # first called after `declared` (the validated computed_imports) is bound below
         if not code_imported:
-            code_imported.append(code_imported_test_files(repo, revision, environment, tracked))
+            code_imported.append(code_imported_test_files(repo, revision, environment, tracked,
+                                                          test_files_computed_imports_reach(declared, owner, tracked)))
         return path not in code_imported[0]
     f1_scan: list = []  # root's ruling of 2026-11-14 19:00 (round 4): computed once, on the first F1 candidate
 

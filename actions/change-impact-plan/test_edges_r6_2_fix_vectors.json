@@ -972,6 +972,131 @@
    "must_run": "test-a",
    "verdict": "REFUSE",
    "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\"))` on line 4 of services/a/test/test_m1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m1.py"
+  },
+  "S11 read a computed import declared reach external keeps the F3 reads (cli should-fix 1), round 4": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/b/app.py",
+       "expr": "NAME",
+       "reach": "external",
+       "reason": "a module named at run time (test fixture)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/tool.py": "X = 1\n",
+    "services/b/test_s11.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/app.py": "import importlib\n\nNAME = \"json\"\nm = importlib.import_module(NAME)\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "verdict": "SELECT",
+   "jobs": [
+    "root",
+    "test-b"
+   ]
+  },
+  "S11 twin a computed import declared reach package marks its package's test files and refuses (cli should-fix 1), round 4": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/b/app.py",
+       "expr": "NAME",
+       "reach": "package",
+       "reason": "a module named at run time (test fixture)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/tool.py": "X = 1\n",
+    "services/b/test_s11.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/app.py": "import importlib\n\nNAME = \"json\"\nm = importlib.import_module(NAME)\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_s11.py is consumed by no read rule; a file reads only when every one is) in services/b/test_s11.py"
+  },
+  "S11 twin a computed import declared to reach a directory marks the test files under it and refuses (cli should-fix 1), round 4": {
+   "cfg_set": {
+    "edge_scan": {
+     "exclude": [
+      "*.md",
+      "docs",
+      ".github",
+      "vendor"
+     ],
+     "reader_dirs": [
+      "scripts",
+      "test",
+      "tools"
+     ],
+     "reader_job": "root",
+     "roots": [
+      "services"
+     ],
+     "computed_imports": [
+      {
+       "file": "services/b/app.py",
+       "expr": "NAME",
+       "reach": [
+        "services/b/"
+       ],
+       "reason": "a module named at run time (test fixture)",
+       "review_by": "2026-11-20"
+      }
+     ]
+    }
+   },
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/tool.py": "X = 1\n",
+    "services/b/test_s11.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/app.py": "import importlib\n\nNAME = \"json\"\nm = importlib.import_module(NAME)\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_s11.py is consumed by no read rule; a file reads only when every one is) in services/b/test_s11.py"
   }
  }
 }

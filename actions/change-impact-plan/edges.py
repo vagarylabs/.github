@@ -2611,10 +2611,13 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 # words (`finder.find_spec(n)` over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, `pkgutil.resolve_name("...")`)
 # runs a file only through one of the two, so a file holding either is parsed, and refuses (LOADER_CALLS), by name,
 # by attribute or as a word in a string constant (MUST-D, cli's read of 63e1cb5: UNREAD_LOADER_CALLS). `imp`,
-# `importfile` and `resolve_name` (cli's round-6 should-fixes) are parsed and refuse the same way.
+# `importfile` and `resolve_name` (cli's round-6 should-fixes) are parsed and refuse the same way. `__path__` (root's
+# MUST-2 of R6-2 round four): a package's `__path__` is where `import pkg.sub` looks, so a file naming it is parsed and
+# refuses at every occurrence (PKG_PATH_WORD); F3's per-file bind guard alone missed a stub bound in one test file and
+# given a `__path__` in another that held no other word.
 PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
                  r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
-                 r"exec_module|load_module|imp|importfile|resolve_name)([^A-Za-z0-9_]|$)"
+                 r"exec_module|load_module|imp|importfile|resolve_name|__path__)([^A-Za-z0-9_]|$)"
                  r"|PYTHONPATH")
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
@@ -2661,6 +2664,9 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
 UNREAD_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec", "exec_module", "load_module",
                                  "importfile", "resolve_name"})
 UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD_LOADER_CALLS)) + r")(?![A-Za-z0-9_])")
+# Root's MUST-2 of R6-2 round four: `__path__` as a word, in a str or bytes constant (`setattr(m, "__path__", d)`,
+# `m.__dict__["__path__"]`, `monkeypatch.setattr("pkg.__path__", d)`).
+PKG_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])__path__(?![A-Za-z0-9_])")
 
 
 def unread_loader_word(value) -> bool:
@@ -3385,7 +3391,9 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
     # `__path__`, `__spec__`, `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, a
     # string such as `"pkg.__path__"`) or calls `setattr` with a computed name (`monkeypatch.setattr("a.b", v)` names
     # it in its string) or `vars` with an argument: a stub with a
-    # `__path__` sends `import m.sub` to a directory no edge names. The bound value is a call, a constant or a name no
+    # `__path__` sends `import m.sub` to a directory no edge names. This guard reads this file only; a `__path__` given in
+    # another file is that file's PKG-PATH occurrence (capability_occurrences, root's MUST-2 of R6-2 round four), and a
+    # dunder name built at run time (`"__pa" + "th__"`) is the open class. The bound value is a call, a constant or a name no
     # import binds (an imported package bound under another name carries its own `__path__`). (a) `sys.path` reads only
     # on the right of `in` / `not in` / `==` / `!=` or the left of `==` / `!=`, and `"m" in sys.modules` only as the
     # last operand: `sys.path in y` hands the list to `y`. (b) `setitem` / `delitem` read only on `monkeypatch`.
@@ -3573,6 +3581,10 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
       consumed call and there is at least one.
     - ENV: a string constant holding `PYTHONPATH` anywhere (an environ key, a shell string, an `env=` mapping).
     - SCOPE: `globals()`, `locals()` or `vars()` with no argument in a file that binds sys (root's twin (i)).
+    - PKG-PATH (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any context, or
+      as a word in a str or bytes constant, WHEREVER it sits, a consumed node too. No rule reads it: a write sends
+      `import pkg.sub` to a directory no edge names, and a read hands the live list out (`p = m.__path__; p.append(d)`).
+      It ranks after the uses and the bindings, so it names the refusal only when nothing else in the file refuses.
     Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
     hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
     same file is judged on its own); N2 a loader call with a LITERAL module name that a recording branch consumed
@@ -3617,7 +3629,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             else:
                 return node
 
-    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding; line; column; segment)
+    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH; line; column; segment)
 
     def refuse(node, binding: bool = False) -> None:
         if id(node) not in consumed:
@@ -3766,6 +3778,17 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
         elif isinstance(node, ast.Constant) and (isinstance(node.value, str) and "PYTHONPATH" in node.value
                                                  or unread_loader_word(node.value)):
             refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `methodcaller("load_module", n)(z)`, `b"exec_module"`
+    # PKG-PATH (root's MUST-2): every `__path__`, consumed or not (`sys.path.insert(0, m.__path__.pop())` sits in a
+    # consumed entry), named by the chain it heads (`email.__path__.append(d)`).
+    for node in ast.walk(tree):
+        value = node.value.decode("latin-1") if isinstance(node, ast.Constant) and isinstance(node.value, bytes) else \
+            node.value if isinstance(node, ast.Constant) else None
+        if isinstance(node, ast.Attribute) and node.attr == "__path__" or isinstance(node, ast.Name) and node.id == "__path__":
+            top = chain_top(node)
+            found.append((2, top.lineno, top.col_offset, segment(top)))
+        elif isinstance(node, ast.keyword) and node.arg == "__path__" \
+                or isinstance(value, str) and PKG_PATH_WORD.search(value) is not None:
+            found.append((2, node.lineno, node.col_offset, segment(node)))
     # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
     for stmt, names_, from_sys in binds:
         ok = True

@@ -574,10 +574,10 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
      `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
      `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`,
-     `imp`, `importfile`, `resolve_name`. It also parses every file holding `PYTHONPATH` anywhere. A word
-     in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word in a string, a
-     loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`, `load_module`,
-     `importfile`, `resolve_name`; MUST-D below).
+     `imp`, `importfile`, `resolve_name`, `__path__`. It also parses every file holding `PYTHONPATH` anywhere. A word
+     in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word in a string,
+     `__path__` and a loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`,
+     `load_module`, `importfile`, `resolve_name`; MUST-D below).
    - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
      it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
    - **The kinds.** Each of these, outside a consumed node, is an occurrence:
@@ -602,6 +602,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **environment:** a string constant holding `PYTHONPATH`: an environ key, a shell string, an `env=` mapping, a
        docstring.
      - **scope:** `globals()`, `locals()` or `vars()` with no argument, in a file that binds sys by an import.
+     - **package path** (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any
+       context, or as a word in a str or bytes constant (`setattr(m, "__path__", d)`, `m.__dict__["__path__"]`),
+       wherever it sits, inside a consumed node too. No rule reads it. A package's `__path__` is where `import pkg.sub`
+       looks, so a write sends the import to a directory no edge names, and a read hands the live list out
+       (`p = m.__path__; p.append(d)`). It names the refusal only when nothing else in the file refuses. Twins `S12`:
+       a stub F3 binds in one test file and another file with no other scan word gives a `__path__`
+       (`openai.__path__ = [os.environ["PLUGINS"]]`), `email.__path__.append(...)`, an alias, a string, a keyword, a
+       bytes constant, and a `__path__` inside a consumed `sys.path` entry.
    - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used
      at least once and EVERY use is an attribute other than the five above and the dunders, or sits inside a consumed
      node. `import sys; sys.exit(main())` reads, and so do `sys.argv`, `sys.stderr` and `import sys as s; s.exit(0)`.
@@ -730,7 +738,11 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        - a bind (`sys.modules[k] = v`, `setitem`) in a file that names `__path__`, `__spec__`,
          `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, or a string such as
          `"pkg.__path__"`), or calls `setattr` with a computed name or `vars` with an argument, because a stub with a
-         `__path__` sends `import m.sub` to a directory no edge names;
+         `__path__` sends `import m.sub` to a directory no edge names. This guard reads one file. A `__path__` given
+         in ANOTHER file is the package path occurrence of rule 9, which refuses in every parsed file (root's MUST-2 of
+         R6-2 round four: before it, a file naming `__path__` and no scan word was never parsed). A dunder name built
+         at run time (`object.__setattr__(fake, "__pa" + "th__", d)`) is neither, the same open class as
+         `"exec_" + "module"`;
        - a bound value that is not a constant, `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` with no
          `spec`, `spec_set`, `wraps`, positional or `**` argument, or a name every binding of which in this file is a
          plain assignment of one of those (another file may hand back a stub with a `__path__`);
@@ -744,7 +756,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          passes no `test_only` for.
        Twins `S1`-`S10` (`__path__` stub `S5`, `sys.path in y` `S6`, another receiver `S7`, `S8`:
        `services/b/test_utils.py` imported by `services/b/app.py`, `S9`: the same file named on a continuation line,
-       in a parenthesised from-import and by a loop literal, `S10`: a stub another file builds).
+       in a parenthesised from-import and by a loop literal, `S10`: a stub another file builds, refusing at that
+       file's `__path__` and, with none there, at the bind; `S12`: a `__path__` in another file, rule 9).
    - **A dead import refuses** (root's decision (ii)). `import sys`, `import site`, `import importlib` or
      `from sys import argv`, bound and never used, is consumed by no rule.
    - **A local is not the module.** A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is

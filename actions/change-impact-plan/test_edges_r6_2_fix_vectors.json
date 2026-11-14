@@ -654,7 +654,7 @@
    },
    "kind": "drop-vector",
    "must_run": "test-a",
-   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/a/test/test_s10.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s10.py",
+   "refusal": "unresolved (the path-mutation capability `m.__path__` on line 6 of services/a/test/stubs.py is consumed by no read rule; a file reads only when every one is) in services/a/test/stubs.py",
    "verdict": "REFUSE"
   },
   "S2 read sys.modules[\"m\"] and .get(\"m\") in a test file record m as the file's dependency edge": {
@@ -1377,6 +1377,109 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "SELECT"
+  },
+  "S12 twin a stub F3 binds in one test file, given a __path__ from the environment in another with no other scan word, refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nopenai.__path__ = [os.environ[\"PLUGINS\"]]\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `openai.__path__` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin email.__path__.append from the environment in a file with no other scan word refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_z.py": "import os\n\nimport email\n\nemail.__path__.append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_z():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `email.__path__.append(os.environ[\"PLUGINS\"])` on line 5 of services/a/test/test_z.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_z.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin a read of __path__ through an alias that is then extended refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nsearch = openai.__path__\nsearch.extend([os.environ[\"PLUGINS\"]])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `openai.__path__` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin setattr with __path__ in a string refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nsetattr(openai, \"__path__\", [os.environ[\"PLUGINS\"]])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `\"__path__\"` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin __path__ as a keyword refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nopenai.__dict__.update(__path__=[os.environ[\"PLUGINS\"]])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `__path__=[os.environ[\"PLUGINS\"]]` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin __path__ in a bytes constant refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nsetattr(openai, b\"__path__\".decode(), [os.environ[\"PLUGINS\"]])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `b\"__path__\"` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S12 twin a __path__ inside a consumed sys.path entry refuses (root MUST-2, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_y.py": "import sys\n\nimport openai\n\nsys.path.insert(0, openai.__path__.pop())\n\n\ndef test_y():\n    assert openai\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `openai.__path__.pop()` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S10 twin sys.modules bound to a stub another file builds, that file holding no scan word, refuses at the bind (cli should-fix 2)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/stubs.py": "import types\n\n\ndef pkg(name):\n    return types.ModuleType(name)\n",
+    "services/a/test/test_s10.py": "import sys\n\nimport stubs\n\nsys.modules[\"openai\"] = stubs.pkg(\"openai\")\n",
+    "services/b/tool.py": "X = 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/a/test/test_s10.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s10.py",
+   "verdict": "REFUSE"
   }
  }
 }

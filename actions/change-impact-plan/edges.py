@@ -3477,6 +3477,14 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     `importlib.metadata.files(...)` read installed metadata and are not loads, `importlib.resources.files(anchor)` and
     `read_text(anchor, ...)` import the anchor package: a literal anchor is recorded as this file's dependency edge and
     read through its chain, a non-literal one refuses; `entry_points(...).load()` stays a loader.
+    Three reads of root's S2 of 2026-11-14 (the census's top three causes), each a recording branch in
+    `python_file_facts` with twin vectors in test_edges_r6_2_fix_vectors.json: F1 `module_from_spec(spec)` over a
+    spec whose `spec_from_file_location` path evaluated (a computed path still refuses at LOADER); F2 SCOPE
+    `globals()["n"]` / `globals().get("n")` for a module-level name the file binds, and the test-runner loop
+    over `globals()` under a literal `startswith` prefix (dynamic keys, writes, comprehensions and `globals()` passed
+    out still refuse); F3 SYS-PATH-REACH in a test file only (plan.is_test_file): `sys.modules` binds, unbinds and
+    literal reads, and `sys.path` compared, indexed or copied (capability keys, computed read keys, `p = sys.path`
+    and every such use outside a test file still refuse).
     A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
     import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
     local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""

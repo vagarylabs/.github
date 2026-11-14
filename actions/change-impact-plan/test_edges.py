@@ -3090,6 +3090,32 @@ class RulingsOf152Test(VectorHarness, unittest.TestCase):
                        "C1", "C2", "C3", "C4", "C5", "C6"):
             self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
 
+class R62FixVectors(VectorHarness, unittest.TestCase):
+    """The R6-2 reader's three top refusal causes on vagary-core (root's S2 of 2026-11-14; cli's census n123 of core head
+    9cea8193fcf5, test_edges_r6_2_fix_vectors.json), pinned EXACT: each teaching's `read` vector, in the census form,
+    selects the runner its load reaches, and each refusing `twin`, the unresolvable form beside it, refuses at R6-2."""
+
+    CASES = json.loads((Path(__file__).with_name("test_edges_r6_2_fix_vectors.json")).read_text())
+    TEACHINGS = ("M1", "M2", "M3")
+
+    def test_every_r6_2_fix_vector_is_pinned_exactly(self):
+        for name, case in sorted(self.CASES["cases"].items()):
+            with self.subTest(name):
+                got = self.run_case(case)
+                self.assertEqual(got, {k: case[k] for k in ("verdict", "jobs", "refusal") if k in case}, name)
+                if name.split(" ")[1] == "read":
+                    self.assertIn(case["must_run"], got["jobs"], f"{name} drops its runner")
+                else:
+                    self.assertEqual(got["verdict"], "REFUSE", f"{name}: a twin must refuse")
+
+    def test_each_teaching_has_vectors_and_every_read_has_a_refusing_twin(self):
+        names = sorted(self.CASES["cases"])
+        for prefix in self.TEACHINGS:
+            self.assertTrue(any(n.startswith(prefix + " ") for n in names), prefix)
+            if any(n.startswith(prefix + " read ") for n in names):
+                self.assertTrue(any(n.startswith(prefix + " twin ") for n in names), f"{prefix} has no refusing twin")
+
+
 def E_add(cfg, path, name):
     targets = cfg.setdefault("extra_edges", {}).setdefault(path, [])
     return E_list_add(targets, name)

@@ -1,0 +1,132 @@
+{
+ "$comment": "R6-2 fix, root's S2 of 2026-11-14: the R6-2 reader's three top refusal causes on cli's census n123 of vagary-core head 9cea8193fcf5 (LOADER:module_from_spec 48, SCOPE 41, SYS-PATH-REACH 25 by first independent cause). Each teaching has a `read` vector in the census form, pinned to the job its file-load reaches, and a refusing `twin`, the unresolvable form beside it, pinned to the R6-2 refusal.",
+ "base_config": {
+  "edge_scan": {
+   "exclude": [
+    "*.md",
+    "docs",
+    ".github",
+    "vendor"
+   ],
+   "reader_dirs": [
+    "scripts",
+    "test",
+    "tools"
+   ],
+   "reader_job": "root",
+   "roots": [
+    "services"
+   ]
+  },
+  "jobs": {
+   "root": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-a": {
+    "packages": [
+     "a"
+    ]
+   },
+   "test-b": {
+    "packages": [
+     "b"
+    ]
+   },
+   "test-c": {
+    "packages": [
+     "c"
+    ]
+   }
+  },
+  "schema": 1,
+  "workspace": {
+   "packages": {
+    "a": {
+     "deps": [],
+     "dir": "services/a"
+    },
+    "b": {
+     "deps": [],
+     "dir": "services/b"
+    },
+    "c": {
+     "deps": [],
+     "dir": "services/c"
+    }
+   },
+   "type": "declared"
+  }
+ },
+ "cases": {
+  "M1 read module_from_spec over a spec whose path evaluates (engine_accept.py:34 form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m1.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "M1 twin module_from_spec over a spec from an environment path refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m1c.py": "import importlib.util\nimport os\n\nspec = importlib.util.spec_from_file_location(\"tool\", os.environ[\"TOOL\"])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 5 of services/a/test/test_m1c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m1c.py",
+   "verdict": "REFUSE"
+  },
+  "M2 read the spec bound in the call's own function, another function binding the name otherwise (check_invariants.py:1037 form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m2.py": "import importlib.util\nimport os\n\nHERE = os.path.dirname(os.path.abspath(__file__))\n\n\ndef load():\n    spec = importlib.util.spec_from_file_location(\"tool\", os.path.join(HERE, \"..\", \"..\", \"b\", \"tool.py\"))\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\ndef other(read):\n    spec = read(\"x.yaml\")\n    return spec\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "M2 twin a second binding of the name in the same function refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m2c.py": "import importlib.util\nimport os\n\nHERE = os.path.dirname(os.path.abspath(__file__))\n\n\ndef load(read):\n    spec = importlib.util.spec_from_file_location(\"tool\", os.path.join(HERE, \"..\", \"..\", \"b\", \"tool.py\"))\n    if read:\n        spec = read(\"x.yaml\")\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 11 of services/a/test/test_m2c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m2c.py",
+   "verdict": "REFUSE"
+  },
+  "M3 twin a spec bound as a parameter (default) refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m3c.py": "import importlib.util\nfrom pathlib import Path\n\n\ndef load(spec=importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")):\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 6 of services/a/test/test_m3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m3c.py",
+   "verdict": "REFUSE"
+  }
+ }
+}

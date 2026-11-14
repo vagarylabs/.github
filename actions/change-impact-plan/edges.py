@@ -2647,7 +2647,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
       name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
       `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). `module_from_spec` is
-      a loader call no rule reads (R6-2): a file calling it refuses at the capability scan.
+      read only over a spec whose site evaluated (R6-2 fix (1)): it adds no site, the spec's is its edge; any other
+      `module_from_spec` refuses at the capability scan.
     Raises ValueError when the file does not parse."""
     import ast
     try:
@@ -3096,6 +3097,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     def consume(node) -> None:
         consumed.update(id(sub) for sub in ast.walk(node))
 
+    spec_sites: dict[int, tuple] = {}  # id() of a recorded spec_from_file_location call -> its path site (R6-2 fix (1))
+
     # N3 (root's ruling of 2026-11-12 21:32): `importlib.resources.files(anchor)` / `.read_text(anchor, ...)` import the
     # anchor package. The receivers and bound names this file reaches them by, so `p.read_text("utf-8")` is never one.
     res_mods = {"importlib.resources"}
@@ -3165,6 +3168,8 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                 if arg is not None:
                     sites.append(path_site(arg))
                     consume(node)
+                    if name == "spec_from_file_location":
+                        spec_sites[id(node)] = sites[-1]
             elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
                 inner = node.args[0]  # exec(open(p).read())
                 if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
@@ -3172,6 +3177,62 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                     arg = inner.func.value.args[0]
                     sites.append(path_site(arg))
                     consume(node)
+    # R6-2 fix (1), root's S2 of 2026-11-14 (the first refusal cause of cli's census of vagary-core, 48 files):
+    # `module_from_spec(spec)` builds the module of ONE spec, so it loads exactly the file that spec names. It is read
+    # when its one argument is the `spec_from_file_location` call itself, or a name whose every binding in the call's
+    # own scope (the module's, when that function binds none) is a plain `name = spec_from_file_location(...)` the
+    # branch above recorded with an EVALUATED path inside the repository: that site is the file-load edge, so the call
+    # adds none. A computed or unevaluable path, a path above the repository, a parameter, a loop, an import, a
+    # `global`, an unpacking or any other binding of the name in that scope, a name bound only in an enclosing function,
+    # or an argument that is not a name, still refuses at the capability scan below.
+    def scope_of(node):
+        while not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            node = parent[node]
+        return node
+
+    binders: dict[str, list] = {}  # name -> every node that binds it (a Store / Del, a parameter, an import, a global)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            binders.setdefault(node.id, []).append(node)
+        elif isinstance(node, ast.arg):
+            binders.setdefault(node.arg, []).append(node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name_ in node.names:
+                binders.setdefault(name_, []).append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                binders.setdefault((alias.asname or alias.name).split(".")[0], []).append(node)
+
+    def loads_one_file(call) -> bool:
+        site = spec_sites.get(id(call))
+        return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../"))
+
+    def spec_of(arg, call) -> bool:
+        if isinstance(arg, ast.Call):
+            return loads_one_file(arg)
+        if not isinstance(arg, ast.Name) or arg.id in unreadable:
+            return False
+        every = binders.get(arg.id, [])
+        if any(isinstance(b, (ast.Global, ast.Nonlocal)) for b in every):
+            return False
+        scope = scope_of(parent[call])
+        mine = [b for b in every if scope_of(parent[b]) is scope]
+        if not mine and not isinstance(scope, ast.Module):
+            mine = [b for b in every if scope_of(parent[b]) is tree]
+        for b in mine:
+            stmt = parent.get(b)
+            plain = isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and stmt.targets[0] is b \
+                or isinstance(stmt, ast.AnnAssign) and stmt.target is b and stmt.value is not None
+            if not (isinstance(b, ast.Name) and plain and isinstance(stmt.value, ast.Call) and loads_one_file(stmt.value)):
+                return False
+        return bool(mine)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and call_name(node.func) == "module_from_spec" and len(node.args) == 1 \
+                and not node.keywords and (isinstance(node.func, ast.Name) or isinstance(node.func.value, ast.Name)
+                                           or isinstance(node.func.value, ast.Attribute) and isinstance(node.func.value.value, ast.Name)) \
+                and spec_of(node.args[0], node):
+            consume(node)
     unconsumed = capability_occurrences(tree, text, parent, consumed)
     if unconsumed:
         lineno, segment = unconsumed[0]

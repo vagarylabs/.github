@@ -2614,10 +2614,11 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 # `importfile` and `resolve_name` (cli's round-6 should-fixes) are parsed and refuse the same way. `__path__` (root's
 # MUST-2 of R6-2 round four): a package's `__path__` is where `import pkg.sub` looks, so a file naming it is parsed and
 # refuses at every occurrence (PKG_PATH_WORD); F3's per-file bind guard alone missed a stub bound in one test file and
-# given a `__path__` in another that held no other word.
+# given a `__path__` in another that held no other word. `__getattr__` (PEP 562, 2026-11-15): a module-scope one
+# can return a `__path__` the file never spells, so a file naming it is parsed (MODULE-GETATTR); a class method is not it.
 PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
                  r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
-                 r"exec_module|load_module|imp|importfile|resolve_name|__path__)([^A-Za-z0-9_]|$)"
+                 r"exec_module|load_module|imp|importfile|resolve_name|__path__|__getattr__)([^A-Za-z0-9_]|$)"
                  r"|PYTHONPATH")
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
@@ -2667,6 +2668,8 @@ UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD
 # Root's MUST-2 of R6-2 round four: `__path__` as a word, in a str or bytes constant (`setattr(m, "__path__", d)`,
 # `m.__dict__["__path__"]`, `monkeypatch.setattr("pkg.__path__", d)`).
 PKG_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])__path__(?![A-Za-z0-9_])")
+# The PEP 562 hook (MODULE-GETATTR in capability_occurrences): the word in a str or bytes constant refuses.
+MODULE_GETATTR_WORD = re.compile(r"(?<![A-Za-z0-9_])__getattr__(?![A-Za-z0-9_])")
 
 
 def unread_loader_word(value) -> bool:
@@ -3586,6 +3589,10 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
       as a word in a str or bytes constant, WHEREVER it sits, a consumed node too. No rule reads it: a write sends
       `import pkg.sub` to a directory no edge names, and a read hands the live list out (`p = m.__path__; p.append(d)`).
       It ranks after the uses and the bindings, so it names the refusal only when nothing else in the file refuses.
+    - MODULE-GETATTR (PEP 562, closed 2026-11-15): a module-scope binding of `__getattr__` (a def, a class, an
+      assignment, an import), `global __getattr__`, a write of a `.__getattr__` attribute, a `__getattr__=` keyword and
+      the word in a str or bytes constant: a module `__getattr__` can hand out a `__path__` the text never names. A
+      method in a class body, a binding inside a function and an attribute read are not it. It ranks last.
     Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
     hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
     same file is judged on its own); N2 a loader call with a LITERAL module name that a recording branch consumed
@@ -3630,7 +3637,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             else:
                 return node
 
-    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH; line; column; segment)
+    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH, 3 MODULE-GETATTR; line; column; segment)
 
     def refuse(node, binding: bool = False) -> None:
         if id(node) not in consumed:
@@ -3792,6 +3799,37 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
         elif isinstance(node, ast.keyword) and node.arg == "__path__" \
                 or isinstance(value, str) and PKG_PATH_WORD.search(value) is not None:
             found.append((2, node.lineno, node.col_offset, segment(node)))
+    # MODULE-GETATTR (the PEP 562 channel, closed for ledger on 2026-11-15): a module `__getattr__` answers every
+    # attribute the module lacks, `__path__` among them, with no `__path__` in the text. Module scope (no enclosing def,
+    # lambda or class): a def, a class, an import or any other binding of the name; anywhere: `global __getattr__`, a
+    # write of the attribute (`openai.__getattr__ = f`), a `__getattr__=` keyword and the word in a str or bytes constant
+    # (`globals()["__getattr__"]`, `setattr(m, "__getattr__", f)`). A method in a class body, a binding inside a
+    # function and an attribute read stay as before. It ranks last, after PKG-PATH.
+    def module_scope(node) -> bool:
+        up = parent.get(node)
+        while up is not None:
+            if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                return False
+            up = parent.get(up)
+        return True
+
+    for node in ast.walk(tree):
+        value = node.value.decode("latin-1") if isinstance(node, ast.Constant) and isinstance(node.value, bytes) else \
+            node.value if isinstance(node, ast.Constant) else None
+        named = [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler,
+                                                 ast.MatchAs, ast.MatchStar)) \
+            else [node.id] if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) \
+            else [node.asname or node.name.split(".")[0]] if isinstance(node, ast.alias) \
+            else [node.rest] if isinstance(node, ast.MatchMapping) else []
+        if "__getattr__" in named and module_scope(node):
+            seg = segment(node) if isinstance(node, (ast.Name, ast.alias)) else {ast.FunctionDef: "def", ast.AsyncFunctionDef: "async def",
+                ast.ClassDef: "class"}.get(type(node), type(node).__name__) + " __getattr__"
+            found.append((3, node.lineno, node.col_offset, seg))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and "__getattr__" in node.names \
+                or isinstance(node, ast.Attribute) and node.attr == "__getattr__" and not isinstance(node.ctx, ast.Load) \
+                or isinstance(node, ast.keyword) and node.arg == "__getattr__" \
+                or isinstance(value, str) and MODULE_GETATTR_WORD.search(value) is not None:
+            found.append((3, node.lineno, node.col_offset, segment(node)))
     # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
     for stmt, names_, from_sys in binds:
         ok = True

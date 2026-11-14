@@ -574,9 +574,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
      `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
      `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`,
-     `imp`, `importfile`, `resolve_name`, `__path__`. It also parses every file holding `PYTHONPATH` anywhere. A word
-     in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word in a string,
-     `__path__` and a loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`,
+     `imp`, `importfile`, `resolve_name`, `__path__`, `__getattr__`. It also parses every file holding `PYTHONPATH`
+     anywhere. A word in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word
+     in a string, `__path__`, `__getattr__` and a loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`,
      `load_module`, `importfile`, `resolve_name`; MUST-D below).
    - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
      it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
@@ -610,6 +610,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        a stub F3 binds in one test file and another file with no other scan word gives a `__path__`
        (`openai.__path__ = [os.environ["PLUGINS"]]`), `email.__path__.append(...)`, an alias, a string, a keyword, a
        bytes constant, and a `__path__` inside a consumed `sys.path` entry.
+     - **module `__getattr__`** (PEP 562, closed for ledger on 2026-11-15): a module-scope binding of `__getattr__` (a
+       def, a class, an assignment, an import), `global __getattr__`, a write of a `.__getattr__` attribute
+       (`openai.__getattr__ = f`), a `__getattr__=` keyword, and the word in a str or bytes constant
+       (`globals()["__getattr__"]`, `setattr(m, "__getattr__", f)`). A module `__getattr__` answers every attribute the
+       module lacks, so it can hand `import m.sub` a `__path__` the file never spells. A `__getattr__` method in a class
+       body, a binding inside a function and an attribute read are not it. It names the refusal only when nothing else
+       in the file refuses. Twins `S13`: the attribute write, a module def, a module assignment, a `globals()` key and
+       `setattr`, each in a file with no other scan word; the read `S13 read` keeps a class-body method a read.
    - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used
      at least once and EVERY use is an attribute other than the five above and the dunders, or sits inside a consumed
      node. `import sys; sys.exit(main())` reads, and so do `sys.argv`, `sys.stderr` and `import sys as s; s.exit(0)`.
@@ -742,7 +750,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          `"pkg.__path__"`), or calls `setattr` with a computed name or `vars` with an argument, because a stub with a
          `__path__` sends `import m.sub` to a directory no edge names. This guard reads one file. A `__path__` given
          in ANOTHER file is the package path occurrence of rule 9, which refuses in every parsed file (root's MUST-2 of
-         R6-2 round four: before it, a file naming `__path__` and no scan word was never parsed). A dunder name built
+         R6-2 round four: before it, a file naming `__path__` and no scan word was never parsed). A module
+         `__getattr__` that returns a path is the module `__getattr__` occurrence of rule 9 (`S13`). A dunder name built
          at run time (`object.__setattr__(fake, "__pa" + "th__", d)`) is neither, the same open class as
          `"exec_" + "module"`;
        - a bound value that is not a constant, `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` with no

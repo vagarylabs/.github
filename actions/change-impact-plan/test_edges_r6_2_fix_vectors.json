@@ -1649,6 +1649,87 @@
    "must_run": "test-a",
    "refusal": "unresolved (the path-mutation capability `sys.path` on line 8 of services/a/test/test_s4l.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s4l.py",
    "verdict": "REFUSE"
+  },
+  "S13 twin openai.__getattr__ assigned a path-returning lambda in a file with no other scan word refuses (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nopenai.__getattr__ = lambda n: [os.environ[\"PLUGINS\"]]\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `openai.__getattr__` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S13 twin a module-level def __getattr__ in a module with no other scan word refuses (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/plug.py": "import os\n\n\ndef __getattr__(name):\n    return [os.environ[\"PLUGINS\"]]\n",
+    "services/a/test/test_s13d.py": "import plug.client  # noqa: F401\n\n\ndef test_d():\n    assert plug.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `def __getattr__` on line 4 of services/a/test/plug.py is consumed by no read rule; a file reads only when every one is) in services/a/test/plug.py",
+   "verdict": "REFUSE"
+  },
+  "S13 twin a module-level __getattr__ assignment refuses (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/plug.py": "import os\n\n__getattr__ = lambda name: [os.environ[\"PLUGINS\"]]\n",
+    "services/a/test/test_s13d.py": "import plug.client  # noqa: F401\n\n\ndef test_d():\n    assert plug.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `__getattr__` on line 3 of services/a/test/plug.py is consumed by no read rule; a file reads only when every one is) in services/a/test/plug.py",
+   "verdict": "REFUSE"
+  },
+  "S13 twin globals() given a __getattr__ key refuses (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/plug.py": "import os\n\n\ndef _hook(name):\n    return [os.environ[\"PLUGINS\"]]\n\n\nglobals()[\"__getattr__\"] = _hook\n",
+    "services/a/test/test_s13d.py": "import plug.client  # noqa: F401\n\n\ndef test_d():\n    assert plug.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `\"__getattr__\"` on line 8 of services/a/test/plug.py is consumed by no read rule; a file reads only when every one is) in services/a/test/plug.py",
+   "verdict": "REFUSE"
+  },
+  "S13 twin setattr of __getattr__ on a stubbed module refuses (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport openai\n\nsetattr(openai, \"__getattr__\", lambda n: [os.environ[\"PLUGINS\"]])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `\"__getattr__\"` on line 5 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py",
+   "verdict": "REFUSE"
+  },
+  "S13 read a __getattr__ method in a class body stays a read (PEP 562, ledger 2026-11-15)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s13r.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\nclass Proxy:\n    def __getattr__(self, name):\n        return getattr(tool, name)\n\n\nassert Proxy().X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
   }
  }
 }

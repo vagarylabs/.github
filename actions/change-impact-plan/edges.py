@@ -3248,24 +3248,78 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
                 return own, None, []
             here = eval_scope(here)
 
+    # Root's ruling of 2026-11-14 18:29 on cli's read of 7001655 (F1 stale spec, a MUST) and cli's should-fix 3:
+    # a module-level `spec` can be rebound behind the reader's back by a star import or a write through `globals()` /
+    # `vars()` / `locals()`, so F1 reads a named spec only in a file with no star import and with every such call a
+    # read (a load subscript, `.get` / `.keys` / `.items` / `.values`, a loop, an `in`, `sorted` / `list` / `len`).
+    # The spec object can be changed through any other handle, so every use of the name bound where the call's is
+    # must be: the call's argument, an `is` / `is not` comparison or a truth test, `spec.loader.exec_module(...)`,
+    # `spec.loader` tested, or a read of `name`, `origin`, `parent`, `cached` or `has_location`. An alias
+    # (`s = spec`), a call argument (`f(spec)`, `setattr(spec, ...)`), a store or `del`, `cast(..., spec.loader)` and
+    # `loader = spec.loader` refuse. A file naming `__spec__`, `__loader__` or `__dict__` (an attribute, a name or a
+    # string) refuses F1 in both forms: the module's `__spec__` is the same object.
+    star_import = any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree))
+    spec_dunders = ("__spec__", "__loader__", "__dict__")
+
+    def namespace_read(c) -> bool:
+        up = parent.get(c)
+        return isinstance(c, ast.Call) and not c.args and not c.keywords and (
+            isinstance(up, ast.Subscript) and up.value is c and isinstance(up.ctx, ast.Load)
+            or isinstance(up, ast.Attribute) and up.value is c and up.attr in ("get", "keys", "items", "values")
+            and isinstance(parent.get(up), ast.Call) and parent[up].func is up
+            or isinstance(up, (ast.For, ast.comprehension)) and up.iter is c
+            or isinstance(up, ast.Compare) and any(x is c for x in up.comparators)
+            or isinstance(up, ast.Call) and isinstance(up.func, ast.Name) and up.func.id in ("sorted", "list", "len")
+            and len(up.args) == 1 and up.args[0] is c)
+
+    rebinds_module = star_import or any(
+        isinstance(n, ast.Name) and n.id in ("globals", "vars", "locals")
+        and not (isinstance(parent.get(n), ast.Call) and parent[n].func is n and namespace_read(parent[n]))
+        for n in ast.walk(tree))
+    names_spec = any(isinstance(n, ast.Attribute) and n.attr in spec_dunders or isinstance(n, ast.Name) and n.id in spec_dunders
+                     or isinstance(n, ast.Constant) and isinstance(n.value, str) and any(w in n.value for w in spec_dunders)
+                     for n in ast.walk(tree))
+
+    def tested(n) -> bool:
+        up = parent.get(n)
+        if isinstance(up, ast.Compare):
+            return all(isinstance(o, (ast.Is, ast.IsNot)) for o in up.ops)
+        while isinstance(up, ast.BoolOp) or isinstance(up, ast.UnaryOp) and isinstance(up.op, ast.Not):
+            if isinstance(up, ast.UnaryOp):
+                return True
+            n, up = up, parent.get(up)
+        return isinstance(up, (ast.If, ast.While, ast.Assert, ast.IfExp)) and up.test is n
+
+    def spec_use_ok(n) -> bool:
+        up = parent.get(n)
+        if isinstance(n.ctx, ast.Load) and tested(n):
+            return True
+        if isinstance(up, ast.Call) and call_name(up.func) == "module_from_spec" and up.args and up.args[0] is n:
+            return True
+        if isinstance(up, ast.Attribute) and up.value is n and isinstance(up.ctx, ast.Load):
+            q = parent.get(up)
+            if up.attr in ("name", "origin", "parent", "cached", "has_location"):
+                return not (isinstance(q, ast.Call) and q.func is up)
+            if up.attr == "loader":
+                return tested(up) or isinstance(q, ast.Attribute) and q.value is up and q.attr == "exec_module" \
+                    and isinstance(q.ctx, ast.Load) and isinstance(parent.get(q), ast.Call) and parent[q].func is q
+        return False
+
     def spec_of(arg, call) -> bool:
         if isinstance(arg, ast.Call):
-            return loads_one_file(arg)
-        if not isinstance(arg, ast.Name) or arg.id in unreadable:
+            return not names_spec and loads_one_file(arg)
+        if not isinstance(arg, ast.Name) or arg.id in unreadable or names_spec or rebinds_module:
             return False
         every = binders.get(arg.id, [])
         if any(isinstance(b, (ast.Global, ast.Nonlocal)) for b in every):
             return False
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == arg.id \
-                    and not isinstance(n.ctx, ast.Load) \
-                    or isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("setattr", "delattr") \
-                    and n.args and isinstance(n.args[0], ast.Name) and n.args[0].id == arg.id:
-                return False
         own, scope, mine = resolve(arg.id, call)
         if isinstance(own, ast.ClassDef):
             return False
         if scope is None or scope is not own and scope is not tree:
+            return False
+        if any(isinstance(n, ast.Name) and n.id == arg.id and not isinstance(n.ctx, ast.Store)
+               and resolve(n.id, n)[1] is scope and not spec_use_ok(n) for n in ast.walk(tree)):
             return False
         for b in mine:
             stmt = parent.get(b)

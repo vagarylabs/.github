@@ -2634,7 +2634,7 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
+def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
     - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
       the text rule 6 reads, key), `key` the entry's own source as written (whitespace collapsed): the text an
@@ -3419,9 +3419,42 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
     # a capability module (sys, site, importlib, runpy, builtins) in any of these forms, a computed key on a read, a
     # use chained past the access (`sys.modules["m"].x`), `sys.modules.items()` / `.update(...)`, `p = sys.path`, any
     # other use, and every one of these outside a test file, still refuse.
-    if _plan.is_test_file(path, []):
+    # Root's ruling (b) of 2026-11-14 17:58: a name is not enough. F3 reads only in a file `test_only(path)` says no
+    # non-test file imports (code_imported_test_files, passed by the scan); a caller that passes none gets no F3.
+    # cli's read of 02137ba: MF3, a bind (`sys.modules[k] = v`, `monkeypatch.setitem`) refuses in a file that names
+    # `__path__`, `__spec__`, `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, a
+    # string such as `"pkg.__path__"`) or calls `setattr` with a computed name (`monkeypatch.setattr("a.b", v)` names
+    # it in its string) or `vars` with an argument: a stub with a
+    # `__path__` sends `import m.sub` to a directory no edge names. The bound value is a call, a constant or a name no
+    # import binds (an imported package bound under another name carries its own `__path__`). (a) `sys.path` reads only
+    # on the right of `in` / `not in` / `==` / `!=` or the left of `==` / `!=`, and `"m" in sys.modules` only as the
+    # last operand: `sys.path in y` hands the list to `y`. (b) `setitem` / `delitem` read only on `monkeypatch`.
+    if test_only is not None and _plan.is_test_file(path, []) and test_only(path):
         def take(*nodes) -> None:
             consumed.update(id(n) for n in nodes)
+
+        pkg_words = ("__path__", "__spec__", "submodule_search_locations", "__dict__")
+        pkg_shape = any(isinstance(n, ast.Attribute) and n.attr in pkg_words or isinstance(n, ast.Name) and n.id in pkg_words
+                        or isinstance(n, ast.keyword) and n.arg in pkg_words
+                        or isinstance(n, ast.Constant) and isinstance(n.value, str) and any(w in n.value for w in pkg_words)
+                        or isinstance(n, ast.Call) and isinstance(n.func, (ast.Name, ast.Attribute))
+                        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == "setattr"
+                        and not (len(n.args) >= 2 and isinstance(n.args[1], ast.Constant)
+                                 or isinstance(n.func, ast.Attribute) and n.args and isinstance(n.args[0], ast.Constant))
+                        or isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "vars" and n.args
+                        for n in ast.walk(tree))
+
+        def bindable(value) -> bool:
+            return not pkg_shape and (isinstance(value, (ast.Call, ast.Constant)) or isinstance(value, ast.Name)
+                                      and not any(isinstance(b, (ast.Import, ast.ImportFrom)) for b in binders.get(value.id, [])))
+
+        def cmp_side(cmp, node, right_ops, left_ops) -> bool:
+            if not isinstance(cmp, ast.Compare):
+                return False
+            seq = [cmp.left, *cmp.comparators]
+            i = next((j for j, x in enumerate(seq) if x is node), None)
+            return i is not None and (i == 0 or isinstance(cmp.ops[i - 1], right_ops)) \
+                and (i == len(cmp.ops) or isinstance(cmp.ops[i], left_ops))
 
         def capability_key(node) -> bool:
             return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.split(".")[0] in CAPABILITY_MODULES
@@ -3437,18 +3470,18 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
             up1 = parent.get(node)
             up2 = parent.get(up1)
             if node.attr == "path":
-                if isinstance(up1, ast.Compare):
+                if cmp_side(up1, node, (ast.In, ast.NotIn, ast.Eq, ast.NotEq), (ast.Eq, ast.NotEq)):
                     take(node.value, node)
                 elif isinstance(up1, ast.Subscript) and up1.value is node and isinstance(up1.ctx, ast.Load):
                     take(node.value, node, up1)
                 elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Name) and up1.func.id in ("len", "list", "tuple") \
-                        and up1.func.id not in binders and len(up1.args) == 1 and up1.args[0] is node and not up1.keywords:
+                        and builtin(up1.func.id) and len(up1.args) == 1 and up1.args[0] is node and not up1.keywords:
                     take(node.value, node)
             elif isinstance(up1, ast.Subscript) and up1.value is node:
                 if capability_key(up1.slice):
                     continue
                 if isinstance(up1.ctx, ast.Store) and isinstance(up2, ast.Assign) and len(up2.targets) == 1 and up2.targets[0] is up1 \
-                        or isinstance(up1.ctx, ast.Del):
+                        and bindable(up2.value) or isinstance(up1.ctx, ast.Del):
                     take(node.value, node, up1)
                 elif isinstance(up1.ctx, ast.Load) and module_key(up1.slice):
                     names.add(module_key(up1.slice).split(".")[0])
@@ -3461,10 +3494,11 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
                 elif up1.attr == "pop" and isinstance(parent.get(up2), ast.Expr) and not capability_key(up2.args[0]):
                     take(node.value, node, up1, up2)
             elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Attribute) and up1.func.attr in ("setitem", "delitem") \
-                    and isinstance(up1.func.value, ast.Name) and len(up1.args) >= 2 and up1.args[0] is node and module_key(up1.args[1]):
+                    and isinstance(up1.func.value, ast.Name) and up1.func.value.id == "monkeypatch" and len(up1.args) >= 2 \
+                    and up1.args[0] is node and module_key(up1.args[1]) \
+                    and (up1.func.attr == "delitem" or len(up1.args) == 3 and not up1.keywords and bindable(up1.args[2])):
                 take(node.value, node)
-            elif isinstance(up1, ast.Compare) and any(c is node for c in up1.comparators) \
-                    and all(isinstance(op, (ast.In, ast.NotIn)) for op in up1.ops) \
+            elif cmp_side(up1, node, (ast.In, ast.NotIn), ()) \
                     or isinstance(up1, (ast.For, ast.AsyncFor, ast.comprehension)) and up1.iter is node:
                 take(node.value, node)
     unconsumed = capability_occurrences(tree, text, parent, consumed)
@@ -4267,12 +4301,63 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     return deps, readers
 
 
+IMPORTER_LINE = re.compile(r"\bimport\b|import_module|__import__|run_module|run_path|spec_from_file_location|SourceFileLoader"
+                           r"|\bexec\b|pytest_plugins")
+
+
+def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
+    """Root's ruling (b) of 2026-11-14 17:58 on the R6-2 fix (3): `plan.is_test_file` is a path regex, so a production
+    helper named `test_utils.py`, or anything under a `tests/` directory, passes it by name alone. The test files a
+    non-test Python file may import lose the F3 reads. One `git grep -E` lists every line of a tracked Python file
+    holding an import or loader word (IMPORTER_LINE); such a line in a non-test file that holds a test file's module
+    word (its stem; its directory's name for an `__init__.py`) marks every test file of that word, and the
+    marked files' own such lines mark further test files, to a fixed point. It over-approximates (a word, not a
+    resolved import), which only refuses more; a test file whose name is no identifier is marked outright."""
+    words: dict[str, set[str]] = {}
+    marked: set[str] = set()
+    for p in tracked:
+        if p.endswith(".py") and _plan.is_test_file(p, []):
+            stem = posixpath.basename(p)[:-3]
+            word = posixpath.basename(posixpath.dirname(p)) if stem == "__init__" else stem
+            if re.fullmatch(r"[A-Za-z_]\w*", word):
+                words.setdefault(word, set()).add(p)
+            else:
+                marked.add(p)
+    if not words:
+        return marked
+    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-I", "-z", "-E",
+                   "import|run_module|run_path|spec_from_file_location|SourceFileLoader|exec|pytest_plugins",
+                   *([revision] if revision else []), "--", "*.py"],
+                  capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
+    grep_read_everything(out, "the reader scan's test-file importer grep")
+    lines: dict[str, list[str]] = {}
+    for record in out.stdout.decode("utf-8", errors="replace").split("\n"):
+        where, sep, text = record.partition("\0")
+        if sep and IMPORTER_LINE.search(text):
+            where = where[len(revision) + 1:] if revision and where.startswith(revision + ":") else where
+            lines.setdefault(where, []).append(text)
+    frontier = sorted(p for p in lines if not _plan.is_test_file(p, []))
+    while frontier:
+        for text in lines.get(frontier.pop(), ()):
+            for word in set(re.findall(r"[A-Za-z_]\w*", text)) & words.keys():
+                for hit in sorted(words[word] - marked):
+                    marked.add(hit)
+                    frontier.append(hit)
+    return marked
+
+
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
                    readers, unowned, names_used_before=frozenset(), parsed_files=frozenset()):
     """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
     ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
+    code_imported: list[set[str]] = []  # root's ruling (b) of 2026-11-14: computed once, on the first test file parsed
+
+    def test_only(path: str) -> bool:
+        if not code_imported:
+            code_imported.append(code_imported_test_files(repo, revision, environment, tracked))
+        return path not in code_imported[0]
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
     # F1 (root, 2026-11-12): a PACKAGE top too (`packages/shared` holds a package but is not a scan root), else an
@@ -4568,7 +4653,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                      "for anything; write the path out, or declare the load in edge_scan.computed_imports)")
                 found.update(hits)
             if src.py:
-                _, loaded, sites = python_file_facts(src.text, path)
+                _, loaded, sites = python_file_facts(src.text, path, test_only)
                 check_python_sites(path, sites)
                 for name in sorted(loaded):
                     sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
@@ -5003,10 +5088,10 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
             # sys.path entries stay a documented residual; a path-mutation capability no rule consumes refuses it as it
             # refuses a package file (R6-2: python_file_facts holds the single refuse point for every Python file read).
-            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
+            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path, test_only)[2])
             continue
         text = read_source(repo, path, revision, environment)
-        entries, file_names, sites = python_file_facts(text, path)
+        entries, file_names, sites = python_file_facts(text, path, test_only)
         parsed_names.setdefault(package, set()).update(file_names)
         mark = len(residual_sites)
         for kind, value, key, tail in entries:

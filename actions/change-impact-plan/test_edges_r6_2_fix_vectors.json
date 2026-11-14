@@ -1250,6 +1250,133 @@
    "must_run": "test-a",
    "verdict": "REFUSE",
    "refusal": "unresolved (the path-mutation capability `b\"exec_module\"` on line 7 of services/a/test/test_m25d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m25d.py"
+  },
+  "O1 read a test helper named _run_path that runs a package directory through subprocess keeps its chain a route (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/__main__.py",
+   "files": {
+    "services/a/test/test_w.py": "import subprocess\nfrom pathlib import Path\n\n\ndef _run_path(p):\n    return subprocess.run([\"python\", str(p)], check=True)\n\n\ndef test_tool():\n    _run_path(Path(__file__).resolve().parents[2] / \"b\")\n",
+    "services/b/__main__.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 read a call named get_run_path keeps its chain a route (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "from pathlib import Path\n\n\ndef get_run_path(p):\n    return p\n\n\nD = get_run_path(Path(__file__).resolve().parents[1] / \"b\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 read a method named dry_run_path keeps its chain a route (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "from pathlib import Path\n\n\nclass Tool:\n    def dry_run_path(self, p):\n        return p\n\n\nD = Tool().dry_run_path(Path(__file__).resolve().parents[1] / \"b\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 read a call named load_spec_from_file_location keeps its chain a route (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "from pathlib import Path\n\n\ndef load_spec_from_file_location(p):\n    return p\n\n\nD = load_spec_from_file_location(Path(__file__).resolve().parents[1] / \"b\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 twin the exact importlib.util.spec_from_file_location over the same chain refuses at its own site (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "import importlib.util\nfrom pathlib import Path\n\nspec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[1] / \"b\" / \"tool.py\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[1] / \"b\" / \"tool.py\")` on line 4 of services/a/x.py is consumed by no read rule; a file reads only when every one is) in services/a/x.py",
+   "verdict": "REFUSE"
+  },
+  "O1 read a chain in run_path's init_globals stays a route; rule 8 reads only the path (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "import runpy\nfrom pathlib import Path\n\nrunpy.run_path(str(Path(__file__).resolve().parent / \"p.py\"), init_globals={\"d\": str(Path(__file__).resolve().parents[1] / \"b\")})\n",
+    "services/a/p.py": "X = 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 read a chain in run_path's run_name stays a route; rule 8 reads only the path (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "import runpy\nfrom pathlib import Path\n\nrunpy.run_path(str(Path(__file__).resolve().parent / \"p.py\"), run_name=str(Path(__file__).resolve().parents[1] / \"b\"))\n",
+    "services/a/p.py": "X = 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "O1 read a chain in exec's globals stays a route; rule 8 reads only the open path (root MUST-1, R6-2 round 4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/x.py": "from pathlib import Path\n\nexec(open(Path(__file__).resolve().parent / \"p.py\").read(), {\"d\": str(Path(__file__).resolve().parents[1] / \"b\")})\n",
+    "services/a/p.py": "X = 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
   }
  }
 }

@@ -519,7 +519,10 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
    - **By path:** `runpy.run_path(p)` and `exec(open(p).read())`. Each such call is consumed (rule 9). A loader call
      with no path argument (`run_path()`) refuses too. `importlib.util.spec_from_file_location(name, p)` and
      `importlib.util.module_from_spec(spec)` are consumed by no rule, by name or attribute, wherever they sit, so a file
-     holding either refuses at rule 9 (fix F1, refuse-all). The path `p` is evaluated as in rule 6:
+     holding either refuses at rule 9 (fix F1, refuse-all). Only the path `p` is this rule's to judge: a chain in any
+     other argument (`init_globals=`, `run_name=`, exec's globals), or in a call whose name only ends with `run_path`
+     or `spec_from_file_location` (`_run_path`, `get_run_path`, `load_spec_from_file_location`), is a route like any
+     other (root's MUST-1 of R6-2 round four; vectors `O1`). The path `p` is evaluated as in rule 6:
      - evaluated, it is a literal load, an edge with no declaration;
      - not evaluated, the floor judges its longest EVALUATED prefix:
        - a prefix inside the importing package (no parent step after it) is declarable, as `reach: "package"`;

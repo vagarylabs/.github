@@ -2399,9 +2399,11 @@ def parent_step_literal(text: str) -> str | None:
 
 def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[int, int]]:
     """Character spans of the Python expressions 1.5.2's evaluator judges itself (python_file_facts): every sys.path
-    entry (insert/append/extend, `+=`, slice assignment) and every loader path (run_path, exec(open(p)); and a
-    spec_from_file_location path, though python_file_facts refuses any file holding that call since R6-2 fix F1 went
-    refuse-all). A chain inside one is that evaluator's to judge, never a route of its own. With `parent_literals`,
+    entry (insert/append/extend, `+=`, slice assignment) and every loader path (a call whose LAST name is exactly
+    `run_path`, the name rule 8 records or refuses; `exec(open(p))`). A chain inside one is that evaluator's to judge,
+    never a route of its own. A call whose name only ends with `run_path` (`_run_path`, `get_run_path`,
+    `dry_run_path`) is no loader, and `spec_from_file_location` is read by no rule (R6-2 fix F1 refuse-all), so a chain
+    inside either stays a route (root's MUST-1 of R6-2 round four: owning them dropped routes no rule judged). With `parent_literals`,
     only the sys.path entries B1 reads by their landings (parent_step_literal), each element alone."""
     import ast
     try:
@@ -2454,9 +2456,14 @@ def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[i
             continue
         if isinstance(node, ast.Call):
             name = dotted(node.func)
-            if name in ("sys.path.insert", "sys.path.append", "sys.path.extend") or name.endswith(
-                    ("spec_from_file_location", "run_path")) or (name == "exec" and node.args):
+            # Only what python_file_facts records (root's MUST-1 of R6-2 round four): the exact last name, so a
+            # `_run_path` / `get_run_path` helper or a `load_spec_from_file_location` is no loader and its chains stay
+            # routes; and of a loader call only the path it evaluates (rule 8 reads `run_path`'s first argument and
+            # `exec(open(p).read())`'s), so a chain in `init_globals=`, `run_name=` or exec's globals stays a route.
+            if name in ("sys.path.insert", "sys.path.append", "sys.path.extend"):
                 out += [span(a) for a in node.args] + [span(k.value) for k in node.keywords]
+            elif (name.rsplit(".", 1)[-1] == "run_path" or name == "exec") and node.args:
+                out.append(span(node.args[0]))
         elif isinstance(node, ast.AugAssign) and dotted(node.target) == "sys.path":
             out.append(span(node.value))
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and dotted(t.value) == "sys.path"

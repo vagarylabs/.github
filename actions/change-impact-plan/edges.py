@@ -3216,7 +3216,9 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
     # scope that binds the name is the call's own or the module's. The spec call itself carries only `location=`: a
     # `loader=` (an inline `SourceFileLoader` the consumed call would hide), a `submodule_search_locations=` or a
     # `**kwargs` refuses, and so does any attribute store on the spec name (`spec.loader = ...`,
-    # `spec.submodule_search_locations = [...]`) or `setattr` on it.
+    # `spec.submodule_search_locations = [...]`) or `setattr` on it. cli's read of 7001655 (MF4): a class body is not
+    # resolved: it reads a name it has not yet assigned from the module, and a comprehension or generator directly in
+    # it cannot see its names, so a call whose own scope is a class body (or such a comprehension) refuses.
     def loads_one_file(call) -> bool:
         site = spec_sites.get(id(call))
         return site is not None and site[2] is not None and not (site[2] == ".." or site[2].startswith("../")) \
@@ -3261,6 +3263,8 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
                     and n.args and isinstance(n.args[0], ast.Name) and n.args[0].id == arg.id:
                 return False
         own, scope, mine = resolve(arg.id, call)
+        if isinstance(own, ast.ClassDef):
+            return False
         if scope is None or scope is not own and scope is not tree:
             return False
         for b in mine:

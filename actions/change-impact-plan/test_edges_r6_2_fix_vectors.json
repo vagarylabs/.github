@@ -360,6 +360,30 @@
    "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 6 of services/a/test/test_m8c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m8c.py",
    "verdict": "REFUSE"
   },
+  "M9 twin a class body reading spec before it assigns it resolves to the module and refuses (cli MF4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m9a.py": "import importlib.util\nfrom pathlib import Path\n\nregistry = {}\nspec = registry.get(\"plugin\")\n\n\nclass Load:\n    mod = importlib.util.module_from_spec(spec)\n    spec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 9 of services/a/test/test_m9a.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m9a.py",
+   "verdict": "REFUSE"
+  },
+  "M9 twin a comprehension in a class body cannot see the class spec and refuses (cli MF4)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_m9b.py": "import importlib.util\nfrom pathlib import Path\n\nregistry = {}\nspec = registry.get(\"plugin\")\n\n\nclass Load:\n    spec = importlib.util.spec_from_file_location(\"tool\", Path(__file__).resolve().parents[2] / \"b\" / \"tool.py\")\n    mods = [importlib.util.module_from_spec(spec) for _ in (0,)]\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `importlib.util.module_from_spec(spec)` on line 10 of services/a/test/test_m9b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_m9b.py",
+   "verdict": "REFUSE"
+  },
   "S1 read sys.modules bound, unbound and named in a test file (startup_ddl_pg.py:227, test_signup_fixture_probes.py:42 forms)": {
    "cfg_set": {},
    "change": "services/b/tool.py",

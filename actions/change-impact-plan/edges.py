@@ -4364,18 +4364,21 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     return deps, readers
 
 
-IMPORTER_LINE = re.compile(r"\bimport\b|import_module|__import__|run_module|run_path|spec_from_file_location|SourceFileLoader"
-                           r"|\bexec\b|pytest_plugins")
-
-
 def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
     """Root's ruling (b) of 2026-11-14 17:58 on the R6-2 fix (3): `plan.is_test_file` is a path regex, so a production
     helper named `test_utils.py`, or anything under a `tests/` directory, passes it by name alone. The test files a
-    non-test Python file may import lose the F3 reads. One `git grep -E` lists every line of a tracked Python file
-    holding an import or loader word (IMPORTER_LINE); such a line in a non-test file that holds a test file's module
-    word (its stem; its directory's name for an `__init__.py`) marks every test file of that word, and the
-    marked files' own such lines mark further test files, to a fixed point. It over-approximates (a word, not a
-    resolved import), which only refuses more; a test file whose name is no identifier is marked outright."""
+    non-test Python file may import lose the F3 reads. cli's read of 7001655 (MF5): the importers come from the AST,
+    not from lines, so a multi-line `from services.b import (\n    test_utils,\n)` and a literal fed to
+    `importlib.import_module` on another line are seen. Every tracked non-test Python file is parsed, and every
+    identifier and every string or bytes literal word in it (an import's names, an attribute, a loop literal, a path)
+    that is a test file's module word (its stem; its directory's name for an `__init__.py`) marks every test file of
+    that word; a marked file's own words mark further test files, to a fixed point. A file that does not parse
+    counts every word of its text. This is a word, not a resolved import: it marks more than Python would import,
+    never less, short of a name the source computes (`"test_" + "utils"`, which the reader's own loader rules refuse)
+    and an importer outside Python (a workflow's `python -m`, an entry point). A test file whose name is no
+    identifier is marked outright."""
+    import ast
+
     words: dict[str, set[str]] = {}
     marked: set[str] = set()
     for p in tracked:
@@ -4388,24 +4391,28 @@ def code_imported_test_files(repo, revision, environment, tracked) -> set[str]:
                 marked.add(p)
     if not words:
         return marked
-    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-I", "-z", "-E",
-                   "import|run_module|run_path|spec_from_file_location|SourceFileLoader|exec|pytest_plugins",
-                   *([revision] if revision else []), "--", "*.py"],
-                  capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    grep_read_everything(out, "the reader scan's test-file importer grep")
-    lines: dict[str, list[str]] = {}
-    for record in out.stdout.decode("utf-8", errors="replace").split("\n"):
-        where, sep, text = record.partition("\0")
-        if sep and IMPORTER_LINE.search(text):
-            where = where[len(revision) + 1:] if revision and where.startswith(revision + ":") else where
-            lines.setdefault(where, []).append(text)
-    frontier = sorted(p for p in lines if not _plan.is_test_file(p, []))
+
+    def words_of(p: str) -> set[str]:
+        text = read_source(repo, p, revision, environment)
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return set(re.findall(r"[A-Za-z_]\w*", text)) & words.keys()
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            for _, value in ast.iter_fields(node):
+                if isinstance(value, bytes):
+                    value = value.decode("latin-1")
+                if isinstance(value, str):
+                    found.update(re.findall(r"[A-Za-z_]\w*", value))
+        return found & words.keys()
+
+    frontier = sorted((p for p in tracked if p.endswith(".py") and not _plan.is_test_file(p, [])), reverse=True)
     while frontier:
-        for text in lines.get(frontier.pop(), ()):
-            for word in set(re.findall(r"[A-Za-z_]\w*", text)) & words.keys():
-                for hit in sorted(words[word] - marked):
-                    marked.add(hit)
-                    frontier.append(hit)
+        for word in sorted(words_of(frontier.pop())):
+            for hit in sorted(words[word] - marked):
+                marked.add(hit)
+                frontier.append(hit)
     return marked
 
 

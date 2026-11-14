@@ -591,6 +591,45 @@
    "must_run": "test-b",
    "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_utils.py is consumed by no read rule; a file reads only when every one is) in services/b/test_utils.py",
    "verdict": "REFUSE"
+  },
+  "S9 twin a test-named helper in a parenthesised from-import refuses (cli MF5, black form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/app.py": "from services.b import (  # noqa: F401\n    test_utils,\n)\n",
+    "services/b/test_utils.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_utils.py is consumed by no read rule; a file reads only when every one is) in services/b/test_utils.py",
+   "verdict": "REFUSE"
+  },
+  "S9 twin a test-named helper named by a loop literal fed to import_module refuses (cli MF5)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/app.py": "import importlib\n\nfor m in (\n    \"test_utils\",\n):\n    importlib.import_module(m)\n",
+    "services/b/test_utils.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_utils.py is consumed by no read rule; a file reads only when every one is) in services/b/test_utils.py",
+   "verdict": "REFUSE"
+  },
+  "S9 twin a test-named helper on a continuation line of a multi-line import refuses (cli MF5)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/b/app.py": "import tool, \\\n    test_utils  # noqa: E401,F401\n",
+    "services/b/test_utils.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-b",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/b/test_utils.py is consumed by no read rule; a file reads only when every one is) in services/b/test_utils.py",
+   "verdict": "REFUSE"
   }
  }
 }

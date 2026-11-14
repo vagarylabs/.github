@@ -3274,6 +3274,87 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str, str, s
             elif isinstance(p, ast.Attribute) and p.value is node and p.attr == "get" and isinstance(g, ast.Call) \
                     and g.func is p and 1 <= len(g.args) <= 2 and not g.keywords and literal(g.args[0]) in module_names:
                 consume(node)
+    # R6-2 fix (2b), the census's own SCOPE form (38 of its 41 sites; none is a literal key): the test-runner loop over
+    # the module's names. A `for k in <globals()>` (`globals()`, `.keys()`, under `sorted` / `list`) yields strings; a
+    # `globals()[k]()` in it, under `if k.startswith(<prefix>)`, calls a name the prefix admits. A `for k, v in
+    # <globals().items()>` is read when `v` is used only as `callable(v)`, `v.__name__`, `getattr(v, "__name__", ...)`
+    # anywhere in the loop, and as a no-argument `v()` only under `if k.startswith(<prefix>)` (alone or as a conjunct),
+    # neither name rebound in the loop, and `v` read after the loop nowhere outside a function that binds its own. The
+    # prefix is a non-empty literal with no leading underscore (so no dunder: `__builtins__`, `__loader__`) that no
+    # capability-bound name of the file starts with (`import sys as test_sys` keeps it refusing). The gate is the
+    # loop's own name test; a gate on a runtime attribute (`getattr(fn, "__name__", "").startswith("test_")` over
+    # `.values()`), a comprehension over `.items()` and every other use of `v` still refuse.
+    def unwrap(node):
+        while isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("sorted", "list") \
+                and node.func.id not in binders and len(node.args) == 1 and not node.keywords:
+            node = node.args[0]
+        return node
+
+    def prefix_gate(test, key: str) -> bool:
+        for t in (test.values if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And) else [test]):
+            if isinstance(t, ast.Call) and isinstance(t.func, ast.Attribute) and t.func.attr == "startswith" \
+                    and isinstance(t.func.value, ast.Name) and t.func.value.id == key and len(t.args) == 1 and not t.keywords:
+                prefix = literal(t.args[0])
+                if prefix and not prefix.startswith("_") and not any(n.startswith(prefix) for n in capability_names):
+                    return True
+        return False
+
+    def gated(use, loop, key: str) -> bool:
+        node = use
+        while node is not loop:
+            up_ = parent[node]
+            if isinstance(up_, ast.If) and any(stmt is node for stmt in up_.body) and prefix_gate(up_.test, key):
+                return True
+            node = up_
+        return False
+
+    def no_arg_call(call, func) -> bool:
+        return isinstance(call, ast.Call) and call.func is func and not call.args and not call.keywords
+
+    for loop in ast.walk(tree):
+        if not isinstance(loop, (ast.For, ast.AsyncFor)):
+            continue
+        core = unwrap(loop.iter)
+        method = core.func.attr if isinstance(core, ast.Call) and isinstance(core.func, ast.Attribute) \
+            and is_globals(core.func.value) and not core.args and not core.keywords else None
+        inside = [n for stmt in loop.body + loop.orelse for n in ast.walk(stmt)]
+        inside_ids = {id(n) for n in inside}
+        targets = [loop.target] if isinstance(loop.target, ast.Name) else loop.target.elts \
+            if isinstance(loop.target, ast.Tuple) and all(isinstance(e, ast.Name) for e in loop.target.elts) else []
+        names_ = [t.id for t in targets]
+        if not names_ or len(set(names_)) != len(names_) \
+                or any(isinstance(n, ast.Name) and n.id in names_ and not isinstance(n.ctx, ast.Load) for n in inside):
+            continue
+        if (is_globals(core) or method == "keys") and len(names_) == 1:
+            key = names_[0]
+            consume(core if is_globals(core) else core.func.value)
+            for n in inside:
+                sub = parent.get(n)
+                if is_globals(n) and isinstance(sub, ast.Subscript) and sub.value is n and isinstance(sub.ctx, ast.Load) \
+                        and isinstance(sub.slice, ast.Name) and sub.slice.id == key and no_arg_call(parent.get(sub), sub) \
+                        and gated(parent[sub], loop, key):
+                    consume(n)
+        elif method == "items" and len(names_) == 2:
+            key, value = names_
+            ok = True
+            for n in ast.walk(tree):
+                if not (isinstance(n, ast.Name) and n.id == value and isinstance(n.ctx, ast.Load)):
+                    continue
+                use = parent.get(n)
+                if id(n) not in inside_ids:
+                    own = scope_of(use)
+                    ok = ok and own is not tree and own is not scope_of(loop) \
+                        and any(scope_of(parent[b]) is own for b in binders.get(value, []))
+                elif no_arg_call(use, n):
+                    ok = ok and gated(use, loop, key)
+                elif not (isinstance(use, ast.Attribute) and use.attr == "__name__"
+                          or isinstance(use, ast.Call) and isinstance(use.func, ast.Name) and use.func.id not in binders
+                          and use.args and use.args[0] is n and not use.keywords
+                          and (use.func.id == "callable" and len(use.args) == 1
+                               or use.func.id == "getattr" and len(use.args) in (2, 3) and literal(use.args[1]) == "__name__")):
+                    ok = False
+            if ok:
+                consume(core.func.value)
     unconsumed = capability_occurrences(tree, text, parent, consumed)
     if unconsumed:
         lineno, segment = unconsumed[0]

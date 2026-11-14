@@ -100,6 +100,74 @@
    "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_g1c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g1c.py",
    "verdict": "REFUSE"
   },
+  "G2 read the test-runner loop over globals().items() under a test_ prefix (test_ci_test_pg.py:498 form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g2.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nif __name__ == \"__main__\":\n    for name, fn in sorted(globals().items()):\n        if name.startswith(\"test_\") and callable(fn):\n            fn()\n            print(f\"ok  {name}\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "G2 twin the same loop without the name gate refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g2c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nif __name__ == \"__main__\":\n    for name, fn in sorted(globals().items()):\n        if callable(fn):\n            fn()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 13 of services/a/test/test_g2c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g2c.py",
+   "verdict": "REFUSE"
+  },
+  "G3 twin a prefix a capability binding starts with refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g3c.py": "import sys as test_sys\nimport sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1 and test_sys.argv\n\n\nif __name__ == \"__main__\":\n    for name, fn in sorted(globals().items()):\n        if name.startswith(\"test_\"):\n            fn()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 14 of services/a/test/test_g3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g3c.py",
+   "verdict": "REFUSE"
+  },
+  "G4 read the key loop calling globals()[k]() under the gate (test_stream_whitespace_fidelity.py:230 form)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g4.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nif __name__ == \"__main__\":\n    for fn in list(globals()):\n        if fn.startswith(\"test_\"):\n            globals()[fn]()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "G4 twin the key loop calling globals()[k]() without the gate refuses": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_g4c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nif __name__ == \"__main__\":\n    for fn in list(globals()):\n        globals()[fn]()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 14 of services/a/test/test_g4c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_g4c.py",
+   "verdict": "REFUSE"
+  },
   "M1 read module_from_spec over a spec whose path evaluates (engine_accept.py:34 form)": {
    "cfg_set": {},
    "change": "services/b/tool.py",

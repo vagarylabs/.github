@@ -3502,9 +3502,46 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
                         or isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "vars" and n.args
                         for n in ast.walk(tree))
 
+        # cli's read of 7001655 (should-fix 2, root's 18:29 scope): another file may hand back a stub with a
+        # `__path__`, so a bound value reads only when this file shows it has none: a constant,
+        # `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` (no `spec`, `spec_set`, `wraps`, positional or `**`
+        # argument; a mock refuses a dunder it was not given), or a name every binding of which in this file is a
+        # plain assignment of one of those.
+        def bound_only_by(name: str, module: str, attr: str | None) -> bool:
+            every = binders.get(name, [])
+            return bool(every) and name not in unreadable and all(
+                isinstance(b, ast.Import) and attr is None and any(a.name == module and (a.asname or a.name) == name for a in b.names)
+                or isinstance(b, ast.ImportFrom) and attr is not None and b.module == module and not b.level
+                and any(a.name == attr and (a.asname or a.name) == name for a in b.names) for b in every)
+
+        mocks = ("Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock", "AsyncMock")
+
+        def stub_call(value) -> bool:
+            if isinstance(value, ast.Constant):
+                return True
+            if not isinstance(value, ast.Call) or any(k.arg in (None, "spec", "spec_set", "wraps") for k in value.keywords):
+                return False
+            f = value.func
+            if isinstance(f, ast.Name) and f.id == "ModuleType" and bound_only_by(f.id, "types", "ModuleType") \
+                    or isinstance(f, ast.Attribute) and f.attr == "ModuleType" and isinstance(f.value, ast.Name) \
+                    and bound_only_by(f.value.id, "types", None):
+                return 1 <= len(value.args) <= 2 and not value.keywords \
+                    and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in value.args)
+            mock = isinstance(f, ast.Name) and f.id in mocks and any(bound_only_by(f.id, m, f.id) for m in ("unittest.mock", "mock")) \
+                or isinstance(f, ast.Attribute) and f.attr in mocks and isinstance(f.value, ast.Name) \
+                and (bound_only_by(f.value.id, "unittest", "mock") or bound_only_by(f.value.id, "mock", None))
+            return mock and not value.args
+
         def bindable(value) -> bool:
-            return not pkg_shape and (isinstance(value, (ast.Call, ast.Constant)) or isinstance(value, ast.Name)
-                                      and not any(isinstance(b, (ast.Import, ast.ImportFrom)) for b in binders.get(value.id, [])))
+            if pkg_shape:
+                return False
+            if isinstance(value, ast.Name):
+                every = binders.get(value.id, [])
+                return bool(every) and value.id not in unreadable and all(
+                    isinstance(parent.get(b), (ast.Assign, ast.AnnAssign)) and isinstance(b, ast.Name)
+                    and (b in parent[b].targets if isinstance(parent[b], ast.Assign) else parent[b].target is b)
+                    and stub_call(parent[b].value) for b in every)
+            return stub_call(value)
 
         def cmp_side(cmp, node, right_ops, left_ops) -> bool:
             if not isinstance(cmp, ast.Compare):

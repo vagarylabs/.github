@@ -460,6 +460,35 @@
    "refusal": "unresolved (the path-mutation capability `sys.modules.pop(m, None)` on line 7 of services/a/s1_tool.py is consumed by no read rule; a file reads only when every one is) in services/a/s1_tool.py",
    "verdict": "REFUSE"
   },
+  "S10 read sys.modules bound to MagicMock() and None in a test file": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_s10r.py": "import sys\nfrom pathlib import Path\nfrom unittest.mock import MagicMock\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nsys.modules[\"openai\"] = MagicMock()\nsys.modules[\"redis\"] = None\nimport tool  # noqa: E402\n\nassert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "verdict": "SELECT"
+  },
+  "S10 twin sys.modules bound to a stub another file builds refuses (cli should-fix 2)": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/stubs.py": "import types\n\n\ndef pkg(name):\n    m = types.ModuleType(name)\n    m.__path__ = []\n    return m\n",
+    "services/a/test/test_s10.py": "import sys\n\nimport stubs\n\nsys.modules[\"openai\"] = stubs.pkg(\"openai\")\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"openai\"]` on line 5 of services/a/test/test_s10.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_s10.py",
+   "verdict": "REFUSE"
+  },
   "S2 read sys.modules[\"m\"] and .get(\"m\") in a test file record m as the file's dependency edge": {
    "cfg_set": {},
    "change": "services/b/tool.py",

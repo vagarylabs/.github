@@ -132,7 +132,7 @@ KNOWN_FAIL_OPEN = {
     "N13e_conftest_evaluated_unit_rsub": "R6B2",
     "P04_eval_zip_on_path": "R6B5", "P04b_eval_zip_on_path_parents2": "R6B5", "U_P01_landing_is_tracked_symlink": "R6B5",
     "U_P02_symlink_intermediate": "R6B5", "U_P03_symlink_then_dotdot": "R6B5", "U_P04_zip_on_path": "R6B5",
-    "U_E_C4_semicolon": "R6B7", "U_E_C4b_if_oneliner": "R6B7", "U_E_C4c_try_oneliner": "R6B7",
+    # R6-2 round 5 (B) reads U_E_C4, C4b and C4c at their truth (every tracked .py is parsed): pins removed.
     "U_E_C4e_unparseable_sibling": "R6B7",
 }
 
@@ -1831,7 +1831,8 @@ class ImportAttributionTest(unittest.TestCase):
             message = str(caught.exception)
             self.assertIn("(git grep exit 128: fatal: planted)", message, f"grep #{k}")
             labels.add(re.search(r"reader closure unproven: (.*?) could not read the scanned tree", message).group(1))
-        self.assertLessEqual({"the reader scan's shell listing", "the reader scan's Python listing",
+        # R6-2 round 5 (B): the Python listing grep is gone (every tracked .py is parsed), so its label is too.
+        self.assertLessEqual({"the reader scan's shell listing",
                               "the reader scan's Python import grep", "the reader scan"}, labels)
 
     def test_python_sys_path_entries_credit_what_the_package_imports_by_name(self):

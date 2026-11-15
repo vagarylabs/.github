@@ -2620,6 +2620,16 @@ PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtin
                  r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
                  r"exec_module|load_module|imp|importfile|resolve_name|__path__|__getattr__)([^A-Za-z0-9_]|$)"
                  r"|PYTHONPATH")
+# R6-2 round 5, (B): every tracked .py is parsed. A file the reader's Python cannot parse cannot run under it either,
+# so it refuses only when its raw text could hold what a parse would have judged: any scan word (PY_FACTS_GREP), a
+# round-5 module-internal word, a backslash (an escape or a continuation), a non-ASCII character (an NFKC identifier)
+# or two quotes with only blanks and a prefix between them (implicit concatenation). A plain one records nothing, as
+# before the parse set widened (cli's review fragments, test fixtures holding prose in a .py). The residual is a
+# version skew: a file that parses under the runner's Python and not the reader's, and spells none of these.
+UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|(?<![A-Za-z0-9_])(?:submodule_search_locations|__class__|__dict__|"
+                              r"__package__|__globals__|__self__|__subclasses__|__spec__|__loader__|__code__|__closure__|"
+                              r"vars|getattr|setattr|delattr)(?![A-Za-z0-9_])|\\|[^\x00-\x7f]|[\"'][ \t]*[rRbBuUfF]{0,2}[\"']",
+                              re.M)
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
@@ -2706,8 +2716,10 @@ INERT_DUNDERS = frozenset({
     "__radd__", "__rsub__", "__rmul__"})
 DUNDER = re.compile(r"__[A-Za-z0-9_]+__")
 # The calls that take a receiver and an attribute name (R5-e: a computed name on a module refuses).
-ATTR_NAME_CALLS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
-ATTR_NAME_METHODS = frozenset({"__getattribute__", "__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
+# R5-e, WRITES only: a getattr / hasattr read with a computed name is the open class (a class-body `__getattr__` proxy
+# returning `getattr(tool, name)` is the pinned read S13); a write into a module namespace by a computed name is not.
+ATTR_NAME_CALLS = frozenset({"setattr", "delattr"})
+ATTR_NAME_METHODS = frozenset({"__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
 FOLD_MAX = 4096
 
 
@@ -2864,11 +2876,14 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
       sys.path entry (None when it cannot be). `spec_from_file_location` and `module_from_spec` record nothing and
       refuse at the capability scan wherever they sit (R6-2 fix F1 refuse-all: root's rule of 2026-11-14 19:00 on
       round 4's MUST-A and MUST-B).
-    Raises ValueError when the file does not parse."""
+    Raises ValueError when the file does not parse and its text is UNPARSED_SUSPECT; a plain unparseable file
+    records nothing (R6-2 round 5)."""
     import ast
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError) as error:
+        if UNPARSED_SUSPECT.search(text) is None:
+            return [], set(), []        # R6-2 round 5 (B): unparseable and plain, so no Python of this reader runs it
         raise ValueError(f"unresolved (a Python file the scan must read does not parse: {path}: {error})") from None
     assigned: dict[str, list] = {}
     augmented: dict[str, list] = {}  # name -> its `name += ...` statements (root's S02 of #84, 2026-11-12)
@@ -3802,16 +3817,16 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
       `__closure__`, `__import__`) in any context and a WRITE_DUNDERS attribute (`__class__`, `__package__`,
       `__dict__`) stored or deleted, on ANY receiver; tier 2, on a module (a name an import in this file binds, an alias
       of one to a fixed point, a literal loader call), every dunder attribute outside INERT_DUNDERS, `vars(<module>)`
-      and a getattr / setattr / delattr / hasattr / `object.__setattr__` whose attribute name does not fold to a
-      constant; and a folded constant (fold_constant: implicit concatenation, `+`, `%`, an all-constant f-string,
+      and a setattr / delattr / `object.__setattr__` / `object.__delattr__` whose attribute name does not fold to a
+      constant (a computed-name READ is the open class); and a folded constant (fold_constant: implicit concatenation, `+`, `%`, an all-constant f-string,
       `sep.join(<constants>)`, `.decode()`) that names a module internal (internals_word) anywhere, or PYTHONPATH or an
       unread loader word outside a consumed node. PKG-PATH also takes `submodule_search_locations` (A1).
     BY DEFAULT (root's STANDING ask, R6-2 round 5): every tracked regular `.py` is parsed and one that does not parse
-    refuses; in a parsed file every dunder attribute outside INERT_DUNDERS on a module, every tier 1 attribute on any
-    receiver, every `vars(<module>)`, every computed attribute name on a module and every constant spelling of a
-    module internal refuses, beside the capability uses above. NOT refused (the open class, dated 2026-11-15): a name
-    built at run time from non-constant parts reaching getattr / setattr / delattr on a receiver this file does not
-    show is a module (a parameter, a call result), and a module object handed in by another file's call and enumerated
+    refuses when its text is UNPARSED_SUSPECT (a plain unparseable one records nothing); in a parsed file every dunder attribute outside INERT_DUNDERS on a module, every tier 1 attribute on any
+    receiver, every `vars(<module>)`, every computed-name WRITE on a module and every constant spelling of a
+    module internal refuses, beside the capability uses above. NOT refused (the open class, dated 2026-11-15): a computed-name READ
+    (getattr / hasattr) on any receiver, a computed-name write on a receiver this file does not show is a module (a
+    parameter, a call result), and a module object handed in by another file's call and enumerated
     through `.__dict__` on a parameter.
     Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
     hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
@@ -4055,8 +4070,8 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     # (a) Tier 1: a GADGET_DUNDERS attribute in any context, and a WRITE_DUNDERS attribute stored or deleted, on ANY
     #     receiver (`textwrap.__class__ = _G`, `json.__builtins__["exec"]`, `len.__self__.exec`, `json.__loader__`).
     # (b) Tier 2, on a MODULE (a name any import in this file binds, an alias of one, a literal loader call): every
-    #     dunder attribute outside INERT_DUNDERS (`email.__dict__.values()`), `vars(<module>)`, and getattr / setattr /
-    #     delattr / hasattr / `object.__setattr__` with an attribute name that does not fold to a constant.
+    #     dunder attribute outside INERT_DUNDERS (`email.__dict__.values()`), `vars(<module>)`, and setattr / delattr /
+    #     `object.__setattr__` / `object.__delattr__` with an attribute name that does not fold to a constant.
     # (c) A folded constant naming a module internal (internals_word, on any node), or PYTHONPATH or an unread loader
     #     word (env_loader_word, outside a consumed node, as ENV and MUST-D): `"__pa" "th__"`, `"PYTHON" + "PATH"`,
     #     `"load_" + "module"`, `"".join(["__built", "ins__"])`, `setattr(m, "__class__", C)`.

@@ -3139,45 +3139,64 @@ def E_list_add(values, item):
 
 
 class R5FoldBounds(unittest.TestCase):
-    """R6-2 round 5, codex's read of cc91398: every fold_constant branch bounds its result BEFORE it builds it. Each
-    oversized case would allocate megabytes if built; tracemalloc's peak during the fold proves it refuses (None)
-    without building it. Small folds still fold (the controls)."""
+    """R6-2 round 5, codex's reads of cc91398 and 0c7d3b3 (B1): every fold_constant branch bounds its result BEFORE it
+    builds it. An oversized case is measured against a BASELINE of the same shape and size that folds to a small value,
+    so the memo and list bookkeeping cancel out and only a built result would show; small-budget controls (FOLD_MAX
+    patched low) pin each boundary without any large allocation."""
 
-    def fold(self, expr):
+    def fold(self, expr, peak=False):
         import ast
         import tracemalloc
         node = ast.parse(expr, mode="eval").body
+        if not peak:
+            return E.fold_constant(node, {})
         tracemalloc.start()
         try:
             value = E.fold_constant(node, {})
-            peak = tracemalloc.get_traced_memory()[1]
+            used = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
-        return value, peak
+        return value, used
+
+    def assert_not_built(self, oversized, baseline, built_bytes):
+        value, used = self.fold(oversized, peak=True)
+        small, base = self.fold(baseline, peak=True)
+        self.assertIsNone(value)
+        self.assertIsNotNone(small, "the baseline must fold")
+        self.assertLess(used - base, built_bytes // 4, "the oversized result was built")
 
     def test_small_folds_still_fold(self):
-        self.assertEqual(self.fold('"".join(["__pa", "th__"])')[0], "__path__")
-        self.assertEqual(self.fold('f"{\'__pa\'}th__"')[0], "__path__")
-        self.assertEqual(self.fold('"%s%s" % ("__pa", "th__")')[0], "__path__")
-        self.assertEqual(self.fold('"abc".encode("utf-8")')[0], b"abc")
+        self.assertEqual(self.fold('"".join(["__pa", "th__"])'), "__path__")
+        self.assertEqual(self.fold('f"{\'__pa\'}th__"'), "__path__")
+        self.assertEqual(self.fold('"%s%s" % ("__pa", "th__")'), "__path__")
+        self.assertEqual(self.fold('"abc".encode("utf-8")'), b"abc")
 
-    def test_join_with_a_long_separator_refuses_before_building(self):
-        value, peak = self.fold('"' + "y" * 4000 + '".join([' + ", ".join(['"a"'] * 20000) + "])")
-        self.assertIsNone(value)
-        self.assertLess(peak, 1 << 20, "the 80 MB join was built")
+    def test_join_with_a_long_separator_is_not_built(self):
+        items = ", ".join(['"a"'] * 2000)
+        self.assert_not_built('"' + "y" * 4000 + '".join([' + items + "])", '"".join([' + items + "])", 4000 * 2000)
 
-    def test_fstring_of_many_long_parts_refuses_before_building(self):
-        value, peak = self.fold("f'" + "".join("{%r}" % ("z" * 4000) for _ in range(1000)) + "'")
-        self.assertIsNone(value)
-        self.assertLess(peak, 1 << 20, "the 4 MB f-string was built")
+    def test_fstring_of_many_long_parts_is_not_built(self):
+        self.assert_not_built("f'" + "".join("{%r}" % ("z" * 4000) for _ in range(200)) + "'",
+                              "f'" + "".join("{%r}" % "" for _ in range(200)) + "'", 4000 * 200)
 
-    def test_percent_with_wide_fields_refuses_before_building(self):
-        value, peak = self.fold('"' + "%4000s" * 600 + '" % (' + ", ".join(['"a"'] * 600) + ")")
-        self.assertIsNone(value)
-        self.assertLess(peak, 1 << 20, "the 2.4 MB format result was built")
+    def test_percent_folds_only_plain_s_fields_over_strings(self):
+        for expr in ('"%d" % (1,)', '"%f" % (1e300,)', '"%r" % ("a",)', '"%c" % (65,)', '"%(k)s" % {"k": "v"}',
+                     '"%*s" % (5, "a")'):
+            self.assertIsNone(self.fold(expr), expr)
+        self.assertEqual(self.fold('"%%s%s" % ("x",)'), "%sx")
+
+    def test_boundaries_at_a_small_budget(self):
+        with patch.object(E, "FOLD_MAX", 12):
+            self.assertEqual(self.fold('"-".join(["ab", "cd", "ef", "g"])'), "ab-cd-ef-g")       # 10
+            self.assertIsNone(self.fold('"--".join(["ab", "cd", "ef", "g"])'))                 # 13
+            self.assertEqual(self.fold('"ab".encode("utf-32")'), "ab".encode("utf-32"))       # 4 + 2 x 4
+            self.assertIsNone(self.fold('"abc".encode("utf-32")'))                            # 16
+            self.assertEqual(self.fold('"%5s" % ("ab",)'), "   ab")                          # 3 + 5 + 2
+            self.assertIsNone(self.fold('"%9s" % ("ab",)'))                                    # 3 + 9 + 2
+            self.assertIsNone(self.fold("f'{\"abcdefg\"}{\"hijkl\"}x'"))                     # 13
 
     def test_an_escaping_codec_does_not_fold(self):
-        self.assertIsNone(self.fold('"abc".encode("unicode_escape")')[0])
+        self.assertIsNone(self.fold('"abc".encode("unicode_escape")'))
 
 
 class R5ModuleAliasContainers(unittest.TestCase):

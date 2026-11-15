@@ -2725,16 +2725,17 @@ DUNDER = re.compile(r"__[A-Za-z0-9_]+__")
 ATTR_NAME_CALLS = frozenset({"setattr", "delattr"})
 ATTR_NAME_METHODS = frozenset({"__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
 FOLD_MAX = 4096
-# `.encode()` / `.decode()` fold only with one of these (at most 4 bytes per character, so a value under FOLD_MAX stays
-# under 4 x FOLD_MAX before the final check; an escaping codec such as unicode_escape is not folded).
-FOLD_CODECS = frozenset({"utf-8", "utf8", "ascii", "latin-1", "latin1", "iso-8859-1", "utf-16", "utf-32"})
+# `.encode()` / `.decode()` fold only with one of these; an encode is bounded before it runs by its worst bytes per
+# character and byte-order mark (codex's read of 0c7d3b3); an escaping codec such as unicode_escape is not folded.
+FOLD_CODECS = {"utf-8": (4, 0), "utf8": (4, 0), "ascii": (1, 0), "latin-1": (1, 0), "latin1": (1, 0),
+               "iso-8859-1": (1, 0), "utf-16": (4, 2), "utf-32": (4, 4)}   # (bytes per character at most, BOM bytes)
 
 
 def fold_constant(node, memo: dict):
     """The str or bytes value of a compile-time constant expression, else None (R6-2 round 5, MUST-B: a word built
     from constants is the word). Folded: a constant (the AST already joins implicit concatenation and decodes
-    escapes), `+` of constants (a left-deep chain of any length, flattened), `%` with constant operands (no `*` width,
-    no width or precision over 4 digits), an f-string whose parts all fold, `sep.join(<list or tuple display of
+    escapes), `+` of constants (a left-deep chain of any length, flattened), `%` of plain `%s` fields over str / bytes
+    constants (no number, no `%r`, no `*` width), an f-string whose parts all fold, `sep.join(<list or tuple display of
     constants>)`, and `.decode()` / `.encode()` of one with a literal FOLD_CODECS codec. Bounded at FOLD_MAX characters, each branch
     BEFORE it builds its result (codex's read of cc91398). A name
     built from anything else (a variable, `chr(95)`, a join over a computed list) is the open class."""
@@ -2762,23 +2763,21 @@ def fold_constant(node, memo: dict):
             vals.append(v)
         value = (vals[0][:0].join(vals)) if vals else None
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # codex's reads of cc91398 and 0c7d3b3 (B1): `%` folds ONLY when every field is a plain `%s` (optional width or
+        # precision, `%%` allowed) and every argument folds to a str / bytes constant; a number, `%r`, `%a`, `%d`, `%f`,
+        # `%c`, a `*` width and a mapping key do not fold. The result is then at most the format plus every width digit
+        # value plus every argument, all known BEFORE the format is evaluated.
         left = fold_constant(node.left, memo)
-        if isinstance(left, (str, bytes)) and not re.search(rb"%[^%a-zA-Z]*(?:\*|\d{5,})" if isinstance(left, bytes)
-                                                            else r"%[^%a-zA-Z]*(?:\*|\d{5,})", left) \
-                and len(left) + sum(int(n) for n in re.findall(rb"\d+" if isinstance(left, bytes) else r"\d+", left)) <= FOLD_MAX:
+        if isinstance(left, (str, bytes)):
+            pat = rb"%(?:%|(\d{0,4})(?:\.(\d{0,4}))?s)" if isinstance(left, bytes) else r"%(?:%|(\d{0,4})(?:\.(\d{0,4}))?s)"
+            fields = list(re.finditer(pat, left))
+            plain = len(re.findall(rb"%" if isinstance(left, bytes) else r"%", left)) == sum(
+                2 if f.group(0) in ("%%", b"%%") else 1 for f in fields)
+            widths = sum(int(f.group(1) or 0) for f in fields)
             items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
-            args = []
-            for item in items:
-                v = item.value if isinstance(item, ast.Constant) and isinstance(item.value, (int, float)) \
-                    and not isinstance(item.value, bool) else fold_constant(item, memo)
-                if v is None:
-                    args = None
-                    break
-                args.append(v)
-            # codex's read of cc91398: bound the result BEFORE building it: the format's own length plus every width or
-            # precision digit run (above) plus each argument's length (a number at most 32 characters).
-            if args is not None and len(left) + sum(int(n) for n in re.findall(rb"\d+" if isinstance(left, bytes) else r"\d+", left)) \
-                    + sum(len(x) if isinstance(x, (str, bytes)) else 32 for x in args) > FOLD_MAX:
+            args = [fold_constant(item, memo) for item in items] if plain else None
+            if args is not None and (any(type(a) is not type(left) for a in args)
+                                     or len(left) + widths + sum(len(a) for a in args) > FOLD_MAX):
                 args = None
             if args is not None:
                 try:
@@ -2812,7 +2811,12 @@ def fold_constant(node, memo: dict):
                 value = recv.join(items)   # codex's read of cc91398: the separator counts, bounded before the join
         elif recv is not None and node.func.attr in ("decode", "encode") and len(node.args) <= 1 \
                 and all(isinstance(a, ast.Constant) and isinstance(a.value, str)
-                        and a.value.lower().replace("_", "-") in FOLD_CODECS for a in node.args):
+                        and a.value.lower().replace("_", "-") in FOLD_CODECS for a in node.args) \
+                and (node.func.attr == "decode" or len(recv) * FOLD_CODECS[
+                    node.args[0].value.lower().replace("_", "-") if node.args else "utf-8"][0]
+                    + FOLD_CODECS[node.args[0].value.lower().replace("_", "-") if node.args else "utf-8"][1] <= FOLD_MAX):
+            # codex's read of 0c7d3b3 (B1): an encode is bounded BEFORE it runs (bytes per character times the length,
+            # plus the byte-order mark); a decode never yields more characters than its input has bytes.
             try:
                 value = getattr(recv, node.func.attr)(*[a.value for a in node.args])
             except (AttributeError, LookupError, UnicodeError, TypeError):

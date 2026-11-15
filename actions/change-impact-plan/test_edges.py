@@ -3199,6 +3199,35 @@ class R5FoldBounds(unittest.TestCase):
         self.assertIsNone(self.fold('"abc".encode("unicode_escape")'))
 
 
+class R5VersionSkew(unittest.TestCase):
+    """R6-2 round 5, root's condition of 2026-11-15 10:18 and codex's read at 10:44: the version-skew path with REAL
+    newer syntax. A Python 3.10 match statement parses on the runner's Python and not under ast.parse feature_version
+    (3, 8). With python_file_facts parsing as such an older reader would, the file plus a line-leading import refuses
+    (UNPARSED_SUSPECT); the same file with no suspect text records nothing, which is the dated version-skew residual."""
+
+    NEWER = "def f(x):\n    match x:\n        case 1:\n            return 1\n    return 0\n"
+    PATH = "services/a/test/test_skew.py"
+
+    def as_older_reader(self):
+        import ast
+        real = ast.parse
+        return patch.object(ast, "parse", lambda src, *a, **k: real(src, *a, **{**k, "feature_version": (3, 8)}))
+
+    def test_control_the_syntax_is_newer_than_3_8_and_valid_here(self):
+        import ast
+        ast.parse(self.NEWER)
+        with self.assertRaises(SyntaxError):
+            ast.parse(self.NEWER, feature_version=(3, 8))
+
+    def test_newer_syntax_with_a_line_leading_import_refuses_under_an_older_reader(self):
+        with self.as_older_reader(), self.assertRaisesRegex(ValueError, "does not parse"):
+            E.python_file_facts("import os\n" + self.NEWER, self.PATH)
+
+    def test_newer_syntax_with_no_suspect_text_records_nothing_the_dated_residual(self):
+        with self.as_older_reader():
+            self.assertEqual(E.python_file_facts(self.NEWER, self.PATH), ([], set(), []))
+
+
 class R5ModuleAliasContainers(unittest.TestCase):
     """R6-2 round 5, codex's read of cc91398 (root 10:36): a module carried in a dict literal, a comprehension or a
     builtin container call is still a module, so enumerating it refuses; the same shapes holding no module read."""

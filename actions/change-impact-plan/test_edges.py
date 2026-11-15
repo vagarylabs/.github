@@ -3106,7 +3106,7 @@ class R62FixVectors(VectorHarness, unittest.TestCase):
     (M1-M26) have twins only: F1 is refuse-all (root's rule of 2026-11-14 19:00)."""
 
     CASES = json.loads((Path(__file__).with_name("test_edges_r6_2_fix_vectors.json")).read_text())
-    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M15", "M16", "M17", "M18", "M19", "M20", "M21", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "M22", "M23", "M24", "M25", "M26", "O1", "E1", "M27", "A1", "A2", "A3", "B6", "B7", "SH2", "F2", "F3")
+    TEACHINGS = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M15", "M16", "M17", "M18", "M19", "M20", "M21", "G1", "G2", "G3", "G4", "G5", "G6", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "M22", "M23", "M24", "M25", "M26", "O1", "E1", "M27", "A1", "A2", "A3", "B6", "B7", "SH2", "F2", "F3", "U1")
 
     def test_every_r6_2_fix_vector_is_pinned_exactly(self):
         for name, case in sorted(self.CASES["cases"].items()):

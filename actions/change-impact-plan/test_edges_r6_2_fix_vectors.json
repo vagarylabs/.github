@@ -1758,7 +1758,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `email.__spec__.submodule_search_locations.append(os.environ[\"PLUGINS\"])` on line 5 of services/a/test/test_b1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b1.py"
   },
   "A1 twin submodule_search_locations in a file with import sys refuses (B1p)": {
    "cfg_set": {},
@@ -1770,7 +1771,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1p to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys` on line 11 of services/a/test/test_b1p.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b1p.py"
   },
   "A1 twin F3 stub updated with vars(email) and submodule_search_locations refuses (B1f)": {
    "cfg_set": {},
@@ -1783,7 +1785,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1f to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `email.__spec__.submodule_search_locations.append(os.environ[\"PLUGINS\"])` on line 7 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py"
   },
   "A2 read normal self.__class__.__name__ or type(x).__name__ reads as today": {
    "cfg_set": {},
@@ -1812,7 +1815,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B2 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `string.__class__` on line 14 of services/a/test/test_b2.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b2.py"
   },
   "A2 twin class-body __getattr__ assigned to textwrap.__class__ refuses (B3)": {
    "cfg_set": {},
@@ -1824,7 +1828,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `textwrap.__class__` on line 11 of services/a/test/test_b3.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b3.py"
   },
   "A2 twin class-body __getattr__ assigned to stubbed openai.__class__ refuses (B3f)": {
    "cfg_set": {},
@@ -1837,7 +1842,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3f to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `openai.__class__` on line 12 of services/a/test/test_y.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_y.py"
   },
   "A2 twin class in helper file assigned to __class__ in token-free test refuses (B3h)": {
    "cfg_set": {},
@@ -1850,19 +1856,18 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3h to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `textwrap.__class__` on line 4 of services/a/test/test_b3h.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b3h.py"
   },
   "A3 read normal vars() without arguments reads as today": {
    "cfg_set": {},
-   "change": "services/b/tool.py",
+   "change": "services/a/client.py",
    "files": {
-    "services/a/test/test_a3_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_a3_read():\n    assert \"tool\" in vars()\n    assert tool.X == 1\n",
-    "services/b/tool.py": "X = 1\n"
+    "services/a/test/test_a3_read.py": "from .. import client\n\ndef test_a3_read():\n    x = client.X\n    assert \"x\" in vars()\n",
+    "services/a/client.py": "X = 1\n"
    },
    "jobs": [
-    "root",
-    "test-a",
-    "test-b"
+    "test-a"
    ],
    "kind": "drop-vector",
    "must_run": "test-a",
@@ -1879,7 +1884,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (vars(<module>)): removing vars on module receiver allows B4 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `vars(email).values()` on line 5 of services/a/test/test_b4.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b4.py"
   },
   "A3 twin email.__dict__.values() list append refuses (B5)": {
    "cfg_set": {},
@@ -1891,7 +1897,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b (__dict__ on module receiver): removing module __dict__ access allows B5 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `email.__dict__.values()` on line 5 of services/a/test/test_b5.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b5.py"
   },
   "B6 read normal string attribute access reads as today": {
    "cfg_set": {},
@@ -1920,7 +1927,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding of implicit concatenation): removing parse-all/folding allows B6s to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"__pa\" \"th__\"` on line 5 of services/a/test/test_b6s.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b6s.py"
   },
   "B6 twin __path__ escape \"__pat\\x68__\" refuses (B6x)": {
    "cfg_set": {},
@@ -1932,7 +1940,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding of escape sequence): removing parse-all/folding allows B6x to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"__pat\\x68__\"` on line 5 of services/a/test/test_b6x.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b6x.py"
   },
   "B6 twin setattr with folded constant \"__pa\" + \"th__\" refuses (B6)": {
    "cfg_set": {},
@@ -1944,7 +1953,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-d (constant folding of + on str constants): removing constant folding allows B6 to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"__pa\" + \"th__\"` on line 5 of services/a/test/test_b6.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b6.py"
   },
   "B6 twin getattr with folded constant \"__pa\" + \"th__\" append refuses (B6g)": {
    "cfg_set": {},
@@ -1956,7 +1966,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-d (constant folding of + on str constants): removing constant folding allows B6g to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"__pa\" + \"th__\"` on line 5 of services/a/test/test_b6g.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b6g.py"
   },
   "B6 twin subprocess env with folded \"PYTHON\" \"PATH\" refuses (E2)": {
    "cfg_set": {},
@@ -1968,7 +1979,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding on env key): removing parse-all/folding allows E2 to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"PYTHON\" \"PATH\"` on line 4 of services/a/test/test_e2.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_e2.py"
   },
   "B6 twin folded loader word \"load_\" \"module\" via __loader__ refuses (L1)": {
    "cfg_set": {},
@@ -1980,7 +1992,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding on loader word): removing parse-all/folding allows L1 to drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"load_\" \"module\"` on line 4 of services/a/test/test_l1.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_l1.py"
   },
   "B7 read normal builtins usage reads as today": {
    "cfg_set": {},
@@ -2009,7 +2022,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b / R5-c (GADGET_DUNDERS / __builtins__ attribute): removing __builtins__ attribute check allows B7 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `json.__builtins__[\"exec\"](open(os.environ[\"PLUGIN_FILE\"]).read())` on line 4 of services/a/test/test_b7.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b7.py"
   },
   "B7 twin globals()[\"__builtins__\"][\"exec\"] without sys refuses (B7g)": {
    "cfg_set": {},
@@ -2021,7 +2035,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-c (__builtins__ word in string constant): removing __builtins__ constant word check allows B7g to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `\"__builtins__\"` on line 3 of services/a/test/test_b7g.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b7g.py"
   },
   "B7 twin getattr on json.__builtins__[\"__import__\"](\"runpy\").run_path refuses (B7r)": {
    "cfg_set": {},
@@ -2033,7 +2048,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b / R5-c (__builtins__ attribute and __import__ dunder): removing GADGET_DUNDERS allows B7r to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `json.__builtins__[\"__import__\"](\"runpy\")` on line 4 of services/a/test/test_b7r.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b7r.py"
   },
   "B7 twin json.__builtins__[\"__import__\"](env) refuses (B7m)": {
    "cfg_set": {},
@@ -2045,7 +2061,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-b / R5-c (__builtins__ attribute and __import__ dunder): removing GADGET_DUNDERS allows B7m to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `json.__builtins__[\"__import__\"](os.environ[\"PLUGIN_MOD\"])` on line 4 of services/a/test/test_b7m.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b7m.py"
   },
   "SH2 read sys.path compared to list(sys.path) copy reads as today": {
    "cfg_set": {},
@@ -2074,7 +2091,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-g (SHOULD-2 operand restriction): removing sys.path == / != operand restriction allows SH2 to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.path` on line 11 of services/a/test/test_sh2.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_sh2.py"
   },
   "SH2 twin reflected user object sys.path == E() refuses (SH2r)": {
    "cfg_set": {},
@@ -2086,7 +2104,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule R5-g (SHOULD-2 operand restriction): removing sys.path == / != operand restriction allows SH2r to select [test-c] and drop test-a",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.path` on line 11 of services/a/test/test_sh2r.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_sh2r.py"
   },
   "F2 read valid test-runner loop over globals().items() under test_ prefix reads as today": {
    "cfg_set": {},
@@ -2115,7 +2134,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: builtin(sorted) check): shadowing sorted prevents consumption of globals() loop",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_f2a.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2a.py"
   },
   "F2 twin globals loop with callable shadowed refuses (F2b)": {
    "cfg_set": {},
@@ -2127,7 +2147,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: builtin(callable) check): shadowing callable prevents consumption of globals().items() loop",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_f2b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2b.py"
   },
   "F2 twin globals loop with globals shadowed refuses (F2c)": {
    "cfg_set": {},
@@ -2139,7 +2160,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: builtin(globals) check): shadowing globals prevents consumption of loop call",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_f2c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2c.py"
   },
   "F2 twin globals loop with getattr shadowed refuses (F2d)": {
    "cfg_set": {},
@@ -2151,7 +2173,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: builtin(getattr) check): shadowing getattr prevents consumption of loop",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 16 of services/a/test/test_f2d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2d.py"
   },
   "F2 twin loop over .values() under runtime __name__ gate refuses (F2e)": {
    "cfg_set": {},
@@ -2163,7 +2186,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: .values() refusal): iteration over .values() is not admitted by loop reader",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_f2e.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2e.py"
   },
   "F2 twin comprehension over globals().items() refuses (F2f)": {
    "cfg_set": {},
@@ -2175,7 +2199,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: comprehension refusal): comprehension over globals() is not admitted by loop reader",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_f2f.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2f.py"
   },
   "F2 twin loop variable read after the loop refuses (F2g)": {
    "cfg_set": {},
@@ -2187,7 +2212,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: loop variable leak check): reading value variable outside loop prevents consumption",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_f2g.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2g.py"
   },
   "F2 twin loop variable rebound inside loop refuses (F2h)": {
    "cfg_set": {},
@@ -2199,7 +2225,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F2 (SCOPE loop over globals: loop variable reassignment): rebinding loop variable in loop body prevents consumption",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `globals()` on line 12 of services/a/test/test_f2h.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f2h.py"
   },
   "F3 read valid test stub sys.modules bound to types.ModuleType reads as today": {
    "cfg_set": {},
@@ -2228,7 +2255,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH stub_call wraps= check): MagicMock with wraps= argument is rejected as bindable stub",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"stub\"]` on line 5 of services/a/test/test_f3a.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3a.py"
   },
   "F3 twin sys.modules stub with positional argument refuses (F3b)": {
    "cfg_set": {},
@@ -2240,7 +2268,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH stub_call positional arg check): MagicMock with positional argument is rejected as bindable stub",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"stub\"]` on line 5 of services/a/test/test_f3b.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3b.py"
   },
   "F3 twin sys.modules stub with **kw refuses (F3c)": {
    "cfg_set": {},
@@ -2252,7 +2281,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH stub_call **kw check): MagicMock with keyword unpack is rejected as bindable stub",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"stub\"]` on line 6 of services/a/test/test_f3c.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3c.py"
   },
   "F3 twin chained sys.modules access sys.modules[\"m\"].x refuses (F3d)": {
    "cfg_set": {},
@@ -2264,7 +2294,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH chain check): chained attribute access past sys.modules subscript is rejected",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"sys\"].path` on line 3 of services/a/test/test_f3d.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3d.py"
   },
   "F3 twin sys.modules.items() call refuses (F3e)": {
    "cfg_set": {},
@@ -2276,7 +2307,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH method check): .items() on sys.modules is not an admitted read method",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules.items()` on line 3 of services/a/test/test_f3e.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3e.py"
   },
   "F3 twin sys.modules.update() call refuses (F3f)": {
    "cfg_set": {},
@@ -2288,7 +2320,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH method check): .update() on sys.modules is not an admitted mutation method",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules.update({})` on line 3 of services/a/test/test_f3f.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3f.py"
   },
   "F3 twin sys.modules bound to tuple refuses (F3g)": {
    "cfg_set": {},
@@ -2300,7 +2333,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH bindable value check): tuple bound to sys.modules is not a constant/ModuleType/Mock",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"stub\"]` on line 3 of services/a/test/test_f3g.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3g.py"
   },
   "F3 twin sys.path assigned to alias p = sys.path refuses (F3h)": {
    "cfg_set": {},
@@ -2312,7 +2346,8 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH alias check): aliasing sys.path to a variable leaves the list and refuses",
-   "verdict": "REFUSE"
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.path` on line 3 of services/a/test/test_f3h.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3h.py"
   },
   "F3 twin sys.modules bound name from another module call refuses (F3i)": {
    "cfg_set": {},
@@ -2324,6 +2359,51 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "removal_proof": "rule F3 (SYS-PATH-REACH bindable value check): call from unadmitted module (os.path) is not an admitted stub",
+   "verdict": "REFUSE",
+   "refusal": "unresolved (the path-mutation capability `sys.modules[\"stub\"]` on line 5 of services/a/test/test_f3i.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_f3i.py"
+  },
+  "U1 read plain prose in a tracked py records nothing and reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/prose.py": "This is plain prose with no python keywords, no backslash, no quotes\n",
+    "services/a/test/test_u1.py": "from pathlib import Path\nimport sys\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool\ndef test_u1():\n    assert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: plain unparseable prose file with no suspect words or import lines records nothing and allows scan to succeed",
+   "verdict": "SELECT"
+  },
+  "U1 twin plain prose in a tracked py with a line-leading import refuses": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/prose_import.py": "This is plain prose but on the next line:\nimport something_broken\nwith syntax error trailing %%%%\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (a Python file the scan must read does not parse: services/a/test/prose_import.py: invalid syntax (<unknown>, line 1))",
+   "removal_proof": "rule UNPARSED_SUSPECT (import/from regex): line-leading import in unparseable file makes it suspect and refuses scan",
+   "verdict": "REFUSE"
+  },
+  "U1 twin unparseable newer syntax with an import refuses": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/newer_syntax.py": "import client\n\ndef broken():\n    # syntax error in older python or invalid token\n    ??? newer syntax token ???\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "refusal": "unresolved (a Python file the scan must read does not parse: services/a/test/newer_syntax.py: invalid syntax (<unknown>, line 5))",
+   "removal_proof": "rule UNPARSED_SUSPECT (import/from regex): unparseable newer syntax file holding import refuses scan",
    "verdict": "REFUSE"
   }
  }

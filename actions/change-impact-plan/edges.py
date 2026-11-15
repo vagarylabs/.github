@@ -2623,10 +2623,14 @@ PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtin
 # R6-2 round 5, (B): every tracked .py is parsed. A file the reader's Python cannot parse cannot run under it either,
 # so it refuses only when its raw text could hold what a parse would have judged: any scan word (PY_FACTS_GREP), a
 # round-5 module-internal word, a backslash (an escape or a continuation), a non-ASCII character (an NFKC identifier)
-# or two quotes with only blanks and a prefix between them (implicit concatenation). A plain one records nothing, as
-# before the parse set widened (cli's review fragments, test fixtures holding prose in a .py). The residual is a
-# version skew: a file that parses under the runner's Python and not the reader's, and spells none of these.
-UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|(?<![A-Za-z0-9_])(?:submodule_search_locations|__class__|__dict__|"
+# or two quotes with only blanks and a prefix between them (implicit concatenation). Root's condition (2026-11-15
+# 10:18): a file let through must be unable to carry an edge its parsed form would record, so a line that starts with
+# `import` or `from` (leading blanks allowed) makes it suspect too, beside the dynamic-load words of the scan set. A
+# plain one records nothing, as before the parse set widened (review fragments, test fixtures holding prose in a .py).
+# The reader runs on the runner's `python3` (3.14 on .github's planner-tests runner, 2026-11-15); the residual is a
+# version skew, a file that parses under the Python that runs it and not the reader's and spells none of these.
+UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|^[ \t]*(?:import|from)(?![A-Za-z0-9_])"
+                              r"|(?<![A-Za-z0-9_])(?:submodule_search_locations|__class__|__dict__|"
                               r"__package__|__globals__|__self__|__subclasses__|__spec__|__loader__|__code__|__closure__|"
                               r"vars|getattr|setattr|delattr)(?![A-Za-z0-9_])|\\|[^\x00-\x7f]|[\"'][ \t]*[rRbBuUfF]{0,2}[\"']",
                               re.M)

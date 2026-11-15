@@ -132,8 +132,8 @@ KNOWN_FAIL_OPEN = {
     "N13e_conftest_evaluated_unit_rsub": "R6B2",
     "P04_eval_zip_on_path": "R6B5", "P04b_eval_zip_on_path_parents2": "R6B5", "U_P01_landing_is_tracked_symlink": "R6B5",
     "U_P02_symlink_intermediate": "R6B5", "U_P03_symlink_then_dotdot": "R6B5", "U_P04_zip_on_path": "R6B5",
-    # R6-2 round 5 (B) reads U_E_C4, C4b and C4c at their truth (every tracked .py is parsed): pins removed.
-    "U_E_C4e_unparseable_sibling": "R6B7",
+    # R6-2 round 5 (B) reads U_E_C4, C4b and C4c at their truth (every tracked .py is parsed), and U_E_C4e refuses (its
+    # unparseable sibling is UNPARSED_SUSPECT, root's condition of 2026-11-15 10:18): pins removed.
 }
 
 # Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
@@ -160,6 +160,9 @@ DESIGNED_RED = {
     # all 37 stay red and none moves; the 28 do not wait on the refuse point after all, each fails on its own rule (a
     # reach list, code the scan excludes, a name that names no tracked file), none on a path-mutation capability.
     "review": frozenset({
+        # R6-2 round 5, root's condition of 2026-11-15 10:18: services/r/y.py does not parse and holds a line-leading
+        # import, so it is UNPARSED_SUSPECT and the scan refuses: an over-selection (FULL), the safe side of its truth.
+        "R86S3_C4e_unparseable_package_file_refuses",
         "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
         "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
         "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",

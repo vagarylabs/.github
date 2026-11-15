@@ -1730,6 +1730,601 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "verdict": "SELECT"
+  },
+  "A1 read anchored import using standard module without submodule_search_locations reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_a1_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_a1_read():\n    assert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: benign import of tool from services/b selects test-a without PKG-PATH scan words",
+   "verdict": "SELECT"
+  },
+  "A1 twin email.__spec__.submodule_search_locations.append from environment refuses (B1)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b1.py": "import os\n\nimport email\n\nemail.__spec__.submodule_search_locations.append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b1():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A1 twin submodule_search_locations in a file with import sys refuses (B1p)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b1p.py": "import os\nimport sys\n\nimport email\n\nemail.__spec__.submodule_search_locations.append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b1p():\n    assert sys and email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1p to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A1 twin F3 stub updated with vars(email) and submodule_search_locations refuses (B1f)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\n\nimport email\nimport openai\n\nopenai.__dict__.update(vars(email))\nemail.__spec__.submodule_search_locations.append(os.environ[\"PLUGINS\"])\nimport openai.client  # noqa: E402\n\n\ndef test_y():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1f to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A2 read normal self.__class__.__name__ or type(x).__name__ reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_a2_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\nclass A:\n    pass\n\n\ndef test_a2_read():\n    assert A().__class__.__name__ == \"A\"\n    assert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: read-only __class__ load on standard class instance is inert under INERT_DUNDERS",
+   "verdict": "SELECT"
+  },
+  "A2 twin __getattribute__ fallback class assigned to string.__class__ refuses (B2)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b2.py": "import os\nimport string\nimport types\n\n\nclass _M(types.ModuleType):\n    def __getattribute__(self, name):\n        try:\n            return super().__getattribute__(name)\n        except AttributeError:\n            return [os.environ[\"PLUGINS\"]]\n\n\nstring.__class__ = _M\nimport string.client  # noqa: E402\n\n\ndef test_b2():\n    assert string.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B2 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A2 twin class-body __getattr__ assigned to textwrap.__class__ refuses (B3)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b3.py": "import os\nimport textwrap\nimport types\n\n\nclass _G(types.ModuleType):\n    def __getattr__(self, name):\n        return [os.environ[\"PLUGINS\"]]\n\n\ntextwrap.__class__ = _G\nimport textwrap.client  # noqa: E402\n\n\ndef test_b3():\n    assert textwrap.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A2 twin class-body __getattr__ assigned to stubbed openai.__class__ refuses (B3f)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_x.py": "import sys\nimport types\n\nfake = types.ModuleType(\"openai\")\nsys.modules[\"openai\"] = fake\n\n\ndef test_x():\n    assert fake\n",
+    "services/a/test/test_y.py": "import os\nimport types\n\nimport openai\n\n\nclass _G(types.ModuleType):\n    def __getattr__(self, name):\n        return [os.environ[\"PLUGINS\"]]\n\n\nopenai.__class__ = _G\nimport openai.client  # noqa: E402\n\n\ndef test_b3f():\n    assert openai.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3f to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A2 twin class in helper file assigned to __class__ in token-free test refuses (B3h)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/helper.py": "import os\nimport types\n\n\nclass Helper(types.ModuleType):\n    def __getattr__(self, name):\n        return [os.environ[\"PLUGINS\"]]\n",
+    "services/a/test/test_b3h.py": "import textwrap\nfrom .helper import Helper\n\ntextwrap.__class__ = Helper\nimport textwrap.client  # noqa: E402\n\n\ndef test_b3h():\n    assert textwrap.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (WRITE_DUNDERS / __class__ Store): removing __class__ write refusal allows B3h to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A3 read normal vars() without arguments reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_a3_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_a3_read():\n    assert \"tool\" in vars()\n    assert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: bare vars() without arguments reads local scope without module-internals refusal",
+   "verdict": "SELECT"
+  },
+  "A3 twin vars(email).values() list append refuses (B4)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b4.py": "import os\n\nimport email\n\nfor v in list(vars(email).values()):\n    if isinstance(v, list):\n        v.append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b4():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (vars(<module>)): removing vars on module receiver allows B4 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "A3 twin email.__dict__.values() list append refuses (B5)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b5.py": "import os\n\nimport email\n\nfor v in list(email.__dict__.values()):\n    if isinstance(v, list):\n        v.append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b5():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b (__dict__ on module receiver): removing module __dict__ access allows B5 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 read normal string attribute access reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_b6_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_b6_read():\n    assert getattr(tool, \"X\") == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: literal non-dunder attribute access on imported tool reads as today",
+   "verdict": "SELECT"
+  },
+  "B6 twin __path__ implicit concatenation \"__pa\" \"th__\" refuses (B6s)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b6s.py": "import os\n\nimport email\n\ngetattr(email, \"__pa\" \"th__\").append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b6s():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding of implicit concatenation): removing parse-all/folding allows B6s to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 twin __path__ escape \"__pat\\x68__\" refuses (B6x)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b6x.py": "import os\n\nimport email\n\ngetattr(email, \"__pat\\x68__\").append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b6x():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding of escape sequence): removing parse-all/folding allows B6x to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 twin setattr with folded constant \"__pa\" + \"th__\" refuses (B6)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b6.py": "import os\n\nimport email\n\nsetattr(email, \"__pa\" + \"th__\", [os.environ[\"PLUGINS\"]])\nimport email.client  # noqa: E402\n\n\ndef test_b6():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-d (constant folding of + on str constants): removing constant folding allows B6 to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 twin getattr with folded constant \"__pa\" + \"th__\" append refuses (B6g)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b6g.py": "import os\n\nimport email\n\ngetattr(email, \"__pa\" + \"th__\").append(os.environ[\"PLUGINS\"])\nimport email.client  # noqa: E402\n\n\ndef test_b6g():\n    assert email.client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-d (constant folding of + on str constants): removing constant folding allows B6g to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 twin subprocess env with folded \"PYTHON\" \"PATH\" refuses (E2)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_e2.py": "import os\nimport subprocess\n\nsubprocess.run([\"python\", \"-c\", \"import client\"], env={\"PYTHON\" \"PATH\": os.environ[\"PLUGINS\"]}, check=True)\n\n\ndef test_e2():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding on env key): removing parse-all/folding allows E2 to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B6 twin folded loader word \"load_\" \"module\" via __loader__ refuses (L1)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_l1.py": "import json\nimport os\n\ngetattr(type(json.__loader__)(\"tool\", os.environ[\"PLUGIN_FILE\"]), \"load_\" \"module\")()\n\n\ndef test_l1():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-f / R5-d (parse-all / AST constant folding on loader word): removing parse-all/folding allows L1 to drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B7 read normal builtins usage reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_b7_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_b7_read():\n    assert len([tool.X]) == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: standard builtin functions (len) read without __builtins__ attribute refusal",
+   "verdict": "SELECT"
+  },
+  "B7 twin json.__builtins__[\"exec\"] refuses (B7)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b7.py": "import json\nimport os\n\njson.__builtins__[\"exec\"](open(os.environ[\"PLUGIN_FILE\"]).read())\n\n\ndef test_b7():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b / R5-c (GADGET_DUNDERS / __builtins__ attribute): removing __builtins__ attribute check allows B7 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B7 twin globals()[\"__builtins__\"][\"exec\"] without sys refuses (B7g)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b7g.py": "import os\n\nglobals()[\"__builtins__\"][\"exec\"](open(os.environ[\"PLUGIN_FILE\"]).read())\n\n\ndef test_b7g():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-c (__builtins__ word in string constant): removing __builtins__ constant word check allows B7g to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B7 twin getattr on json.__builtins__[\"__import__\"](\"runpy\").run_path refuses (B7r)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b7r.py": "import json\nimport os\n\ngetattr(json.__builtins__[\"__import__\"](\"runpy\"), \"run_path\")(os.environ[\"PLUGIN_FILE\"])\n\n\ndef test_b7r():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b / R5-c (__builtins__ attribute and __import__ dunder): removing GADGET_DUNDERS allows B7r to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "B7 twin json.__builtins__[\"__import__\"](env) refuses (B7m)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_b7m.py": "import json\nimport os\n\njson.__builtins__[\"__import__\"](os.environ[\"PLUGIN_MOD\"])\n\n\ndef test_b7m():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-b / R5-c (__builtins__ attribute and __import__ dunder): removing GADGET_DUNDERS allows B7m to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "SH2 read sys.path compared to list(sys.path) copy reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_sh2_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\nsaved = list(sys.path)\nassert saved == sys.path\n\n\ndef test_sh2_read():\n    assert tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: sys.path compared against unshadowed list(sys.path) copy remains allowed under SHOULD-2",
+   "verdict": "SELECT"
+  },
+  "SH2 twin user object __eq__ comparison E() == sys.path refuses (SH2)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_sh2.py": "import os\nimport sys\n\n\nclass E:\n    def __eq__(self, other):\n        other.append(os.environ[\"PLUGINS\"])\n        return True\n\n\nassert E() == sys.path\nimport client  # noqa: E402\n\n\ndef test_sh2():\n    assert client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-g (SHOULD-2 operand restriction): removing sys.path == / != operand restriction allows SH2 to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "SH2 twin reflected user object sys.path == E() refuses (SH2r)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_sh2r.py": "import os\nimport sys\n\n\nclass E:\n    def __eq__(self, other):\n        other.append(os.environ[\"PLUGINS\"])\n        return True\n\n\nassert sys.path == E()\nimport client  # noqa: E402\n\n\ndef test_sh2r():\n    assert client.X == 1\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule R5-g (SHOULD-2 operand restriction): removing sys.path == / != operand restriction allows SH2r to select [test-c] and drop test-a",
+   "verdict": "REFUSE"
+  },
+  "F2 read valid test-runner loop over globals().items() under test_ prefix reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_f2_read.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    if k.startswith(\"test_\"):\n        v()\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: standard test runner loop over globals().items() under startswith gate reads without refusal",
+   "verdict": "SELECT"
+  },
+  "F2 twin globals loop with sorted shadowed refuses (F2a)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2a.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef sorted(x):\n    return list(x)\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k in sorted(globals()):\n    if k.startswith(\"test_\"):\n        globals()[k]()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: builtin(sorted) check): shadowing sorted prevents consumption of globals() loop",
+   "verdict": "REFUSE"
+  },
+  "F2 twin globals loop with callable shadowed refuses (F2b)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2b.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef callable(x):\n    return True\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    if callable(v) and k.startswith(\"test_\"):\n        v()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: builtin(callable) check): shadowing callable prevents consumption of globals().items() loop",
+   "verdict": "REFUSE"
+  },
+  "F2 twin globals loop with globals shadowed refuses (F2c)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2c.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef globals():\n    return {}\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    if k.startswith(\"test_\"):\n        v()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: builtin(globals) check): shadowing globals prevents consumption of loop call",
+   "verdict": "REFUSE"
+  },
+  "F2 twin globals loop with getattr shadowed refuses (F2d)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2d.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef getattr(obj, attr, default=None):\n    return default\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    if getattr(v, \"__name__\", \"\").startswith(\"test_\"):\n        v()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: builtin(getattr) check): shadowing getattr prevents consumption of loop",
+   "verdict": "REFUSE"
+  },
+  "F2 twin loop over .values() under runtime __name__ gate refuses (F2e)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2e.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor v in globals().values():\n    if getattr(v, \"__name__\", \"\").startswith(\"test_\"):\n        v()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: .values() refusal): iteration over .values() is not admitted by loop reader",
+   "verdict": "REFUSE"
+  },
+  "F2 twin comprehension over globals().items() refuses (F2f)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2f.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\n_ = [v() for k, v in globals().items() if k.startswith(\"test_\")]\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: comprehension refusal): comprehension over globals() is not admitted by loop reader",
+   "verdict": "REFUSE"
+  },
+  "F2 twin loop variable read after the loop refuses (F2g)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2g.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    if k.startswith(\"test_\"):\n        v()\n\nlast_fn = v\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: loop variable leak check): reading value variable outside loop prevents consumption",
+   "verdict": "REFUSE"
+  },
+  "F2 twin loop variable rebound inside loop refuses (F2h)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f2h.py": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\n\ndef test_one():\n    assert tool.X == 1\n\n\nfor k, v in globals().items():\n    v = None\n    if k.startswith(\"test_\"):\n        test_one()\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F2 (SCOPE loop over globals: loop variable reassignment): rebinding loop variable in loop body prevents consumption",
+   "verdict": "REFUSE"
+  },
+  "F3 read valid test stub sys.modules bound to types.ModuleType reads as today": {
+   "cfg_set": {},
+   "change": "services/b/tool.py",
+   "files": {
+    "services/a/test/test_f3_read.py": "import sys\nimport types\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"b\"))\nimport tool  # noqa: E402\n\nfake = types.ModuleType(\"stub\")\nsys.modules[\"stub\"] = fake\n\n\ndef test_f3_read():\n    assert fake and tool.X == 1\n",
+    "services/b/tool.py": "X = 1\n"
+   },
+   "jobs": [
+    "root",
+    "test-a",
+    "test-b"
+   ],
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "control: types.ModuleType bound to sys.modules in test file is a valid F3 stub",
+   "verdict": "SELECT"
+  },
+  "F3 twin sys.modules stub with MagicMock(wraps=) refuses (F3a)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3a.py": "import sys\nfrom unittest.mock import MagicMock\n\nstub = MagicMock(wraps=object())\nsys.modules[\"stub\"] = stub\n\n\ndef test_f3a():\n    assert stub\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH stub_call wraps= check): MagicMock with wraps= argument is rejected as bindable stub",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules stub with positional argument refuses (F3b)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3b.py": "import sys\nfrom unittest.mock import MagicMock\n\nstub = MagicMock(object())\nsys.modules[\"stub\"] = stub\n\n\ndef test_f3b():\n    assert stub\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH stub_call positional arg check): MagicMock with positional argument is rejected as bindable stub",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules stub with **kw refuses (F3c)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3c.py": "import sys\nfrom unittest.mock import MagicMock\n\nkw = {\"name\": \"test\"}\nstub = MagicMock(**kw)\nsys.modules[\"stub\"] = stub\n\n\ndef test_f3c():\n    assert stub\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH stub_call **kw check): MagicMock with keyword unpack is rejected as bindable stub",
+   "verdict": "REFUSE"
+  },
+  "F3 twin chained sys.modules access sys.modules[\"m\"].x refuses (F3d)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3d.py": "import sys\n\n_ = sys.modules[\"sys\"].path\n\n\ndef test_f3d():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH chain check): chained attribute access past sys.modules subscript is rejected",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules.items() call refuses (F3e)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3e.py": "import sys\n\nfor k, v in sys.modules.items():\n    pass\n\n\ndef test_f3e():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH method check): .items() on sys.modules is not an admitted read method",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules.update() call refuses (F3f)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3f.py": "import sys\n\nsys.modules.update({})\n\n\ndef test_f3f():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH method check): .update() on sys.modules is not an admitted mutation method",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules bound to tuple refuses (F3g)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3g.py": "import sys\n\nsys.modules[\"stub\"] = ()\n\n\ndef test_f3g():\n    pass\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH bindable value check): tuple bound to sys.modules is not a constant/ModuleType/Mock",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.path assigned to alias p = sys.path refuses (F3h)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3h.py": "import sys\n\np = sys.path\n\n\ndef test_f3h():\n    assert p\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH alias check): aliasing sys.path to a variable leaves the list and refuses",
+   "verdict": "REFUSE"
+  },
+  "F3 twin sys.modules bound name from another module call refuses (F3i)": {
+   "cfg_set": {},
+   "change": "services/c/client.py",
+   "files": {
+    "services/a/test/test_f3i.py": "import sys\nimport os\n\nfake = os.path.abspath(\"stub\")\nsys.modules[\"stub\"] = fake\n\n\ndef test_f3i():\n    assert fake\n",
+    "services/c/client.py": "X = 1\n"
+   },
+   "kind": "drop-vector",
+   "must_run": "test-a",
+   "removal_proof": "rule F3 (SYS-PATH-REACH bindable value check): call from unadmitted module (os.path) is not an admitted stub",
+   "verdict": "REFUSE"
   }
  }
 }

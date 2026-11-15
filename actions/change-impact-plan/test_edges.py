@@ -3180,6 +3180,27 @@ class R5FoldBounds(unittest.TestCase):
         self.assertIsNone(self.fold('"abc".encode("unicode_escape")')[0])
 
 
+class R5ModuleAliasContainers(unittest.TestCase):
+    """R6-2 round 5, codex's read of cc91398 (root 10:36): a module carried in a dict literal, a comprehension or a
+    builtin container call is still a module, so enumerating it refuses; the same shapes holding no module read."""
+
+    def refuses(self, text):
+        with self.assertRaisesRegex(ValueError, "path-mutation capability"):
+            E.python_file_facts(text, "services/a/test/test_alias.py")
+
+    def reads(self, text):
+        E.python_file_facts(text, "services/a/test/test_alias.py")
+
+    def test_a_module_in_a_dict_literal_is_still_a_module(self):
+        self.refuses('import email\n\nholders = {"module": email}\nnames = sorted(vars(holders["module"]))\n')
+        self.reads('import email\n\nholders = {"module": 1}\nnames = sorted(holders)\n')
+
+    def test_a_module_in_a_comprehension_or_a_container_call_is_still_a_module(self):
+        self.refuses('import email\n\nholders = dict(module=email)\nnames = sorted(vars(holders["module"]))\n')
+        self.refuses('import email\n\nholders = [m for m in (email,)]\nnames = sorted(vars(holders[0]))\n')
+        self.reads('import email\n\nholders = [n for n in (1, 2)]\nnames = sorted(holders)\n')
+
+
 class PlannerReadFromSource(unittest.TestCase):
     """N2 (root's review of .github #52): edges.py compiles its sibling plan.py from SOURCE. A plan bytecode file planted
     in the action directory (the runner's shared action cache) never runs, and none is written there."""

@@ -3845,7 +3845,9 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     BY DEFAULT (root's STANDING ask, R6-2 round 5): every tracked regular `.py` is parsed and one that does not parse
     refuses when its text is UNPARSED_SUSPECT (a plain unparseable one records nothing); in a parsed file every dunder attribute outside INERT_DUNDERS on a module, every tier 1 attribute on any
     receiver, every `vars(<module>)`, every computed-name WRITE on a module and every constant spelling of a
-    module internal refuses, beside the capability uses above. NOT refused (the open class, dated 2026-11-15): a computed-name READ
+    module internal refuses, beside the capability uses above. A module carried by an alias in this file (an assignment,
+    a walrus, a for / with target, a tuple / list / set / dict display, a comprehension, a builtin container call) is a
+    module for both tiers (codex's read of cc91398, root 10:36). NOT refused (the open class, dated 2026-11-15): a computed-name READ
     (getattr / hasattr) on any receiver, a computed-name write on a receiver this file does not show is a module (a
     parameter, a call result), and a module object handed in by another file's call and enumerated
     through `.__dict__` on a parameter.
@@ -4114,8 +4116,20 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             or isinstance(r, ast.Call) and call_name(r.func) in N2_LITERAL_LOADERS
 
     def carries_module(expr) -> bool:
+        # codex's read of cc91398 (root 10:36): a module put in a dict literal, a comprehension or a builtin container
+        # call is carried too (`holders = {"module": email}` then `vars(holders["module"])`); a module handed into any
+        # other call is the dated open class.
         if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
             return any(carries_module(e) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return any(k is not None and carries_module(k) or carries_module(v) for k, v in zip(expr.keys, expr.values))
+        if isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return carries_module(expr.elt)
+        if isinstance(expr, ast.DictComp):
+            return carries_module(expr.key) or carries_module(expr.value)
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) \
+                and expr.func.id in ("dict", "list", "tuple", "set", "frozenset") and expr.func.id not in local_bound:
+            return any(carries_module(x) for x in expr.args) or any(carries_module(k.value) for k in expr.keywords)
         if isinstance(expr, (ast.Starred, ast.NamedExpr)):
             return carries_module(expr.value)
         if isinstance(expr, ast.IfExp):

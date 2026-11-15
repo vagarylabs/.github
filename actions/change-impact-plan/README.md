@@ -632,8 +632,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          (`json.__builtins__["exec"](...)`, `len.__self__.exec(...)`, `json.__loader__`,
          `().__class__.__base__.__subclasses__()`), and `__class__`, `__package__` or `__dict__` stored or deleted
          (`textwrap.__class__ = _G` hands every missing attribute, `__path__` among them, to `_G`);
-       - tier 2, on a MODULE (a name an import in this file binds, an alias of one to a fixed point, a literal loader
-         call): every dunder attribute outside the inert list (`email.__dict__.values()`), `vars(<module>)`, and a
+       - tier 2, on a MODULE (a name an import in this file binds, an alias of one to a fixed point through an
+         assignment, a walrus, a for / with target, a tuple / list / set / dict display, a comprehension or a builtin
+         container call such as `dict(m=email)`; or a literal loader call; codex's read of cc91398, root 10:36): every dunder attribute outside the inert list (`email.__dict__.values()`), `vars(<module>)`, and a
          setattr / delattr / `object.__setattr__` / `object.__delattr__` whose attribute name does not fold to a
          constant (a computed-name WRITE; a computed-name READ is the open class, root's ruling of 2026-11-15 10:18).
          The inert list reads metadata or runs ordinary protocol methods (`__name__`, `__doc__`, `__file__`,
@@ -657,7 +658,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      internal. Not refused by default, dated 2026-11-15: a computed-name READ (getattr / hasattr with a name that does
      not fold) on any receiver; a computed-name write on a receiver the file does not show is a module (a parameter, a
      call result); a name built at run time from NON-constant parts (a variable, `chr(95)`, a join over a computed
-     list); a module object handed in by another file's call and enumerated through `.__dict__` on a parameter; and a
+     list); a module object handed in by another file's call, or put in a container built by any call other than the
+     builtin containers, and enumerated through `.__dict__` on a parameter or that container; and a
      file that parses under the Python that runs it but not the reader's and is not UNPARSED_SUSPECT. That is the
      open class below, and where the next reader should attack.
    - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used

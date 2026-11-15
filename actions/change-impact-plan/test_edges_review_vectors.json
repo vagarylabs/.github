@@ -26034,7 +26034,9 @@
    },
    "checkout": "vectors",
    "fixture_parent": "U_E_C4e_unparseable_sibling",
-   "expect": "read",
+   "expect": "refuse",
+   "expected_rule": "a Python file the scan must read does not parse: services/r/y.py",
+   "refuse_reason": "R6-2 round 5 (root 2026-11-15 10:18 and 11:01): services/r/y.py does not parse and holds a line-leading import, so it is UNPARSED_SUSPECT and the scan refuses.",
    "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4e_unparseable_sibling of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4e_unparseable_sibling/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
   },
   "U_E_N18_import_module_kw": {

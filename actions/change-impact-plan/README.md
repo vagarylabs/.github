@@ -575,7 +575,12 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      01:58: the pre-filter may never be narrower than the parser). The word grep that chose the parse set until then
      missed words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
      (`"__pat\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ(...)` runs as
-     `exec`). A file that does not parse refuses. A symlink or a submodule is not parsed: a tracked link's target is
+     `exec`). A file that does not parse refuses only when its raw text is UNPARSED_SUSPECT (root's condition of
+     2026-11-15 10:18): a scan word, a module-internal word, a line that starts with `import` or `from`, a backslash,
+     a non-ASCII character or adjacent quotes; a plain one records nothing, as before the parse set widened, because
+     the reader's Python (the runner's `python3`, 3.14 on this repository's CI) cannot run it either. The residual is a
+     version skew, dated 2026-11-15. Measured the same day: 0 unparseable `.py` on core main (3,167 files) and vagaris
+     main (49). A symlink or a submodule is not parsed: a tracked link's target is
      read on its own, or refuses by the landing rule. A word in a comment is never read. In a string, PYTHONPATH, a
      loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`, `load_module`,
      `importfile`, `resolve_name`; MUST-D below) and the module-internal words below refuse, after folding (below).
@@ -629,7 +634,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          (`textwrap.__class__ = _G` hands every missing attribute, `__path__` among them, to `_G`);
        - tier 2, on a MODULE (a name an import in this file binds, an alias of one to a fixed point, a literal loader
          call): every dunder attribute outside the inert list (`email.__dict__.values()`), `vars(<module>)`, and a
-         getattr / setattr / delattr / hasattr / `object.__setattr__` whose attribute name does not fold to a constant.
+         setattr / delattr / `object.__setattr__` / `object.__delattr__` whose attribute name does not fold to a
+         constant (a computed-name WRITE; a computed-name READ is the open class, root's ruling of 2026-11-15 10:18).
          The inert list reads metadata or runs ordinary protocol methods (`__name__`, `__doc__`, `__file__`,
          `__version__`, `__all__`, `__class__` as a read, `__init__`, `__enter__`, `__eq__`, ...; INERT_DUNDERS);
        - a constant that names a module internal: the package-path words, `__getattr__` and `__builtins__` anywhere in
@@ -645,12 +651,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          reads: `self.__class__.__name__`, `type(x).__name__`, `super().__init__()`, a literal-name
          `monkeypatch.setattr(mod, "attr", v)`.
    - **What refuses by default** (R6-2 round 5, root's STANDING ask, 2026-11-15). Every tracked regular `.py` is parsed,
-     and one that does not parse refuses. In a parsed file, every capability use no read rule consumes refuses (the
-     kinds above), and so do every tier 1 attribute, every non-inert dunder on a module, every `vars(<module>)`, every
-     computed attribute name on a module and every constant spelling of a module internal. Not refused by default:
-     a name built at run time from NON-constant parts (a variable, `chr(95)`, a join over a computed list) reaching
-     getattr / setattr / delattr on a receiver the file does not show is a module (a parameter, a call result), and a
-     module object handed in by another file's call and enumerated through `.__dict__` on a parameter. That is the
+     and one that does not parse refuses when its text is UNPARSED_SUSPECT (above). In a parsed file, every capability
+     use no read rule consumes refuses (the kinds above), and so do every tier 1 attribute, every non-inert dunder on a
+     module, every `vars(<module>)`, every computed-name WRITE on a module and every constant spelling of a module
+     internal. Not refused by default, dated 2026-11-15: a computed-name READ (getattr / hasattr with a name that does
+     not fold) on any receiver; a computed-name write on a receiver the file does not show is a module (a parameter, a
+     call result); a name built at run time from NON-constant parts (a variable, `chr(95)`, a join over a computed
+     list); a module object handed in by another file's call and enumerated through `.__dict__` on a parameter; and a
+     file that parses under the Python that runs it but not the reader's and is not UNPARSED_SUSPECT. That is the
      open class below, and where the next reader should attack.
    - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used
      at least once and EVERY use is an attribute other than the five above and the dunders, or sits inside a consumed

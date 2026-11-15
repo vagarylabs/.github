@@ -3138,6 +3138,48 @@ def E_list_add(values, item):
     return True
 
 
+class R5FoldBounds(unittest.TestCase):
+    """R6-2 round 5, codex's read of cc91398: every fold_constant branch bounds its result BEFORE it builds it. Each
+    oversized case would allocate megabytes if built; tracemalloc's peak during the fold proves it refuses (None)
+    without building it. Small folds still fold (the controls)."""
+
+    def fold(self, expr):
+        import ast
+        import tracemalloc
+        node = ast.parse(expr, mode="eval").body
+        tracemalloc.start()
+        try:
+            value = E.fold_constant(node, {})
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        return value, peak
+
+    def test_small_folds_still_fold(self):
+        self.assertEqual(self.fold('"".join(["__pa", "th__"])')[0], "__path__")
+        self.assertEqual(self.fold('f"{\'__pa\'}th__"')[0], "__path__")
+        self.assertEqual(self.fold('"%s%s" % ("__pa", "th__")')[0], "__path__")
+        self.assertEqual(self.fold('"abc".encode("utf-8")')[0], b"abc")
+
+    def test_join_with_a_long_separator_refuses_before_building(self):
+        value, peak = self.fold('"' + "y" * 4000 + '".join([' + ", ".join(['"a"'] * 20000) + "])")
+        self.assertIsNone(value)
+        self.assertLess(peak, 1 << 20, "the 80 MB join was built")
+
+    def test_fstring_of_many_long_parts_refuses_before_building(self):
+        value, peak = self.fold("f'" + "".join("{%r}" % ("z" * 4000) for _ in range(1000)) + "'")
+        self.assertIsNone(value)
+        self.assertLess(peak, 1 << 20, "the 4 MB f-string was built")
+
+    def test_percent_with_wide_fields_refuses_before_building(self):
+        value, peak = self.fold('"' + "%4000s" * 600 + '" % (' + ", ".join(['"a"'] * 600) + ")")
+        self.assertIsNone(value)
+        self.assertLess(peak, 1 << 20, "the 2.4 MB format result was built")
+
+    def test_an_escaping_codec_does_not_fold(self):
+        self.assertIsNone(self.fold('"abc".encode("unicode_escape")')[0])
+
+
 class PlannerReadFromSource(unittest.TestCase):
     """N2 (root's review of .github #52): edges.py compiles its sibling plan.py from SOURCE. A plan bytecode file planted
     in the action directory (the runner's shared action cache) never runs, and none is written there."""

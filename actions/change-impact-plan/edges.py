@@ -2725,6 +2725,9 @@ DUNDER = re.compile(r"__[A-Za-z0-9_]+__")
 ATTR_NAME_CALLS = frozenset({"setattr", "delattr"})
 ATTR_NAME_METHODS = frozenset({"__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
 FOLD_MAX = 4096
+# `.encode()` / `.decode()` fold only with one of these (at most 4 bytes per character, so a value under FOLD_MAX stays
+# under 4 x FOLD_MAX before the final check; an escaping codec such as unicode_escape is not folded).
+FOLD_CODECS = frozenset({"utf-8", "utf8", "ascii", "latin-1", "latin1", "iso-8859-1", "utf-16", "utf-32"})
 
 
 def fold_constant(node, memo: dict):
@@ -2732,7 +2735,8 @@ def fold_constant(node, memo: dict):
     from constants is the word). Folded: a constant (the AST already joins implicit concatenation and decodes
     escapes), `+` of constants (a left-deep chain of any length, flattened), `%` with constant operands (no `*` width,
     no width or precision over 4 digits), an f-string whose parts all fold, `sep.join(<list or tuple display of
-    constants>)`, and `.decode()` / `.encode()` of one with a literal codec. Bounded at FOLD_MAX characters. A name
+    constants>)`, and `.decode()` / `.encode()` of one with a literal FOLD_CODECS codec. Bounded at FOLD_MAX characters, each branch
+    BEFORE it builds its result (codex's read of cc91398). A name
     built from anything else (a variable, `chr(95)`, a join over a computed list) is the open class."""
     import ast
     key = id(node)
@@ -2760,7 +2764,8 @@ def fold_constant(node, memo: dict):
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
         left = fold_constant(node.left, memo)
         if isinstance(left, (str, bytes)) and not re.search(rb"%[^%a-zA-Z]*(?:\*|\d{5,})" if isinstance(left, bytes)
-                                                            else r"%[^%a-zA-Z]*(?:\*|\d{5,})", left):
+                                                            else r"%[^%a-zA-Z]*(?:\*|\d{5,})", left) \
+                and len(left) + sum(int(n) for n in re.findall(rb"\d+" if isinstance(left, bytes) else r"\d+", left)) <= FOLD_MAX:
             items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
             args = []
             for item in items:
@@ -2770,32 +2775,44 @@ def fold_constant(node, memo: dict):
                     args = None
                     break
                 args.append(v)
+            # codex's read of cc91398: bound the result BEFORE building it: the format's own length plus every width or
+            # precision digit run (above) plus each argument's length (a number at most 32 characters).
+            if args is not None and len(left) + sum(int(n) for n in re.findall(rb"\d+" if isinstance(left, bytes) else r"\d+", left)) \
+                    + sum(len(x) if isinstance(x, (str, bytes)) else 32 for x in args) > FOLD_MAX:
+                args = None
             if args is not None:
                 try:
                     value = left % (tuple(args) if isinstance(node.right, ast.Tuple) else args[0])
                 except (TypeError, ValueError, KeyError, OverflowError):
                     value = None
     elif isinstance(node, ast.JoinedStr):
-        out = []
+        out, total = [], 0
         for part in node.values:
             if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                out.append(part.value)
+                piece = part.value
             elif isinstance(part, ast.FormattedValue) and part.conversion in (-1, 115) and part.format_spec is None \
                     and isinstance(fold_constant(part.value, memo), str):
-                out.append(fold_constant(part.value, memo))
+                piece = fold_constant(part.value, memo)
             else:
                 out = None
                 break
+            total += len(piece)
+            if total > FOLD_MAX:           # bounded before the join builds anything
+                out = None
+                break
+            out.append(piece)
         value = "".join(out) if out is not None else None
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and not node.keywords:
         recv = fold_constant(node.func.value, memo)
         if recv is not None and node.func.attr == "join" and len(node.args) == 1 \
                 and isinstance(node.args[0], (ast.List, ast.Tuple)):
             items = [fold_constant(e, memo) for e in node.args[0].elts]
-            if all(i is not None and type(i) is type(recv) for i in items):
-                value = recv.join(items)
+            if all(i is not None and type(i) is type(recv) for i in items) \
+                    and sum(len(i) for i in items) + len(recv) * max(0, len(items) - 1) <= FOLD_MAX:
+                value = recv.join(items)   # codex's read of cc91398: the separator counts, bounded before the join
         elif recv is not None and node.func.attr in ("decode", "encode") and len(node.args) <= 1 \
-                and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args):
+                and all(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                        and a.value.lower().replace("_", "-") in FOLD_CODECS for a in node.args):
             try:
                 value = getattr(recv, node.func.attr)(*[a.value for a in node.args])
             except (AttributeError, LookupError, UnicodeError, TypeError):

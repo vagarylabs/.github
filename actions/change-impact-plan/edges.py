@@ -2624,12 +2624,13 @@ PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtin
 # so it refuses only when its raw text could hold what a parse would have judged: any scan word (PY_FACTS_GREP), a
 # round-5 module-internal word, a backslash (an escape or a continuation), a non-ASCII character (an NFKC identifier)
 # or two quotes with only blanks and a prefix between them (implicit concatenation). Root's condition (2026-11-15
-# 10:18): a file let through must be unable to carry an edge its parsed form would record, so a line that starts with
-# `import` or `from` (leading blanks allowed) makes it suspect too, beside the dynamic-load words of the scan set. A
+# 10:18, and its R4 F1 at 9c057b7): a file let through must be unable to carry an edge its parsed form would record, so
+# the word `import` ANYWHERE makes it suspect (`x = 1; import os`, `if True: import os`, `try: from a import b`), beside
+# the dynamic-load words of the scan set. A
 # plain one records nothing, as before the parse set widened (review fragments, test fixtures holding prose in a .py).
 # The reader runs on the runner's `python3` (3.14 on .github's planner-tests runner, 2026-11-15); the residual is a
 # version skew, a file that parses under the Python that runs it and not the reader's and spells none of these.
-UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|^[ \t]*(?:import|from)(?![A-Za-z0-9_])"
+UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|(?<![A-Za-z0-9_])import(?![A-Za-z0-9_])"
                               r"|(?<![A-Za-z0-9_])(?:submodule_search_locations|__class__|__dict__|"
                               r"__package__|__globals__|__self__|__subclasses__|__spec__|__loader__|__code__|__closure__|"
                               r"vars|getattr|setattr|delattr)(?![A-Za-z0-9_])|\\|[^\x00-\x7f]|[\"'][ \t]*[rRbBuUfF]{0,2}[\"']",
@@ -5553,7 +5554,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
     # (`"__pat\\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ` and `ｓｙｓ`
     # run as `exec` and `sys`). A symlink or a submodule is not parsed here: a tracked link's target is read on its own
-    # or refuses by the landing rule. PY_FACTS_GREP stays as the documented word list, read by nothing.
+    # or refuses by the landing rule. PY_FACTS_GREP now feeds only UNPARSED_SUSPECT (a file that does not parse).
     listed = {p for p, mode in tracked.items() if p.endswith(".py") and mode in ("100644", "100755") and not excluded(p)}
     # Root's B1 of the slice 3 CHANGES: the files scan()'s parse set a sys.path entry aside in are read here too, so an
     # entry the grep misses (`sys .path.insert`, `sys.\` + newline) is never suppressed there and unread here.

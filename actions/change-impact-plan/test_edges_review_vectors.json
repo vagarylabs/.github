@@ -21048,7 +21048,9 @@
   },
   "R86S3_C4e_unparseable_package_file_refuses": {
    "question": "dotgithub-86 slice 3 CHANGES B4",
-   "expect": "read",
+   "expect": "refuse",
+   "expected_rule": "a Python file the scan must read does not parse: services/r/y.py",
+   "refuse_reason": "R6-2 round 5 (root 2026-11-15 11:05 and R4 F1): services/r/y.py does not parse and holds an import, so it is UNPARSED_SUSPECT and the scan refuses; pinned by rule, no longer a DESIGNED_RED name.",
    "ext": "py",
    "src": "import sys\nsys.path[:0] = [\"../../tools/lib\"]\n",
    "truth": [

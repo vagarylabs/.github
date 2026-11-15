@@ -160,9 +160,6 @@ DESIGNED_RED = {
     # all 37 stay red and none moves; the 28 do not wait on the refuse point after all, each fails on its own rule (a
     # reach list, code the scan excludes, a name that names no tracked file), none on a path-mutation capability.
     "review": frozenset({
-        # R6-2 round 5, root's condition of 2026-11-15 10:18: services/r/y.py does not parse and holds a line-leading
-        # import, so it is UNPARSED_SUSPECT and the scan refuses: an over-selection (FULL), the safe side of its truth.
-        "R86S3_C4e_unparseable_package_file_refuses",
         "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
         "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
         "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
@@ -3222,6 +3219,12 @@ class R5VersionSkew(unittest.TestCase):
     def test_newer_syntax_with_a_line_leading_import_refuses_under_an_older_reader(self):
         with self.as_older_reader(), self.assertRaisesRegex(ValueError, "does not parse"):
             E.python_file_facts("import os\n" + self.NEWER, self.PATH)
+
+    def test_newer_syntax_with_an_import_anywhere_refuses_under_an_older_reader(self):
+        # Root's R4 F1 at 9c057b7: an import that does not start its line is still an import.
+        for head in ("x = 1; import os\n", "if True: import os\n", "try: from a import b\nexcept ImportError: pass\n"):
+            with self.subTest(head), self.as_older_reader(), self.assertRaisesRegex(ValueError, "does not parse"):
+                E.python_file_facts(head + self.NEWER, self.PATH)
 
     def test_newer_syntax_with_no_suspect_text_records_nothing_the_dated_residual(self):
         with self.as_older_reader():

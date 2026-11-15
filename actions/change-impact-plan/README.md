@@ -576,7 +576,7 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      missed words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
      (`"__pat\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ(...)` runs as
      `exec`). A file that does not parse refuses only when its raw text is UNPARSED_SUSPECT (root's condition of
-     2026-11-15 10:18): a scan word, a module-internal word, a line that starts with `import` or `from`, a backslash,
+     2026-11-15 10:18 and its R4 F1): a scan word, a module-internal word, the word `import` anywhere, a backslash,
      a non-ASCII character or adjacent quotes; a plain one records nothing, as before the parse set widened, because
      the reader's Python (the runner's `python3`, 3.14 on this repository's CI) cannot run it either. The residual is a
      version skew, dated 2026-11-15. Measured the same day: 0 unparseable `.py` on core main (3,167 files) and vagaris

@@ -1770,7 +1770,7 @@
    },
    "kind": "drop-vector",
    "must_run": "test-a",
-   "removal_proof": "rule R5-a (submodule_search_locations in PKG-PATH): removing submodule_search_locations from PKG-PATH allows B1p to select [test-c] and drop test-a",
+   "removal_proof": "unconsumed path-mutation capability (sys import): the unused sys import on line 11 refuses under scope rule, as pinned by its exact refusal text",
    "verdict": "REFUSE",
    "refusal": "unresolved (the path-mutation capability `sys` on line 11 of services/a/test/test_b1p.py is consumed by no read rule; a file reads only when every one is) in services/a/test/test_b1p.py"
   },
@@ -2393,7 +2393,7 @@
    "removal_proof": "rule UNPARSED_SUSPECT (import/from regex): line-leading import in unparseable file makes it suspect and refuses scan",
    "verdict": "REFUSE"
   },
-  "U1 twin unparseable newer syntax with an import refuses": {
+  "U1 twin arbitrary invalid source with an import line refuses": {
    "cfg_set": {},
    "change": "services/c/client.py",
    "files": {
@@ -2403,7 +2403,7 @@
    "kind": "drop-vector",
    "must_run": "test-a",
    "refusal": "unresolved (a Python file the scan must read does not parse: services/a/test/newer_syntax.py: invalid syntax (<unknown>, line 5))",
-   "removal_proof": "rule UNPARSED_SUSPECT (import/from regex): unparseable newer syntax file holding import refuses scan",
+   "removal_proof": "rule UNPARSED_SUSPECT (import/from regex): arbitrary unparseable source holding import line is suspect and refuses scan",
    "verdict": "REFUSE"
   }
  }

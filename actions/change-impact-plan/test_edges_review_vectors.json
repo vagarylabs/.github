@@ -25927,12 +25927,6 @@
    "checkout": "vectors",
    "fixture_parent": "U_E_C4_semicolon",
    "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
    "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4_semicolon of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4_semicolon/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
   },
   "U_E_C4b_if_oneliner": {
@@ -25969,12 +25963,6 @@
    "checkout": "vectors",
    "fixture_parent": "U_E_C4b_if_oneliner",
    "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
    "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4b_if_oneliner of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4b_if_oneliner/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
   },
   "U_E_C4c_try_oneliner": {
@@ -26011,12 +25999,6 @@
    "checkout": "vectors",
    "fixture_parent": "U_E_C4c_try_oneliner",
    "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
    "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4c_try_oneliner of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4c_try_oneliner/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
   },
   "U_E_C4e_unparseable_sibling": {
@@ -26053,12 +26035,6 @@
    "checkout": "vectors",
    "fixture_parent": "U_E_C4e_unparseable_sibling",
    "expect": "read",
-   "known_fail_open": {
-    "gap": "R6B7",
-    "until": "2026-11-28",
-    "today": [],
-    "record": "lanes/root/reviews/github-86-r5fix-1112.md"
-   },
    "note": "root's round-6 CHANGES of dotgithub-86 (lanes/root/reviews/github-86-r5fix-1112.md, CHANGES at ff414447542b, 16:13 2026-11-12), input U_E_C4e_unparseable_sibling of root's 111 (/tmp/r4pr86r5/cases2.json), fixture copied verbatim: files, links, env and cfg as root's harness built them (fx/U_E_C4e_unparseable_sibling/<checkout>, cfg.json). Below truth on main, the parent and the head (root's B7): a dated known fail-open pinned at the head's reading until 2026-11-28; the R6 slice that reads it removes the pin."
   },
   "U_E_N18_import_module_kw": {

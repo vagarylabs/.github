@@ -770,5 +770,46 @@ class GitTimeoutTest(unittest.TestCase):
             observation = P.resolve_target_observation(**context)
         self.assertEqual((observation["status"], observation["reason"]), ("unknown", "canonical target snapshot unavailable"))
 
+
+class CoreVectorsTest(unittest.TestCase):
+    """P2-13: core-vectors.json is the parity lock vagaris's TS port of the pure core vendors by sha256. It must be a
+    fresh export of THIS plan.py, and the recompute check must catch a single wrong output."""
+
+    def test_the_committed_vectors_are_a_fresh_export(self):
+        import export_core_vectors as X
+        self.assertEqual(X.render(X.build()), X.VECTORS_PATH.read_bytes(),
+                         "regenerate: python3 actions/change-impact-plan/export_core_vectors.py")
+
+    def test_every_committed_vector_recomputes(self):
+        import export_core_vectors as X
+        doc = json.loads(X.VECTORS_PATH.read_bytes())
+        self.assertEqual(X.check(doc), [])
+        self.assertEqual(sorted({v["fn"] for v in doc["vectors"]}), sorted(X.FUNCTIONS))
+        self.assertGreaterEqual(len(doc["vectors"]), X.MIN_VECTORS)
+
+    def test_a_single_mutated_output_fails_the_recompute_check(self):
+        import copy
+        import export_core_vectors as X
+        doc = json.loads(X.VECTORS_PATH.read_bytes())
+        index = next(i for i, v in enumerate(doc["vectors"]) if v["fn"] == "graph_digest" and v["input"]["packages"])
+        mutated = copy.deepcopy(doc)
+        digest = mutated["vectors"][index]["output"]["returns"]
+        mutated["vectors"][index]["output"]["returns"] = digest[:-1] + ("0" if digest[-1] != "0" else "1")
+        self.assertEqual(X.check(mutated), [f"vector {index} (graph_digest): output differs from plan.py"])
+        self.assertNotEqual(X.render(mutated), X.VECTORS_PATH.read_bytes())
+
+    def test_the_floor_refuses_a_missing_function_and_an_unknown_one(self):
+        import copy
+        import export_core_vectors as X
+        doc = json.loads(X.VECTORS_PATH.read_bytes())
+        dropped = copy.deepcopy(doc)
+        dropped["vectors"] = [v for v in dropped["vectors"] if v["fn"] != "owner_package"]
+        self.assertIn("no vector for owner_package", X.check(dropped))
+        unknown = copy.deepcopy(doc)
+        unknown["vectors"][0]["fn"] = "edges_scan"
+        self.assertIn("vector 0: unknown fn 'edges_scan'", X.check(unknown))
+        self.assertEqual(X.check({"vectors": doc["vectors"][:3]})[0], f"3 vectors, below the floor of {X.MIN_VECTORS}")
+
+
 if __name__ == "__main__":
     unittest.main()

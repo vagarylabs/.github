@@ -1,0 +1,7706 @@
+{
+  "functions": [
+    "constants",
+    "glob_to_regex",
+    "first_match",
+    "json_nesting_depth",
+    "parse_pnpm_workspace_patterns",
+    "pnpm_graph",
+    "apply_extra_deps",
+    "declared_packages",
+    "reverse_closure",
+    "owner_package",
+    "canonical_digest",
+    "graph_digest",
+    "is_inert",
+    "classify_paths"
+  ],
+  "schema": 1,
+  "source": "vagarylabs/.github actions/change-impact-plan/plan.py",
+  "vectors": [
+    {
+      "fn": "constants",
+      "input": {},
+      "output": {
+        "returns": {
+          "BUILTIN_FULL_GLOBS": [
+            ".github/**",
+            "**/package.json",
+            "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
+            "package-lock.json",
+            "yarn.lock",
+            "npm-shrinkwrap.json",
+            ".npmrc",
+            ".nvmrc",
+            ".node-version",
+            ".tool-versions",
+            "turbo.json",
+            "nx.json",
+            "poetry.lock",
+            "uv.lock",
+            "Pipfile.lock",
+            "pyproject.toml",
+            "**/requirements*.txt",
+            "**/migrations/**",
+            "**/alembic/**",
+            "**/prisma/**",
+            "**/Dockerfile*"
+          ],
+          "LOCKFILE_NAMES": [
+            "Cargo.lock",
+            "Gemfile.lock",
+            "Pipfile.lock",
+            "bun.lock",
+            "bun.lockb",
+            "composer.lock",
+            "go.sum",
+            "npm-shrinkwrap.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "poetry.lock",
+            "uv.lock",
+            "yarn.lock"
+          ],
+          "PLAN_CONFIG_MAX_DEPTH": 64
+        }
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "docs",
+          "docs/",
+          "docs/a.md",
+          "docs/a/b.md",
+          "docsx/a",
+          "a/docs/x"
+        ],
+        "pattern": "docs/**"
+      },
+      "output": {
+        "returns": [
+          false,
+          true,
+          true,
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "package.json",
+          "a/package.json",
+          "a/b/package.json",
+          "xpackage.json",
+          "a/xpackage.json"
+        ],
+        "pattern": "**/package.json"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a.md",
+          "x/a.md",
+          ".md",
+          "a.mdx"
+        ],
+        "pattern": "*.md"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "src/a.ts",
+          "src/ab.ts",
+          "src/.ts",
+          "src//.ts",
+          "src/\u00e9.ts",
+          "src/\ud83d\ude00.ts"
+        ],
+        "pattern": "src/?.ts"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          false,
+          false,
+          true,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "ab",
+          "a/x/b",
+          "axb",
+          "a/b/"
+        ],
+        "pattern": "a**b"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "",
+          "a",
+          "a/b",
+          "/"
+        ],
+        "pattern": "**"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          true,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "",
+          "a/",
+          "a",
+          "a/b/"
+        ],
+        "pattern": "**/"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          false,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a+b(c)[d]{e}|f^$.ts",
+          "aab(c)[d]{e}|f^$.ts",
+          "a+b(c)[d]{e}|f^$xts"
+        ],
+        "pattern": "a+b(c)[d]{e}|f^$.ts"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "dir\\file-1",
+          "dir/file-1",
+          "dirxfile-1"
+        ],
+        "pattern": "dir\\file-1"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "!x",
+          "x"
+        ],
+        "pattern": "!x"
+      },
+      "output": {
+        "returns": [
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "migrations/a.sql",
+          "db/migrations/1.sql",
+          "migrations",
+          "db/migrationsx/1"
+        ],
+        "pattern": "**/migrations/**"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "Dockerfile",
+          "a/Dockerfile.dev",
+          "a/b/Dockerfilex",
+          "a/dockerfile"
+        ],
+        "pattern": "**/Dockerfile*"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "requirements.txt",
+          "a/requirements-dev.txt",
+          "a/requirements/x.txt"
+        ],
+        "pattern": "**/requirements*.txt"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a",
+          "a\n",
+          "a\n\n",
+          "\na",
+          "a\r"
+        ],
+        "pattern": "a"
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          false,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a\nb",
+          "a\n",
+          "a\rb",
+          "a\u2028b"
+        ],
+        "pattern": "**"
+      },
+      "output": {
+        "returns": [
+          false,
+          true,
+          true,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "x/a\rb",
+          "x/a\nb",
+          "x/\n"
+        ],
+        "pattern": "x/**"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a\nb",
+          "a/b",
+          ""
+        ],
+        "pattern": "*"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          true
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "",
+          "\n",
+          "a"
+        ],
+        "pattern": ""
+      },
+      "output": {
+        "returns": [
+          true,
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          "a.b",
+          "axb"
+        ],
+        "pattern": "a.b"
+      },
+      "output": {
+        "returns": [
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "glob_to_regex",
+      "input": {
+        "paths": [
+          ".github/workflows/ci.yml",
+          "x/.github/a",
+          ".githubx/a"
+        ],
+        "pattern": ".github/**"
+      },
+      "output": {
+        "returns": [
+          true,
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          "src/**",
+          "docs/**",
+          "**/*.md"
+        ],
+        "path": "docs/a.md"
+      },
+      "output": {
+        "returns": "docs/**"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          "src/**",
+          "docs/**"
+        ],
+        "path": "lib/a.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [],
+        "path": "lib/a.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          "",
+          "**"
+        ],
+        "path": ""
+      },
+      "output": {
+        "returns": ""
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          "**/*.md",
+          "a/**"
+        ],
+        "path": "a/b.md"
+      },
+      "output": {
+        "returns": "**/*.md"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": ".github/workflows/ci.yml"
+      },
+      "output": {
+        "returns": ".github/**"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "packages/x/package.json"
+      },
+      "output": {
+        "returns": "**/package.json"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "pnpm-lock.yaml"
+      },
+      "output": {
+        "returns": "pnpm-lock.yaml"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "packages/x/pnpm-lock.yaml"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "server/requirements-dev.txt"
+      },
+      "output": {
+        "returns": "**/requirements*.txt"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "a/b/prisma/schema.prisma"
+      },
+      "output": {
+        "returns": "**/prisma/**"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "server/Dockerfile.prod"
+      },
+      "output": {
+        "returns": "**/Dockerfile*"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "db/migrations/0001.sql"
+      },
+      "output": {
+        "returns": "**/migrations/**"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "pyproject.toml"
+      },
+      "output": {
+        "returns": "pyproject.toml"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "svc/pyproject.toml"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": ".nvmrc"
+      },
+      "output": {
+        "returns": ".nvmrc"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "src/index.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "turbo.json"
+      },
+      "output": {
+        "returns": "turbo.json"
+      }
+    },
+    {
+      "fn": "first_match",
+      "input": {
+        "globs": [
+          ".github/**",
+          "**/package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "npm-shrinkwrap.json",
+          ".npmrc",
+          ".nvmrc",
+          ".node-version",
+          ".tool-versions",
+          "turbo.json",
+          "nx.json",
+          "poetry.lock",
+          "uv.lock",
+          "Pipfile.lock",
+          "pyproject.toml",
+          "**/requirements*.txt",
+          "**/migrations/**",
+          "**/alembic/**",
+          "**/prisma/**",
+          "**/Dockerfile*"
+        ],
+        "path": "a/alembic/env.py"
+      },
+      "output": {
+        "returns": "**/alembic/**"
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{}"
+      },
+      "output": {
+        "returns": 1
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "[[{}]]"
+      },
+      "output": {
+        "returns": 3
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{\"a\":\"[[[[\"}"
+      },
+      "output": {
+        "returns": 1
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{\"a\":\"\\\"[[\"}"
+      },
+      "output": {
+        "returns": 1
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{\"a\":\"\\\\\",\"b\":[[]]}"
+      },
+      "output": {
+        "returns": 3
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": ""
+      },
+      "output": {
+        "returns": 0
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "]]]"
+      },
+      "output": {
+        "returns": 0
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "]][["
+      },
+      "output": {
+        "returns": 0
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["
+      },
+      "output": {
+        "returns": 65
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "\"unterminated ["
+      },
+      "output": {
+        "returns": 0
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{\"name\": \"@v/deep\",\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+      },
+      "output": {
+        "returns": 64
+      }
+    },
+    {
+      "fn": "json_nesting_depth",
+      "input": {
+        "text": "{\"name\": \"@v/deep\",\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+      },
+      "output": {
+        "returns": 65
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - 'packages/*'\n  - \"server\"\n  - ui # comment\n"
+      },
+      "output": {
+        "returns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - packages/*\n  - '!packages/legacy'\n"
+      },
+      "output": {
+        "returns": [
+          "packages/*",
+          "!packages/legacy"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - a\ncatalog:\n  - b\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "onlyBuiltDependencies:\n  - esbuild\npackages:\n  - a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "onlyBuiltDependencies:\n  - esbuild\n"
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": ""
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages: [a, b]\n"
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - 'a#b'\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n- a\n- b\n"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n\t- a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\r\n  - a\r\n  - b\r\n"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\u0085  - a\u2028  - b\f  - c\u001c  - d\u000b  - e"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b",
+          "c",
+          "d",
+          "e"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - '\"a\"'\n  - \"b'\n"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "\ufeffpackages:\n  - a\n"
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - a\u3000\n  - b\u00a0\n"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\u00a0\n  - a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\u001f\n  - a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  -\n  - a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - ''\n"
+      },
+      "output": {
+        "returns": [
+          ""
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "  packages:\n  - a\n"
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:   # c\n  - a\n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packagesx:\n  - a\n"
+      },
+      "output": {
+        "message": "pnpm-workspace.yaml has no packages list",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "packages:\n  - a\nother: 1\npackages:\n  - b\n"
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "fn": "parse_pnpm_workspace_patterns",
+      "input": {
+        "text": "# header\npackages:\n\n  # inner\n  - a  \n"
+      },
+      "output": {
+        "returns": [
+          "a"
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            ".",
+            "{\"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"root\"}"
+          ],
+          [
+            "packages/shared",
+            "{\"name\": \"@v/shared\"}"
+          ],
+          [
+            "packages/db",
+            "{\"dependencies\": {\"@v/shared\": \"workspace:*\", \"left-pad\": \"1\"}, \"name\": \"@v/db\"}"
+          ],
+          [
+            "server",
+            "{\"dependencies\": {\"@v/db\": \"*\"}, \"devDependencies\": {\"@v/shared\": \"*\", \"vitest\": \"3\"}, \"name\": \"@v/server\", \"optionalDependencies\": {\"fsevents\": \"2\"}, \"peerDependencies\": {\"@v/ui\": \"*\"}}"
+          ],
+          [
+            "ui",
+            "{\"bundledDependencies\": [\"@v/db\"], \"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"@v/ui\"}"
+          ],
+          [
+            "packages/shared/node_modules/foo",
+            "not json"
+          ],
+          [
+            "tools/x",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/shared",
+              "@v/ui"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": {
+          "@v/shared": [],
+          "@v/ui": [
+            "@v/db"
+          ]
+        },
+        "manifests": [
+          [
+            ".",
+            "{\"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"root\"}"
+          ],
+          [
+            "packages/shared",
+            "{\"name\": \"@v/shared\"}"
+          ],
+          [
+            "packages/db",
+            "{\"dependencies\": {\"@v/shared\": \"workspace:*\", \"left-pad\": \"1\"}, \"name\": \"@v/db\"}"
+          ],
+          [
+            "server",
+            "{\"dependencies\": {\"@v/db\": \"*\"}, \"devDependencies\": {\"@v/shared\": \"*\", \"vitest\": \"3\"}, \"name\": \"@v/server\", \"optionalDependencies\": {\"fsevents\": \"2\"}, \"peerDependencies\": {\"@v/ui\": \"*\"}}"
+          ],
+          [
+            "ui",
+            "{\"bundledDependencies\": [\"@v/db\"], \"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"@v/ui\"}"
+          ],
+          [
+            "packages/shared/node_modules/foo",
+            "not json"
+          ],
+          [
+            "tools/x",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/shared",
+              "@v/ui"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": {
+          "@v/ghost": [
+            "@v/db"
+          ]
+        },
+        "manifests": [
+          [
+            ".",
+            "{\"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"root\"}"
+          ],
+          [
+            "packages/shared",
+            "{\"name\": \"@v/shared\"}"
+          ],
+          [
+            "packages/db",
+            "{\"dependencies\": {\"@v/shared\": \"workspace:*\", \"left-pad\": \"1\"}, \"name\": \"@v/db\"}"
+          ],
+          [
+            "server",
+            "{\"dependencies\": {\"@v/db\": \"*\"}, \"devDependencies\": {\"@v/shared\": \"*\", \"vitest\": \"3\"}, \"name\": \"@v/server\", \"optionalDependencies\": {\"fsevents\": \"2\"}, \"peerDependencies\": {\"@v/ui\": \"*\"}}"
+          ],
+          [
+            "ui",
+            "{\"bundledDependencies\": [\"@v/db\"], \"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"@v/ui\"}"
+          ],
+          [
+            "packages/shared/node_modules/foo",
+            "not json"
+          ],
+          [
+            "tools/x",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      },
+      "output": {
+        "message": "extra_deps names an undeclared workspace package",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": {
+          "@v/ui": [
+            "left-pad"
+          ]
+        },
+        "manifests": [
+          [
+            ".",
+            "{\"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"root\"}"
+          ],
+          [
+            "packages/shared",
+            "{\"name\": \"@v/shared\"}"
+          ],
+          [
+            "packages/db",
+            "{\"dependencies\": {\"@v/shared\": \"workspace:*\", \"left-pad\": \"1\"}, \"name\": \"@v/db\"}"
+          ],
+          [
+            "server",
+            "{\"dependencies\": {\"@v/db\": \"*\"}, \"devDependencies\": {\"@v/shared\": \"*\", \"vitest\": \"3\"}, \"name\": \"@v/server\", \"optionalDependencies\": {\"fsevents\": \"2\"}, \"peerDependencies\": {\"@v/ui\": \"*\"}}"
+          ],
+          [
+            "ui",
+            "{\"bundledDependencies\": [\"@v/db\"], \"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"@v/ui\"}"
+          ],
+          [
+            "packages/shared/node_modules/foo",
+            "not json"
+          ],
+          [
+            "tools/x",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      },
+      "output": {
+        "message": "extra_deps for @v/ui contains an undeclared dependency",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": [],
+        "manifests": [
+          [
+            ".",
+            "{\"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"root\"}"
+          ],
+          [
+            "packages/shared",
+            "{\"name\": \"@v/shared\"}"
+          ],
+          [
+            "packages/db",
+            "{\"dependencies\": {\"@v/shared\": \"workspace:*\", \"left-pad\": \"1\"}, \"name\": \"@v/db\"}"
+          ],
+          [
+            "server",
+            "{\"dependencies\": {\"@v/db\": \"*\"}, \"devDependencies\": {\"@v/shared\": \"*\", \"vitest\": \"3\"}, \"name\": \"@v/server\", \"optionalDependencies\": {\"fsevents\": \"2\"}, \"peerDependencies\": {\"@v/ui\": \"*\"}}"
+          ],
+          [
+            "ui",
+            "{\"bundledDependencies\": [\"@v/db\"], \"dependencies\": {\"@v/shared\": \"*\"}, \"name\": \"@v/ui\"}"
+          ],
+          [
+            "packages/shared/node_modules/foo",
+            "not json"
+          ],
+          [
+            "tools/x",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server",
+          "ui"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/shared",
+              "@v/ui"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"name\": \"@v/a\"}"
+          ],
+          [
+            "packages/legacy",
+            "not json"
+          ],
+          [
+            "packages/gen/deep/x",
+            "not json"
+          ],
+          [
+            "packages/gen/y",
+            "not json"
+          ],
+          [
+            "packages/x",
+            "{\"name\": \"@v/x\"}"
+          ],
+          [
+            "packages/xy",
+            "{\"name\": \"@v/xy\"}"
+          ],
+          [
+            "packages/x/z",
+            "not json"
+          ],
+          [
+            "packages/legacyx",
+            "{\"dependencies\": {\"@v/a\": \"*\"}, \"name\": \"@v/legacyx\"}"
+          ]
+        ],
+        "patterns": [
+          "packages/**",
+          "!packages/legacy",
+          "!packages/gen/*",
+          "!packages/x*/"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "packages/a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [],
+            "dir": "packages/x",
+            "name": "@v/x"
+          },
+          {
+            "deps": [],
+            "dir": "packages/xy",
+            "name": "@v/xy"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "packages/legacyx",
+            "name": "@v/legacyx"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            ".",
+            "not json"
+          ],
+          [
+            "a",
+            "{\"name\": \"@v/a\"}"
+          ],
+          [
+            "a/node_modules/b",
+            "not json"
+          ],
+          [
+            "node_modules/c",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "**"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "a",
+            "not json"
+          ]
+        ],
+        "patterns": []
+      },
+      "output": {
+        "returns": []
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "a",
+            "not json"
+          ]
+        ],
+        "patterns": [
+          "!a"
+        ]
+      },
+      "output": {
+        "returns": []
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "packages/a/package.json has no name",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"name\": \"\"}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "packages/a/package.json has no name",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"name\": \"@v/a\"}"
+          ],
+          [
+            "packages/b",
+            "{\"name\": \"@v/a\"}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "duplicate workspace package name @v/a",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"name\": \"@v/a\","
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "raises": "JSONDecodeError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"dependencies\": null, \"devDependencies\": [], \"name\": \"@v/a\", \"optionalDependencies\": {\"@v/b\": \"*\"}, \"peerDependencies\": {}}"
+          ],
+          [
+            "packages/b",
+            "{\"dependencies\": {\"@v/a\": \"*\"}, \"name\": \"@v/b\"}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "@v/b"
+            ],
+            "dir": "packages/a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "packages/b",
+            "name": "@v/b"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/deep",
+            "{\"name\": \"@v/deep\",\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "packages/deep",
+            "name": "@v/deep"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/deep",
+            "{\"name\": \"@v/deep\",\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "packages/deep/package.json nests deeper than 64 levels",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/deep",
+            "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "packages/deep/package.json nests deeper than 64 levels",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/deep",
+            "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "raises": "JSONDecodeError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "packages/a",
+            "{\"name\": \"@v/a\"}"
+          ],
+          [
+            "packages/deep",
+            "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["
+          ]
+        ],
+        "patterns": [
+          "packages/*"
+        ]
+      },
+      "output": {
+        "message": "packages/deep/package.json nests deeper than 64 levels",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "pnpm_graph",
+      "input": {
+        "extra_deps": null,
+        "manifests": [
+          [
+            "server",
+            "{\"dependencies\": {\"@v/a\": \"*\"}, \"name\": \"@v/server\"}"
+          ],
+          [
+            "packages/a",
+            "{\"dependencies\": {\"@v/server\": \"*\"}, \"name\": \"@v/a\"}"
+          ]
+        ],
+        "patterns": [
+          "packages/*",
+          "server"
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "packages/a",
+            "name": "@v/a"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": null,
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": [],
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {},
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": 0,
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": "",
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": [
+          "@v/a"
+        ],
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps must map a workspace package to a list of its extra dependencies",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": "x",
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps must map a workspace package to a list of its extra dependencies",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/ghost": []
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps names an undeclared workspace package",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/a": "@v/b"
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps for @v/a contains an undeclared dependency",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/a": [
+            "@v/zz"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps for @v/a contains an undeclared dependency",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/a": [
+            1
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps for @v/a contains an undeclared dependency",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/a": null
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "message": "extra_deps for @v/a contains an undeclared dependency",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/c": [
+            "@v/a",
+            "@v/b",
+            "@v/a"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [
+              "@v/a",
+              "@v/b"
+            ],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/a": [
+            "@v/a"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/b": [
+            "@v/c"
+          ],
+          "@v/c": [
+            "@v/a"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a",
+              "@v/c"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "apply_extra_deps",
+      "input": {
+        "extra_deps": {
+          "@v/c": []
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "@v/a"
+          },
+          {
+            "deps": [
+              "@v/a"
+            ],
+            "dir": "b",
+            "name": "@v/b"
+          },
+          {
+            "deps": [],
+            "dir": "c",
+            "name": "@v/c"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "extra_deps": {
+            "lib": []
+          },
+          "packages": {
+            "core": {
+              "deps": [
+                "lib"
+              ],
+              "dir": "services/core/"
+            },
+            "lib": {
+              "dir": "lib"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "lib"
+            ],
+            "dir": "services/core",
+            "name": "core"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "extra_deps": {
+            "core": [
+              "lib"
+            ]
+          },
+          "packages": {
+            "core": {
+              "dir": "services/core"
+            },
+            "lib": {
+              "dir": "lib"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "lib"
+            ],
+            "dir": "services/core",
+            "name": "core"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "extra_deps": {
+            "ghost": [],
+            "phantom": []
+          },
+          "packages": {
+            "core": {
+              "deps": [
+                "ghost"
+              ],
+              "dir": "core"
+            }
+          }
+        }
+      },
+      "output": {
+        "message": "extra_deps names undeclared package(s) ['ghost', 'phantom']",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "packages": {
+            "core": {
+              "deps": [
+                "zed",
+                "ghost"
+              ],
+              "dir": "core"
+            }
+          }
+        }
+      },
+      "output": {
+        "message": "package core depends on undeclared ['ghost', 'zed']",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "packages": {
+            "core": {
+              "dir": "x///"
+            },
+            "root": {
+              "dir": "/"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "x",
+            "name": "core"
+          },
+          {
+            "deps": [],
+            "dir": "",
+            "name": "root"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {}
+      },
+      "output": {
+        "returns": []
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "extra_deps": null,
+          "packages": null
+        }
+      },
+      "output": {
+        "returns": []
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "packages": {
+            "core": {
+              "deps": "lib",
+              "dir": "core"
+            }
+          }
+        }
+      },
+      "output": {
+        "message": "package core depends on undeclared ['b', 'i', 'l']",
+        "raises": "ValueError"
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "packages": {
+            "core": {
+              "deps": null,
+              "dir": "core"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [],
+            "dir": "core",
+            "name": "core"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "packages": {
+            "a": {
+              "deps": [
+                "b"
+              ],
+              "dir": "same"
+            },
+            "b": {
+              "dir": "same"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "same",
+            "name": "a"
+          },
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "b"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "declared_packages",
+      "input": {
+        "workspace": {
+          "extra_deps": {
+            "core": [
+              "core"
+            ]
+          },
+          "packages": {
+            "core": {
+              "deps": [],
+              "dir": "core"
+            }
+          }
+        }
+      },
+      "output": {
+        "returns": [
+          {
+            "deps": [
+              "core"
+            ],
+            "dir": "core",
+            "name": "core"
+          }
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "c",
+            "name": "c"
+          }
+        ],
+        "seeds": [
+          "a"
+        ]
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "c",
+            "name": "c"
+          }
+        ],
+        "seeds": [
+          "b"
+        ]
+      },
+      "output": {
+        "returns": [
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "c",
+            "name": "c"
+          }
+        ],
+        "seeds": [
+          "c"
+        ]
+      },
+      "output": {
+        "returns": [
+          "c"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "c",
+            "name": "c"
+          },
+          {
+            "deps": [],
+            "dir": "d",
+            "name": "d"
+          }
+        ],
+        "seeds": [
+          "a"
+        ]
+      },
+      "output": {
+        "returns": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "c",
+            "name": "c"
+          },
+          {
+            "deps": [],
+            "dir": "d",
+            "name": "d"
+          }
+        ],
+        "seeds": [
+          "c"
+        ]
+      },
+      "output": {
+        "returns": [
+          "c"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "c",
+            "name": "c"
+          },
+          {
+            "deps": [],
+            "dir": "d",
+            "name": "d"
+          }
+        ],
+        "seeds": [
+          "d"
+        ]
+      },
+      "output": {
+        "returns": [
+          "d"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "s"
+            ],
+            "dir": "s",
+            "name": "s"
+          },
+          {
+            "deps": [
+              "s"
+            ],
+            "dir": "t",
+            "name": "t"
+          }
+        ],
+        "seeds": [
+          "s"
+        ]
+      },
+      "output": {
+        "returns": [
+          "s",
+          "t"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "c",
+            "name": "c"
+          }
+        ],
+        "seeds": []
+      },
+      "output": {
+        "returns": []
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "a",
+            "name": "a"
+          },
+          {
+            "deps": [
+              "a"
+            ],
+            "dir": "b",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "c",
+            "name": "c"
+          }
+        ],
+        "seeds": [
+          "ghost"
+        ]
+      },
+      "output": {
+        "returns": [
+          "ghost"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "t",
+            "name": "top"
+          },
+          {
+            "deps": [
+              "top"
+            ],
+            "dir": "l",
+            "name": "l"
+          },
+          {
+            "deps": [
+              "top"
+            ],
+            "dir": "r",
+            "name": "r"
+          },
+          {
+            "deps": [
+              "l",
+              "r"
+            ],
+            "dir": "x",
+            "name": "bottom"
+          }
+        ],
+        "seeds": [
+          "top"
+        ]
+      },
+      "output": {
+        "returns": [
+          "bottom",
+          "l",
+          "r",
+          "top"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "t",
+            "name": "top"
+          },
+          {
+            "deps": [
+              "top"
+            ],
+            "dir": "l",
+            "name": "l"
+          },
+          {
+            "deps": [
+              "top"
+            ],
+            "dir": "r",
+            "name": "r"
+          },
+          {
+            "deps": [
+              "l",
+              "r"
+            ],
+            "dir": "x",
+            "name": "bottom"
+          }
+        ],
+        "seeds": [
+          "l",
+          "r"
+        ]
+      },
+      "output": {
+        "returns": [
+          "bottom",
+          "l",
+          "r"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "seeds": [
+          "@v/shared"
+        ]
+      },
+      "output": {
+        "returns": [
+          "@v/cli",
+          "@v/db",
+          "@v/plugin",
+          "@v/server",
+          "@v/shared",
+          "@v/ui"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "seeds": [
+          "@v/adapter-utils"
+        ]
+      },
+      "output": {
+        "returns": [
+          "@v/adapter-claude",
+          "@v/adapter-utils",
+          "@v/cli",
+          "@v/plugin",
+          "@v/server",
+          "@v/ui"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "seeds": [
+          "@v/server"
+        ]
+      },
+      "output": {
+        "returns": [
+          "@v/cli",
+          "@v/plugin",
+          "@v/server"
+        ]
+      }
+    },
+    {
+      "fn": "reverse_closure",
+      "input": {
+        "packages": [],
+        "seeds": [
+          "x"
+        ]
+      },
+      "output": {
+        "returns": [
+          "x"
+        ]
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "server/plugins/x/a.ts"
+      },
+      "output": {
+        "returns": "@v/plugin"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "server/a.ts"
+      },
+      "output": {
+        "returns": "@v/server"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "serverx/a.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "server"
+      },
+      "output": {
+        "returns": "@v/server"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "server/plugins/xy/a.ts"
+      },
+      "output": {
+        "returns": "@v/server"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "packages/adapters/claude-local/src/a.ts"
+      },
+      "output": {
+        "returns": "@v/adapter-claude"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "packages/adapters/a.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": "docs/a.md"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "path": ""
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "first"
+          },
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "second"
+          }
+        ],
+        "path": "same/a"
+      },
+      "output": {
+        "returns": "first"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "second"
+          },
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "first"
+          }
+        ],
+        "path": "same/a"
+      },
+      "output": {
+        "returns": "second"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "",
+            "name": "empty"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ],
+        "path": "lib/a"
+      },
+      "output": {
+        "returns": "lib"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "",
+            "name": "empty"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ],
+        "path": "a.ts"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "",
+            "name": "empty"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ],
+        "path": "/abs"
+      },
+      "output": {
+        "returns": "empty"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "",
+            "name": "empty"
+          },
+          {
+            "deps": [],
+            "dir": "lib",
+            "name": "lib"
+          }
+        ],
+        "path": ""
+      },
+      "output": {
+        "returns": "empty"
+      }
+    },
+    {
+      "fn": "owner_package",
+      "input": {
+        "packages": [],
+        "path": "a"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {}
+      },
+      "output": {
+        "returns": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": []
+      },
+      "output": {
+        "returns": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": null
+      },
+      "output": {
+        "returns": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": true
+      },
+      "output": {
+        "returns": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": false
+      },
+      "output": {
+        "returns": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": 0
+      },
+      "output": {
+        "returns": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": -1
+      },
+      "output": {
+        "returns": "1bad6b8cf97131fceab8543e81f7757195fbb1d36b376ee994ad1cf17699c464"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": 9007199254740991
+      },
+      "output": {
+        "returns": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": -9007199254740991
+      },
+      "output": {
+        "returns": "4c933a456bb8f2e9894b2d0b26480439cd72d52fb8a27cbf8fd7f323f22c7815"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": ""
+      },
+      "output": {
+        "returns": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": "a"
+      },
+      "output": {
+        "returns": "ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {
+          "a": "x",
+          "b": [
+            1,
+            {
+              "c": true,
+              "d": null
+            }
+          ]
+        }
+      },
+      "output": {
+        "returns": "063f1587acec8e6af9d1e89abbbc89ea9c84f056a2ababeaa3fa03417c7f7e9a"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {
+          "ctl": "\u0000\u0001\b\t\n\f\r\u001f\"\\/",
+          "\u00e9": "\u00fc",
+          "\u2028": "\u007f"
+        }
+      },
+      "output": {
+        "returns": "7e2d73b6db713a7f6110cecd7706a436e52327117718f626b665b52e998018fd"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": [
+          "\ud83d\ude00",
+          "\ufeff",
+          "\u0100",
+          "~ "
+        ]
+      },
+      "output": {
+        "returns": "0648840978912afecf45441bdd4e00396d60b26dc1768e022e4a131731e904ad"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {
+          "a": 4,
+          "\ue000": 3,
+          "\uffff": 1,
+          "\ud800\udc00": 5,
+          "\ud83d\ude00": 2
+        }
+      },
+      "output": {
+        "returns": "857ef1ebe6ebeacbba60bd0e425dd6817fcd48782305c7a6b163040c467439ec"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {
+          "": 4,
+          "B": 3,
+          "a": 2,
+          "a\u0000": 5,
+          "ab": 1
+        }
+      },
+      "output": {
+        "returns": "2ae5f89308362e1b6757902cb40948bcb30f757ea6d3cd2d879034adb2cdf6ea"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": [
+          "\ud800",
+          "x\udfffy"
+        ]
+      },
+      "output": {
+        "returns": "11c301d8efc2b685325d7c690b227c38e5b5c161445e3e3665f0501de5aa504e"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": {
+          "packages": [
+            {
+              "deps": [],
+              "dir": "a",
+              "name": "@v/a"
+            }
+          ],
+          "schema": 1
+        }
+      },
+      "output": {
+        "returns": "360cf0897a9c09ab89cacc9beeb45f251fce21c2db19bf5d927c5782a532148a"
+      }
+    },
+    {
+      "fn": "canonical_digest",
+      "input": {
+        "value": [
+          [
+            []
+          ],
+          {
+            "x": {}
+          },
+          [
+            null,
+            false
+          ]
+        ]
+      },
+      "output": {
+        "returns": "cf527082bec5fc9662114fc3cb6c1e11de5e10bb01fde3f98c97e8304c467543"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": []
+      },
+      "output": {
+        "returns": "76aa514ea2838133beaf48123d42e888fe6dde44f9ae3ec37409c61e035ff4eb"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ]
+      },
+      "output": {
+        "returns": "dfcc5875dbec08f268a896024fd9480a095d54098cdd6c9e842dc7fb6a8b4678"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          }
+        ]
+      },
+      "output": {
+        "returns": "dfcc5875dbec08f268a896024fd9480a095d54098cdd6c9e842dc7fb6a8b4678"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "@v/b",
+              "@v/c"
+            ],
+            "dir": "a",
+            "name": "@v/a"
+          }
+        ]
+      },
+      "output": {
+        "returns": "2b7e14118718cfa3412cd494a29f0dd43e178169d111f6ec510f857ccec94712"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [
+              "@v/c",
+              "@v/b"
+            ],
+            "dir": "a",
+            "name": "@v/a"
+          }
+        ]
+      },
+      "output": {
+        "returns": "2b7e14118718cfa3412cd494a29f0dd43e178169d111f6ec510f857ccec94712"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "\u00e9/\ud83d\ude00",
+            "name": "\u00e9"
+          }
+        ]
+      },
+      "output": {
+        "returns": "e047222141cff9b2f729309593bb73f3266fe6ea61d7bef153f50bc4e3ba1655"
+      }
+    },
+    {
+      "fn": "graph_digest",
+      "input": {
+        "packages": [
+          {
+            "deps": [],
+            "dir": "same",
+            "name": "b"
+          },
+          {
+            "deps": [
+              "b"
+            ],
+            "dir": "same",
+            "name": "a"
+          }
+        ]
+      },
+      "output": {
+        "returns": "db71d01fabc38401242c6237449a62c3bdd3741dc75220c6cbbab9b6ff511353"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "docs/**"
+          ]
+        },
+        "path": "docs/a.md"
+      },
+      "output": {
+        "returns": "docs/**"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "docs/**"
+          ]
+        },
+        "path": "docs/pnpm-lock.yaml"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "*.yaml"
+          ]
+        },
+        "path": "pnpm-lock.yaml"
+      },
+      "output": {
+        "returns": "*.yaml"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "**"
+          ]
+        },
+        "path": "a/Cargo.lock"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "**"
+          ]
+        },
+        "path": "a/b/go.sum"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "**"
+          ]
+        },
+        "path": "a/Cargo.lockx"
+      },
+      "output": {
+        "returns": "**"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "**"
+          ]
+        },
+        "path": "a/bun.lockb"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {},
+        "path": "a/b.md"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": null
+        },
+        "path": "a/b.md"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": []
+        },
+        "path": "a/b.md"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": [
+            "**/*.md",
+            "a/**"
+          ]
+        },
+        "path": "a/b.md"
+      },
+      "output": {
+        "returns": "**/*.md"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "inert_globs": "docs/**"
+        },
+        "path": "x"
+      },
+      "output": {
+        "returns": "*"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "path": "README.md"
+      },
+      "output": {
+        "returns": "**/*.md"
+      }
+    },
+    {
+      "fn": "is_inert",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "path": "docs/sub/uv.lock"
+      },
+      "output": {
+        "returns": null
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "cli/src/a.ts",
+          "docs/cli/x.md"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/cli"
+            ],
+            "full_triggers": [],
+            "inert": [
+              "docs/cli/x.md"
+            ],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "ui/src/app.tsx"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/ui"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "packages/shared/src/x.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli",
+            "@v/db",
+            "@v/plugin",
+            "@v/server",
+            "@v/shared",
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/shared"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": [
+            "@v/db",
+            "@v/server",
+            "@v/shared"
+          ]
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "packages/db/src/x.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli",
+            "@v/db",
+            "@v/plugin",
+            "@v/server"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/db"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": [
+            "@v/db",
+            "@v/server"
+          ]
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "packages/adapter-utils/src/x.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/adapter-claude",
+            "@v/adapter-utils",
+            "@v/cli",
+            "@v/plugin",
+            "@v/server",
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/adapter-utils"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": [
+            "@v/server"
+          ]
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          ".github/workflows/ci.yml",
+          "cli/a.ts",
+          "pnpm-lock.yaml"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": ".github/workflows/ci.yml",
+                "rule": ".github/**"
+              },
+              {
+                "path": "pnpm-lock.yaml",
+                "rule": "pnpm-lock.yaml"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "infra/main.tf",
+          "cli/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "infra/main.tf",
+                "rule": "infra/**"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "random/file.txt",
+          "cli/a.ts",
+          "a/other.txt"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/cli"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": [
+              "random/file.txt",
+              "a/other.txt"
+            ]
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "scripts/ui-build.mjs"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/ui"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "contracts/x.yaml"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli",
+            "@v/plugin",
+            "@v/server"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/cli",
+              "@v/server"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": [
+            "@v/server"
+          ]
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/ghost",
+              "@v/abc"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "docs/a.md",
+          "cli/a.ts",
+          "contracts/x.yaml",
+          "ui/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": "extra_edges for contracts/x.yaml name unknown package(s) ['@v/abc', '@v/ghost']",
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [],
+            "inert": [
+              "docs/a.md"
+            ],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "ui/pnpm-lock.yaml"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/ui"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "tools/yarn.lock"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "tools/yarn.lock",
+                "rule": "nested lockfile maps to 0 packages, not exactly one"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "ui/**": [
+              "@v/cli"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "ui/Cargo.lock"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "ui/Cargo.lock",
+                "rule": "nested lockfile maps to 2 packages, not exactly one"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "docs/sub/uv.lock"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "docs/sub/uv.lock",
+                "rule": "nested lockfile maps to 0 packages, not exactly one"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": []
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "docs/a.md",
+          "x/README.md"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [],
+            "inert": [
+              "docs/a.md",
+              "x/README.md"
+            ],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "hub_packages": null
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "server/src/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli",
+            "@v/plugin",
+            "@v/server"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/server"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "tools/yarn.lock",
+          "zzz/u.txt",
+          "cli/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "tools/yarn.lock",
+                "rule": "nested lockfile maps to 0 packages, not exactly one"
+              }
+            ],
+            "inert": [],
+            "unmapped": [
+              "zzz/u.txt"
+            ]
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/ghost",
+              "@v/abc"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "contracts/x.yaml",
+          ".github/x"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": ".github/x",
+                "rule": ".github/**"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "server/Dockerfile.prod"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "server/Dockerfile.prod",
+                "rule": "**/Dockerfile*"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": {
+            "contracts/**": [
+              "@v/server",
+              "@v/cli"
+            ],
+            "scripts/ui-*.mjs": [
+              "@v/ui"
+            ]
+          },
+          "full_globs": [
+            "infra/**"
+          ],
+          "hub_packages": [
+            "@v/server",
+            "@v/db",
+            "@v/shared"
+          ],
+          "inert_globs": [
+            "docs/**",
+            "**/*.md"
+          ]
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "server/plugins/x/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/plugin"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/plugin"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {},
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "server/plugins/x/a.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/plugin"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/plugin"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {
+          "extra_edges": null,
+          "full_globs": null,
+          "hub_packages": [],
+          "inert_globs": null
+        },
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "cli/a.ts",
+          "ui/b.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [
+            "@v/cli",
+            "@v/ui"
+          ],
+          "error": null,
+          "evidence": {
+            "changed_packages": [
+              "@v/cli",
+              "@v/ui"
+            ],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {},
+        "packages": [
+          {
+            "deps": [],
+            "dir": "packages/shared",
+            "name": "@v/shared"
+          },
+          {
+            "deps": [
+              "@v/shared"
+            ],
+            "dir": "packages/db",
+            "name": "@v/db"
+          },
+          {
+            "deps": [],
+            "dir": "packages/adapter-utils",
+            "name": "@v/adapter-utils"
+          },
+          {
+            "deps": [
+              "@v/adapter-utils"
+            ],
+            "dir": "packages/adapters/claude-local",
+            "name": "@v/adapter-claude"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/db",
+              "@v/shared"
+            ],
+            "dir": "server",
+            "name": "@v/server"
+          },
+          {
+            "deps": [
+              "@v/adapter-claude",
+              "@v/shared"
+            ],
+            "dir": "ui",
+            "name": "@v/ui"
+          },
+          {
+            "deps": [
+              "@v/db",
+              "@v/server"
+            ],
+            "dir": "cli",
+            "name": "@v/cli"
+          },
+          {
+            "deps": [
+              "@v/server"
+            ],
+            "dir": "server/plugins/x",
+            "name": "@v/plugin"
+          }
+        ],
+        "paths": [
+          "packages/x/package.json"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [
+              {
+                "path": "packages/x/package.json",
+                "rule": "**/package.json"
+              }
+            ],
+            "inert": [],
+            "unmapped": []
+          },
+          "hubs": []
+        }
+      }
+    },
+    {
+      "fn": "classify_paths",
+      "input": {
+        "config": {},
+        "packages": [],
+        "paths": [
+          "a/b.ts"
+        ]
+      },
+      "output": {
+        "returns": {
+          "affected": [],
+          "error": null,
+          "evidence": {
+            "changed_packages": [],
+            "full_triggers": [],
+            "inert": [],
+            "unmapped": [
+              "a/b.ts"
+            ]
+          },
+          "hubs": []
+        }
+      }
+    }
+  ]
+}

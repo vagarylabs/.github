@@ -2667,9 +2667,178 @@ UNREAD_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec", 
 UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD_LOADER_CALLS)) + r")(?![A-Za-z0-9_])")
 # Root's MUST-2 of R6-2 round four: `__path__` as a word, in a str or bytes constant (`setattr(m, "__path__", d)`,
 # `m.__dict__["__path__"]`, `monkeypatch.setattr("pkg.__path__", d)`).
-PKG_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])__path__(?![A-Za-z0-9_])")
+# R6-2 round 5 (root's ruling (A) of 2026-11-15 01:58 on MUST-A A1): `m.__spec__.submodule_search_locations` IS
+# `m.__path__` (the same list object), so PKG-PATH takes both words, by attribute, name, keyword or str/bytes word.
+PKG_PATH_NAMES = frozenset({"__path__", "submodule_search_locations"})
+PKG_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:__path__|submodule_search_locations)(?![A-Za-z0-9_])")
 # The PEP 562 hook (MODULE-GETATTR in capability_occurrences): the word in a str or bytes constant refuses.
 MODULE_GETATTR_WORD = re.compile(r"(?<![A-Za-z0-9_])__getattr__(?![A-Za-z0-9_])")
+# R6-2 round 5, MODULE-INTERNALS (root's rulings of 2026-11-15 01:58: (A) `__class__` assignment and `vars()` /
+# `__dict__` on an imported module refuse, (C) `__builtins__` as an attribute or in a string counts, and the STANDING
+# default). Tier 1: these attributes reach the import machinery, the builtins, a function's module globals or code
+# from ANY receiver (`json.__builtins__`, `len.__self__`, `f.__globals__`, `().__class__.__base__.__subclasses__()`,
+# `json.__loader__`, `m.__spec__`), so each refuses in any context wherever it sits.
+GADGET_DUNDERS = frozenset({"__builtins__", "__globals__", "__subclasses__", "__self__", "__spec__", "__loader__",
+                            "__code__", "__closure__", "__import__"})
+# Tier 1, writes: an assignment, augmented assignment or `del` of one of these on any receiver (`m.__class__ = C`
+# hands every missing attribute, `__path__` among them, to C's `__getattr__` / `__getattribute__`; `__package__`
+# moves relative imports; `__dict__` replaces the namespace).
+WRITE_DUNDERS = frozenset({"__class__", "__package__", "__dict__"})
+# A str or bytes constant (after fold_constant) that IS one of these, alone or as the last part of a dotted path,
+# names an attribute for getattr / setattr / delattr / a namespace key: `setattr(m, "__class__", C)`,
+# `getattr(m, "__dict__")`, `monkeypatch.setattr("pkg.__spec__", s)`.
+NAME_DUNDERS = GADGET_DUNDERS | WRITE_DUNDERS | frozenset({"__getattribute__", "__setattr__", "__delattr__"})
+NAME_DUNDER = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?:" + "|".join(sorted(NAME_DUNDERS)) + r")")
+# Root's ruling (C): `__builtins__` as a word inside any str or bytes constant (`globals()["__builtins__"]`).
+BUILTINS_WORD = re.compile(r"(?<![A-Za-z0-9_])__builtins__(?![A-Za-z0-9_])")
+# Tier 2: on a MODULE (a name an import in this file binds, an alias of one, or a literal loader call such as
+# `importlib.import_module("m")`), every dunder attribute outside these refuses, a Load too (`email.__dict__`,
+# `m.__setattr__`, `m.__wrapped__`). These read metadata or run ordinary protocol methods; `__class__` is inert only
+# as a Load and `__package__` is not on the list (tier 1 refuses its write; a read on a module refuses here).
+INERT_DUNDERS = frozenset({
+    "__name__", "__qualname__", "__module__", "__doc__", "__file__", "__version__", "__all__", "__annotations__",
+    "__dataclass_fields__", "__slots__", "__class__",
+    "__init__", "__new__", "__post_init__", "__call__", "__enter__", "__exit__", "__aenter__", "__aexit__",
+    "__iter__", "__next__", "__aiter__", "__anext__", "__len__", "__contains__", "__getitem__", "__setitem__",
+    "__delitem__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__hash__", "__bool__", "__repr__",
+    "__str__", "__format__", "__bytes__", "__fspath__", "__index__", "__int__", "__float__",
+    "__add__", "__sub__", "__mul__", "__truediv__", "__floordiv__", "__mod__", "__neg__", "__pos__", "__abs__",
+    "__radd__", "__rsub__", "__rmul__"})
+DUNDER = re.compile(r"__[A-Za-z0-9_]+__")
+# The calls that take a receiver and an attribute name (R5-e: a computed name on a module refuses).
+ATTR_NAME_CALLS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
+ATTR_NAME_METHODS = frozenset({"__getattribute__", "__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
+FOLD_MAX = 4096
+
+
+def fold_constant(node, memo: dict):
+    """The str or bytes value of a compile-time constant expression, else None (R6-2 round 5, MUST-B: a word built
+    from constants is the word). Folded: a constant (the AST already joins implicit concatenation and decodes
+    escapes), `+` of constants (a left-deep chain of any length, flattened), `%` with constant operands (no `*` width,
+    no width or precision over 4 digits), an f-string whose parts all fold, `sep.join(<list or tuple display of
+    constants>)`, and `.decode()` / `.encode()` of one with a literal codec. Bounded at FOLD_MAX characters. A name
+    built from anything else (a variable, `chr(95)`, a join over a computed list) is the open class."""
+    import ast
+    key = id(node)
+    if key in memo:
+        return memo[key]
+    memo[key] = None                      # a cycle or a re-entry reads as not constant
+    value = None
+    if isinstance(node, ast.Constant):
+        value = node.value if isinstance(node.value, (str, bytes)) else None
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts, cur = [], node
+        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+            parts.append(cur.right)
+            cur = cur.left
+        parts.append(cur)
+        vals, total = [], 0
+        for part in reversed(parts):
+            v = fold_constant(part, memo)
+            total += len(v) if v is not None else 0
+            if v is None or vals and type(v) is not type(vals[0]) or total > FOLD_MAX:
+                vals = None
+                break
+            vals.append(v)
+        value = (vals[0][:0].join(vals)) if vals else None
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        left = fold_constant(node.left, memo)
+        if isinstance(left, (str, bytes)) and not re.search(rb"%[^%a-zA-Z]*(?:\*|\d{5,})" if isinstance(left, bytes)
+                                                            else r"%[^%a-zA-Z]*(?:\*|\d{5,})", left):
+            items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+            args = []
+            for item in items:
+                v = item.value if isinstance(item, ast.Constant) and isinstance(item.value, (int, float)) \
+                    and not isinstance(item.value, bool) else fold_constant(item, memo)
+                if v is None:
+                    args = None
+                    break
+                args.append(v)
+            if args is not None:
+                try:
+                    value = left % (tuple(args) if isinstance(node.right, ast.Tuple) else args[0])
+                except (TypeError, ValueError, KeyError, OverflowError):
+                    value = None
+    elif isinstance(node, ast.JoinedStr):
+        out = []
+        for part in node.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                out.append(part.value)
+            elif isinstance(part, ast.FormattedValue) and part.conversion in (-1, 115) and part.format_spec is None \
+                    and isinstance(fold_constant(part.value, memo), str):
+                out.append(fold_constant(part.value, memo))
+            else:
+                out = None
+                break
+        value = "".join(out) if out is not None else None
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and not node.keywords:
+        recv = fold_constant(node.func.value, memo)
+        if recv is not None and node.func.attr == "join" and len(node.args) == 1 \
+                and isinstance(node.args[0], (ast.List, ast.Tuple)):
+            items = [fold_constant(e, memo) for e in node.args[0].elts]
+            if all(i is not None and type(i) is type(recv) for i in items):
+                value = recv.join(items)
+        elif recv is not None and node.func.attr in ("decode", "encode") and len(node.args) <= 1 \
+                and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args):
+            try:
+                value = getattr(recv, node.func.attr)(*[a.value for a in node.args])
+            except (AttributeError, LookupError, UnicodeError, TypeError):
+                value = None
+    if value is not None and len(value) > FOLD_MAX:
+        value = None
+    memo[key] = value
+    return value
+
+
+def constant_words(node, parent: dict, memo: dict) -> list:
+    """The folded constant values one node stands for, each checked by internals_word (R6-2 round 5): a constant; a
+    `+` chain once, at its root (the outermost `+`), as each maximal run of parts that fold (`"__pa" + "th__" + x`
+    yields "__path__"); a `%`, f-string, join or decode that folds whole. Any other node yields nothing."""
+    import ast
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, (str, bytes)) else []
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        up = parent.get(node)
+        if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Add) and up.left is node:
+            return []                      # inside a chain: its root reads it
+        parts, cur = [], node
+        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+            parts.append(cur.right)
+            cur = cur.left
+        parts.append(cur)
+        runs, run, total = [], [], 0
+        for part in reversed(parts):
+            v = fold_constant(part, memo)
+            if v is None or run and type(v) is not type(run[0]) or total + len(v) > FOLD_MAX:
+                if run:
+                    runs.append(run[0][:0].join(run))
+                run, total = ([v], len(v)) if v is not None and len(v) <= FOLD_MAX else ([], 0)
+            else:
+                run.append(v)
+                total += len(v)
+        if run:
+            runs.append(run[0][:0].join(run))
+        return runs
+    if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+        v = fold_constant(node, memo)
+        return [v] if v is not None else []
+    return []
+
+
+def internals_word(value) -> bool:
+    """A folded str or bytes value that names a module internal (R6-2 round 5): the PKG-PATH words, `__getattr__` or
+    `__builtins__` anywhere in it, or the whole value a NAME_DUNDERS name (alone or the last part of a dotted path)."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and (PKG_PATH_WORD.search(value) is not None or MODULE_GETATTR_WORD.search(value) is not None
+                                       or BUILTINS_WORD.search(value) is not None or NAME_DUNDER.fullmatch(value) is not None)
+
+
+def env_loader_word(value) -> bool:
+    """A folded value holding PYTHONPATH or an unread loader word (ENV and MUST-D, now through fold_constant too)."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and ("PYTHONPATH" in value or UNREAD_LOADER_WORD.search(value) is not None)
 
 
 def unread_loader_word(value) -> bool:
@@ -3464,6 +3633,41 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
             return i is not None and (i == 0 or isinstance(cmp.ops[i - 1], right_ops)) \
                 and (i == len(cmp.ops) or isinstance(cmp.ops[i], left_ops))
 
+        # R6-2 round 5, SHOULD-2 (root's ruling of 2026-11-15 01:58): `==` / `!=` hands the live list to the other
+        # operand's `__eq__` (`E() == sys.path`, `sys.path == E()`), so beside `==` / `!=` the other side must be a list
+        # or tuple display, or a name every binding of which in this file is a copy of sys.path (`list(sys.path)`,
+        # `tuple(sys.path)`, `sys.path[:]`, `sys.path.copy()`, the builtin unshadowed). `in` / `not in` are unchanged.
+        def sys_path_attr(n) -> bool:
+            return isinstance(n, ast.Attribute) and n.attr == "path" and isinstance(n.value, ast.Name) and n.value.id == "sys"
+
+        def path_copy(value) -> bool:
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id in ("list", "tuple") \
+                    and builtin(value.func.id) and len(value.args) == 1 and not value.keywords and sys_path_attr(value.args[0]):
+                return True
+            if isinstance(value, ast.Subscript) and sys_path_attr(value.value) and isinstance(value.slice, ast.Slice) \
+                    and value.slice.lower is None and value.slice.upper is None and value.slice.step is None:
+                return True
+            return isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "copy" \
+                and sys_path_attr(value.func.value) and not value.args and not value.keywords
+
+        def copy_side(other) -> bool:
+            if isinstance(other, (ast.List, ast.Tuple)):
+                return True
+            if isinstance(other, ast.Name):
+                every = binders.get(other.id, [])
+                return bool(every) and other.id not in unreadable and all(
+                    isinstance(b, ast.Name) and isinstance(parent.get(b), (ast.Assign, ast.AnnAssign))
+                    and (b in parent[b].targets if isinstance(parent[b], ast.Assign) else parent[b].target is b)
+                    and parent[b].value is not None and path_copy(parent[b].value) for b in every)
+            return False
+
+        def eq_copy_only(cmp, node) -> bool:
+            seq = [cmp.left, *cmp.comparators]
+            i = next(j for j, x in enumerate(seq) if x is node)
+            sides = ([seq[i - 1]] if i > 0 and isinstance(cmp.ops[i - 1], (ast.Eq, ast.NotEq)) else []) \
+                + ([seq[i + 1]] if i < len(cmp.ops) and isinstance(cmp.ops[i], (ast.Eq, ast.NotEq)) else [])
+            return all(copy_side(s) for s in sides)
+
         def capability_key(node) -> bool:
             return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.split(".")[0] in CAPABILITY_MODULES
 
@@ -3478,7 +3682,7 @@ def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[
             up1 = parent.get(node)
             up2 = parent.get(up1)
             if node.attr == "path":
-                if cmp_side(up1, node, (ast.In, ast.NotIn, ast.Eq, ast.NotEq), (ast.Eq, ast.NotEq)):
+                if cmp_side(up1, node, (ast.In, ast.NotIn, ast.Eq, ast.NotEq), (ast.Eq, ast.NotEq)) and eq_copy_only(up1, node):
                     take(node.value, node)
                 elif isinstance(up1, ast.Subscript) and up1.value is node and isinstance(up1.ctx, ast.Load):
                     take(node.value, node, up1)
@@ -3592,7 +3796,23 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     - MODULE-GETATTR (PEP 562, closed 2026-11-15): a module-scope binding of `__getattr__` (a def, a class, an
       assignment, an import), `global __getattr__`, a write of a `.__getattr__` attribute, a `__getattr__=` keyword and
       the word in a str or bytes constant: a module `__getattr__` can hand out a `__path__` the text never names. A
-      method in a class body, a binding inside a function and an attribute read are not it. It ranks last.
+      method in a class body, a binding inside a function and an attribute read are not it. It ranks after PKG-PATH.
+    - MODULE-INTERNALS (R6-2 round 5, root's rulings of 2026-11-15 01:58; ranks last): tier 1, a GADGET_DUNDERS
+      attribute (`__builtins__`, `__globals__`, `__subclasses__`, `__self__`, `__spec__`, `__loader__`, `__code__`,
+      `__closure__`, `__import__`) in any context and a WRITE_DUNDERS attribute (`__class__`, `__package__`,
+      `__dict__`) stored or deleted, on ANY receiver; tier 2, on a module (a name an import in this file binds, an alias
+      of one to a fixed point, a literal loader call), every dunder attribute outside INERT_DUNDERS, `vars(<module>)`
+      and a getattr / setattr / delattr / hasattr / `object.__setattr__` whose attribute name does not fold to a
+      constant; and a folded constant (fold_constant: implicit concatenation, `+`, `%`, an all-constant f-string,
+      `sep.join(<constants>)`, `.decode()`) that names a module internal (internals_word) anywhere, or PYTHONPATH or an
+      unread loader word outside a consumed node. PKG-PATH also takes `submodule_search_locations` (A1).
+    BY DEFAULT (root's STANDING ask, R6-2 round 5): every tracked regular `.py` is parsed and one that does not parse
+    refuses; in a parsed file every dunder attribute outside INERT_DUNDERS on a module, every tier 1 attribute on any
+    receiver, every `vars(<module>)`, every computed attribute name on a module and every constant spelling of a
+    module internal refuses, beside the capability uses above. NOT refused (the open class, dated 2026-11-15): a name
+    built at run time from non-constant parts reaching getattr / setattr / delattr on a receiver this file does not
+    show is a module (a parameter, a call result), and a module object handed in by another file's call and enumerated
+    through `.__dict__` on a parameter.
     Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
     hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
     same file is judged on its own); N2 a loader call with a LITERAL module name that a recording branch consumed
@@ -3637,7 +3857,7 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
             else:
                 return node
 
-    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH, 3 MODULE-GETATTR; line; column; segment)
+    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH, 3 MODULE-GETATTR, 4 MODULE-INTERNALS; line; column; segment)
 
     def refuse(node, binding: bool = False) -> None:
         if id(node) not in consumed:
@@ -3793,10 +4013,10 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
     for node in ast.walk(tree):
         value = node.value.decode("latin-1") if isinstance(node, ast.Constant) and isinstance(node.value, bytes) else \
             node.value if isinstance(node, ast.Constant) else None
-        if isinstance(node, ast.Attribute) and node.attr == "__path__" or isinstance(node, ast.Name) and node.id == "__path__":
+        if isinstance(node, ast.Attribute) and node.attr in PKG_PATH_NAMES or isinstance(node, ast.Name) and node.id in PKG_PATH_NAMES:
             top = chain_top(node)
             found.append((2, top.lineno, top.col_offset, segment(top)))
-        elif isinstance(node, ast.keyword) and node.arg == "__path__" \
+        elif isinstance(node, ast.keyword) and node.arg in PKG_PATH_NAMES \
                 or isinstance(value, str) and PKG_PATH_WORD.search(value) is not None:
             found.append((2, node.lineno, node.col_offset, segment(node)))
     # MODULE-GETATTR (the PEP 562 channel, closed for ledger on 2026-11-15): a module `__getattr__` answers every
@@ -3830,6 +4050,88 @@ def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) ->
                 or isinstance(node, ast.keyword) and node.arg == "__getattr__" \
                 or isinstance(value, str) and MODULE_GETATTR_WORD.search(value) is not None:
             found.append((3, node.lineno, node.col_offset, segment(node)))
+    # R6-2 round 5, MODULE-INTERNALS (root's rulings of 2026-11-15 01:58), ranked last (4): it names the refusal only
+    # when nothing earlier in the file refuses, so no earlier refusal text moves. Consumed nodes count too, as PKG-PATH.
+    # (a) Tier 1: a GADGET_DUNDERS attribute in any context, and a WRITE_DUNDERS attribute stored or deleted, on ANY
+    #     receiver (`textwrap.__class__ = _G`, `json.__builtins__["exec"]`, `len.__self__.exec`, `json.__loader__`).
+    # (b) Tier 2, on a MODULE (a name any import in this file binds, an alias of one, a literal loader call): every
+    #     dunder attribute outside INERT_DUNDERS (`email.__dict__.values()`), `vars(<module>)`, and getattr / setattr /
+    #     delattr / hasattr / `object.__setattr__` with an attribute name that does not fold to a constant.
+    # (c) A folded constant naming a module internal (internals_word, on any node), or PYTHONPATH or an unread loader
+    #     word (env_loader_word, outside a consumed node, as ENV and MUST-D): `"__pa" "th__"`, `"PYTHON" + "PATH"`,
+    #     `"load_" + "module"`, `"".join(["__built", "ins__"])`, `setattr(m, "__class__", C)`.
+    module_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_names.update(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module_names.update(a.asname or a.name for a in node.names if a.name != "*")
+
+    def root_of(expr):
+        while isinstance(expr, (ast.Attribute, ast.Subscript)):
+            expr = expr.value
+        return expr
+
+    def on_module(expr) -> bool:
+        r = root_of(expr)
+        return isinstance(r, ast.Name) and r.id in module_names \
+            or isinstance(r, ast.Call) and call_name(r.func) in N2_LITERAL_LOADERS
+
+    def carries_module(expr) -> bool:
+        if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+            return any(carries_module(e) for e in expr.elts)
+        if isinstance(expr, (ast.Starred, ast.NamedExpr)):
+            return carries_module(expr.value)
+        if isinstance(expr, ast.IfExp):
+            return carries_module(expr.body) or carries_module(expr.orelse)
+        if isinstance(expr, ast.BoolOp):
+            return any(carries_module(v) for v in expr.values)
+        return on_module(expr)
+
+    grew = True
+    while grew:  # aliases, to a fixed point: `e = email`, `(e := email.mime)`, `for m in (email, json)`, `with m as e`
+        grew = False
+        for node in ast.walk(tree):
+            pairs = []
+            if isinstance(node, ast.Assign):
+                pairs = [(target, node.value) for target in node.targets]
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                pairs = [(node.target, node.iter)]
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                pairs = [(node.optional_vars, node.context_expr)]
+            for target, value in pairs:
+                if carries_module(value):
+                    for n in ast.walk(target):
+                        if isinstance(n, ast.Name) and n.id not in module_names:
+                            module_names.add(n.id)
+                            grew = True
+
+    memo: dict = {}
+
+    def internal(node) -> None:
+        top = chain_top(node)
+        found.append((4, top.lineno, top.col_offset, segment(top)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            write = isinstance(node.ctx, (ast.Store, ast.Del))
+            if node.attr in GADGET_DUNDERS or write and node.attr in WRITE_DUNDERS \
+                    or DUNDER.fullmatch(node.attr) and node.attr not in INERT_DUNDERS and on_module(node.value):
+                internal(node)
+        elif isinstance(node, ast.Call):
+            name = call_name(node.func)
+            if isinstance(node.func, ast.Name) and name == "vars" and node.args and carries_module(node.args[0]):
+                internal(node)
+            elif (isinstance(node.func, ast.Name) and name in ATTR_NAME_CALLS
+                  or isinstance(node.func, ast.Attribute) and name in ATTR_NAME_METHODS) \
+                    and len(node.args) >= 2 and carries_module(node.args[0]) and fold_constant(node.args[1], memo) is None:
+                internal(node)
+        for value in constant_words(node, parent, memo):
+            if internals_word(value) or env_loader_word(value) and id(node) not in consumed:
+                found.append((4, node.lineno, node.col_offset, segment(node)))
+                break
     # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
     for stmt, names_, from_sys in binds:
         ok = True
@@ -5192,11 +5494,13 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             return
         outside_entries.setdefault(package, []).append((source, value))
 
-    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                          PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
-                         capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    grep_read_everything(out, "the reader scan's Python listing")
-    listed = {p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p}
+    # R6-2 round 5, MUST-B (root's ruling (B) of 2026-11-15 01:58: the pre-filter may never be narrower than the
+    # parser): EVERY tracked regular Python file is parsed; the word grep that chose the parse set is gone. It missed
+    # words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
+    # (`"__pat\\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ` and `ｓｙｓ`
+    # run as `exec` and `sys`). A symlink or a submodule is not parsed here: a tracked link's target is read on its own
+    # or refuses by the landing rule. PY_FACTS_GREP stays as the documented word list, read by nothing.
+    listed = {p for p, mode in tracked.items() if p.endswith(".py") and mode in ("100644", "100755") and not excluded(p)}
     # Root's B1 of the slice 3 CHANGES: the files scan()'s parse set a sys.path entry aside in are read here too, so an
     # entry the grep misses (`sys .path.insert`, `sys.\` + newline) is never suppressed there and unread here.
     listed |= {p for p in parsed_files if p in tracked and not excluded(p)}

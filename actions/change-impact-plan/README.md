@@ -571,13 +571,14 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      (`sorted(x)`, `.split()`) stays computed.
 9. **A Python file reads only when every path-mutation capability in it is consumed** (R6-2 of #86, root's ruling of
    2026-11-12, fail closed by token; cli's R6 design, accepted by root at 16:44).
-   - **Which files.** The scan parses every Python file holding one of these words: `sys`, `site`, `importlib`, `runpy`,
-     `builtins`, `__builtins__`, `exec`, `eval`, `compile`, `__import__`, `import_module`, `run_module`, `run_path`,
-     `spec_from_file_location`, `module_from_spec`, `SourceFileLoader`, `addsitedir`, `exec_module`, `load_module`,
-     `imp`, `importfile`, `resolve_name`, `__path__`, `__getattr__`. It also parses every file holding `PYTHONPATH`
-     anywhere. A word in a comment or a string is read and found clean, except `PYTHONPATH` in a string and, as a word
-     in a string, `__path__`, `__getattr__` and a loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`,
-     `load_module`, `importfile`, `resolve_name`; MUST-D below).
+   - **Which files.** Every tracked regular `.py` file is parsed (R6-2 round 5, root's ruling (B) of 2026-11-15
+     01:58: the pre-filter may never be narrower than the parser). The word grep that chose the parse set until then
+     missed words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
+     (`"__pat\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ(...)` runs as
+     `exec`). A file that does not parse refuses. A symlink or a submodule is not parsed: a tracked link's target is
+     read on its own, or refuses by the landing rule. A word in a comment is never read. In a string, PYTHONPATH, a
+     loader call no rule reads (`spec_from_file_location`, `module_from_spec`, `exec_module`, `load_module`,
+     `importfile`, `resolve_name`; MUST-D below) and the module-internal words below refuse, after folding (below).
    - **Consumed.** Each branch of rules 6 and 8 that records an entry, a name or a site consumes the statement or call
      it read, with every node inside it. Nothing else consumes a node. The binding rules below judge each import.
    - **The kinds.** Each of these, outside a consumed node, is an occurrence:
@@ -602,7 +603,8 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
      - **environment:** a str or bytes constant holding `PYTHONPATH`: an environ key (`os.environb[b"PYTHONPATH"]`
        too, twin `E1`), a shell string, an `env=` mapping, a docstring.
      - **scope:** `globals()`, `locals()` or `vars()` with no argument, in a file that binds sys by an import.
-     - **package path** (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any
+     - **package path** (root's MUST-2 of R6-2 round four; `submodule_search_locations` added by round 5, root's (A):
+       `m.__spec__.submodule_search_locations` is the same list as `m.__path__`): `__path__` as an attribute, a name or a keyword in any
        context, or as a word in a str or bytes constant (`setattr(m, "__path__", d)`, `m.__dict__["__path__"]`),
        wherever it sits, inside a consumed node too. No rule reads it. A package's `__path__` is where `import pkg.sub`
        looks, so a write sends the import to a directory no edge names, and a read hands the live list out
@@ -618,6 +620,38 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
        body, a binding inside a function and an attribute read are not it. It names the refusal only when nothing else
        in the file refuses. Twins `S13`: the attribute write, a module def, a module assignment, a `globals()` key and
        `setattr`, each in a file with no other scan word; the read `S13 read` keeps a class-body method a read.
+     - **module internals** (R6-2 round 5, root's rulings (A) and (C) of 2026-11-15 01:58; it names the refusal only
+       when nothing else in the file refuses):
+       - tier 1, on ANY receiver: `__builtins__`, `__globals__`, `__subclasses__`, `__self__`, `__spec__`,
+         `__loader__`, `__code__`, `__closure__` or `__import__` as an attribute in any context
+         (`json.__builtins__["exec"](...)`, `len.__self__.exec(...)`, `json.__loader__`,
+         `().__class__.__base__.__subclasses__()`), and `__class__`, `__package__` or `__dict__` stored or deleted
+         (`textwrap.__class__ = _G` hands every missing attribute, `__path__` among them, to `_G`);
+       - tier 2, on a MODULE (a name an import in this file binds, an alias of one to a fixed point, a literal loader
+         call): every dunder attribute outside the inert list (`email.__dict__.values()`), `vars(<module>)`, and a
+         getattr / setattr / delattr / hasattr / `object.__setattr__` whose attribute name does not fold to a constant.
+         The inert list reads metadata or runs ordinary protocol methods (`__name__`, `__doc__`, `__file__`,
+         `__version__`, `__all__`, `__class__` as a read, `__init__`, `__enter__`, `__eq__`, ...; INERT_DUNDERS);
+       - a constant that names a module internal: the package-path words, `__getattr__` and `__builtins__` anywhere in
+         it, or the whole constant (or the last part of a dotted path) one of the tier 1 names, `__getattribute__`,
+         `__setattr__` or `__delattr__` (`setattr(m, "__class__", C)`, `globals()["__builtins__"]`).
+       - Folding: a constant is read after fold_constant joins `+` of constants (a chain of any length, and each run
+         of constant parts in a chain that does not fold whole), `%` with constant operands, an all-constant f-string,
+         `sep.join(<list or tuple of constants>)` and `.decode()` / `.encode()` with a literal codec, up to 4,096
+         characters. So `"PYTHON" + "PATH"`, `"load_" + "module"` and `"__pa" + "th__"` refuse like the words.
+       - Twins `R5`: `submodule_search_locations` (A1, B1p, B1f), the `__class__` swaps (B2, B3, B3f, B3h), `vars` and
+         `__dict__` enumeration (B4, B5), the folded and escaped words (B6, B6g, B6s, B6x, E2, L1), `__builtins__` (B7,
+         B7g, B7r, B7m), an NFKC `exec`, a join, `len.__self__`, `__subclasses__` and `__globals__`; reads that stay
+         reads: `self.__class__.__name__`, `type(x).__name__`, `super().__init__()`, a literal-name
+         `monkeypatch.setattr(mod, "attr", v)`.
+   - **What refuses by default** (R6-2 round 5, root's STANDING ask, 2026-11-15). Every tracked regular `.py` is parsed,
+     and one that does not parse refuses. In a parsed file, every capability use no read rule consumes refuses (the
+     kinds above), and so do every tier 1 attribute, every non-inert dunder on a module, every `vars(<module>)`, every
+     computed attribute name on a module and every constant spelling of a module internal. Not refused by default:
+     a name built at run time from NON-constant parts (a variable, `chr(95)`, a join over a computed list) reaching
+     getattr / setattr / delattr on a receiver the file does not show is a module (a parameter, a call result), and a
+     module object handed in by another file's call and enumerated through `.__dict__` on a parameter. That is the
+     open class below, and where the next reader should attack.
    - **The sys binding rule** (root's decision (i); R6 design line 5). A sys binding is consumed when the name is used
      at least once and EVERY use is an attribute other than the five above and the dunders, or sits inside a consumed
      node. `import sys; sys.exit(main())` reads, and so do `sys.argv`, `sys.stderr` and `import sys as s; s.exit(0)`.
@@ -703,8 +737,9 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          a string, which no rule resolves;
        - an OPEN class, not a closed list: any function that imports or runs code from a name or a text it is given,
          whether or not the file holds a scan word (a file with `import sys` and `pydoc.locate("plugins.x")` reads),
-         and any unread loader call whose name is built at run time (`getattr(loader, "exec_" + "module")`,
-         `"".join(...)`, an f-string). Examples: code-text runners
+         and any unread loader call or module internal whose name is built at run time from NON-constant parts
+         (`getattr(loader, prefix + "module")`, `"".join(parts)`, an f-string with a variable; dated 2026-11-15: a name
+         built from constants alone is folded and refuses since R6-2 round 5). Examples: code-text runners
          (`code.InteractiveInterpreter().runsource`, `cProfile.run` / `profile.run`, `pdb.run`,
          `timeit.timeit(stmt=...)`, `trace.Trace().run`); `pickle.loads`, which imports by name; `pkg_resources`
          entry points' `.load()`; `types.FunctionType(marshal.loads(...))`; `pydoc.locate("m")`.
@@ -752,8 +787,10 @@ modules. vagary-core does this in 482 files: `os.path.join(os.path.dirname(__fil
          in ANOTHER file is the package path occurrence of rule 9, which refuses in every parsed file (root's MUST-2 of
          R6-2 round four: before it, a file naming `__path__` and no scan word was never parsed). A module
          `__getattr__` that returns a path is the module `__getattr__` occurrence of rule 9 (`S13`). A dunder name built
-         at run time (`object.__setattr__(fake, "__pa" + "th__", d)`) is neither, the same open class as
-         `"exec_" + "module"`;
+         at run time from non-constant parts is neither, the open class; one built from constants alone
+         (`object.__setattr__(fake, "__pa" + "th__", d)`, `setattr(email, "__pa" + "th__", [...])`,
+         `getattr(email, "__pa" + "th__").append(...)`, the record's B6 and B6g) is folded and refuses by module
+         internals since R6-2 round 5 (2026-11-15);
        - a bound value that is not a constant, `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` with no
          `spec`, `spec_set`, `wraps`, positional or `**` argument, or a name every binding of which in this file is a
          plain assignment of one of those (another file may hand back a stub with a `__path__`);

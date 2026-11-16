@@ -138,12 +138,12 @@ KNOWN_FAIL_OPEN = {
 
 # Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
 # MAIN's reader beside the head's on every review vector (test_r6_no_regression_against_main_reader). MAIN_EDGES_BLOB is
-# the git blob of edges.py on origin/main the gate was derived against (0ff30f1ad9ce and 75e84a53527e carry it,
-# 2026-11-12), read with `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
+# the git blob of edges.py on origin/main the gate was derived against (8faf489 carries it, 2026-11-15), read with
+# `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
 # re-reads origin/main: while the head's edges.py differs from main's, main's blob must still BE this one, so a PR under
 # which main's reader moved is an admission change that re-derives the gate and re-pins here; once the head and main
 # are the same reader (main itself), the pin must name a former main edges.py, so it cannot point at nothing.
-MAIN_EDGES_BLOB = "5449e5f68aa251ef8a66db44316cad70af8e21e4"
+MAIN_EDGES_BLOB = "d639454b08e42696f67664f6f27726512a72ea87"
 MAIN_EDGES_PATH = "actions/change-impact-plan/edges.py"
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).

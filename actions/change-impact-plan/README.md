@@ -106,6 +106,13 @@ FULL.
    trailing `#` comment is removed. A QUOTED root there (`"services"`) still REFUSES, and `.sql` files are metadata.
 3. **Metadata, only with positive evidence:**
    - an object key or value, never a ternary branch (a JSON file is parsed, so its keys and values are these);
+   - in Python, a keyword value of a call to the BUILTIN `dict` (`dict(policy_id="services")` is the object value
+     `{"policy_id": "services"}` under another spelling; root, 2026-11-15). Two readings must agree, the tokens and
+     the syntax tree, and it holds only when the call is exactly `dict(name="root", ...)` with keyword arguments
+     alone, its result is not spread, subscripted or dereferenced, it is not in a class body, and NOTHING in the
+     file could make `dict` another callable (a binding, an import of the name or `*`, the word `dict` in a string,
+     a word that reaches a namespace). Anything else refuses as before (`builtin_dict_keyword_values` in edges.py
+     holds the closed list);
    - a subscript key (`m["services"]`);
    - any `.sql` file.
 4. **Rule 7, parent steps on names (lexical taint). This is a CLOSED list of the forms implemented, exactly as coded.

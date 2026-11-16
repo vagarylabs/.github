@@ -591,6 +591,9 @@ class EdgesTest(unittest.TestCase):
             ('{\n  "policy_id": "services",\n  "version": "1"\n}', "json"),
             ("INSERT INTO t VALUES ('apps', 'dns_iac', NULL);", "sql"),
             ('count = manifest["services"][0]', "py"),  # a subscript key
+            # Root's ruling of 2026-11-15 17:08: a keyword value of the BUILTIN dict is an object value under another
+            # spelling. The controls for everything that is not exactly that are in `refused` below.
+            ('policy_ref = dict(policy_id="services", version="1")', "py"),
             # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
             ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
              "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
@@ -600,7 +603,17 @@ class EdgesTest(unittest.TestCase):
                 self.assertEqual(scan(src, ext), set(), src)
         refused = (
             ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
-            ('policy_ref = dict(policy_id="services", version="1")', "py"),
+            # dict(...) keyword values that are NOT the builtin's object value (root, 2026-11-15 17:08): each refuses.
+            ('policy_ref = cfg.dict(policy_id="services", version="1")', "py"),  # a method that is merely named dict
+            ('dict = make\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # the name is rebound
+            ('def build(dict):\n    return dict(policy_id="services", version="1")', "py"),  # a parameter named dict
+            ('from helpers import *\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # may bind dict
+            ('setattr(target, name, value)\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # a namespace word
+            ('"""Builds a dict of refs."""\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # the word in a string
+            ('class C:\n    ref = dict(policy_id="services", version="1")', "py"),  # a class body's namespace is chosen
+            ('policy_ref = dict(base, policy_id="services")', "py"),  # a positional argument
+            ('policy_ref = dict(policy_id="services", **extra)', "py"),  # a spread
+            ('ref = dict(policy_id="services", version="1")["policy_id"]', "py"),  # the value is selected again
             ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
             ('"services"', "py"),
             ('kind = "services"', "py"),

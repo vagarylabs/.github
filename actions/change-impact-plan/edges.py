@@ -430,6 +430,14 @@ class Source:
             or (tok[0] == "word" and tok[3] in ("parent", "parents") and j and code[j - 1][0] == "op"
                 and code[j - 1][3] in (".", "?."))]
         self.computed = []
+        self._dict_values = None
+
+    def dict_keyword_values(self) -> frozenset:
+        """The (start, end) spans of this file's string constants that are a keyword value of a call to the builtin
+        `dict` (builtin_dict_keyword_values), computed once. Empty for any file that is not Python."""
+        if self._dict_values is None:
+            self._dict_values = builtin_dict_keyword_values(self.text) if self.py else frozenset()
+        return self._dict_values
 
     def _in_getattr(self, j: int) -> bool:
         """Token j is an argument of `getattr(` (its innermost bracket is a call named getattr)."""
@@ -865,6 +873,24 @@ class RootLiteral:
         return (k == b - 1 and k - 1 > a and T[k - 1][0] == "colon"
                 and not any(T[j][0] == "op" and T[j][3] == "?" for j in range(a, k - 1)))  # a value, never a ternary
 
+    def dict_keyword_value(self, k: int, e: int) -> bool:
+        """Root's ruling of 2026-11-15 17:08: the root string at k is a keyword value of a call to the BUILTIN `dict`,
+        which is an object value under another spelling (`dict(policy_id="services")` is `{"policy_id": "services"}`).
+        Two readings must agree. The tokens: the call is spelled exactly `dict(` (never `x.dict(`), every argument is
+        `name=...` (no positional argument, no `*` or `**`), and this argument is exactly `name="root"`. The syntax
+        tree: Source.dict_keyword_values holds this string's span, which it does only when nothing in the file can
+        make `dict` another callable and the call's result is not spread, subscripted or dereferenced. Anything else
+        is no evidence, so the literal refuses as before."""
+        T = self.src.code
+        if not self.src.py or self.callee(e) != "dict":
+            return False
+        spans = self.elements(e)
+        if not spans or not all(b - a >= 3 and T[a][0] == "word" and T[a][3] not in KEYWORDS and T[a + 1][0] == "op"
+                                and T[a + 1][3] == "=" for a, b in spans):
+            return False
+        a, b = spans[self.span_of(spans, k)]
+        return b - a == 3 and k == a + 2 and (T[k][1], T[k][2]) in self.src.dict_keyword_values()
+
     def classify(self, k: int) -> set:
         T = self.src.code
         root = self.root_of(T[k])
@@ -889,6 +915,8 @@ class RootLiteral:
         if self.in_exec(k):
             self.refuse("an argv element of an exec call")
         if kind == "object" and self.object_entry(k, e):
+            return set()
+        if kind == "call" and self.dict_keyword_value(k, e):
             return set()
         if kind == "subscript" and self.elements(e) == [(k, k + 1)]:
             return set()
@@ -2470,6 +2498,120 @@ def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[i
                                                   for t in node.targets):
             out.append(span(node.value))
     return out
+
+
+# Root's ruling of 2026-11-15 17:08 (cli's finding on vagary-core scripts/build_evidence_qualification_contract_data.py:190,
+# `policy_ref = dict(policy_id="services", ...)`, a fixture value the reader refused). These words reach a namespace
+# or an attribute by a computed name, so `dict` could be rebound with no binding of the name in sight. NAME_DUNDERS
+# (defined below) joins them.
+DICT_NAMESPACE_WORDS = frozenset({"globals", "locals", "vars", "builtins", "setattr", "delattr", "getattr", "attrgetter",
+                                  "methodcaller", "exec", "eval", "compile", "__import__", "f_globals", "f_locals",
+                                  "f_builtins", "__prepare__", "patch", "mock", "monkeypatch", "gc", "ctypes"})
+
+
+DICT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def builtin_dict_keyword_values(text: str) -> frozenset:
+    """The (start, end) character spans of the string constants that are a keyword-argument value of a call to the
+    BUILTIN `dict`. Such a value is an object value under another spelling, which rule 3 already reads as metadata.
+
+    EMPTY, so that the literal refuses as before, when the file does not parse, holds a carriage return or a byte
+    order mark (the parser numbers its lines differently), or when ANYTHING in it could make the name `dict` mean
+    another callable. That is a closed list, judged over the whole file whatever the scope:
+    - a binding of the name: `def dict`, `class dict`, an assignment of any kind (`=`, `+=`, an annotation, `:=`, a
+      tuple target, `for`, `with ... as`, a comprehension), `del dict`, `except ... as dict`, a `match` capture, a
+      type parameter or alias, `global`/`nonlocal dict`, a parameter (a lambda's, `*dict`, `**dict`), and an import
+      (`import dict`, `from x import dict`, `... as dict`);
+    - `from x import *`, which can bind any name;
+    - an attribute named `dict` that is assigned or deleted (`builtins.dict = f`, `sys.modules[__name__].dict = f`);
+    - a keyword argument named `dict` (`globals().update(dict=f)`, `mock.patch.multiple(__name__, dict=f)`);
+    - a str or bytes constant that holds the WORD `dict` (`setattr(m, "dict", f)`, `mock.patch("pkg.mod.dict", f)`,
+      a docstring that says "a dict of"; never "verdict" or "dictionary", which name nothing);
+    - a word that reaches a namespace: DICT_NAMESPACE_WORDS and NAME_DUNDERS, as a name, an attribute, a keyword, a
+      parameter, a definition, an imported module, or the last word of a str or bytes constant ("pkg.__dict__").
+    Identifiers are compared as the parser normalises them (NFKC), so a full-width spelling binds the same name.
+
+    A call counts only when its callee is the bare name `dict`, it has no positional argument and no `**`, it is
+    not inside a class body (a metaclass's `__prepare__` chooses the namespace a class body reads names from), and
+    its result is not spread (`*dict(...)`, `**dict(...)`, `{**dict(...)}`), subscripted or dereferenced
+    (`dict(...)["k"]`, `dict(...).values()`): those select a value, which may become a path. The value must be one
+    string constant: a conditional, a concatenation, an f-string and bytes are not."""
+    import ast
+    import unicodedata
+    if "\r" in text or text.startswith("\ufeff"):
+        return frozenset()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return frozenset()
+    words = DICT_NAMESPACE_WORDS | NAME_DUNDERS
+    parent, calls = {}, []
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+        if isinstance(node, ast.Constant):
+            value = node.value
+            if isinstance(value, bytes):
+                value = value.decode("latin-1")
+            elif not isinstance(value, str):
+                continue
+            names = DICT_WORD.findall(unicodedata.normalize("NFKC", value))
+            if "dict" in names or (names and names[-1] in words):
+                return frozenset()
+            continue
+        if isinstance(node, ast.alias) and node.name == "*":
+            return frozenset()
+        for field in ("name", "asname", "arg", "rest", "id", "attr", "module"):
+            value = getattr(node, field, None)
+            if not isinstance(value, str):
+                continue
+            parts = value.split(".")
+            if any(part in words for part in parts):
+                return frozenset()
+            if field in ("id", "attr"):
+                if value == "dict" and not isinstance(getattr(node, "ctx", None), ast.Load):
+                    return frozenset()
+            elif field != "module" and parts[0] == "dict":
+                return frozenset()
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and any(name == "dict" or name in words for name in node.names):
+            return frozenset()
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict" and not node.args
+                and node.keywords and all(keyword.arg is not None for keyword in node.keywords)):
+            calls.append(node)
+    starts, n = [0], 0
+    lines = text.split("\n")
+    for line in lines:
+        n += len(line) + 1
+        starts.append(n)
+
+    def offset(lineno: int, col: int) -> int:  # ast columns are UTF-8 byte offsets
+        line = lines[lineno - 1] if 0 < lineno <= len(lines) else ""
+        return starts[lineno - 1] + len(line.encode("utf-8")[:col].decode("utf-8", errors="ignore"))
+
+    def selected(call) -> bool:
+        above = parent.get(call)
+        if isinstance(above, ast.Starred) or (isinstance(above, ast.keyword) and above.arg is None):
+            return True
+        if isinstance(above, (ast.Subscript, ast.Attribute)) and above.value is call:
+            return True
+        if isinstance(above, ast.Dict) and any(key is None and value is call for key, value in zip(above.keys, above.values)):
+            return True
+        while above is not None:
+            if isinstance(above, ast.ClassDef):
+                return True
+            above = parent.get(above)
+        return False
+
+    out = set()
+    for call in calls:
+        if selected(call):
+            continue
+        for keyword in call.keywords:
+            value = keyword.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                out.add((offset(value.lineno, value.col_offset), offset(value.end_lineno, value.end_col_offset)))
+    return frozenset(out)
 
 
 ROOT_BASE_WRAPPERS = frozenset({"realpathSync", "realpath", "normalize", "String", "str", "abspath", "normpath", "Path"})

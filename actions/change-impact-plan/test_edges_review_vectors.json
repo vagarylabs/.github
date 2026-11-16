@@ -28558,6 +28558,16 @@
    "expect": "refuse",
    "note": "An unparsable Python file refuses with the parse message.",
    "expected_rule": "a Python file the scan must read does not parse"
+  },
+  "DK01_builtin_dict_keyword_value_beside_a_read": {
+   "question": "cli's reader dict-kwarg row (root's ruling of 2026-11-15 17:08)",
+   "ext": "py",
+   "src": "policy_ref = dict(policy_id=\"services\", version=\"1\")\np = os.path.join(ROOT, \"services\", \"b\", \"cfg.json\")\n",
+   "truth": [
+    "b"
+   ],
+   "expect": "read",
+   "note": "A keyword value of the builtin dict is an object value, so the file reads on and the join beside it reads b. Main's reader d639454b08e4 refuses the whole file on the keyword value: this is the no-regression gate's control (GATE_CONTROL)."
   }
  }
 }

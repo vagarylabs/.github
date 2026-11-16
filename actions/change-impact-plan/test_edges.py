@@ -180,12 +180,12 @@ DESIGNED_RED = {
         "RC6G_py_fixture_route_declared_reach_own_unit_refuses", "RC6H_refuse_reach_names_the_namer_itself",
         "RC6I_refuse_reach_names_only_the_callers_own_unit",
     }),
-    # test_r6_no_regression_against_main_reader: exactly root's nine (main REFUSE, head reads [] below truth).
-    "gate": frozenset({
-        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
-        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
-        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
-    }),
+    # test_r6_no_regression_against_main_reader: EMPTY since the gate was re-derived against main's reader
+    # d639454b08e4 (2026-11-16, the dict-keyword slice). Root's nine (C01, C03, C04, C05, C07, G03, N13b, N13c, P05)
+    # were red here while main was 5449e5f68aa2, which REFUSED them and the head read [] below truth. Main now reads
+    # the same [] the head reads, so against main they are no regression; they stay red in "review" above, where
+    # each is still judged against its truth (hosted run 43838099017 named all nine as now green here).
+    "gate": frozenset(),
 }
 
 # Root's S1 of dotgithub-86 (2026-11-12): the `"r5": true` opt-in is closed. Exactly R5_VECTOR_COUNT vectors carry it
@@ -1009,8 +1009,8 @@ class EdgesTest(unittest.TestCase):
 
     def test_designed_red_pin_fails_by_name_three_ways(self):
         """assert_designed_red is not vacuous: the designed set itself passes; a 47th label, a designed label gone green
-        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (the
-        nine fail both tests), and both sets name only vectors."""
+        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (a
+        tree-leg red of the gate reads below its truth, so it is a review red too), and both sets name only vectors."""
         for which in DESIGNED_RED:
             self.assert_designed_red(which, {label: "designed" for label in DESIGNED_RED[which]})
         self.assertTrue({label for label in DESIGNED_RED["gate"] if label == self.vector_of(label)} <= DESIGNED_RED["review"],
@@ -1160,9 +1160,11 @@ class EdgesTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "compare a reader with itself"):
             self.pinned_main_source(main_source, live_blob)
 
-    # Root's round-6 inputs where main refuses and the head reads its truth: the control proving the two readers the gate
-    # compares differ, so the gate cannot pass by loading the head twice.
-    GATE_CONTROL = "G01_literal_unowned_dir_under_root"
+    # An input main refuses and the head reads at its truth: the control proving the two readers the gate compares
+    # differ, so the gate cannot pass by loading the head twice. Re-derived with the pin (2026-11-16): root's round-6
+    # G01 was the control against main 5449e5f68aa2 and proves nothing about d639454b08e4, so the control is now the
+    # input this slice reads and main refuses, a keyword value of the builtin dict beside a real read.
+    GATE_CONTROL = "DK01_builtin_dict_keyword_value_beside_a_read"
 
     # The review vectors the --revision path is driven on (test_review_vectors_hold_at_a_revision): the round-2 cases
     # whose lines span or shift, positive controls that must READ, and #84's B1 brace-named tops. The no-regression gate

@@ -138,12 +138,12 @@ KNOWN_FAIL_OPEN = {
 
 # Root's R6 ruling (1) of dotgithub-86 (16:13 2026-11-12; design line 7 accepted 16:44): the no-regression gate runs
 # MAIN's reader beside the head's on every review vector (test_r6_no_regression_against_main_reader). MAIN_EDGES_BLOB is
-# the git blob of edges.py on origin/main the gate was derived against (0ff30f1ad9ce and 75e84a53527e carry it,
-# 2026-11-12), read with `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
+# the git blob of edges.py on origin/main the gate was derived against (8faf489 carries it, 2026-11-15), read with
+# `git cat-file` from the clone (planner-tests checks out with fetch-depth 0 for it). The gate
 # re-reads origin/main: while the head's edges.py differs from main's, main's blob must still BE this one, so a PR under
 # which main's reader moved is an admission change that re-derives the gate and re-pins here; once the head and main
 # are the same reader (main itself), the pin must name a former main edges.py, so it cannot point at nothing.
-MAIN_EDGES_BLOB = "5449e5f68aa251ef8a66db44316cad70af8e21e4"
+MAIN_EDGES_BLOB = "d639454b08e42696f67664f6f27726512a72ea87"
 MAIN_EDGES_PATH = "actions/change-impact-plan/edges.py"
 # Root's B1 and S5 of dotgithub-86 (ruling 09:03, 2026-11-12): ONE date. Every pin's `until` must EQUAL it, so no pin
 # carries its own later date; the expiry is judged against the real UTC date (test_review_vector_closed_lists_hold).
@@ -180,12 +180,12 @@ DESIGNED_RED = {
         "RC6G_py_fixture_route_declared_reach_own_unit_refuses", "RC6H_refuse_reach_names_the_namer_itself",
         "RC6I_refuse_reach_names_only_the_callers_own_unit",
     }),
-    # test_r6_no_regression_against_main_reader: exactly root's nine (main REFUSE, head reads [] below truth).
-    "gate": frozenset({
-        "C01_case_variant_empty_rest", "C03_linked_sibling_empty_rest", "C04_prefix_name_empty_rest",
-        "C05_suffix_name_empty_rest", "C07_deeper_beside_linked_parent", "G03_generated_start_excluded_landing_dropped",
-        "N13b_D13b_unit_rsub", "N13c_conftest_literal_unit_rsub", "P05_generated_start_symlink",
-    }),
+    # test_r6_no_regression_against_main_reader: EMPTY since the gate was re-derived against main's reader
+    # d639454b08e4 (2026-11-16, the dict-keyword slice). Root's nine (C01, C03, C04, C05, C07, G03, N13b, N13c, P05)
+    # were red here while main was 5449e5f68aa2, which REFUSED them and the head read [] below truth. Main now reads
+    # the same [] the head reads, so against main they are no regression; they stay red in "review" above, where
+    # each is still judged against its truth (hosted run 43838099017 named all nine as now green here).
+    "gate": frozenset(),
 }
 
 # Root's S1 of dotgithub-86 (2026-11-12): the `"r5": true` opt-in is closed. Exactly R5_VECTOR_COUNT vectors carry it
@@ -591,6 +591,9 @@ class EdgesTest(unittest.TestCase):
             ('{\n  "policy_id": "services",\n  "version": "1"\n}', "json"),
             ("INSERT INTO t VALUES ('apps', 'dns_iac', NULL);", "sql"),
             ('count = manifest["services"][0]', "py"),  # a subscript key
+            # Root's ruling of 2026-11-15 17:08: a keyword value of the BUILTIN dict is an object value under another
+            # spelling. The controls for everything that is not exactly that are in `refused` below.
+            ('policy_ref = dict(policy_id="services", version="1")', "py"),
             # JSX closing tags are not regex literals: `</h2><p>{a}</p>` must not swallow a brace.
             ("export const V = ({ ok, a }) => <section>{ok ? <div><h2>{a}</h2><p>{a}</p></div> : null}</section>;\n"
              "const tabs = [{ key: 'services', label: 'Services' }];", "tsx"),
@@ -600,7 +603,17 @@ class EdgesTest(unittest.TestCase):
                 self.assertEqual(scan(src, ext), set(), src)
         refused = (
             ('record = make("services", version="1", digest=value)', "py"),  # a direct call argument (root, H2)
-            ('policy_ref = dict(policy_id="services", version="1")', "py"),
+            # dict(...) keyword values that are NOT the builtin's object value (root, 2026-11-15 17:08): each refuses.
+            ('policy_ref = cfg.dict(policy_id="services", version="1")', "py"),  # a method that is merely named dict
+            ('dict = make\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # the name is rebound
+            ('def build(dict):\n    return dict(policy_id="services", version="1")', "py"),  # a parameter named dict
+            ('from helpers import *\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # may bind dict
+            ('setattr(target, name, value)\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # a namespace word
+            ('"""Builds a dict of refs."""\npolicy_ref = dict(policy_id="services", version="1")', "py"),  # the word in a string
+            ('class C:\n    ref = dict(policy_id="services", version="1")', "py"),  # a class body's namespace is chosen
+            ('policy_ref = dict(base, policy_id="services")', "py"),  # a positional argument
+            ('policy_ref = dict(policy_id="services", **extra)', "py"),  # a spread
+            ('ref = dict(policy_id="services", version="1")["policy_id"]', "py"),  # the value is selected again
             ('shutil.copytree("services", "dist", dirs_exist_ok=True)', "py"),
             ('"services"', "py"),
             ('kind = "services"', "py"),
@@ -996,8 +1009,8 @@ class EdgesTest(unittest.TestCase):
 
     def test_designed_red_pin_fails_by_name_three_ways(self):
         """assert_designed_red is not vacuous: the designed set itself passes; a 47th label, a designed label gone green
-        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (the
-        nine fail both tests), and both sets name only vectors."""
+        and a pin naming no vector each fail, naming the label. DESIGNED_RED's gate set is within its review set (a
+        tree-leg red of the gate reads below its truth, so it is a review red too), and both sets name only vectors."""
         for which in DESIGNED_RED:
             self.assert_designed_red(which, {label: "designed" for label in DESIGNED_RED[which]})
         self.assertTrue({label for label in DESIGNED_RED["gate"] if label == self.vector_of(label)} <= DESIGNED_RED["review"],
@@ -1147,9 +1160,11 @@ class EdgesTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "compare a reader with itself"):
             self.pinned_main_source(main_source, live_blob)
 
-    # Root's round-6 inputs where main refuses and the head reads its truth: the control proving the two readers the gate
-    # compares differ, so the gate cannot pass by loading the head twice.
-    GATE_CONTROL = "G01_literal_unowned_dir_under_root"
+    # An input main refuses and the head reads at its truth: the control proving the two readers the gate compares
+    # differ, so the gate cannot pass by loading the head twice. Re-derived with the pin (2026-11-16): root's round-6
+    # G01 was the control against main 5449e5f68aa2 and proves nothing about d639454b08e4, so the control is now the
+    # input this slice reads and main refuses, a keyword value of the builtin dict beside a real read.
+    GATE_CONTROL = "DK01_builtin_dict_keyword_value_beside_a_read"
 
     # The review vectors the --revision path is driven on (test_review_vectors_hold_at_a_revision): the round-2 cases
     # whose lines span or shift, positive controls that must READ, and #84's B1 brace-named tops. The no-regression gate

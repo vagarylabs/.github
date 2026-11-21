@@ -98,6 +98,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # change-impact-plan's no-regression gate reads MAIN's edges.py from the clone (`git cat-file` of the blob
+          # test_edges.MAIN_EDGES_BLOB pins, and origin/main's): the checkout is still the PR's merge commit, with the
+          # full history behind it so origin/main and the pinned blob are in the object store.
+          fetch-depth: 0
       - name: change-impact planner unit tests
         run: |
           python3 -m unittest discover -s actions/change-impact-plan -p 'test_*.py' -v
@@ -134,6 +138,26 @@ jobs:
           [ "$("$TEST_BOUNDS_SG" --version)" = "ast-grep 0.42.1" ]
           python3 -I actions/test-bounds/check.py self-test
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s actions/test-bounds -p 'test_*.py' -v
+
+  upload-artifact-retry-tests:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 6  # the completion floor (trusted timeout-floor); the suite itself runs in seconds
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # upload-artifact is a node20 action, but the runner forces node20 actions onto Node 24 where it is configured to
+      # (the vl-light proof run ran the preload on Node 24), so the preload is tested under both, never under whatever
+      # node the host carries (the light runners have no reliable node on PATH; vagaris pr.yml sets one up likewise).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: upload-artifact-retry preload contract and composite shape (real node processes under NODE_OPTIONS)
+        run: node --test actions/upload-artifact-retry/attempt-budget.test.mjs
 
   fetch-release-asset-tests:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

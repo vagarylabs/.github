@@ -1,0 +1,125 @@
+# upload-artifact-retry: actions/upload-artifact for an artifact that IS a job's evidence (a validation plan, a change
+# manifest, a partition receipt, the fresh observations a later job grades): attempt one is bounded by a budget that
+# makes it FAIL (never be cancelled) when it hangs, and a failed attempt one is retried exactly once, with overwrite,
+# before the step (and so the job) fails.
+#
+# WHY A RETRY. On the night of 2026-11-11 a GitHub artifact-service fault cost four vagaris heads a run each (#1006,
+# #1013, #976, #889): the tests had passed and the upload of an artifact a later job reads failed. Such uploads may not
+# hide behind continue-on-error (a receipt grades the step's outcome, which continue-on-error does not change); what
+# they may do is try once more, so a transient fault costs seconds, not a run. A second failure still fails the job.
+#
+# WHY A BUDGET INSIDE THE PROCESS (attempt-budget.cjs, loaded through NODE_OPTIONS=--require). A hung upload can run
+# about 15 minutes inside upload-artifact before it fails on its own (5 CreateArtifact attempts x a 3-min socket
+# timeout; a 5-min blob-chunk stall timer). A composite's inner steps cannot carry timeout-minutes, and the CALLING
+# step's timeout-minutes fires on the whole composite: measured in the control run (README), attempt one ends
+# outcome=failure ("The action has timed out"), the retry step starts into the already-fired timeout and is timed out
+# after 23 ms, before it makes a request, and the calling step fails: no real retry exactly when the fault is a stall
+# (vagaris run 43094998692 attempt 1: a 309 s hang, then the 7-min job limit). The preload turns the stall into a node
+# exit 1 at the budget: a plain step failure, which continue-on-error converts, so the retry runs with its whole budget
+# ahead of it. The runner copies the step's env into the node process and sets no NODE_OPTIONS of its own
+# (actions/runner NodeScriptActionHandler.cs); a job-level NODE_OPTIONS is kept.
+#
+# WHY THE PRELOAD PATH GOES THROUGH A BASH STEP. Inside the double quotes of a NODE_OPTIONS value node reads a
+# backslash as an escape, so a Windows action path (D:\a\_actions\...) written straight into `--require "..."` loses
+# its separators and node exits 1 with MODULE_NOT_FOUND before the upload starts, on both attempts. The first step
+# writes the slash-normalised path to GITHUB_OUTPUT (root's R4 of #85: an output, not GITHUB_ENV, so nothing leaks
+# into later steps of the calling job) and both attempts read that output. Windows is UNPROVEN until a Windows run
+# shows it (README); no Windows workflow adopts this composite before that.
+#
+# WHY A COMPOSITE AND NOT TWO WORKFLOW STEPS. vagary-core's service-build roster binds one step id per rostered step
+# and its partition receipt grades every rostered outcome as success or skipped (scripts/core-service-partition.py),
+# so a second upload step would need a roster entry and would read `skipped` whenever attempt one succeeded. Inside a
+# composite the retry is the step's own business: same id, same name, same `if:`, same outcome semantics. The outer
+# step's outcome is the composite's result: success when either attempt succeeded, failure when both failed.
+#
+# WHY HOSTED HERE AND PINNED BY SHA FROM THE CONSUMERS. vagary-core's partition receipt is trusted as graded by MAIN's
+# verifier; a composite read from the candidate's own checkout (`./.github/actions/...`) would be code the candidate
+# controls inside that trust. Consumers therefore pin `vagarylabs/.github/actions/upload-artifact-retry@<sha>`, one
+# sha across repos, as they pin the other actions here.
+#
+# WHY `overwrite: true` ON THE RETRY ONLY. Attempt one can fail AFTER CreateArtifact succeeded (the finalize or a chunk
+# failed, or the budget cut it): the name then exists and a plain second upload would fail with "artifact already
+# exists". The first attempt never overwrites: a name that exists before the step runs is a defect (two steps writing
+# one name), which the consumers' static gates assert against (unique artifact names per workflow run), because at the
+# retry a pre-existing name and attempt one's half-created artifact cannot be told apart.
+#
+# CALLER'S BOUND. The calling step's timeout-minutes covers both attempts: at least attempt-budget-ms + retry-budget-ms
+# + 60 s, rounded up to whole minutes. Budgets are set from measured upload durations (the artifact's size), never from
+# the job ceiling: a budget below a healthy slow upload turns one slow upload into two cut ones.
+#
+# WHAT THE RETRY DOES NOT COVER. A job-level timeout-minutes or a workflow cancel (the job is cancelled, nothing
+# retries); runner loss; a deterministic fault (a missing path with if-no-files-found: error, a 4xx on the inputs)
+# repeats on the retry and fails the job after both budgets; a name that existed before the step (above).
+name: upload-artifact-retry
+description: >-
+  actions/upload-artifact for a job's evidence artifact: attempt one FAILS (never a cancel) at its budget when it
+  hangs, and a failed attempt one is retried exactly once with overwrite before the step fails.
+inputs:
+  name:
+    description: Artifact name (the consumers read it by this exact name)
+    required: true
+  path:
+    description: File, directory or multi-line list of paths to upload
+    required: true
+  if-no-files-found:
+    description: As actions/upload-artifact (error is the right value for evidence)
+    required: false
+    default: error
+  retention-days:
+    description: As actions/upload-artifact (empty keeps the repository default)
+    required: false
+    default: ''
+  include-hidden-files:
+    description: As actions/upload-artifact
+    required: false
+    default: 'false'
+  attempt-budget-ms:
+    description: >-
+      Attempt one's budget in milliseconds (a decimal integer). When it passes and the upload is still running, the
+      attempt exits 1 and the retry runs. Set from the artifact's measured upload time. "0" disables the budget and is
+      for control runs only: consumer gates refuse it in a workflow.
+    required: false
+    default: '150000'
+  retry-budget-ms:
+    description: The retry's budget in milliseconds, as attempt-budget-ms. "0" disables it (control runs only).
+    required: false
+    default: '150000'
+# No outputs: the composite exposes nothing of upload-artifact's artifact-id / artifact-url / artifact-digest (no
+# consumer reads them today). If outputs are added later they must read the RETRY's values when it ran.
+runs:
+  using: composite
+  steps:
+    - name: Preload path (slash-normalised; inside NODE_OPTIONS quotes a backslash is an escape)
+      id: preload
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: printf 'file=%s/attempt-budget.cjs\n' "${ACTION_PATH//\\//}" >> "$GITHUB_OUTPUT"
+    - name: Upload (first attempt, bounded by attempt-budget-ms)
+      id: first
+      continue-on-error: true
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      env:
+        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ steps.preload.outputs.file }}"
+        UPLOAD_ATTEMPT_BUDGET_MS: ${{ inputs.attempt-budget-ms }}
+        UPLOAD_ATTEMPT_LABEL: upload attempt one (${{ inputs.name }})
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+    - name: Upload (one retry after a failed first attempt, bounded by retry-budget-ms)
+      if: ${{ steps.first.outcome == 'failure' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      env:
+        NODE_OPTIONS: ${{ env.NODE_OPTIONS }} --require "${{ steps.preload.outputs.file }}"
+        UPLOAD_ATTEMPT_BUDGET_MS: ${{ inputs.retry-budget-ms }}
+        UPLOAD_ATTEMPT_LABEL: upload retry (${{ inputs.name }})
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        overwrite: true

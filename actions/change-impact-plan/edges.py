@@ -109,6 +109,9 @@ CONT_WORDS = frozenset({"and", "or", "not", "in", "instanceof"})
 PAIR = {"(": ")", "[": "]", "{": "}"}
 PARENT_SEG = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 PARENT_STEP = re.compile(r"(?<![.\w])\.\.(?![.\w])")  # `..` as a step, never `...` or `a..b`
+GENERATED_CWD = "\0generated"  # an untracked directory component beneath a tracked start (parent_step_landings)
+PERCENT_FIELD = r"%(?:\([^)]*\))?[-+ #0]*\d*(?:\.\d+)?[A-Za-z]"  # a %-format field, flags/width/precision included
+PERCENT_RE = re.compile(PERCENT_FIELD)
 # A parent step inside a substitution. A single `'.'` is a separator (`.split('.')`), never a step; dots build one only
 # as `..`, repeated (`'.' * 2`) or concatenated (`'.' + '.'`).
 SUB_PARENT = re.compile(r"(?<![.\w])\.\.(?![.\w])|\.parents?\b|\bpardir\b|\bdirname\s*\("
@@ -2381,10 +2384,27 @@ def anchored_chain_sites(src: "Source") -> list[tuple[str, int, int]]:
     return sites
 
 
-def python_owned_spans(text: str) -> list[tuple[int, int]]:
+PARENT_STEP_LITERAL = re.compile(r"""(["'])([^"'\\\n]*)\1""")
+
+
+def parent_step_literal(text: str) -> str | None:
+    """B1's literal (RC1A, root's R-c r2 review B1 and dotgithub-86): a sys.path entry written as ONE plain string
+    literal (no prefix, no escape, no second literal) that is relative and holds a `..` component, its text as the
+    process reads it; None for anything else (a backslash path is B2's, `os.sep.join` and f-strings are other forms)."""
+    m = PARENT_STEP_LITERAL.fullmatch(text.strip())
+    if m is None or m.group(2).startswith("/") or ".." not in m.group(2).split("/"):
+        return None
+    return m.group(2)
+
+
+def python_owned_spans(text: str, parent_literals: bool = False) -> list[tuple[int, int]]:
     """Character spans of the Python expressions 1.5.2's evaluator judges itself (python_file_facts): every sys.path
-    entry (insert/append/extend, `+=`, slice assignment) and every loader path (spec_from_file_location, run_path,
-    exec(open(p))). A chain inside one is that evaluator's to judge, never a route of its own."""
+    entry (insert/append/extend, `+=`, slice assignment) and every loader path (a call whose LAST name is exactly
+    `run_path`, the name rule 8 records or refuses; `exec(open(p))`). A chain inside one is that evaluator's to judge,
+    never a route of its own. A call whose name only ends with `run_path` (`_run_path`, `get_run_path`,
+    `dry_run_path`) is no loader, and `spec_from_file_location` is read by no rule (R6-2 fix F1 refuse-all), so a chain
+    inside either stays a route (root's MUST-1 of R6-2 round four: owning them dropped routes no rule judged). With `parent_literals`,
+    only the sys.path entries B1 reads by their landings (parent_step_literal), each element alone."""
     import ast
     try:
         tree = ast.parse(text)
@@ -2412,13 +2432,38 @@ def python_owned_spans(text: str) -> list[tuple[int, int]]:
             parts.append(node.id)
         return ".".join(reversed(parts))
 
+    def items(node) -> list:  # the elements python_file_facts reads as entries
+        return list(node.elts) if isinstance(node, (ast.List, ast.Tuple)) else [node]
+
     out = []
     for node in ast.walk(tree):
+        if parent_literals:
+            name = dotted(node.func) if isinstance(node, ast.Call) else ""
+            if name == "sys.path.insert" and len(node.args) == 2:
+                elements = [node.args[1]]
+            elif name == "sys.path.append" and len(node.args) == 1:
+                elements = [node.args[0]]
+            elif name == "sys.path.extend" and len(node.args) == 1:
+                elements = items(node.args[0])
+            elif isinstance(node, ast.AugAssign) and dotted(node.target) == "sys.path":
+                elements = items(node.value)
+            elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and dotted(t.value) == "sys.path"
+                                                      for t in node.targets):
+                elements = items(node.value)
+            else:
+                continue
+            out += [s for s in map(span, elements) if parent_step_literal(text[s[0]:s[1]]) is not None]
+            continue
         if isinstance(node, ast.Call):
             name = dotted(node.func)
-            if name in ("sys.path.insert", "sys.path.append", "sys.path.extend") or name.endswith(
-                    ("spec_from_file_location", "run_path")) or (name == "exec" and node.args):
+            # Only what python_file_facts records (root's MUST-1 of R6-2 round four): the exact last name, so a
+            # `_run_path` / `get_run_path` helper or a `load_spec_from_file_location` is no loader and its chains stay
+            # routes; and of a loader call only the path it evaluates (rule 8 reads `run_path`'s first argument and
+            # `exec(open(p).read())`'s), so a chain in `init_globals=`, `run_name=` or exec's globals stays a route.
+            if name in ("sys.path.insert", "sys.path.append", "sys.path.extend"):
                 out += [span(a) for a in node.args] + [span(k.value) for k in node.keywords]
+            elif (name.rsplit(".", 1)[-1] == "run_path" or name == "exec") and node.args:
+                out.append(span(node.args[0]))
         elif isinstance(node, ast.AugAssign) and dotted(node.target) == "sys.path":
             out.append(span(node.value))
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and dotted(t.value) == "sys.path"
@@ -2549,12 +2594,47 @@ PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import\b|import\s+([A-Za
 #     [tool:pytest]; the nearest config walking up from the package, pytest.ini first in one directory) is an entry
 #     relative to its config's directory, for every package that holds Python files. An unreadable one refuses.
 #   - Python's loaders (spine's pre-review): `importlib.import_module`, `__import__` and `runpy.run_module` with a
-#     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `spec_from_file_location`,
-#     `runpy.run_path` and `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the
-#     declaration, and one whose text holds a parent step or names a root or outside directory refuses even declared.
-#     The same holds in a reached Python file.
-# The lines a package Python file can change its import path or load a module by name or path on.
-PY_FACTS_GREP = r"sys\.path|import_module|__import__|spec_from_file_location|run_path|run_module|exec[[:space:]]*\("
+#     LITERAL name are imports by name; with a non-literal one, rule 4's declaration. `runpy.run_path` and
+#     `exec(open(p).read())` take a path: evaluated, a literal load (an edge); not evaluated, the declaration, and one
+#     whose text holds a parent step or names a root or outside directory refuses even declared.
+#     `spec_from_file_location` and `module_from_spec` are read by no rule and refuse (R6-2 fix F1 refuse-all, root's
+#     rule of 2026-11-14 19:00 on round 4's MUST-A and MUST-B).
+#     The same holds in a reached Python file. N2 / N3 (root's ruling of 2026-11-12 21:32): a literal-name loader call
+#     is read through its chain (`__import__("json").loads(x)`), a literal `importlib.resources` anchor is an import of
+#     that name, and `importlib.metadata.version` / `.files` are reads, not loads.
+# The tokens a Python file can change its import path, or load a module by name or path, through (R6-2, root's ruling of
+# 2026-11-12, fail-closed by token): every file holding one is read by python_file_facts, whose capability scan judges
+# each occurrence (a file with the token only in a comment or a string is read and found clean, except `PYTHONPATH`, which
+# refuses in any string constant: an environ key, a shell string, an `env=` mapping). POSIX ERE: `[^A-Za-z0-9_]`
+# bounds a word (git grep -E has no `\b`), so `system` and `website` are not listed; `PYTHONPATH` is listed anywhere.
+# `exec_module` and `load_module` (R6-2 fix MUST-C, cli's read of 825d064): a spec or loader got with none of the other
+# words (`finder.find_spec(n)` over `pkgutil.iter_modules`, `zipimport.zipimporter(p)`, `pkgutil.resolve_name("...")`)
+# runs a file only through one of the two, so a file holding either is parsed, and refuses (LOADER_CALLS), by name,
+# by attribute or as a word in a string constant (MUST-D, cli's read of 63e1cb5: UNREAD_LOADER_CALLS). `imp`,
+# `importfile` and `resolve_name` (cli's round-6 should-fixes) are parsed and refuse the same way. `__path__` (root's
+# MUST-2 of R6-2 round four): a package's `__path__` is where `import pkg.sub` looks, so a file naming it is parsed and
+# refuses at every occurrence (PKG_PATH_WORD); F3's per-file bind guard alone missed a stub bound in one test file and
+# given a `__path__` in another that held no other word. `__getattr__` (PEP 562, 2026-11-15): a module-scope one
+# can return a `__path__` the file never spells, so a file naming it is parsed (MODULE-GETATTR); a class method is not it.
+PY_FACTS_GREP = (r"(^|[^A-Za-z0-9_])(sys|site|importlib|runpy|builtins|__builtins__|exec|eval|compile|__import__|import_module|"
+                 r"run_module|run_path|spec_from_file_location|module_from_spec|SourceFileLoader|addsitedir|"
+                 r"exec_module|load_module|imp|importfile|resolve_name|__path__|__getattr__)([^A-Za-z0-9_]|$)"
+                 r"|PYTHONPATH")
+# R6-2 round 5, (B): every tracked .py is parsed. A file the reader's Python cannot parse cannot run under it either,
+# so it refuses only when its raw text could hold what a parse would have judged: any scan word (PY_FACTS_GREP), a
+# round-5 module-internal word, a backslash (an escape or a continuation), a non-ASCII character (an NFKC identifier)
+# or two quotes with only blanks and a prefix between them (implicit concatenation). Root's condition (2026-11-15
+# 10:18, and its R4 F1 at 9c057b7): a file let through must be unable to carry an edge its parsed form would record, so
+# the word `import` ANYWHERE makes it suspect (`x = 1; import os`, `if True: import os`, `try: from a import b`), beside
+# the dynamic-load words of the scan set. A
+# plain one records nothing, as before the parse set widened (review fragments, test fixtures holding prose in a .py).
+# The reader runs on the runner's `python3` (3.14 on .github's planner-tests runner, 2026-11-15); the residual is a
+# version skew, a file that parses under the Python that runs it and not the reader's and spells none of these.
+UNPARSED_SUSPECT = re.compile(PY_FACTS_GREP + r"|(?<![A-Za-z0-9_])import(?![A-Za-z0-9_])"
+                              r"|(?<![A-Za-z0-9_])(?:submodule_search_locations|__class__|__dict__|"
+                              r"__package__|__globals__|__self__|__subclasses__|__spec__|__loader__|__code__|__closure__|"
+                              r"vars|getattr|setattr|delattr)(?![A-Za-z0-9_])|\\|[^\x00-\x7f]|[\"'][ \t]*[rRbBuUfF]{0,2}[\"']",
+                              re.M)
 # pytest's config files, in its precedence order inside one directory (pytest.ini wins even with no [pytest] section).
 PYTEST_CONFIGS = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
@@ -2589,28 +2669,348 @@ def pytest_pythonpath(text: str, name: str, path: str) -> list[str] | None:
     return parser.get(section, "pythonpath", fallback="").split()
 
 
-def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[str], list[tuple[str, str, str | None]]]:
+# R6-2 fix F1, REFUSE-ALL (root's rule of 2026-11-14 19:00: a must-fix left on the spec-loader class after round 4
+# sends the class to refuse-all; cli's round-4 read found two, MUST-A and MUST-B). No read rule consumes these loader
+# calls, by name, by attribute or as a word in a string constant, wherever they sit, so a Python file holding one
+# refuses at the capability scan. `exec_module` and `load_module` end every load through a spec or loader object,
+# however it was got (MUST-C, cli's read of 825d064); a string spelling refuses too (MUST-D, cli's read of 63e1cb5:
+# `getattr(loader, "exec_module")(m)`, `operator.methodcaller("exec_module", m)(loader)`); `importfile` and
+# `resolve_name` are cli's round-6 should-fixes. `load_source` is not one by name (four scripts on core main 9cea8193
+# define their own `load_source()` and would refuse): `imp.load_source` refuses through `imp` (CAPABILITY_MODULES).
+UNREAD_LOADER_CALLS = frozenset({"spec_from_file_location", "module_from_spec", "exec_module", "load_module",
+                                 "importfile", "resolve_name"})
+UNREAD_LOADER_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(sorted(UNREAD_LOADER_CALLS)) + r")(?![A-Za-z0-9_])")
+# Root's MUST-2 of R6-2 round four: `__path__` as a word, in a str or bytes constant (`setattr(m, "__path__", d)`,
+# `m.__dict__["__path__"]`, `monkeypatch.setattr("pkg.__path__", d)`).
+# R6-2 round 5 (root's ruling (A) of 2026-11-15 01:58 on MUST-A A1): `m.__spec__.submodule_search_locations` IS
+# `m.__path__` (the same list object), so PKG-PATH takes both words, by attribute, name, keyword or str/bytes word.
+PKG_PATH_NAMES = frozenset({"__path__", "submodule_search_locations"})
+PKG_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])(?:__path__|submodule_search_locations)(?![A-Za-z0-9_])")
+# The PEP 562 hook (MODULE-GETATTR in capability_occurrences): the word in a str or bytes constant refuses.
+MODULE_GETATTR_WORD = re.compile(r"(?<![A-Za-z0-9_])__getattr__(?![A-Za-z0-9_])")
+# R6-2 round 5, MODULE-INTERNALS (root's rulings of 2026-11-15 01:58: (A) `__class__` assignment and `vars()` /
+# `__dict__` on an imported module refuse, (C) `__builtins__` as an attribute or in a string counts, and the STANDING
+# default). Tier 1: these attributes reach the import machinery, the builtins, a function's module globals or code
+# from ANY receiver (`json.__builtins__`, `len.__self__`, `f.__globals__`, `().__class__.__base__.__subclasses__()`,
+# `json.__loader__`, `m.__spec__`), so each refuses in any context wherever it sits.
+GADGET_DUNDERS = frozenset({"__builtins__", "__globals__", "__subclasses__", "__self__", "__spec__", "__loader__",
+                            "__code__", "__closure__", "__import__"})
+# Tier 1, writes: an assignment, augmented assignment or `del` of one of these on any receiver (`m.__class__ = C`
+# hands every missing attribute, `__path__` among them, to C's `__getattr__` / `__getattribute__`; `__package__`
+# moves relative imports; `__dict__` replaces the namespace).
+WRITE_DUNDERS = frozenset({"__class__", "__package__", "__dict__"})
+# A str or bytes constant (after fold_constant) that IS one of these, alone or as the last part of a dotted path,
+# names an attribute for getattr / setattr / delattr / a namespace key: `setattr(m, "__class__", C)`,
+# `getattr(m, "__dict__")`, `monkeypatch.setattr("pkg.__spec__", s)`.
+NAME_DUNDERS = GADGET_DUNDERS | WRITE_DUNDERS | frozenset({"__getattribute__", "__setattr__", "__delattr__"})
+NAME_DUNDER = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?:" + "|".join(sorted(NAME_DUNDERS)) + r")")
+# Root's ruling (C): `__builtins__` as a word inside any str or bytes constant (`globals()["__builtins__"]`).
+BUILTINS_WORD = re.compile(r"(?<![A-Za-z0-9_])__builtins__(?![A-Za-z0-9_])")
+# Tier 2: on a MODULE (a name an import in this file binds, an alias of one, or a literal loader call such as
+# `importlib.import_module("m")`), every dunder attribute outside these refuses, a Load too (`email.__dict__`,
+# `m.__setattr__`, `m.__wrapped__`). These read metadata or run ordinary protocol methods; `__class__` is inert only
+# as a Load and `__package__` is not on the list (tier 1 refuses its write; a read on a module refuses here).
+INERT_DUNDERS = frozenset({
+    "__name__", "__qualname__", "__module__", "__doc__", "__file__", "__version__", "__all__", "__annotations__",
+    "__dataclass_fields__", "__slots__", "__class__",
+    "__init__", "__new__", "__post_init__", "__call__", "__enter__", "__exit__", "__aenter__", "__aexit__",
+    "__iter__", "__next__", "__aiter__", "__anext__", "__len__", "__contains__", "__getitem__", "__setitem__",
+    "__delitem__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__hash__", "__bool__", "__repr__",
+    "__str__", "__format__", "__bytes__", "__fspath__", "__index__", "__int__", "__float__",
+    "__add__", "__sub__", "__mul__", "__truediv__", "__floordiv__", "__mod__", "__neg__", "__pos__", "__abs__",
+    "__radd__", "__rsub__", "__rmul__"})
+DUNDER = re.compile(r"__[A-Za-z0-9_]+__")
+# The calls that take a receiver and an attribute name (R5-e: a computed name on a module refuses).
+# R5-e, WRITES only: a getattr / hasattr read with a computed name is the open class (a class-body `__getattr__` proxy
+# returning `getattr(tool, name)` is the pinned read S13); a write into a module namespace by a computed name is not.
+ATTR_NAME_CALLS = frozenset({"setattr", "delattr"})
+ATTR_NAME_METHODS = frozenset({"__setattr__", "__delattr__"})  # object.__setattr__(m, n, v)
+FOLD_MAX = 4096
+# `.encode()` / `.decode()` fold only with one of these; an encode is bounded before it runs by its worst bytes per
+# character and byte-order mark (codex's read of 0c7d3b3); an escaping codec such as unicode_escape is not folded.
+FOLD_CODECS = {"utf-8": (4, 0), "utf8": (4, 0), "ascii": (1, 0), "latin-1": (1, 0), "latin1": (1, 0),
+               "iso-8859-1": (1, 0), "utf-16": (4, 2), "utf-32": (4, 4)}   # (bytes per character at most, BOM bytes)
+
+
+def fold_constant(node, memo: dict):
+    """The str or bytes value of a compile-time constant expression, else None (R6-2 round 5, MUST-B: a word built
+    from constants is the word). Folded: a constant (the AST already joins implicit concatenation and decodes
+    escapes), `+` of constants (a left-deep chain of any length, flattened), `%` of plain `%s` fields over str / bytes
+    constants (no number, no `%r`, no `*` width), an f-string whose parts all fold, `sep.join(<list or tuple display of
+    constants>)`, and `.decode()` / `.encode()` of one with a literal FOLD_CODECS codec. Bounded at FOLD_MAX characters, each branch
+    BEFORE it builds its result (codex's read of cc91398). A name
+    built from anything else (a variable, `chr(95)`, a join over a computed list) is the open class."""
+    import ast
+    key = id(node)
+    if key in memo:
+        return memo[key]
+    memo[key] = None                      # a cycle or a re-entry reads as not constant
+    value = None
+    if isinstance(node, ast.Constant):
+        value = node.value if isinstance(node.value, (str, bytes)) else None
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts, cur = [], node
+        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+            parts.append(cur.right)
+            cur = cur.left
+        parts.append(cur)
+        vals, total = [], 0
+        for part in reversed(parts):
+            v = fold_constant(part, memo)
+            total += len(v) if v is not None else 0
+            if v is None or vals and type(v) is not type(vals[0]) or total > FOLD_MAX:
+                vals = None
+                break
+            vals.append(v)
+        value = (vals[0][:0].join(vals)) if vals else None
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # codex's reads of cc91398 and 0c7d3b3 (B1): `%` folds ONLY when every field is a plain `%s` (optional width or
+        # precision, `%%` allowed) and every argument folds to a str / bytes constant; a number, `%r`, `%a`, `%d`, `%f`,
+        # `%c`, a `*` width and a mapping key do not fold. The result is then at most the format plus every width digit
+        # value plus every argument, all known BEFORE the format is evaluated.
+        left = fold_constant(node.left, memo)
+        if isinstance(left, (str, bytes)):
+            pat = rb"%(?:%|(\d{0,4})(?:\.(\d{0,4}))?s)" if isinstance(left, bytes) else r"%(?:%|(\d{0,4})(?:\.(\d{0,4}))?s)"
+            fields = list(re.finditer(pat, left))
+            plain = len(re.findall(rb"%" if isinstance(left, bytes) else r"%", left)) == sum(
+                2 if f.group(0) in ("%%", b"%%") else 1 for f in fields)
+            widths = sum(int(f.group(1) or 0) for f in fields)
+            items = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+            args = [fold_constant(item, memo) for item in items] if plain else None
+            if args is not None and (any(type(a) is not type(left) for a in args)
+                                     or len(left) + widths + sum(len(a) for a in args) > FOLD_MAX):
+                args = None
+            if args is not None:
+                try:
+                    value = left % (tuple(args) if isinstance(node.right, ast.Tuple) else args[0])
+                except (TypeError, ValueError, KeyError, OverflowError):
+                    value = None
+    elif isinstance(node, ast.JoinedStr):
+        out, total = [], 0
+        for part in node.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                piece = part.value
+            elif isinstance(part, ast.FormattedValue) and part.conversion in (-1, 115) and part.format_spec is None \
+                    and isinstance(fold_constant(part.value, memo), str):
+                piece = fold_constant(part.value, memo)
+            else:
+                out = None
+                break
+            total += len(piece)
+            if total > FOLD_MAX:           # bounded before the join builds anything
+                out = None
+                break
+            out.append(piece)
+        value = "".join(out) if out is not None else None
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and not node.keywords:
+        recv = fold_constant(node.func.value, memo)
+        if recv is not None and node.func.attr == "join" and len(node.args) == 1 \
+                and isinstance(node.args[0], (ast.List, ast.Tuple)):
+            items = [fold_constant(e, memo) for e in node.args[0].elts]
+            if all(i is not None and type(i) is type(recv) for i in items) \
+                    and sum(len(i) for i in items) + len(recv) * max(0, len(items) - 1) <= FOLD_MAX:
+                value = recv.join(items)   # codex's read of cc91398: the separator counts, bounded before the join
+        elif recv is not None and node.func.attr in ("decode", "encode") and len(node.args) <= 1 \
+                and all(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                        and a.value.lower().replace("_", "-") in FOLD_CODECS for a in node.args) \
+                and (node.func.attr == "decode" or len(recv) * FOLD_CODECS[
+                    node.args[0].value.lower().replace("_", "-") if node.args else "utf-8"][0]
+                    + FOLD_CODECS[node.args[0].value.lower().replace("_", "-") if node.args else "utf-8"][1] <= FOLD_MAX):
+            # codex's read of 0c7d3b3 (B1): an encode is bounded BEFORE it runs (bytes per character times the length,
+            # plus the byte-order mark); a decode never yields more characters than its input has bytes.
+            try:
+                value = getattr(recv, node.func.attr)(*[a.value for a in node.args])
+            except (AttributeError, LookupError, UnicodeError, TypeError):
+                value = None
+    if value is not None and len(value) > FOLD_MAX:
+        value = None
+    memo[key] = value
+    return value
+
+
+def constant_words(node, parent: dict, memo: dict) -> list:
+    """The folded constant values one node stands for, each checked by internals_word (R6-2 round 5): a constant; a
+    `+` chain once, at its root (the outermost `+`), as each maximal run of parts that fold (`"__pa" + "th__" + x`
+    yields "__path__"); a `%`, f-string, join or decode that folds whole. Any other node yields nothing."""
+    import ast
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, (str, bytes)) else []
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        up = parent.get(node)
+        if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Add) and up.left is node:
+            return []                      # inside a chain: its root reads it
+        parts, cur = [], node
+        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+            parts.append(cur.right)
+            cur = cur.left
+        parts.append(cur)
+        runs, run, total = [], [], 0
+        for part in reversed(parts):
+            v = fold_constant(part, memo)
+            if v is None or run and type(v) is not type(run[0]) or total + len(v) > FOLD_MAX:
+                if run:
+                    runs.append(run[0][:0].join(run))
+                run, total = ([v], len(v)) if v is not None and len(v) <= FOLD_MAX else ([], 0)
+            else:
+                run.append(v)
+                total += len(v)
+        if run:
+            runs.append(run[0][:0].join(run))
+        return runs
+    if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+        v = fold_constant(node, memo)
+        return [v] if v is not None else []
+    return []
+
+
+def internals_word(value) -> bool:
+    """A folded str or bytes value that names a module internal (R6-2 round 5): the PKG-PATH words, `__getattr__` or
+    `__builtins__` anywhere in it, or the whole value a NAME_DUNDERS name (alone or the last part of a dotted path)."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and (PKG_PATH_WORD.search(value) is not None or MODULE_GETATTR_WORD.search(value) is not None
+                                       or BUILTINS_WORD.search(value) is not None or NAME_DUNDER.fullmatch(value) is not None)
+
+
+def env_loader_word(value) -> bool:
+    """A folded value holding PYTHONPATH or an unread loader word (ENV and MUST-D, now through fold_constant too)."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and ("PYTHONPATH" in value or UNREAD_LOADER_WORD.search(value) is not None)
+
+
+def unread_loader_word(value) -> bool:
+    """A str or bytes constant holding an UNREAD_LOADER_CALLS word (MUST-D; bytes, cli's read of 37f77d2:
+    `getattr(loader, b"exec_module".decode())`), wherever it sits, a docstring too."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and UNREAD_LOADER_WORD.search(value) is not None
+
+
+def python_file_facts(text: str, path: str, test_only=None) -> tuple[list[tuple[str, str, str, str | None]], set[str], list[tuple]]:
     """One Python file's (sys.path entries, imported top-level names, loader sites), from one parse.
-    - An entry is ("dir", repo-relative directory, which may start with `../` above the repository) or ("unknown", its
-      source text).
+    - An entry is ("dir", repo-relative directory, which may start with `../` above the repository, key) or ("unknown",
+      the text rule 6 reads, key), `key` the entry's own source as written (whitespace collapsed): the text an
+      edge_scan.computed_imports `expr` names it by (the r5 sys.path rule, root's dotgithub-86 review, 2026-11-12).
+      Each entry carries a fourth item, the literal text an "unknown" entry's path ends with (literal_tail, from the
+      AST), else None.
     - The names are every top-level module imported by name: `import x`, `from x import y`, and a LITERAL
-      `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`.
+      `importlib.import_module("x")`, `__import__("x")` or `runpy.run_module("x")`, and (N3, root's ruling of 2026-11-12
+      21:32) a LITERAL `importlib.resources.files("x")` or `read_text("x", ...)` anchor.
     - A loader site (spine's pre-review of 1.5.2) is ("module", expr, None) for one of those three with a non-literal
-      name, or ("path", expr, resolved) for `importlib.util.spec_from_file_location(name, p)`, `runpy.run_path(p)` and
-      `exec(open(p).read())`, with `p` evaluated like a sys.path entry (None when it cannot be). module_from_spec loads
-      what spec_from_file_location built, so the path is read at the latter.
-    Raises ValueError when the file does not parse."""
+      name, or ("path", expr, resolved) for `runpy.run_path(p)` and `exec(open(p).read())`, with `p` evaluated like a
+      sys.path entry (None when it cannot be). `spec_from_file_location` and `module_from_spec` record nothing and
+      refuse at the capability scan wherever they sit (R6-2 fix F1 refuse-all: root's rule of 2026-11-14 19:00 on
+      round 4's MUST-A and MUST-B).
+    Raises ValueError when the file does not parse and its text is UNPARSED_SUSPECT; a plain unparseable file
+    records nothing (R6-2 round 5)."""
     import ast
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError) as error:
+        if UNPARSED_SUSPECT.search(text) is None:
+            return [], set(), []        # R6-2 round 5 (B): unparseable and plain, so no Python of this reader runs it
         raise ValueError(f"unresolved (a Python file the scan must read does not parse: {path}: {error})") from None
     assigned: dict[str, list] = {}
+    augmented: dict[str, list] = {}  # name -> its `name += ...` statements (root's S02 of #84, 2026-11-12)
+    # Root's K3 of #84's third delta R4 (2026-11-12): the scan reads a name through a plain assignment (`p = ...`, an
+    # annotated one, a pairwise tuple, `p += ...`) and nothing else. A name bound by anything else is UNREADABLE: its
+    # text is empty, so a loader site reading it refuses (never a reading of [] under a declaration), and `ev` never
+    # evaluates it (a module `for LIB in ...` beside a helper-local `LIB = ...` once evaluated the helper's, G03m).
+    # name -> the kind of binding the scan does not read (the first one met names the refusal).
+    unreadable: dict[str, str] = {}
+    assigned_attrs: set[tuple[str, str]] = set()  # (`self`, `p`) for `self.p = ...` anywhere (K3's B07)
+    shadowed: set[int] = set()  # id() of a Name read inside a function whose parameter binds it (root's S08)
+    defaulted: set[int] = set()  # those of them whose parameter carries a default (K3's B03): a loader site refuses
+    # id() -> name for a parameter-named Name in the function's own defaults or decorators (root's C3 of #84's second
+    # delta R4): it evaluates in the ENCLOSING scope, so it is un-shadowed below only when the name's single binding
+    # in the file is a plain module-level assignment (root's K2 of the third delta R4), else it stays shadowed.
+    enclosing: dict[int, str] = {}
+
+    def unread(name: str, kind: str) -> None:
+        unreadable.setdefault(name, kind)
+
+    def unread_names(target, kind: str) -> None:
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                unread(sub.id, kind)
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Store) and isinstance(sub.value, ast.Name):
+                assigned_attrs.add((sub.value.id, sub.attr))
+
     for node in ast.walk(tree):
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name):
+                augmented.setdefault(node.target.id, []).append(node)
+            elif isinstance(node.target, ast.Attribute) and isinstance(node.target.value, ast.Name):
+                assigned_attrs.add((node.target.value.id, node.target.attr))
+            continue
+        if isinstance(node, ast.NamedExpr):
+            unread_names(node.target, "a walrus (`:=`)")
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            unread_names(node.target, "a `for` loop")
+        elif isinstance(node, ast.comprehension):
+            unread_names(node.target, "a comprehension")
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            unread_names(node.optional_vars, "a `with ... as`")
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            unread(node.name, "an `except ... as`")
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            unread(node.name, "a `match` pattern")
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            unread(node.rest, "a `match` pattern")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            unread(node.name, "a `def` (a call's return is not a path the scan reads)")
+        elif isinstance(node, ast.ClassDef):
+            unread(node.name, "a `class`")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs} | {x.arg for x in (a.vararg, a.kwarg) if x}
+            # A parameter WITH a default is a binding the scan does not read (K3's B03: `def f(p=f"{S}/packages/...")`):
+            # a read of it in the body is `defaulted`, and a loader site reading it refuses. A bare parameter's read is
+            # the S08 residual (its text is its name, which names nothing). Both are per read (by id), since the same
+            # name at module level is another binding (D01 reads the module's LIB through the default, K2).
+            positional = a.posonlyargs + a.args
+            with_default = {x.arg for x in positional[len(positional) - len(a.defaults):]} if a.defaults else set()
+            with_default |= {x.arg for x, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None}
+            # Argument defaults and decorators evaluate in the ENCLOSING scope (`def setup(LIB=LIB)` reads the module's
+            # LIB), so a Name there is not the parameter's (root's C3 of #84's second delta R4, 2026-11-12): recorded
+            # as a candidate, decided once the file's bindings are known (K2).
+            outer = {id(n) for d in (*a.defaults, *[x for x in a.kw_defaults if x], *getattr(node, "decorator_list", ()))
+                     for n in ast.walk(d)}
+            for n in ast.walk(node):
+                if isinstance(n, ast.Name) and n.id in params and isinstance(n.ctx, ast.Load):
+                    if id(n) in outer:
+                        enclosing[id(n)] = n.id
+                    else:
+                        shadowed.add(id(n))
+                        if n.id in with_default:
+                            defaulted.add(id(n))
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        value = getattr(node, "value", None)
         for t in targets:
-            if isinstance(t, ast.Name) and getattr(node, "value", None) is not None:
-                assigned.setdefault(t.id, []).append(node.value)
+            if isinstance(t, ast.Name) and value is not None:
+                assigned.setdefault(t.id, []).append(value)
+            elif isinstance(t, ast.Name):
+                unread(t.id, "an annotation without a value")
+            elif isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
+                assigned_attrs.add((t.value.id, t.attr))
+            elif isinstance(t, (ast.Tuple, ast.List)) and value is not None:
+                # Root's S11: `p, q = f"{source}/packages/shared", 1` binds each name to its own element. Unpacked from
+                # anything else (a call, a starred target), each name carries the whole right side as text and never
+                # evaluates (K3: it is unreadable, so a loader site reading it refuses).
+                pairwise = isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(t.elts) and \
+                    not any(isinstance(e, ast.Starred) for e in t.elts + value.elts)
+                for i, e in enumerate(t.elts):
+                    if isinstance(e, ast.Name):
+                        assigned.setdefault(e.id, []).append(value.elts[i] if pairwise else value)
+                        if not pairwise:
+                            unread(e.id, "an unpacking the scan cannot pair")
+                    elif isinstance(e, ast.Starred):
+                        unread_names(e, "a starred target")
+                    elif isinstance(e, (ast.Tuple, ast.List)):
+                        unread_names(e, "a nested unpacking")  # `(p, q), r = ...` (K3's B09)
+                    elif isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name):
+                        assigned_attrs.add((e.value.id, e.attr))
     here = posixpath.dirname(path)
     FILE, UNKNOWN = ("file",), None
 
@@ -2629,7 +3029,19 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
             if node.id == "__file__":
                 return FILE
             values = assigned.get(node.id, [])
-            return ev(values[0], depth + 1) if len(values) == 1 else UNKNOWN
+            if len(values) != 1 or node.id in unreadable or id(node) in shadowed:
+                return UNKNOWN
+            value = ev(values[0], depth + 1)
+            # `p = dirname(__file__); p += "/../../packages/shared"` evaluates as the concatenation (root's S13 reads
+            # [shared] as before); an augmentation that is not `+= "<literal>"`, or that stands before the assignment,
+            # leaves the name unevaluated (root's S02: the text then carries every literal the augmentations add).
+            for aug in sorted(augmented.get(node.id, []), key=lambda n: (n.lineno, n.col_offset)):
+                if value is UNKNOWN or value is FILE or not isinstance(aug.op, ast.Add) or \
+                        not (isinstance(aug.value, ast.Constant) and isinstance(aug.value.value, str)) or \
+                        (aug.lineno, aug.col_offset) < (values[0].lineno, values[0].col_offset):
+                    return UNKNOWN
+                value = posixpath.normpath(value + aug.value.value)
+            return value
         if isinstance(node, ast.Call):
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
@@ -2701,15 +3113,29 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         return current, parts
 
     def path_site(arg):
+        """("path", expr, resolved target, (evaluated prefix, a step after it) or None, the rule-6 text): the text is
+        what rule 8 reads when nothing evaluates, the argument's source AND every assignment of the names it reads
+        (text_of), so `p = f"{source}/packages/shared/m.py"; runpy.run_path(p)` lands where the f-string lands (root's
+        B2 of #84's second delta R4, 2026-11-12: the source `p` alone named no top and read nothing). A name the
+        argument reads that is bound by something the scan does not read (a walrus, a loop, a comprehension, a
+        `with ... as`, a parameter default, a starred or nested unpacking, a `def`, an assigned attribute) has no text
+        to land anywhere, so the site REFUSES, declared or not (root's K3 of the third delta R4: `(p := f"{source}/
+        packages/shared/m.py"); run_path(p)` declared "external" read [] on main and on both earlier heads)."""
+        bad = unreadable_in(arg)
+        if bad:
+            name, kind = bad[0]
+            raise ValueError(f"unresolved (a computed Python load `{source(arg)}` reads `{name}`, bound by {kind}, which "
+                             f"the scan does not read) in {path}; bind it by a plain assignment, or write it from "
+                             "__file__ with literal parts, which the scan maps")
         target = resolved(arg)
         if target is not None:
-            return ("path", source(arg), target, None)
+            return ("path", source(arg), target, None, None)
         found = evaluated_prefix(arg)
         if found is None:
-            return ("path", source(arg), None, None)
+            return ("path", source(arg), None, None, text_of(arg))
         prefix, rest = found
         stepping = any(isinstance(n, ast.Constant) and isinstance(n.value, str) and PARENT_STEP.search(n.value) for n in rest)
-        return ("path", source(arg), None, (prefix, stepping))
+        return ("path", source(arg), None, (prefix, stepping), None)
 
     def resolved(node) -> str | None:
         value = ev(node)
@@ -2717,9 +3143,108 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
 
     entries: list[tuple[str, str]] = []
 
+    def text_of(node, seen: frozenset = frozenset()) -> str:
+        """The text rule 6 reads for an unevaluable expression: its source, and the source of every assignment and
+        augmentation of each name it reads, recursively (`p = f"{source}/packages/shared"; sys.path.insert(0, p)`, root's
+        C1 of #84; `base = f"{source}/packages"; p = base + "/shared"`, S03; a name assigned in two branches stands for
+        both, S07; `p += "/packages/shared"`, S02). A name a parameter shadows keeps its own name beside the texts of
+        any module-level assignment (S08), so a reading never shrinks for the shadow; a cycle or depth 8 stops."""
+        parts = [source(node)]
+        if len(seen) < 8:
+            for name in sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name) and n.id not in seen}):
+                for value in assigned.get(name, []):
+                    parts.append(f"{name} = {text_of(value, seen | {name})}")
+                for aug in augmented.get(name, []):
+                    parts.append(f"{name} += {text_of(aug.value, seen | {name})}")
+        return "; ".join(parts)
+
+    def unreadable_in(node, seen: frozenset = frozenset()) -> list[tuple[str, str]]:
+        """Root's K3 of #84's third delta R4 (2026-11-12): every name a loader-site argument reads, directly or through
+        the assignments text_of walks, that is bound by something the scan does not read (`unreadable`), and every
+        `base.attr` it reads that is assigned as an attribute anywhere (`self.p = ...; run_path(self.p)`), each with
+        the kind of binding. A Store-context name (`exec(open(p := f"...").read())`) is the site's own binding, not a
+        read; an imported name has no binding here and no text, so it reads nothing (B17) and is not listed."""
+        found: list[tuple[str, str]] = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load) and sub.id not in seen:
+                if sub.id in unreadable:
+                    found.append((sub.id, unreadable[sub.id]))
+                elif id(sub) in defaulted:
+                    found.append((sub.id, "a parameter default"))
+                if len(seen) < 8:
+                    for value in assigned.get(sub.id, []):
+                        found.extend(unreadable_in(value, seen | {sub.id}))
+                    for aug in augmented.get(sub.id, []):
+                        found.extend(unreadable_in(aug.value, seen | {sub.id}))
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Load) and isinstance(sub.value, ast.Name) \
+                    and (sub.value.id, sub.attr) in assigned_attrs:
+                found.append((f"{sub.value.id}.{sub.attr}", "an attribute assignment"))
+        return found
+
     def entry(node):
+        # Root's R1 of #84's fourth delta R4 (2026-11-12): `node.id in unreadable` makes a name UNKNOWN wherever the file
+        # binds it by something the scan does not read (`root = dirname(...)` at module level and `for root, d, f in
+        # os.walk(t)` inside a function), so the entry fell to the read-nothing return of apply_entry and read []
+        # where main read [a]. An entry whose text reads such a name REFUSES, as a loader site does (path_site),
+        # declared or not, naming the binding; a name bound once by a plain assignment still evaluates.
+        bad = unreadable_in(node)
+        if bad:
+            name, kind = bad[0]
+            raise ValueError(f"unresolved (a sys.path entry `{source(node)}` reads `{name}`, bound by {kind}, which the "
+                             f"scan does not read) in {path}; bind it by a plain assignment, or write it from __file__ "
+                             "with literal parts, which the scan maps")
         value = resolved(node)
-        entries.append(("unknown", source(node)) if value is None else ("dir", value))
+        entries.append(("unknown", text_of(node), source(node), literal_tail(node)) if value is None
+                       else ("dir", value, source(node), None))
+
+    def is_sep(part) -> bool:
+        """`{os.sep}` / `{os.path.sep}` in an f-string: a separator, literal text (root's S05)."""
+        return isinstance(part, ast.FormattedValue) and part.conversion == -1 and part.format_spec is None \
+            and isinstance(part.value, ast.Attribute) and ast.unparse(part.value) in ("os.sep", "os.path.sep")
+
+    def literal_tail(node) -> str | None:
+        """The literal text a sys.path entry's path ENDS with, from its AST (root's B1 of dotgithub-86 slice 2,
+        2026-11-12): the trailing components every directory it lands in ends with, or None. A CLOSED list of forms,
+        each with a literal as its LAST component: a string literal (adjacent and triple-quoted literals are one
+        constant); str() / Path() / abspath() / realpath() / normpath() / fspath() around exactly one such form, or
+        `.resolve()` on one; `X / "literal"`; os.path.join(X..., "literal"); an f-string whose placeholders all come
+        before its literal text, which then starts at a separator. A literal run before the last literal is kept
+        (`join("packages", "shared")` ends in `packages/shared`, never only `shared`, which `vendor/shared` also ends
+        with); an unknown part resets it. Anything else (a name, a concatenation, dirname, `.parent`, a slice, a
+        ternary, a literal followed by a computed part) has no tail."""
+        def joined(prefix: str | None, literal: str) -> str:
+            return literal if literal.startswith("/") or not prefix else prefix.rstrip("/") + "/" + literal
+
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.JoinedStr):
+            parts = node.values
+            first = next((i for i, part in enumerate(parts) if isinstance(part, ast.Constant) or is_sep(part)), len(parts))
+            if first == len(parts) or not all(isinstance(part, ast.Constant) or is_sep(part) for part in parts[first:]):
+                return None
+            text = "".join("/" if is_sep(part) else str(part.value) for part in parts[first:])
+            if first == 0:
+                return text  # no placeholder: a plain literal
+            return text.lstrip("/") if text.startswith("/") else None  # `f"{ROOT}shared"` ends in ROOT's last part
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+                return None
+            return joined(literal_tail(node.left), node.right.value)
+        if isinstance(node, ast.Call) and not node.keywords and not any(isinstance(a, ast.Starred) for a in node.args):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr == "resolve" and not node.args:
+                return literal_tail(f.value)
+            if call_name(f) in ("str", "Path", "abspath", "realpath", "normpath", "fspath") and len(node.args) == 1:
+                return literal_tail(node.args[0])
+            is_join = (isinstance(f, ast.Name) and f.id == "join") or (
+                isinstance(f, ast.Attribute) and f.attr == "join" and ast.unparse(f.value) in ("os.path", "posixpath", "path"))
+            if is_join and node.args and isinstance(node.args[-1], ast.Constant) and isinstance(node.args[-1].value, str):
+                run = None
+                for arg in node.args:
+                    literal = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    run = joined(run, arg.value) if literal else None
+                return run
+        return None
 
     def is_sys_path(node):
         return isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) and node.value.id == "sys"
@@ -2810,8 +3335,37 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
                 return values
         return None
 
+    # Root's K2 of #84's third delta R4 (2026-11-12): a parameter-named Name in the function's own defaults or
+    # decorators reads the ENCLOSING scope, but `ev` looks a name up in the file's assignments whatever their scope, so
+    # the un-shadow holds only when that name's single binding in the whole file is one plain, unmutated module-level
+    # assignment (the loop-literal pattern): `LIB = join(dirname(__file__), "../../packages/shared"); def setup(LIB=None,
+    # _=sys.path.insert(0, LIB))` reads shared (D01); the same default beside a module `(LIB := os.environ[...])` or
+    # `for LIB in ...` and a helper-local `LIB = ...` stays shadowed, so the entry is its text and refuses (G03, G04).
+    shadowed.update(ident for ident, name in enclosing.items() if unmutated_module_literal(name) is None)
+
     names: set[str] = set()
-    sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None)
+    sites: list[tuple] = []  # (kind, expr, resolved, (evaluated prefix, a parent step after it) or None, the rule-6 text or None)
+    # R6 (root's ruling of 2026-11-12, fail-closed by token, R6-2): every node a recording branch below UNDERSTOOD, with
+    # its whole subtree (the `sys.path` it mutated, the `importlib` it called through). A capability occurrence the
+    # scan below finds outside this set is consumed by no read rule, and the file refuses at the single refuse point.
+    consumed: set[int] = set()
+
+    def consume(node) -> None:
+        consumed.update(id(sub) for sub in ast.walk(node))
+
+    # N3 (root's ruling of 2026-11-12 21:32): `importlib.resources.files(anchor)` / `.read_text(anchor, ...)` import the
+    # anchor package. The receivers and bound names this file reaches them by, so `p.read_text("utf-8")` is never one.
+    res_mods = {"importlib.resources"}
+    res_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            res_mods |= {alias.asname or alias.name for alias in node.names if alias.name == "importlib.resources"}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == "importlib":
+                res_mods |= {alias.asname or alias.name for alias in node.names if alias.name == "resources"}
+            elif node.module == "importlib.resources":
+                res_names |= {alias.asname or alias.name for alias in node.names if alias.name in ("files", "read_text")}
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
@@ -2820,40 +3374,843 @@ def python_file_facts(text: str, path: str) -> tuple[list[tuple[str, str]], set[
         elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
+            consume(node)
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in node.targets):
             for item in (node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) else [node.value]):
                 entry(item)
+            consume(node)
         elif isinstance(node, ast.Call):
             f, name = node.func, call_name(node.func)
             if isinstance(f, ast.Attribute) and is_sys_path(f.value):
                 if f.attr == "insert" and len(node.args) == 2:
                     entry(node.args[1])
+                    consume(node)
                 elif f.attr == "append" and len(node.args) == 1:
                     entry(node.args[0])
+                    consume(node)
                 elif f.attr == "extend" and len(node.args) == 1:
                     for item in (node.args[0].elts if isinstance(node.args[0], (ast.List, ast.Tuple)) else [node.args[0]]):
                         entry(item)
+                    consume(node)
             elif name in ("import_module", "__import__", "run_module") and node.args:
                 arg = node.args[0]
                 looped = loop_literal_names(node, arg)
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    names.add(arg.value.split(".")[0])
+                    # A literal naming a capability module (`__import__("sys").path`) is a binding of it, judged by
+                    # the R6 scan below, never a module imported by name.
+                    if arg.value.split(".")[0] not in CAPABILITY_MODULES:
+                        names.add(arg.value.split(".")[0])
+                        consume(node)
                 elif looped is not None:
                     names |= {value.split(".")[0] for value in looped}  # resolved by name, like any import
+                    consume(node)
                 else:
-                    sites.append(("module", source(arg), None, None))
-            elif name in ("spec_from_file_location", "run_path"):
-                arg = (node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "location"), None)) \
-                    if name == "spec_from_file_location" else (node.args[0] if node.args else None)
+                    sites.append(("module", source(arg), None, None, None))
+                    consume(node)
+            elif name in ("files", "read_text") and node.args and (
+                    isinstance(f, ast.Name) and f.id in res_names
+                    or isinstance(f, ast.Attribute) and source(f.value) in res_mods):
+                # N3: a LITERAL anchor is a dependency edge of this file, like import_module("x"); a non-literal one is
+                # left to the R6-2 scan below, which refuses it (root's ruling of 2026-11-12 21:32).
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.split(".")[0] not in CAPABILITY_MODULES:
+                    names.add(arg.value.split(".")[0])
+                    consume(node)
+            elif name == "run_path":
+                # Rule 8 by path. `spec_from_file_location` is no longer read here (R6-2 fix F1 refuse-all, root's rule of
+                # 2026-11-14 19:00; cli's round-4 MUST-A): the spec it returns may be changed or run in ways its site does
+                # not show (`spec.loader.path = x` before `spec.loader.exec_module(m)`, an inline `loader=`), so it
+                # stays unconsumed and refuses.
+                arg = node.args[0] if node.args else None
                 if arg is not None:
                     sites.append(path_site(arg))
+                    consume(node)
             elif name == "exec" and node.args and isinstance(node.args[0], ast.Call):
                 inner = node.args[0]  # exec(open(p).read())
                 if isinstance(inner.func, ast.Attribute) and inner.func.attr == "read" and isinstance(inner.func.value, ast.Call) \
                         and call_name(inner.func.value.func) == "open" and inner.func.value.args:
                     arg = inner.func.value.args[0]
                     sites.append(path_site(arg))
+                    consume(node)
+    def scope_of(node):
+        while not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            node = parent[node]
+        return node
+
+    binders: dict[str, list] = {}  # name -> every node that binds it (a Store / Del, a parameter, an import, a global)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            binders.setdefault(node.id, []).append(node)
+        elif isinstance(node, ast.arg):
+            binders.setdefault(node.arg, []).append(node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name_ in node.names:
+                binders.setdefault(name_, []).append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                binders.setdefault((alias.asname or alias.name).split(".")[0], []).append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            binders.setdefault(node.name, []).append(node)  # a def or class binds its name in the enclosing scope
+        elif isinstance(node, ast.ExceptHandler) and node.name or isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            binders.setdefault(node.name, []).append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            binders.setdefault(node.rest, []).append(node)
+
+    # R6-2 fix (2), root's S2 of 2026-11-14 (cause 2 of cli's census, SCOPE): `globals()[<literal>]` and
+    # `globals().get(<literal>[, default])` read the module-level name the literal spells, the same object a read of that
+    # name reaches, when this module binds it at its top level by a `def`, a `class` or a plain assignment and it is no
+    # dunder and no name bound to a capability module or one of its names (`import sys as k`, `from importlib import
+    # util`): those reach what rule 5 and the loader rules judge by name. A computed key, a write (`globals()[k] = v`,
+    # `patch.dict(globals(), ...)`, `monkeypatch.setitem(globals(), ...)`), globals() passed out or bound to a name, and
+    # `locals()` / `vars()` still refuse.
+    capability_names: set[str] = set(CAPABILITY_MODULES) | {"__builtins__"}
+
+    def builtin(name: str) -> bool:  # cli's read of 02137ba (c): a def, class or any binding of the name shadows it
+        return name not in binders and name not in unreadable
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            top = (node.module or "").split(".")[0] if isinstance(node, ast.ImportFrom) and node.level == 0 else ""
+            for alias in node.names:
+                bound_as = alias.asname or alias.name.split(".")[0]
+                if top in CAPABILITY_MODULES or alias.name.split(".")[0] in CAPABILITY_MODULES or bound_as in CAPABILITY_MODULES:
+                    capability_names.add(bound_as)
+    module_names: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_names.add(stmt.name)
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            module_names.add(stmt.targets[0].id)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            module_names.add(stmt.target.id)
+    module_names = {n for n in module_names if n not in capability_names and not n.startswith("__")}
+
+    def is_globals(node) -> bool:
+        return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "globals" \
+            and not node.args and not node.keywords and builtin("globals")
+
+    def literal(node):
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    for node in ast.walk(tree):
+        if is_globals(node):
+            p = parent.get(node)
+            g = parent.get(p)
+            if isinstance(p, ast.Subscript) and p.value is node and isinstance(p.ctx, ast.Load) and literal(p.slice) in module_names:
+                consume(node)
+            elif isinstance(p, ast.Attribute) and p.value is node and p.attr == "get" and isinstance(g, ast.Call) \
+                    and g.func is p and 1 <= len(g.args) <= 2 and not g.keywords and literal(g.args[0]) in module_names:
+                consume(node)
+    # R6-2 fix (2b), the census's own SCOPE form (38 of its 41 sites; none is a literal key): the test-runner loop over
+    # the module's names. A `for k in <globals()>` (`globals()`, `.keys()`, under `sorted` / `list`) yields strings; a
+    # `globals()[k]()` in it, under `if k.startswith(<prefix>)`, calls a name the prefix admits. A `for k, v in
+    # <globals().items()>` is read when `v` is used only as `callable(v)`, `v.__name__`, `getattr(v, "__name__", ...)`
+    # anywhere in the loop, and as a no-argument `v()` only under `if k.startswith(<prefix>)` (alone or as a conjunct),
+    # neither name rebound in the loop, and `v` read after the loop nowhere outside a function that binds its own. The
+    # prefix is a non-empty literal with no leading underscore (so no dunder: `__builtins__`, `__loader__`) that no
+    # capability-bound name of the file starts with (`import sys as test_sys` keeps it refusing). The gate is the
+    # loop's own name test; a gate on a runtime attribute (`getattr(fn, "__name__", "").startswith("test_")` over
+    # `.values()`), a comprehension over `.items()` and every other use of `v` still refuse.
+    def unwrap(node):
+        while isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("sorted", "list") \
+                and builtin(node.func.id) and len(node.args) == 1 and not node.keywords:
+            node = node.args[0]
+        return node
+
+    def prefix_gate(test, key: str) -> bool:
+        for t in (test.values if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And) else [test]):
+            if isinstance(t, ast.Call) and isinstance(t.func, ast.Attribute) and t.func.attr == "startswith" \
+                    and isinstance(t.func.value, ast.Name) and t.func.value.id == key and len(t.args) == 1 and not t.keywords:
+                prefix = literal(t.args[0])
+                if prefix and not prefix.startswith("_") and not any(n.startswith(prefix) for n in capability_names):
+                    return True
+        return False
+
+    # cli's read of 02137ba, made MUST by root's ruling (a) of 17:58: a use inside a lambda, a nested def or class, or a
+    # generator expression in the loop runs later, with the loop's LAST value, so the gate does not hold for it; and a
+    # file with a star import may hold any name the prefix admits, so neither loop form reads there.
+    def gated(use, loop, key: str) -> bool:
+        node = use
+        while node is not loop:
+            up_ = parent[node]
+            if isinstance(up_, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.GeneratorExp)):
+                return False
+            if isinstance(up_, ast.If) and any(stmt is node for stmt in up_.body) and prefix_gate(up_.test, key):
+                return True
+            node = up_
+        return False
+
+    def no_arg_call(call, func) -> bool:
+        return isinstance(call, ast.Call) and call.func is func and not call.args and not call.keywords
+
+    star = any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in ast.walk(tree))
+    for loop in ([] if star else ast.walk(tree)):
+        if not isinstance(loop, (ast.For, ast.AsyncFor)):
+            continue
+        core = unwrap(loop.iter)
+        method = core.func.attr if isinstance(core, ast.Call) and isinstance(core.func, ast.Attribute) \
+            and is_globals(core.func.value) and not core.args and not core.keywords else None
+        inside = [n for stmt in loop.body + loop.orelse for n in ast.walk(stmt)]
+        inside_ids = {id(n) for n in inside}
+        targets = [loop.target] if isinstance(loop.target, ast.Name) else loop.target.elts \
+            if isinstance(loop.target, ast.Tuple) and all(isinstance(e, ast.Name) for e in loop.target.elts) else []
+        names_ = [t.id for t in targets]
+        if not names_ or len(set(names_)) != len(names_) \
+                or any(isinstance(n, ast.Name) and n.id in names_ and not isinstance(n.ctx, ast.Load) for n in inside):
+            continue
+        if (is_globals(core) or method == "keys") and len(names_) == 1:
+            key = names_[0]
+            consume(core if is_globals(core) else core.func.value)
+            for n in inside:
+                sub = parent.get(n)
+                if is_globals(n) and isinstance(sub, ast.Subscript) and sub.value is n and isinstance(sub.ctx, ast.Load) \
+                        and isinstance(sub.slice, ast.Name) and sub.slice.id == key and no_arg_call(parent.get(sub), sub) \
+                        and gated(parent[sub], loop, key):
+                    consume(n)
+        elif method == "items" and len(names_) == 2:
+            key, value = names_
+            ok = True
+            for n in ast.walk(tree):
+                if not (isinstance(n, ast.Name) and n.id == value and isinstance(n.ctx, ast.Load)):
+                    continue
+                use = parent.get(n)
+                if id(n) not in inside_ids:
+                    own = scope_of(use)
+                    ok = ok and own is not tree and own is not scope_of(loop) \
+                        and any(scope_of(parent[b]) is own for b in binders.get(value, []))
+                elif no_arg_call(use, n):
+                    ok = ok and gated(use, loop, key)
+                elif not (isinstance(use, ast.Attribute) and use.attr == "__name__"
+                          or isinstance(use, ast.Call) and isinstance(use.func, ast.Name) and builtin(use.func.id)
+                          and use.args and use.args[0] is n and not use.keywords
+                          and (use.func.id == "callable" and len(use.args) == 1
+                               or use.func.id == "getattr" and len(use.args) in (2, 3) and literal(use.args[1]) == "__name__")):
+                    ok = False
+            if ok:
+                consume(core.func.value)
+    # R6-2 fix (3), root's S2 of 2026-11-14 (cause 3 of cli's census, SYS-PATH-REACH): in a TEST file, by the planner's
+    # own classification (plan.is_test_file with no config test_globs: test_*.py, *_test.py, any file under test/,
+    # tests/ or __tests__/, so conftest.py there too), the `sys.modules` and `sys.path` uses that load no file are read.
+    # `sys.modules[k] = v`, `del sys.modules[k]`, a discarded `sys.modules.pop(k[, d])`, `<x>.setitem(sys.modules,
+    # "<m>", v)` and `<x>.delitem(sys.modules, "<m>"[, ...])` bind or unbind a module name for the test's own process
+    # (a later `import m` is judged as an import); `"m" in sys.modules` and `for m in sys.modules` read names;
+    # `sys.modules["m"]` and `sys.modules.get("m"[, d])` read module m, recorded as this file's dependency edge like
+    # `import_module("m")`. `sys.path` compared, indexed, or under len / list / tuple is a read of the list. A key naming
+    # a capability module (sys, site, importlib, runpy, builtins) in any of these forms, a computed key on a read, a
+    # use chained past the access (`sys.modules["m"].x`), `sys.modules.items()` / `.update(...)`, `p = sys.path`, any
+    # other use, and every one of these outside a test file, still refuse.
+    # Root's ruling (b) of 2026-11-14 17:58: a name is not enough. F3 reads only in a file `test_only(path)` says no
+    # non-test file imports (code_imported_test_files, passed by the scan); a caller that passes none gets no F3.
+    # cli's read of 02137ba: MF3, a bind (`sys.modules[k] = v`, `monkeypatch.setitem`) refuses in a file that names
+    # `__path__`, `__spec__`, `submodule_search_locations` or `__dict__` anywhere (an attribute, a name, a keyword, a
+    # string such as `"pkg.__path__"`) or calls `setattr` with a computed name (`monkeypatch.setattr("a.b", v)` names
+    # it in its string) or `vars` with an argument: a stub with a
+    # `__path__` sends `import m.sub` to a directory no edge names. This guard reads this file only; a `__path__` given in
+    # another file is that file's PKG-PATH occurrence (capability_occurrences, root's MUST-2 of R6-2 round four), and a
+    # dunder name built at run time (`"__pa" + "th__"`) is the open class. The bound value is a call, a constant or a name no
+    # import binds (an imported package bound under another name carries its own `__path__`). (a) `sys.path` reads only
+    # on the right of `in` / `not in` / `==` / `!=` or the left of `==` / `!=`, and `"m" in sys.modules` only as the
+    # last operand: `sys.path in y` hands the list to `y`. (b) `setitem` / `delitem` read only on `monkeypatch`.
+    if test_only is not None and _plan.is_test_file(path, []) and test_only(path):
+        def take(*nodes) -> None:
+            consumed.update(id(n) for n in nodes)
+
+        pkg_words = ("__path__", "__spec__", "submodule_search_locations", "__dict__")
+        pkg_shape = any(isinstance(n, ast.Attribute) and n.attr in pkg_words or isinstance(n, ast.Name) and n.id in pkg_words
+                        or isinstance(n, ast.keyword) and n.arg in pkg_words
+                        or isinstance(n, ast.Constant) and isinstance(n.value, str) and any(w in n.value for w in pkg_words)
+                        or isinstance(n, ast.Call) and isinstance(n.func, (ast.Name, ast.Attribute))
+                        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == "setattr"
+                        and not (len(n.args) >= 2 and isinstance(n.args[1], ast.Constant)
+                                 or isinstance(n.func, ast.Attribute) and n.args and isinstance(n.args[0], ast.Constant))
+                        or isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "vars" and n.args
+                        for n in ast.walk(tree))
+
+        # cli's read of 7001655 (should-fix 2, root's 18:29 scope): another file may hand back a stub with a
+        # `__path__`, so a bound value reads only when this file shows it has none: a constant,
+        # `types.ModuleType(<literal>)`, a `Mock()` / `MagicMock()` (no `spec`, `spec_set`, `wraps`, positional or `**`
+        # argument; a mock refuses a dunder it was not given), or a name every binding of which in this file is a
+        # plain assignment of one of those.
+        def bound_only_by(name: str, module: str, attr: str | None) -> bool:
+            every = binders.get(name, [])
+            return bool(every) and name not in unreadable and all(
+                isinstance(b, ast.Import) and attr is None and any(a.name == module and (a.asname or a.name) == name for a in b.names)
+                or isinstance(b, ast.ImportFrom) and attr is not None and b.module == module and not b.level
+                and any(a.name == attr and (a.asname or a.name) == name for a in b.names) for b in every)
+
+        mocks = ("Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock", "AsyncMock")
+
+        def stub_call(value) -> bool:
+            if isinstance(value, ast.Constant):
+                return True
+            if not isinstance(value, ast.Call) or any(k.arg in (None, "spec", "spec_set", "wraps") for k in value.keywords):
+                return False
+            f = value.func
+            if isinstance(f, ast.Name) and f.id == "ModuleType" and bound_only_by(f.id, "types", "ModuleType") \
+                    or isinstance(f, ast.Attribute) and f.attr == "ModuleType" and isinstance(f.value, ast.Name) \
+                    and bound_only_by(f.value.id, "types", None):
+                return 1 <= len(value.args) <= 2 and not value.keywords \
+                    and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in value.args)
+            mock = isinstance(f, ast.Name) and f.id in mocks and any(bound_only_by(f.id, m, f.id) for m in ("unittest.mock", "mock")) \
+                or isinstance(f, ast.Attribute) and f.attr in mocks and isinstance(f.value, ast.Name) \
+                and (bound_only_by(f.value.id, "unittest", "mock") or bound_only_by(f.value.id, "mock", None))
+            return mock and not value.args
+
+        def bindable(value) -> bool:
+            if pkg_shape:
+                return False
+            if isinstance(value, ast.Name):
+                every = binders.get(value.id, [])
+                return bool(every) and value.id not in unreadable and all(
+                    isinstance(parent.get(b), (ast.Assign, ast.AnnAssign)) and isinstance(b, ast.Name)
+                    and (b in parent[b].targets if isinstance(parent[b], ast.Assign) else parent[b].target is b)
+                    and stub_call(parent[b].value) for b in every)
+            return stub_call(value)
+
+        def cmp_side(cmp, node, right_ops, left_ops) -> bool:
+            if not isinstance(cmp, ast.Compare):
+                return False
+            seq = [cmp.left, *cmp.comparators]
+            i = next((j for j, x in enumerate(seq) if x is node), None)
+            return i is not None and (i == 0 or isinstance(cmp.ops[i - 1], right_ops)) \
+                and (i == len(cmp.ops) or isinstance(cmp.ops[i], left_ops))
+
+        # R6-2 round 5, SHOULD-2 (root's ruling of 2026-11-15 01:58): `==` / `!=` hands the live list to the other
+        # operand's `__eq__` (`E() == sys.path`, `sys.path == E()`), so beside `==` / `!=` the other side must be a list
+        # or tuple display, or a name every binding of which in this file is a copy of sys.path (`list(sys.path)`,
+        # `tuple(sys.path)`, `sys.path[:]`, `sys.path.copy()`, the builtin unshadowed). `in` / `not in` are unchanged.
+        def sys_path_attr(n) -> bool:
+            return isinstance(n, ast.Attribute) and n.attr == "path" and isinstance(n.value, ast.Name) and n.value.id == "sys"
+
+        def path_copy(value) -> bool:
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id in ("list", "tuple") \
+                    and builtin(value.func.id) and len(value.args) == 1 and not value.keywords and sys_path_attr(value.args[0]):
+                return True
+            if isinstance(value, ast.Subscript) and sys_path_attr(value.value) and isinstance(value.slice, ast.Slice) \
+                    and value.slice.lower is None and value.slice.upper is None and value.slice.step is None:
+                return True
+            return isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "copy" \
+                and sys_path_attr(value.func.value) and not value.args and not value.keywords
+
+        def copy_side(other) -> bool:
+            if isinstance(other, (ast.List, ast.Tuple)):
+                return True
+            if isinstance(other, ast.Name):
+                every = binders.get(other.id, [])
+                return bool(every) and other.id not in unreadable and all(
+                    isinstance(b, ast.Name) and isinstance(parent.get(b), (ast.Assign, ast.AnnAssign))
+                    and (b in parent[b].targets if isinstance(parent[b], ast.Assign) else parent[b].target is b)
+                    and parent[b].value is not None and path_copy(parent[b].value) for b in every)
+            return False
+
+        def eq_copy_only(cmp, node) -> bool:
+            seq = [cmp.left, *cmp.comparators]
+            i = next(j for j, x in enumerate(seq) if x is node)
+            sides = ([seq[i - 1]] if i > 0 and isinstance(cmp.ops[i - 1], (ast.Eq, ast.NotEq)) else []) \
+                + ([seq[i + 1]] if i < len(cmp.ops) and isinstance(cmp.ops[i], (ast.Eq, ast.NotEq)) else [])
+            return all(copy_side(s) for s in sides)
+
+        def capability_key(node) -> bool:
+            return isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.split(".")[0] in CAPABILITY_MODULES
+
+        def module_key(node):
+            return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value \
+                and not capability_key(node) else None
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Attribute) and node.attr in ("modules", "path") and isinstance(node.value, ast.Name)
+                    and node.value.id == "sys" and isinstance(node.ctx, ast.Load)):
+                continue
+            up1 = parent.get(node)
+            up2 = parent.get(up1)
+            if node.attr == "path":
+                if cmp_side(up1, node, (ast.In, ast.NotIn, ast.Eq, ast.NotEq), (ast.Eq, ast.NotEq)) and eq_copy_only(up1, node):
+                    take(node.value, node)
+                elif isinstance(up1, ast.Subscript) and up1.value is node and isinstance(up1.ctx, ast.Load):
+                    take(node.value, node, up1)
+                elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Name) and up1.func.id in ("len", "list", "tuple") \
+                        and builtin(up1.func.id) and len(up1.args) == 1 and up1.args[0] is node and not up1.keywords:
+                    take(node.value, node)
+            elif isinstance(up1, ast.Subscript) and up1.value is node:
+                if capability_key(up1.slice):
+                    continue
+                if isinstance(up1.ctx, ast.Store) and isinstance(up2, ast.Assign) and len(up2.targets) == 1 and up2.targets[0] is up1 \
+                        and bindable(up2.value) or isinstance(up1.ctx, ast.Del):
+                    take(node.value, node, up1)
+                elif isinstance(up1.ctx, ast.Load) and module_key(up1.slice):
+                    names.add(module_key(up1.slice).split(".")[0])
+                    take(node.value, node, up1)
+            elif isinstance(up1, ast.Attribute) and up1.value is node and isinstance(up2, ast.Call) and up2.func is up1 \
+                    and 1 <= len(up2.args) <= 2 and not up2.keywords:
+                if up1.attr == "get" and module_key(up2.args[0]):
+                    names.add(module_key(up2.args[0]).split(".")[0])
+                    take(node.value, node, up1, up2)
+                elif up1.attr == "pop" and isinstance(parent.get(up2), ast.Expr) and not capability_key(up2.args[0]):
+                    take(node.value, node, up1, up2)
+            elif isinstance(up1, ast.Call) and isinstance(up1.func, ast.Attribute) and up1.func.attr in ("setitem", "delitem") \
+                    and isinstance(up1.func.value, ast.Name) and up1.func.value.id == "monkeypatch" and len(up1.args) >= 2 \
+                    and up1.args[0] is node and module_key(up1.args[1]) \
+                    and (up1.func.attr == "delitem" or len(up1.args) == 3 and not up1.keywords and bindable(up1.args[2])):
+                take(node.value, node)
+            elif cmp_side(up1, node, (ast.In, ast.NotIn), ()) \
+                    or isinstance(up1, (ast.For, ast.AsyncFor, ast.comprehension)) and up1.iter is node:
+                take(node.value, node)
+    # R6-2 fix F1 refuse-all (root's rule of 2026-11-14 19:00, on cli's round-4 MUST-A and MUST-B), MUST-C and MUST-D:
+    # no read rule consumes an UNREAD_LOADER_CALLS call, by name, by attribute or as a word in a string, wherever it
+    # sits (a recording branch above consumes its whole subtree, a sys.path entry or a run_path path holding one too).
+    # The chain each heads, and each such string, is unconsumed again here, so the capability scan below refuses at it.
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and unread_loader_word(n.value):
+            consumed.discard(id(n))
+            continue
+        if isinstance(n, ast.Name) and n.id in UNREAD_LOADER_CALLS \
+                or isinstance(n, ast.Attribute) and n.attr in UNREAD_LOADER_CALLS:
+            while True:
+                consumed.discard(id(n))
+                up = parent.get(n)
+                if not (isinstance(up, ast.Attribute) and up.value is n or isinstance(up, ast.Call) and up.func is n
+                        or isinstance(up, ast.Subscript) and up.value is n):
+                    break
+                n = up
+    unconsumed = capability_occurrences(tree, text, parent, consumed)
+    if unconsumed:
+        lineno, segment = unconsumed[0]
+        raise ValueError(f"unresolved (the path-mutation capability `{segment}` on line {lineno} of {path} is consumed by "
+                         f"no read rule; a file reads only when every one is) in {path}")
     return entries, names, sites
+
+
+# R6-2 (root's ruling of 2026-11-12, fail-closed by token; cli's R6 design accepted 16:44): the modules whose binding is a
+# path-mutation capability, each with the family the scan judges it under. `sys` is read by rule 5 below; `site`,
+# `importlib`, `runpy` and `builtins` are read only through the recording branches of python_file_facts. `imp` (Python
+# 3.11 or older: `load_source`, `load_compiled`, `load_dynamic`, `load_package`; cli's round-6 should-fix) is read by no rule.
+CAPABILITY_MODULES = {"sys": "sys", "site": "site", "importlib": "loader", "runpy": "loader", "builtins": "loader",
+                      "imp": "loader"}
+# The attributes of `sys` that reach the import path (root's rule 5 twins): a use of a sys-bound name as any of these,
+# or as any dunder (`sys.__dict__`), is a path reach; every other attribute (`sys.exit`, `sys.argv`, `sys.stderr`) is not.
+SYS_PATH_ATTRS = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache"})
+# The loader calls, by name or attribute: each is a load the recording branches read (a consumed call) or a refusal.
+# Every UNREAD_LOADER_CALLS call is one, read by no rule (R6-2 fix F1, MUST-C, MUST-D).
+LOADER_CALLS = frozenset({"import_module", "__import__", "run_module", "run_path", "SourceFileLoader", "addsitedir"}) \
+    | UNREAD_LOADER_CALLS
+EXEC_CALLS = frozenset({"exec", "eval", "compile"})
+# N2 / N3 (root's ruling of 2026-11-12 21:32): the loader calls read through their chain when the first argument is a literal
+# the recording branch consumed, the importlib.metadata reads that are not loads, the importlib.resources anchors recorded as edges.
+N2_LITERAL_LOADERS = frozenset({"import_module", "__import__", "run_module"})
+N3_METADATA_READS = frozenset({"importlib.metadata.version", "importlib.metadata.files"})
+N3_RESOURCE_READS = frozenset({"importlib.resources.files", "importlib.resources.read_text"})
+
+
+def capability_occurrences(tree, text: str, parent: dict, consumed: set[int]) -> list[tuple[int, str]]:
+    """Every path-mutation capability occurrence in one parsed Python file that no read rule consumed, each as (line, the
+    source segment, whitespace collapsed), in file order with the import bindings LAST and no duplicates (R6-2 of #86,
+    root's ruling of 2026-11-12: a file reads only when every one of them is consumed; the first one names the refusal,
+    so the message names the use that was not consumed before the `import sys` it hangs from, and a dead import only
+    when nothing else refuses). The kinds, root's B8 eleven forms among them:
+    - SYS-BIND: `import sys` under any alias, `from sys import ...` (any name, any alias, `*`), `__import__("sys")` and
+      `import_module("sys")`, a name literally called `sys` imported from ANY module (root's dated residual: an alias
+      re-exported under another name stays unseen), and `del` or a rebinding of a sys-bound name. Rule 5 (root's (i)):
+      the binding is consumed when the name is used at least once and EVERY use is an attribute read outside
+      SYS_PATH_ATTRS and the dunders, or sits inside a consumed recording branch (`sys.path.insert(0, x)` read by rule
+      6); a name that is aliased (`s = sys`), passed (`getattr(sys, n)`, `vars(sys)`, `dir(sys)`, `setattr(sys, ...)`),
+      subscripted, deleted, rebound or never used (a dead import, root's (ii)) is not. `from sys import argv` is the
+      attribute read itself: consumed when the bound name is used at least once; `from sys import path` (any of
+      SYS_PATH_ATTRS, any alias) and `from sys import *` never are.
+    - SYS-PATH-REACH: `.path`, `.modules`, `.meta_path`, `.path_hooks`, `.path_importer_cache` or a dunder on a
+      sys expression (a sys-bound name, `__import__("sys")`, `os.sys`) outside a consumed branch: `p = sys.path`,
+      `sys.path.remove(x)`, `sys.path.insert(*args)`, `list.insert(sys.path, 0, x)`, `sys.path.__iadd__([x])`,
+      `sys.path.__setitem__(...)`, `sys.modules["sys"].path`, `sys.path = [...]`, `getattr(sys, "path")`.
+    - SITE: `import site` under any alias, `from site import ...`, any use of a site-bound name, `addsitedir` by any
+      name or attribute. No rule reads them.
+    - LOADER: `import importlib` / `runpy` / `builtins` under any alias or submodule, `from importlib[.util] import ...`,
+      a use of a loader-bound name outside a consumed call (`importlib.util.find_spec`, `importlib.reload`,
+      `builtins.exec`), a loader call by attribute on anything (`.module_from_spec(...)`, `.run_path(...)`), and
+      `exec` / `eval` / `compile` as a bare name (`exec("import x")`, `exec(__doc__)`), outside a consumed branch
+      (`exec(open(p).read())` is read by rule 8). A loader binding is consumed when every use of it sits inside a
+      consumed call and there is at least one.
+    - ENV: a str or bytes constant holding `PYTHONPATH` anywhere (an environ key, `os.environb[b"PYTHONPATH"]`, a
+      shell string, an `env=` mapping).
+    - SCOPE: `globals()`, `locals()` or `vars()` with no argument in a file that binds sys (root's twin (i)).
+    - PKG-PATH (root's MUST-2 of R6-2 round four): `__path__` as an attribute, a name or a keyword in any context, or
+      as a word in a str or bytes constant, WHEREVER it sits, a consumed node too. No rule reads it: a write sends
+      `import pkg.sub` to a directory no edge names, and a read hands the live list out (`p = m.__path__; p.append(d)`).
+      It ranks after the uses and the bindings, so it names the refusal only when nothing else in the file refuses.
+    - MODULE-GETATTR (PEP 562, closed 2026-11-15): a module-scope binding of `__getattr__` (a def, a class, an
+      assignment, an import), `global __getattr__`, a write of a `.__getattr__` attribute, a `__getattr__=` keyword and
+      the word in a str or bytes constant: a module `__getattr__` can hand out a `__path__` the text never names. A
+      method in a class body, a binding inside a function and an attribute read are not it. It ranks after PKG-PATH.
+    - MODULE-INTERNALS (R6-2 round 5, root's rulings of 2026-11-15 01:58; ranks last): tier 1, a GADGET_DUNDERS
+      attribute (`__builtins__`, `__globals__`, `__subclasses__`, `__self__`, `__spec__`, `__loader__`, `__code__`,
+      `__closure__`, `__import__`) in any context and a WRITE_DUNDERS attribute (`__class__`, `__package__`,
+      `__dict__`) stored or deleted, on ANY receiver; tier 2, on a module (a name an import in this file binds, an alias
+      of one to a fixed point, a literal loader call), every dunder attribute outside INERT_DUNDERS, `vars(<module>)`
+      and a setattr / delattr / `object.__setattr__` / `object.__delattr__` whose attribute name does not fold to a
+      constant (a computed-name READ is the open class); and a folded constant (fold_constant: implicit concatenation, `+`, `%`, an all-constant f-string,
+      `sep.join(<constants>)`, `.decode()`) that names a module internal (internals_word) anywhere, or PYTHONPATH or an
+      unread loader word outside a consumed node. PKG-PATH also takes `submodule_search_locations` (A1).
+    BY DEFAULT (root's STANDING ask, R6-2 round 5): every tracked regular `.py` is parsed and one that does not parse
+    refuses when its text is UNPARSED_SUSPECT (a plain unparseable one records nothing); in a parsed file every dunder attribute outside INERT_DUNDERS on a module, every tier 1 attribute on any
+    receiver, every `vars(<module>)`, every computed-name WRITE on a module and every constant spelling of a
+    module internal refuses, beside the capability uses above. A module carried by an alias in this file (an assignment,
+    a walrus, a for / with target, a tuple / list / set / dict display, a comprehension, a builtin container call) is a
+    module for both tiers (codex's read of cc91398, root 10:36). NOT refused (the open class, dated 2026-11-15): a computed-name READ
+    (getattr / hasattr) on any receiver, a computed-name write on a receiver this file does not show is a module (a
+    parameter, a call result), and a module object handed in by another file's call and enumerated
+    through `.__dict__` on a parameter.
+    Three narrowings, root's ruling of 2026-11-12 21:32 on cli's measured census (each a rule with twin vectors, never a
+    hand exemption): N1 `x in sys.path` / `x not in sys.path` is a read of the list (the guarded insert or append in the
+    same file is judged on its own); N2 a loader call with a LITERAL module name that a recording branch consumed
+    (`__import__("json")`, `import_module("server")`, `run_module("m")`) is read through the chain that follows it
+    (`.loads(x)`, `.app`), a non-literal first argument refuses as before; N3 `importlib.metadata.version(...)` and
+    `importlib.metadata.files(...)` read installed metadata and are not loads, `importlib.resources.files(anchor)` and
+    `read_text(anchor, ...)` import the anchor package: a literal anchor is recorded as this file's dependency edge and
+    read through its chain, a non-literal one refuses; `entry_points(...).load()` stays a loader.
+    Root's S2 of 2026-11-14 (the census's top three causes), with twin vectors in test_edges_r6_2_fix_vectors.json: F1
+    is REFUSE-ALL (root's rule of 2026-11-14 19:00, applied on cli's round-4 MUST-A and MUST-B): no rule reads
+    `spec_from_file_location` or `module_from_spec`, by name or attribute, wherever it sits, and each refuses at
+    LOADER; two reads, each a recording branch in `python_file_facts`: F2
+    SCOPE `globals()["n"]` / `globals().get("n")` for a module-level name the file binds, and the test-runner loop
+    over `globals()` under a literal `startswith` prefix (dynamic keys, writes, comprehensions, `globals()` passed
+    out, a star import and a gated call inside a lambda, nested def or generator still refuse); F3 SYS-PATH-REACH in
+    a test file no non-test file imports (plan.is_test_file and code_imported_test_files): `sys.modules` binds,
+    unbinds and literal reads, and `sys.path` as a right operand of in / ==, indexed or copied (capability keys,
+    computed read keys, `p = sys.path`, `sys.path in y`, a bind in a file naming `__path__` / `__spec__` /
+    `submodule_search_locations` / `__dict__`, a receiver other than `monkeypatch`, and every such use in any other
+    file still refuse); `sys.path` reads as a right operand of in / not in / == / != and a left operand of == / !=.
+    Round 3 (cli's read of 7001655, root's 18:29 scope): the F3 test files a non-test file may import come from the
+    AST; an F3 bind takes only a value this file shows carries no `__path__`.
+    A bare `sys`, `site`, `importlib`, `runpy` or `builtins` the file never imports is its module all the same (a star
+    import, an injection), unless the file binds that name itself (an assignment, a parameter, a `def`): then it is a
+    local, and no occurrence. A file with no occurrence has nothing to consume and reads as before."""
+    import ast
+
+    def segment(node) -> str:
+        return " ".join((ast.get_source_segment(text, node) or ast.dump(node)).split())
+
+    def call_name(f):
+        return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+
+    def chain_top(node):
+        """The outermost attribute / call / subscript chain this node heads (`importlib.util.find_spec("x")` for its
+        `importlib`), so the refusal names the whole use."""
+        while True:
+            p = parent.get(node)
+            if isinstance(p, ast.Attribute) and p.value is node or isinstance(p, ast.Call) and p.func is node \
+                    or isinstance(p, ast.Subscript) and p.value is node:
+                node = p
+            else:
+                return node
+
+    found: list[tuple[int, int, int, str]] = []  # (rank: 0 a use, 1 an import binding, 2 PKG-PATH, 3 MODULE-GETATTR, 4 MODULE-INTERNALS; line; column; segment)
+
+    def refuse(node, binding: bool = False) -> None:
+        if id(node) not in consumed:
+            found.append((1 if binding else 0, node.lineno, node.col_offset, segment(node)))
+
+    # Names the file binds by something other than an import: a bare capability name among them is a local, not the module.
+    local_bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            local_bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            local_bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            local_bound.add(node.arg)
+    # bound name -> family. The bare module names are their families unless the file binds them locally; every import
+    # of a capability module (any alias, any submodule) adds its name, an import overriding a local binding (a rebinding
+    # of an imported name is then the Store below, and refuses).
+    bound: dict[str, str] = {m: f for m, f in CAPABILITY_MODULES.items() if m not in local_bound}
+    if "__builtins__" not in local_bound:
+        bound["__builtins__"] = "loader"
+    modpath: dict[str, str] = {m: m for m in CAPABILITY_MODULES}  # bound name -> the dotted module or function it stands for
+    binds: list[tuple] = []  # (import statement, [bound names], [names bound from `from sys import <non-path>`])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            hit = []
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in CAPABILITY_MODULES:
+                    name = alias.asname or top
+                    bound[name] = CAPABILITY_MODULES[top]
+                    modpath[name] = alias.name if alias.asname else top
+                    hit.append(name)
+            if hit:
+                binds.append((node, hit, []))
+        elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0] if node.level == 0 else ""
+            hit, from_sys = [], []
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if top in CAPABILITY_MODULES:
+                    family = CAPABILITY_MODULES[top]
+                    if alias.name == "*" or (family == "sys" and (alias.name in SYS_PATH_ATTRS or alias.name.startswith("__"))):
+                        refuse(node)  # `from sys import *`, `from sys import path as p`, `from importlib import *`
+                    elif family == "sys":
+                        from_sys.append(name)  # `from sys import argv`: the attribute read itself
+                    else:
+                        bound[name] = family
+                        modpath[name] = f"{node.module}.{alias.name}"
+                        hit.append(name)
+                elif alias.name in CAPABILITY_MODULES or name in CAPABILITY_MODULES:
+                    # A name literally called sys/site/importlib/runpy/builtins imported from any other module binds it.
+                    bound[name] = CAPABILITY_MODULES.get(alias.name) or CAPABILITY_MODULES[name]
+                    modpath[name] = alias.name if alias.name in CAPABILITY_MODULES else name
+                    hit.append(name)
+            if hit or from_sys:
+                binds.append((node, hit, from_sys))
+    binds_sys = any(bound.get(n) == "sys" for _, names_, _ in binds for n in names_) or any(fs for _, _, fs in binds)
+    uses: dict[str, list] = {}  # bound name -> its Load uses (Name nodes)
+    safe: set[int] = set()  # id() of a Load Name whose use rule 5 reads (a non-path attribute of sys)
+
+    def sys_expression(node) -> bool:
+        """A node that stands for the sys module: a sys-bound name, `__import__("sys")`, `import_module("sys")`, `X.sys`."""
+        if isinstance(node, ast.Name):
+            return bound.get(node.id) == "sys"
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "sys":
+            return call_name(node.func) in ("__import__", "import_module")
+        return isinstance(node, ast.Attribute) and node.attr == "sys"
+
+    def membership_read(attr) -> bool:
+        """N1: `x in sys.path` / `x not in sys.path` reads the list (the attribute is a comparator of an In/NotIn compare)."""
+        g = parent.get(attr)
+        return attr.attr == "path" and isinstance(g, ast.Compare) and any(c is attr for c in g.comparators) \
+            and all(isinstance(op, (ast.In, ast.NotIn)) for op in g.ops)
+
+    def owning_call(node):
+        """Climb the attribute chain a loader name heads to the call it makes: (attribute names, the Call or None)."""
+        attrs, cur = [], node
+        while True:
+            p = parent.get(cur)
+            if isinstance(p, ast.Attribute) and p.value is cur:
+                attrs.append(p.attr)
+                cur = p
+            elif isinstance(p, ast.Call) and p.func is cur:
+                return attrs, p
+            else:
+                return attrs, None
+
+    def read_through(node) -> bool:
+        """N2 / N3: a loader name whose call a recording branch consumed with a LITERAL first argument is read through the
+        chain after the call; `importlib.metadata.version` / `.files` are reads of installed metadata. Anything else is
+        judged as before (a non-literal argument, another attribute, `entry_points(...).load()`)."""
+        attrs, call = owning_call(node)
+        if call is None:
+            return False
+        dotted = ".".join([modpath.get(node.id, node.id)] + attrs) if isinstance(node, ast.Name) else None
+        if dotted in N3_METADATA_READS:
+            return True
+        literal = bool(call.args) and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str)
+        if dotted in N3_RESOURCE_READS or call_name(call.func) in N2_LITERAL_LOADERS or call_name(call.func) in ("files", "read_text"):
+            return id(call) in consumed and literal
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            family = bound.get(node.id)
+            if not isinstance(node.ctx, ast.Load):
+                if family is not None:
+                    refuse(parent.get(node, node))  # `sys = x`, `del sys`, `for site in ...`: a rebinding of a module
+                continue
+            if family is not None:
+                uses.setdefault(node.id, []).append(node)
+            if family == "sys":
+                p = parent.get(node)
+                if isinstance(p, ast.Attribute) and p.value is node:
+                    if (p.attr in SYS_PATH_ATTRS or p.attr.startswith("__")) and not membership_read(p):
+                        refuse(chain_top(node))
+                    else:
+                        safe.add(id(node))  # a non-path attribute, or N1's `x in sys.path`
+                else:
+                    refuse(node)  # aliased, passed, subscripted, compared: the module itself leaves the name
+            elif family in ("site", "loader"):
+                if family == "loader" and read_through(node):
+                    safe.add(id(node))  # N2 / N3
+                elif id(node) not in consumed:
+                    refuse(chain_top(node))  # an alias, an argument, an attribute no recording branch read
+            elif node.id in EXEC_CALLS or node.id in LOADER_CALLS:
+                if not read_through(node):
+                    refuse(chain_top(node))
+            elif node.id in ("globals", "locals", "vars") and binds_sys:
+                p = parent.get(node)
+                if isinstance(p, ast.Call) and p.func is node and not p.args and not p.keywords:
+                    refuse(p)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in LOADER_CALLS:
+                if not read_through(node):
+                    refuse(chain_top(node))
+            elif node.attr in EXEC_CALLS and isinstance(node.value, ast.Name) and bound.get(node.value.id) == "loader":
+                refuse(chain_top(node))
+            elif not isinstance(node.value, ast.Name) and sys_expression(node.value) \
+                    and (node.attr in SYS_PATH_ATTRS or node.attr.startswith("__")) and not membership_read(node):
+                refuse(chain_top(node))  # `__import__("sys").path`, `os.sys.path`: the anonymous sys reaches the path
+        elif isinstance(node, ast.Call) and sys_expression(node):
+            p = parent.get(node)
+            if not (isinstance(p, ast.Attribute) and p.value is node):
+                refuse(node)  # `s = __import__("sys")`, `f(import_module("sys"))`: the module leaves the call
+        elif isinstance(node, ast.Constant) and ("PYTHONPATH" in (node.value.decode("latin-1") if isinstance(node.value, bytes)
+                                                                  else node.value if isinstance(node.value, str) else "")
+                                                 or unread_loader_word(node.value)):
+            # A bytes key counts, decoded (the record's SHOULD 4: `os.environb[b"PYTHONPATH"]`).
+            refuse(node)  # MUST-D: `getattr(loader, "exec_module")(m)`, `methodcaller("load_module", n)(z)`, `b"exec_module"`
+    # PKG-PATH (root's MUST-2): every `__path__`, consumed or not (`sys.path.insert(0, m.__path__.pop())` sits in a
+    # consumed entry), named by the chain it heads (`email.__path__.append(d)`).
+    for node in ast.walk(tree):
+        value = node.value.decode("latin-1") if isinstance(node, ast.Constant) and isinstance(node.value, bytes) else \
+            node.value if isinstance(node, ast.Constant) else None
+        if isinstance(node, ast.Attribute) and node.attr in PKG_PATH_NAMES or isinstance(node, ast.Name) and node.id in PKG_PATH_NAMES:
+            top = chain_top(node)
+            found.append((2, top.lineno, top.col_offset, segment(top)))
+        elif isinstance(node, ast.keyword) and node.arg in PKG_PATH_NAMES \
+                or isinstance(value, str) and PKG_PATH_WORD.search(value) is not None:
+            found.append((2, node.lineno, node.col_offset, segment(node)))
+    # MODULE-GETATTR (the PEP 562 channel, closed for ledger on 2026-11-15): a module `__getattr__` answers every
+    # attribute the module lacks, `__path__` among them, with no `__path__` in the text. Module scope (no enclosing def,
+    # lambda or class): a def, a class, an import or any other binding of the name; anywhere: `global __getattr__`, a
+    # write of the attribute (`openai.__getattr__ = f`), a `__getattr__=` keyword and the word in a str or bytes constant
+    # (`globals()["__getattr__"]`, `setattr(m, "__getattr__", f)`). A method in a class body, a binding inside a
+    # function and an attribute read stay as before. It ranks last, after PKG-PATH.
+    def module_scope(node) -> bool:
+        up = parent.get(node)
+        while up is not None:
+            if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                return False
+            up = parent.get(up)
+        return True
+
+    for node in ast.walk(tree):
+        value = node.value.decode("latin-1") if isinstance(node, ast.Constant) and isinstance(node.value, bytes) else \
+            node.value if isinstance(node, ast.Constant) else None
+        named = [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler,
+                                                 ast.MatchAs, ast.MatchStar)) \
+            else [node.id] if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) \
+            else [node.asname or node.name.split(".")[0]] if isinstance(node, ast.alias) \
+            else [node.rest] if isinstance(node, ast.MatchMapping) else []
+        if "__getattr__" in named and module_scope(node):
+            seg = segment(node) if isinstance(node, (ast.Name, ast.alias)) else {ast.FunctionDef: "def", ast.AsyncFunctionDef: "async def",
+                ast.ClassDef: "class"}.get(type(node), type(node).__name__) + " __getattr__"
+            found.append((3, node.lineno, node.col_offset, seg))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and "__getattr__" in node.names \
+                or isinstance(node, ast.Attribute) and node.attr == "__getattr__" and not isinstance(node.ctx, ast.Load) \
+                or isinstance(node, ast.keyword) and node.arg == "__getattr__" \
+                or isinstance(value, str) and MODULE_GETATTR_WORD.search(value) is not None:
+            found.append((3, node.lineno, node.col_offset, segment(node)))
+    # R6-2 round 5, MODULE-INTERNALS (root's rulings of 2026-11-15 01:58), ranked last (4): it names the refusal only
+    # when nothing earlier in the file refuses, so no earlier refusal text moves. Consumed nodes count too, as PKG-PATH.
+    # (a) Tier 1: a GADGET_DUNDERS attribute in any context, and a WRITE_DUNDERS attribute stored or deleted, on ANY
+    #     receiver (`textwrap.__class__ = _G`, `json.__builtins__["exec"]`, `len.__self__.exec`, `json.__loader__`).
+    # (b) Tier 2, on a MODULE (a name any import in this file binds, an alias of one, a literal loader call): every
+    #     dunder attribute outside INERT_DUNDERS (`email.__dict__.values()`), `vars(<module>)`, and setattr / delattr /
+    #     `object.__setattr__` / `object.__delattr__` with an attribute name that does not fold to a constant.
+    # (c) A folded constant naming a module internal (internals_word, on any node), or PYTHONPATH or an unread loader
+    #     word (env_loader_word, outside a consumed node, as ENV and MUST-D): `"__pa" "th__"`, `"PYTHON" + "PATH"`,
+    #     `"load_" + "module"`, `"".join(["__built", "ins__"])`, `setattr(m, "__class__", C)`.
+    module_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_names.update(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module_names.update(a.asname or a.name for a in node.names if a.name != "*")
+
+    def root_of(expr):
+        while isinstance(expr, (ast.Attribute, ast.Subscript)):
+            expr = expr.value
+        return expr
+
+    def on_module(expr) -> bool:
+        r = root_of(expr)
+        return isinstance(r, ast.Name) and r.id in module_names \
+            or isinstance(r, ast.Call) and call_name(r.func) in N2_LITERAL_LOADERS
+
+    def carries_module(expr) -> bool:
+        # codex's read of cc91398 (root 10:36): a module put in a dict literal, a comprehension or a builtin container
+        # call is carried too (`holders = {"module": email}` then `vars(holders["module"])`); a module handed into any
+        # other call is the dated open class.
+        if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+            return any(carries_module(e) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return any(k is not None and carries_module(k) or carries_module(v) for k, v in zip(expr.keys, expr.values))
+        if isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return carries_module(expr.elt)
+        if isinstance(expr, ast.DictComp):
+            return carries_module(expr.key) or carries_module(expr.value)
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) \
+                and expr.func.id in ("dict", "list", "tuple", "set", "frozenset") and expr.func.id not in local_bound:
+            return any(carries_module(x) for x in expr.args) or any(carries_module(k.value) for k in expr.keywords)
+        if isinstance(expr, (ast.Starred, ast.NamedExpr)):
+            return carries_module(expr.value)
+        if isinstance(expr, ast.IfExp):
+            return carries_module(expr.body) or carries_module(expr.orelse)
+        if isinstance(expr, ast.BoolOp):
+            return any(carries_module(v) for v in expr.values)
+        return on_module(expr)
+
+    grew = True
+    while grew:  # aliases, to a fixed point: `e = email`, `(e := email.mime)`, `for m in (email, json)`, `with m as e`
+        grew = False
+        for node in ast.walk(tree):
+            pairs = []
+            if isinstance(node, ast.Assign):
+                pairs = [(target, node.value) for target in node.targets]
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                pairs = [(node.target, node.iter)]
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                pairs = [(node.optional_vars, node.context_expr)]
+            for target, value in pairs:
+                if carries_module(value):
+                    for n in ast.walk(target):
+                        if isinstance(n, ast.Name) and n.id not in module_names:
+                            module_names.add(n.id)
+                            grew = True
+
+    memo: dict = {}
+
+    def internal(node) -> None:
+        top = chain_top(node)
+        found.append((4, top.lineno, top.col_offset, segment(top)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            write = isinstance(node.ctx, (ast.Store, ast.Del))
+            if node.attr in GADGET_DUNDERS or write and node.attr in WRITE_DUNDERS \
+                    or DUNDER.fullmatch(node.attr) and node.attr not in INERT_DUNDERS and on_module(node.value):
+                internal(node)
+        elif isinstance(node, ast.Call):
+            name = call_name(node.func)
+            if isinstance(node.func, ast.Name) and name == "vars" and node.args and carries_module(node.args[0]):
+                internal(node)
+            elif (isinstance(node.func, ast.Name) and name in ATTR_NAME_CALLS
+                  or isinstance(node.func, ast.Attribute) and name in ATTR_NAME_METHODS) \
+                    and len(node.args) >= 2 and carries_module(node.args[0]) and fold_constant(node.args[1], memo) is None:
+                internal(node)
+        for value in constant_words(node, parent, memo):
+            if internals_word(value) or env_loader_word(value) and id(node) not in consumed:
+                found.append((4, node.lineno, node.col_offset, segment(node)))
+                break
+    # The bindings: rule 5 for sys, "every use consumed" for a loader, never for site; a dead import refuses (root's (ii)).
+    for stmt, names_, from_sys in binds:
+        ok = True
+        for name in names_:
+            used = uses.get(name, [])
+            if not used or bound[name] == "site":
+                ok = False
+            elif bound[name] == "sys":
+                ok = ok and all(id(u) in safe or id(u) in consumed for u in used)
+            else:
+                ok = ok and all(id(u) in consumed or id(u) in safe for u in used)  # `safe`: N2 / N3 reads
+        for name in from_sys:
+            if not any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load) for n in ast.walk(tree)):
+                ok = False
+        if not ok:
+            refuse(stmt, binding=True)
+    found.sort()
+    seen: set[tuple[int, str]] = set()
+    out: list[tuple[int, str]] = []
+    for _, line, _, seg in found:  # a node reached by two walks (a chain top and its name) is one occurrence
+        if (line, seg) not in seen:
+            seen.add((line, seg))
+            out.append((line, seg))
+    return out
 
 
 def tracked_paths(repo: Path, revision: str | None, environment: dict) -> dict[str, str]:
@@ -3036,11 +4393,29 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     scan_names, scan_name_globs = unresolved_name_registry(es, own_names(repo), Path(repo).resolve().as_posix())
     scan_names_used: set = set()
     root_info: dict[str, tuple] = {}
+    parent_literal_spans: dict[str, list] = {}  # a package's .py file -> the spans of its B1 sys.path literals
+    # Root's B1 of the slice 3 CHANGES (dotgithub-86, 2026-11-12): every file whose PARSE set aside a sys.path entry or a
+    # loader path below (its chains left to the Python evaluator) is a file import_closure's reader reads, whatever a
+    # text grep for `sys\.path` lists (`sys .path`, a backslash continuation): one file set for both.
+    parsed_sys_path_files: set[str] = set()
 
     def relative_or_root(path: str, spec: str, at: int) -> set:
         """relative_target, except that a root base whose every use joins string literals stands for exactly those
         literals (1.5.2, root's ruling b: root_base_uses); `at` is the offset of the name in the file."""
         ext = posixpath.splitext(path)[1].lstrip(".").lower()
+        if ext in PY_EXT and owner(path) is not None:
+            # RC1A (B1): a parent-step literal sys.path entry in a package's file is relative to the process cwd, not to
+            # the file, so import_closure's apply_entry reads it by its landings over every tracked directory (the
+            # file's own among them) or refuses; read from the file's directory it is never a route of its own.
+            if path not in parent_literal_spans:
+                src = sources.get(path)
+                if src is None:
+                    src = sources[path] = Source(read_source(repo, path, revision, environment), ext)
+                parent_literal_spans[path] = python_owned_spans(src.text, parent_literals=True)
+                if parent_literal_spans[path]:
+                    parsed_sys_path_files.add(path)
+            if any(a <= at < b for a, b in parent_literal_spans[path]):
+                return set()
         if ext in JS_EXT | PY_EXT and posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)) == ".":
             if path not in root_info:
                 src = sources.get(path)
@@ -3305,6 +4680,8 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
             # A chain inside a sys.path entry or a loader path is 1.5.2's Python evaluator's to judge (it credits what is
             # imported by name, or floors an unevaluated loader path), never a directory route of its own.
             owned = python_owned_spans(sources[path].text)
+            if owned:
+                parsed_sys_path_files.add(path)
             sites = [x for x in sites if not any(a <= sources[path].code[x[1]][1] < b for a, b in owned)]
         if not sites:
             continue
@@ -3322,7 +4699,7 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     unowned: dict[str, dict] = {}
     imports, unused, unresolved_data, unit_imports, stood_for, routes_to = import_closure(
         repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps, readers, unowned,
-        names_used_before=scan_names_used)
+        names_used_before=scan_names_used, parsed_files=frozenset(parsed_sys_path_files))
     # Root's ruling on the backstop's consequence (2026-10-29): mentions over BASE ∪ HEAD, so a mention the PR adds
     # flags, and so does one it removes. The base tree is data like the head: it can only add FULL paths. A file the PR
     # did not change has the same text at both ends, so the base pass reads only the deleted and modified ones (D/M/T,
@@ -3369,15 +4746,98 @@ def _scan(repo: Path, cfg: dict, *, manifest_root: Path | None = None, revision:
     return deps, readers
 
 
+def code_imported_test_files(repo, revision, environment, tracked, seeds=frozenset()) -> set[str]:
+    """Root's ruling (b) of 2026-11-14 17:58 on the R6-2 fix (3): `plan.is_test_file` is a path regex, so a production
+    helper named `test_utils.py`, or anything under a `tests/` directory, passes it by name alone. The test files a
+    non-test Python file may import lose the F3 reads. cli's read of 7001655 (MF5): the importers come from the AST,
+    not from lines, so a multi-line `from services.b import (\n    test_utils,\n)` and a literal fed to
+    `importlib.import_module` on another line are seen. Every tracked non-test Python file is parsed, and every
+    identifier and every string or bytes literal word in it (an import's names, an attribute, a loop literal, a path)
+    that is a test file's module word (its stem; its directory's name for an `__init__.py`) marks every test file of
+    that word; a marked file's own words mark further test files, to a fixed point. A file that does not parse
+    counts every word of its text. This is a word, not a resolved import: it marks more than Python would import,
+    never less, short of a name the source computes (`"test_" + "utils"`, which the reader's own loader rules refuse)
+    and an importer outside Python (a workflow's `python -m`, an entry point). A test file whose name is no
+    identifier is marked outright, and so is each of `seeds` (cli's round-3 should-fix 1: the test files a declared
+    computed import may reach, test_files_computed_imports_reach); a seed's words mark further test files too."""
+    import ast
+
+    words: dict[str, set[str]] = {}
+    marked: set[str] = set(seeds)
+    for p in tracked:
+        if p.endswith(".py") and _plan.is_test_file(p, []):
+            stem = posixpath.basename(p)[:-3]
+            word = posixpath.basename(posixpath.dirname(p)) if stem == "__init__" else stem
+            if re.fullmatch(r"[A-Za-z_]\w*", word):
+                words.setdefault(word, set()).add(p)
+            else:
+                marked.add(p)
+    if not words:
+        return marked
+
+    def words_of(p: str) -> set[str]:
+        text = read_source(repo, p, revision, environment)
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return set(re.findall(r"[A-Za-z_]\w*", text)) & words.keys()
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            for _, value in ast.iter_fields(node):
+                if isinstance(value, bytes):
+                    value = value.decode("latin-1")
+                if isinstance(value, str):
+                    found.update(re.findall(r"[A-Za-z_]\w*", value))
+        return found & words.keys()
+
+    frontier = sorted((p for p in tracked if p.endswith(".py") and not _plan.is_test_file(p, [])), reverse=True)
+    frontier += sorted(seeds, reverse=True)
+    while frontier:
+        for word in sorted(words_of(frontier.pop())):
+            for hit in sorted(words[word] - marked):
+                marked.add(hit)
+                frontier.append(hit)
+    return marked
+
+
+def test_files_computed_imports_reach(declared: list, owner, tracked) -> set[str]:
+    """cli's round-3 should-fix 1 on the R6-2 fix (3) (round 4): a computed import is a load the scan cannot name, so
+    every test file a declared `computed_imports` entry may reach is one code may import (whichever file declares it):
+    reach "package", each test file of the declaring file's package (every test file when that file is outside every
+    package); a list of repo paths, each test file at or under one of them; "external" (npm or stdlib) and "fixture"
+    (a test temp directory) reach no tracked file."""
+    tests = [p for p in tracked if p.endswith(".py") and _plan.is_test_file(p, [])]
+    reached: set[str] = set()
+    for entry in declared:
+        reach = entry["reach"]
+        if reach == "package":
+            home = owner(entry["file"])
+            reached.update(t for t in tests if home is None or owner(t) == home)
+        elif isinstance(reach, list):
+            for target in reach:
+                base = posixpath.normpath(target.strip()).strip("/")
+                reached.update(t for t in tests if base in ("", ".") or t == base or t.startswith(base + "/"))
+    return reached
+
+
 def import_closure(repo, es, roots, owner, by_dir, revision, environment, excludes, always, edges, outside, deps,
-                   readers, unowned, names_used_before=frozenset()):
+                   readers, unowned, names_used_before=frozenset(), parsed_files=frozenset()):
     """Rules 1-4 of 1.5.0: credit each package with the reads of the files outside every package it reaches. Returns
     ({path: importing packages}, [computed_imports entries that matched no site]); refuses where it cannot see."""
     tracked = tracked_paths(repo, revision, environment)
     package_tops = {d.split("/")[0] for d in by_dir} | set(roots)
+    code_imported: list[set[str]] = []  # root's ruling (b) of 2026-11-14: computed once, on the first test file parsed
+
+    def test_only(path: str) -> bool:  # first called after `declared` (the validated computed_imports) is bound below
+        if not code_imported:
+            code_imported.append(code_imported_test_files(repo, revision, environment, tracked,
+                                                          test_files_computed_imports_reach(declared, owner, tracked)))
+        return path not in code_imported[0]
     # Top-level directories outside every package: the tracked ones, and every declared reader directory.
     outside_tops = ({p.split("/")[0] for p in tracked if "/" in p} | set(es.get("reader_dirs") or [])) - package_tops
-    named_tops = outside_tops | set(roots)  # what an unevaluated path may not name (rule 6)
+    # F1 (root, 2026-11-12): a PACKAGE top too (`packages/shared` holds a package but is not a scan root), else an
+    # unevaluable entry into another package's directory read as a residual while its module was imported from it.
+    named_tops = outside_tops | package_tops  # what an unevaluated path may not name (rule 6)
     # A trailing slash names a directory, exactly as git's pathspec reads `:!vendor/` (root's R4 of #33): strip it.
     patterns = [x[2:].rstrip("/") if not any(c in x for c in "*?[") else x[2:] for x in excludes if x.startswith(":!")]
 
@@ -3600,6 +5060,13 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 raise ValueError(f"unresolved (a computed import whose parent step stays in its package, `{expr}`, must be "
                                  f"declared reach \"package\") in {path}")
             used.add((path, expr))
+            # Root's C1 of #84's second delta R4 (2026-11-12), the JS twin of rule 8's landing credit: the package a
+            # literal of the expression lands in (import(`${source}/packages/shared/m.mjs`), the leading `./`, `/` and
+            # substitutions stripped as parent_verdict strips them) is credited whatever the reach says; declared
+            # "external" it read nothing. The reach list adds, never replaces.
+            for found in sorted({owner(posixpath.normpath(re.sub(r"^(?:\./|/|\$\{[^}]*\}/)+", "", t[3][0])))
+                                 for t in tokens if t[0] == "str"} - {None, caller}):
+                credit_package(path, caller, found)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reaches(posixpath.normpath(target))
@@ -3629,7 +5096,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             for t in src.code:
                 if t[0] != "str" or not t[3][0].startswith(("./", "../")):
                     continue
-                if t[3][1] is True:
+                if t[3][1] is True and not (src.py and PERCENT_RE.search(t[3][0])):
                     named_one = posixpath.normpath(posixpath.join(here, t[3][0]))
                     if named_one == ".":
                         # 1.5.2, root's ruling (b): a root base joined only with literals stands for those literals.
@@ -3644,7 +5111,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                 # substitution is any name, so it is a glob. A parent step after a substitution, or a template that
                 # spells no tracked file, refuses.
                 text = t[3][0]
-                pattern = re.sub(r"\{[^{}]*\}", "*", text) if src.py else re.sub(r"\$\{[^{}]*\}", "*", text)
+                # A Python `"../%s" % p` is a template too (root's G12 of #84, 2026-11-12): a %-field is any name.
+                pattern = re.sub(r"\{[^{}]*\}|" + PERCENT_FIELD, "*", text) if src.py else re.sub(r"\$\{[^{}]*\}", "*", text)
                 if "*" not in pattern:
                     continue
                 if any(steps_up(x) for x in pattern[pattern.index("*"):].split("/")):
@@ -3660,7 +5128,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
                                      "for anything; write the path out, or declare the load in edge_scan.computed_imports)")
                 found.update(hits)
             if src.py:
-                _, loaded, sites = python_file_facts(src.text, path)
+                _, loaded, sites = python_file_facts(src.text, path, test_only)
                 check_python_sites(path, sites)
                 for name in sorted(loaded):
                     sibling = posixpath.join(here, f"{name}.py") if here else f"{name}.py"
@@ -3718,17 +5186,51 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     def reach_from(path: str, target: str) -> None:
         credit_load(path, owner(path), target)  # the same credit as a JS loader's (fix 1 and fix 2)
 
+    # The JS strip (parent_verdict) for an unevaluable Python literal: what may stand before its top-level name, in
+    # any number and order. "./", "/" (`str(x) + "/packages/shared"`), a substitution (`f"{source}/packages/shared"`,
+    # `${x}/`, `{{x}}/`), a %-format field (`"%s/packages/shared" % x`, `%(root)s/`, with any flags, width or
+    # precision: `"%-10s/..."`, root's S04) or a bare environment variable (`os.path.expandvars("$ROOT/packages/shared")`):
+    # F1's four forms and root's C1 of #84 (2026-11-12).
+    LEADING = re.compile(r"^(?:\./|/|\{+[^{}]*\}+/|\$\{[^}]*\}/|" + PERCENT_FIELD + r"/|\$[A-Za-z_]\w*/)+")
+    QUOTED = re.compile(r"""["']([^"']*)["']""")
+    SEP_SUBST = re.compile(r"\{(?:os\.|os\.path\.)?sep\}")  # `{os.sep}` in an f-string spells a separator (root's S05)
+
+    def collapse_braces(expr: str) -> str:
+        """`expr` with every outermost `{...}` collapsed to `{}`, however deep the braces nest: a regex pass collapses one
+        level, so `f"{d[f'{k}']}/packages/shared"` kept a quote inside the substitution (root's S01 of #84, 2026-11-12)."""
+        out, depth = [], 0
+        for ch in expr:
+            if ch == "{":
+                if depth == 0:
+                    out.append("{}")
+                depth += 1
+            elif ch == "}" and depth:
+                depth -= 1
+            elif depth == 0:
+                out.append(ch)
+        return "".join(out)
+
+    def escape_tops(expr: str) -> tuple[bool, set[str]]:
+        """Whether a parent step stands in the expression, and every literal of it that names a top-level directory
+        (rule 6): read as written AND stripped of LEADING, since a tracked top literally named `{tpl}` or `${tpl}` is
+        named only by the unstripped form (root's B1 of #84: the strip must not hide it). A substitution with quotes
+        inside (`f"{d['root']}/packages/shared"`) splits the quote regex, so the literals of the expression with every
+        `{...}` collapsed to `{}` (nested braces included) are read too and unioned; `{os.sep}` reads as `/`."""
+        expr = SEP_SUBST.sub("/", expr)
+        collapsed = collapse_braces(expr)
+        literals = set(QUOTED.findall(expr)) | set(QUOTED.findall(collapsed))
+        landings = {form for s in literals for form in (s, LEADING.sub("", s)) if form.split("/")[0] in named_tops}
+        return PARENT_STEP.search(expr) is not None, landings
+
     def escapes_by_text(expr: str, unowned_caller: bool = False) -> bool:
         """A parent step always escapes. A literal naming another top-level directory escapes a PACKAGE; a caller
         outside every package has no package to leave, so for it that is a load to declare, not an escape."""
-        literals = re.findall(r"""["']([^"']*)["']""", expr)
-        if PARENT_STEP.search(expr):
-            return True
-        return not unowned_caller and any(re.sub(r"^(?:\./)+", "", s).split("/")[0] in named_tops for s in literals)
+        parent, landings = escape_tops(expr)
+        return parent or (not unowned_caller and bool(landings))
 
     def check_python_sites(path: str, sites) -> None:
         """Rule 4 for Python's loaders: an evaluated path is a literal load; anything else is declared or refuses."""
-        for kind, expr, target, prefix in sites:
+        for kind, expr, target, prefix, text in sites:
             if kind == "path" and target is not None:
                 if not (target == ".." or target.startswith("../")):
                     reach_from(path, target)
@@ -3749,9 +5251,36 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if kind == "path" and prefix is not None and not inside and other is None and (prefix[1] or not unowned_caller or not free):
                 raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
                                  "write it from __file__ with literal parts, which the scan maps")
-            if kind == "path" and prefix is None and escapes_by_text(expr, unowned_caller):
-                raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
-                                 "write it from __file__ with literal parts, which the scan maps")
+            if kind == "path" and prefix is None:
+                # Nothing evaluates, so the text decides. A parent step escapes; so does a literal naming a scan root
+                # or a top-level directory outside every package (as 1.7.5 refused). A literal landing INSIDE another
+                # package (`f"{source}/packages/shared/mod.py"`, F1) is rule 8's load into another package, declarable
+                # like an evaluated prefix there, so its declaration is honoured first (root's B3 of #84, 2026-11-12);
+                # undeclared, or landing in the caller's own package or on a package-free top, it refuses as before.
+                # The literals are read through the names, as rule 6 reads them (`text`, root's B2 of #84's second
+                # delta R4): `p = f"{source}/packages/shared/m.py"; runpy.run_path(p)` lands in shared.
+                parent, landings = escape_tops(text)
+                declarable = (path, expr) in by_site and all(owner(x) not in (None, owner(path)) for x in landings)
+                if parent or (not unowned_caller and landings and not declarable):
+                    raise ValueError(f"unresolved (a computed Python load that may leave its package, `{expr}`) in {path}; "
+                                     "write it from __file__ with literal parts, which the scan maps")
+                # Root's F1 of #84's R4 (2026-11-12): the package a text lands in is credited whatever the declaration's
+                # reach says (the reach ADDS to the landing, never replaces it), as the evaluated-prefix twin credits
+                # `other`. A reach of "external", "fixture" or "package" on such a site is not a way to read []. For a
+                # caller OUTSIDE every package too (root's B1 of the second delta R4): its landings on a package-free top
+                # (`tools/t.py`, its own `scripts/`) are the paths its reach declares, and its landing in a package is
+                # credited, so `declarable` (which asks every landing to be in another package) does not gate the credit.
+                # A symlinked landing credits BOTH the package holding the link and the package its target is in
+                # (`packages/pk/link/m.py`, link -> ../shared: pk and shared), never one instead of the other: the
+                # literal names pk's directory, which the load reads through, and the file read is shared's. A link
+                # whose target is the caller's own package, a package-free top or outside the repository credits the
+                # holder alone (root's K1 of #84's third delta R4, 2026-11-12: the target's owner once REPLACED the
+                # holder's, so `packages/pk/link/m.py` with link -> ../../services/r read [] from services/r/x.py).
+                # X08b (`packages/link`, a link under no package, -> shared) credits shared, the target's owner; from a
+                # PACKAGE caller that link still refuses above, as before (X08).
+                landed = {found for x in landings for found in (owner(x), owner(resolve_links(x)))} - {None, owner(path)}
+            else:
+                landed = set()
             entry = by_site.get((path, expr))
             if entry is None:
                 raise ValueError(f"unresolved (an undeclared computed import `{expr}`; declare it in "
@@ -3765,6 +5294,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             used.add((path, expr))
             if other is not None:
                 credit_package(path, owner(path), other)
+            for found in sorted(landed):
+                credit_package(path, owner(path), found)
             if isinstance(entry["reach"], list):
                 for target in entry["reach"]:
                     reach_from(path, posixpath.normpath(target))
@@ -3772,15 +5303,245 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     outside_entries: dict[str, list[tuple[str, str]]] = {}  # package -> [(the edge's source path, a directory)]
     parsed_names: dict[str, set[str]] = {}  # package -> names its parsed files import, loop literals included
 
-    def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry") -> None:
+    # Every tracked directory, each ancestor of a tracked path (the RC1B reach check below and the outside-entry pass).
+    tracked_dirs = {posixpath.dirname(p) for p in tracked}
+    for d in list(tracked_dirs):
+        while d:
+            d = posixpath.dirname(d)
+            tracked_dirs.add(d)
+
+    def entry_tail(raw: str | None, key: str) -> str | None:
+        """A sys.path entry's tail: the literal its path ENDS with, from the AST (python_file_facts' literal_tail, a
+        closed list of forms; root's B1 of dotgithub-86 slice 2, 2026-11-12), normalised (`./packages/shared`,
+        `{source}/x` stripped as rule 6 reads a landing): the components every directory it lands in ends with (root's
+        amended item 2 of the R-c r4 review). None for no listed form, a parent step anywhere in the key, an absolute
+        path, `.` or the empty string. The key's lone quoted literal is NOT a tail: in `join("packages/shared", PLUGIN)`
+        it is not the last component (A1, A11), in `os.path.dirname("packages/shared")` not the landing (A5)."""
+        if raw is None or raw.startswith("/") or PARENT_STEP.search(key) or PARENT_STEP.search(raw):
+            return None
+        tail = posixpath.normpath(LEADING.sub("", raw))
+        return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
+
+    def key_tail(key: str) -> str | None:
+        """The key's one quoted literal, normalised: the tail before root's B1 of slice 2. Rule (b) below still refuses
+        by it as well as by the AST tail, so no undeclared entry it refused reads now (`"shared" + X`)."""
+        literals = QUOTED.findall(SEP_SUBST.sub("/", key))
+        if len(literals) != 1 or PARENT_STEP.search(key) or literals[0].startswith("/"):
+            return None
+        tail = posixpath.normpath(LEADING.sub("", literals[0]))
+        return None if tail in (".", "") or tail.startswith("/") or tail.split("/")[0] == ".." else tail
+
+    def ends_in(directory: str, tail: str) -> bool:
+        want = tail.split("/")
+        return directory.split("/")[-len(want):] == want
+
+    # Root's B2 of the round-5 STACK CHANGES: the (file, key) of every sys.path entry rule (b) leaves as a residual,
+    # so the file's other entries are judged with it (the per-file loop below).
+    residual_sites: list[tuple[str, str]] = []
+    # Root's B5 of the round-5 STACK CHANGES: every tracked symlink and every sourceless .pyc (no `stem.py` beside it,
+    # never one under __pycache__, which Python does not import sourceless), judged where a directory lands.
+    unreadable_held = sorted(p for p, mode in tracked.items() if mode == "120000" or (
+        p.endswith(".pyc") and posixpath.basename(posixpath.dirname(p)) != "__pycache__" and p[:-1] not in tracked))
+
+    def parent_step_landings(literal: str) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str]], list[str]]:
+        """B1's landings of a parent-step literal: from every TRACKED directory (the repository root `""` included), its
+        components walked one at a time against the tracked tree, never normpath alone (root's r4 item 5: `lnk/../x`
+        resolves `lnk` first). A step above the checkout, or a component that is no tracked directory, gives no landing
+        from that start (root's r4 item 11); a component that is a tracked symlink (mode 120000) is returned in
+        `links`, with the start it was reached from, whichever start reaches it.
+
+        Root's round-5 fix of dotgithub-86 (STACK CHANGES at 2774a421f815, 2026-11-12), [I] for the undeclared twins
+        of B1 (N01u, N01mu): a process may run from a directory generated beneath a tracked one (`services/r/gen/deep`),
+        so each tracked start is also walked with up to as many untracked components beneath it as the literal's
+        leading parent steps consume; `../../../a` from `services/r/gen/deep` lands in services/a. B4 (N15, N12): a
+        walk that climbs above the checkout to a directory beside it is returned in `beside` when the checkout may
+        still be under it, a later parent step (`../other/../repo/x`) or a sibling of the checkout one level up whose
+        remaining path is a tracked directory (`../repo/packages/shared`, a link or clone of the checkout).
+        A walk from a generated start is a source of ADDED landings only (`added`): it records no link and no climb
+        beside the checkout, and apply_entry drops its landing when that is the root or code the scan excludes, so a
+        generated start never refuses an entry the tracked starts read (S3_C12, N27, RC1S b1, cli's 11-12 course fix)."""
+        parts = [c for c in literal.split("/") if c not in ("", ".")]
+        leading = next((i for i, c in enumerate(parts) if c != ".."), len(parts))
+        landings, links, beside, added = set(), [], [], set()
+        checkout = Path(repo).resolve().as_posix()
+        names = own_names(repo)
+        for start in sorted(tracked_dirs):
+            for generated in range(leading + 1):
+                here = (start.split("/") if start else []) + [GENERATED_CWD] * generated
+                above = None  # the walk's components above the checkout, relative to it: None while inside
+                for i, c in enumerate(parts):
+                    if above is not None:
+                        # Root's B2 of the slice 3 CHANGES: a step above the checkout that re-enters it by its own name
+                        # (`../repo/lib` with CI's .../repo/repo, or the checkout's own directory name) lands inside it;
+                        # the walk resumes at the root. Lexical against the actual checkout path, and one level up by
+                        # any of own_names.
+                        above.append(c)
+                        at = posixpath.normpath(posixpath.join(checkout, *above))
+                        if at == checkout or (above == ["..", c] and c in names):
+                            above, here = None, []
+                        elif c != ".." and not checkout.startswith(at.rstrip("/") + "/"):
+                            rest = parts[i + 1:]
+                            if not generated and (".." in rest or (above == ["..", c] and rest and "/".join(rest) in tracked_dirs)):
+                                beside.append((start, "/".join(above)))
+                            break  # beside the checkout: not tracked here, so nothing it holds is read
+                        continue
+                    if c == "..":
+                        if not here:
+                            above = [".."]  # above the checkout: read on only if the walk re-enters it
+                            continue
+                        here.pop()
+                        continue
+                    if GENERATED_CWD in here:
+                        break  # a component beneath a generated directory: nothing tracked
+                    here.append(c)
+                    path = "/".join(here)
+                    if tracked.get(path) == "120000":
+                        if not generated:
+                            links.append((path, start))
+                        break
+                    if path not in tracked_dirs:
+                        break  # no such tracked directory
+                else:
+                    if above is None and GENERATED_CWD not in here:  # a walk ending above or beneath: nothing tracked
+                        (added if generated else landings).add("/".join(here))
+        return sorted(landings), sorted(set(links)), sorted(set(beside)), sorted(added - landings)
+
+    def apply_entry(package: str, source: str, kind: str, value: str, where: str, what: str = "sys.path entry",
+                    key: str | None = None, tail: str | None = None) -> None:
+        declared = by_site.get((where, key)) if key is not None else None
+        tail = entry_tail(tail, key) if kind == "unknown" and key is not None else None
+        # The parent-step route is judged BEFORE the no-tail refusal (slice 2 fix stacked on slice 3, 2026-11-12): a
+        # bare parent-step literal is read by its landings, declared or not; the no-tail refusal is for a declared
+        # entry that is neither a parent-step literal nor a listed tail form (`r"../x"`, `join("../..", X)`).
+        literal = parent_step_literal(key) if kind == "unknown" and key is not None else None
+        if declared is not None and kind == "unknown" and tail is None and literal is None:
+            # Root's B1 and B2 of dotgithub-86 slice 2 (2026-11-12): a declared entry with no tail has no reach the scan
+            # can check (`os.path.join("packages/shared", PLUGIN)` declared to packages/shared once read shared, truth
+            # its child; `p` declared once read nothing and its declaration counted as used). It refuses, unused.
+            raise ValueError(f"unresolved (the declared sys.path entry `{key}` has no tail the scan reads: its last path "
+                             "component is not a literal of a read form (a literal; str, Path, abspath, realpath, "
+                             "normpath or fspath of one, or its .resolve(); X / literal; os.path.join(..., literal); an "
+                             "f-string whose placeholders all come first), or it holds a parent step or an absolute path, "
+                             f"so the directories it reaches cannot be checked) in {where}")
+        if declared is not None and tail is not None:
+            # The RC1B rule (root's dotgithub-86 review and the R-c r4 review items 2 and 7, 2026-11-12): a DECLARED
+            # entry the scan cannot evaluate is read by its reach, a LIST of tracked directories, each ending in the
+            # entry's literal (`shared` -> packages/shared; a subset of the matches is the declarer's cwd claim). A
+            # keyword says nothing about where a cwd-relative entry lands; each reach is credited as an evaluated entry.
+            reach = declared["reach"]
+            if not isinstance(reach, list):
+                raise ValueError(f"unresolved (`{key}` is declared reach \"{reach}\", but a sys.path entry is declared with "
+                                 f"a reach list: the tracked directories ending in `{tail}` it lands in) in {where}")
+            for target in reach:
+                if not ends_in(posixpath.normpath(target), tail):
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` is declared to reach `{target}`, whose "
+                                     f"trailing components are not `{tail}`, so the entry cannot land there) in {where}")
+                if posixpath.normpath(target) not in tracked_dirs:
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` is declared to reach `{target}`, which is "
+                                     f"not a tracked directory) in {where}")
+            used.add((where, key))  # root's B2 of slice 2: a key is used only in the branch that honours it, here
+            for target in reach:
+                apply_entry(package, source, "dir", posixpath.normpath(target), where, what)
+            return
+        if literal is not None:
+            # The RC1A rule (root's R-c r2 review B1, r3 item 3, r4 items 5 and 11; dotgithub-86, 2026-11-12): a
+            # parent-step literal needs no declaration. It lands, relative to the process cwd, wherever it joins from
+            # a tracked directory (or one generated beneath it); every such landing is read and credited, or the entry
+            # refuses. Root's B1 of the round-5 STACK CHANGES (2774a421f815): a declaration of one is validated, its
+            # reach a LIST of tracked directories (never a keyword), and each is credited WITH the landings (the cwd it
+            # claims may be one the scan cannot walk, N01/N01m); a reach that is no tracked directory refuses.
+            landings, links, beside, added = parent_step_landings(literal)
+            if declared is not None:
+                reach = declared["reach"]
+                if not isinstance(reach, list):
+                    raise ValueError(f"unresolved (the parent-step sys.path entry `{key}` is declared reach \"{reach}\", "
+                                     "but a parent-step literal is declared with a reach list: the tracked directories "
+                                     f"it lands in, credited with its landings) in {where}")
+                for target in reach:
+                    if posixpath.normpath(target) not in landings and posixpath.normpath(target) not in tracked_dirs:
+                        raise ValueError(f"unresolved (the parent-step sys.path entry `{key}` is declared to reach "
+                                         f"`{target}`, which is neither one of its landings nor a tracked directory) in "
+                                         f"{where}")
+                used.add((where, key))
+            if links:
+                link, start = links[0]
+                raise ValueError(f"unresolved (the sys.path entry `{key}` passes through {link}, a symlink component, "
+                                 f"from {start or '.'}; the scan does not follow links, so it cannot tell where the entry "
+                                 f"lands) in {where}")
+            reached = sorted(set(landings) | ({posixpath.normpath(t) for t in declared["reach"]} if declared else set()))
+            tracked_reached = reached
+            # a generated start's landing is added, never refused: the root and excluded code contribute nothing
+            reached = sorted(set(reached) | {landing for landing in added if landing and not excluded(landing)})
+            if beside and reached:
+                # Root's B4 of the round-5 STACK CHANGES (N15, N12): a start whose walk climbs beside the checkout,
+                # where the checkout may still be (a later parent step, or a sibling one level up), is not dropped
+                # because another start lands: it refuses.
+                start, at = beside[0]
+                raise ValueError(f"unresolved (the sys.path entry `{key}` climbs from {start or '.'} to {at}, beside the "
+                                 "checkout, where it may re-enter the checkout by a path the scan cannot see; a climb "
+                                 f"beside the checkout is not dropped for another start's landing) in {where}")
+            if not reached:
+                raise ValueError(f"unresolved (the sys.path entry `{key}` lands in no tracked directory: from each one "
+                                 f"it joins to a path above the checkout or to none that is tracked) in {where}")
+            for landing in tracked_reached:
+                if landing and excluded(landing):
+                    raise ValueError(f"unresolved (the sys.path entry `{key}` lands in {landing}, code the scan "
+                                     f"excludes, so its reads cannot be credited) in {where}")
+            for landing in reached:
+                # Root's B3 of the round-5 STACK CHANGES (ruling 3 withdrawn): a package-free landing is read as a
+                # whole-directory route, as its evaluated twin is (the literal read from the file's directory), and
+                # the closure judges it; the landing is also applied as an evaluated entry, as the twin's is.
+                apply_entry(package, source, "dir", landing or ".", where, what)
+                if owner(landing) is None:
+                    edges.setdefault(source, set()).add(landing or ".")
+            return
         if kind == "unknown":
             if escapes_by_text(value):
+                # The r5 sys.path rule (root's dotgithub-86 review, 2026-11-12; vectors RC1B/RC1C/RC1I/RC1Q/RC1S): a
+                # Python sys.path entry that may leave its package and that no edge_scan.computed_imports entry names
+                # (its `file` this file, its `expr` the entry's text as written, `key`) refuses by its own rule. A
+                # different text (quotes, an r prefix, adjacent literals, inner parentheses, a trailing slash) is a
+                # different key, so a twin's declaration does not cover it (RC1Q). A pytest pythonpath entry (no key)
+                # falls to the catch-all below; a DECLARED entry never reaches here (RC1B honours or refuses it above).
+                if key is not None and (where, key) not in by_site:
+                    raise ValueError(f"unresolved (an undeclared sys.path entry `{value}` may leave its package; declare "
+                                     f"it in edge_scan.computed_imports by its text as written, `{key}`) in {where}")
                 raise ValueError(f"unresolved (a {what} that may leave its package, `{value}`, cannot be evaluated) "
                                  f"in {where}")
-            return  # an entry naming no parent step and no top-level directory: a documented residual
+            # The RC1B bare-name rule: an undeclared entry naming no top-level directory (`"shared"`, `"app"`,
+            # `Path.cwd() / "shared"`) still lands, relative to the process cwd, in every tracked directory ending in
+            # its literal, the caller's own unit included (vagary-core's cost_centre_checks.py:33 `"app"`): refuse.
+            # Rule (b) reads the AST tail AND the key's lone literal (key_tail), so `"sha" "red"`, `"""shared"""`,
+            # `"\u0073hared"` and `join("shared", "plugins")` refuse while nothing it refused before reads.
+            tails = sorted({t for t in (tail, key_tail(key) if key is not None else None) if t is not None})
+            hits = sorted(d for d in tracked_dirs if any(ends_in(d, t) for t in tails))
+            if key is not None and declared is None and hits:
+                raise ValueError(f"unresolved (an undeclared sys.path entry `{key}` may land in "
+                                 f"{', '.join(hits[:3])}{', ...' if len(hits) > 3 else ''}, the tracked directories ending "
+                                 f"in `{'` or `'.join(tails)}`; declare it in edge_scan.computed_imports by its text as "
+                                 f"written, with the directories it reaches) in {where}")
+            residual_sites.append((where, key if key is not None else value))
+            return  # an entry naming no parent step, no top-level directory and no tracked directory: a residual
         if value == ".." or value.startswith("../"):
             return  # above the repository: nothing tracked is imported from there
+        # Root's B5 of the round-5 STACK CHANGES (N24, N28, and their evaluated twins N24e, N28e): a directory on the
+        # path that holds a tracked symlink or a sourceless .pyc loads what the scan does not read (the link's target,
+        # the compiled module), on every route that lands here; it refuses.
+        inner = "" if value in ("", ".") else value.rstrip("/") + "/"
+        for held in unreadable_held:
+            if held.startswith(inner):
+                form = "a symlink inside the landing" if tracked.get(held) == "120000" else "a sourceless .pyc"
+                raise ValueError(f"unresolved (the {what} {value} holds {held}, {form}: the scan reads neither a link's "
+                                 f"target nor compiled code, so what an import loads from there is unknown) in {where}")
         found = owner(value)
+        if found is not None:
+            # Root's B5 of the slice 3 CHANGES: an owned directory on the path imports, by name, the packages nested
+            # inside it too (`import worker.m` from services/b reaches services/b/worker), on every route that lands
+            # here (an evaluated entry, an RC1B reach, an RC1A landing, a pytest pythonpath entry).
+            inner = value.rstrip("/") + "/"
+            for nested, directory in sorted(package_dir.items()):
+                if nested != package and directory.startswith(inner):
+                    deps[package].add(nested)
         if found == package:
             return
         if found is not None:
@@ -3788,21 +5549,41 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             return
         outside_entries.setdefault(package, []).append((source, value))
 
-    out = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                          PY_FACTS_GREP, *([revision] if revision else []), "--", "*.py", *excludes],
-                         capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
-    grep_read_everything(out, "the reader scan's Python listing")
-    for path in sorted(p[len(revision) + 1:] if revision else p for p in out.stdout.decode("utf-8", errors="replace").split("\0") if p):
+    # R6-2 round 5, MUST-B (root's ruling (B) of 2026-11-15 01:58: the pre-filter may never be narrower than the
+    # parser): EVERY tracked regular Python file is parsed; the word grep that chose the parse set is gone. It missed
+    # words the AST sees and the text never spells: implicit concatenation (`"__pa" "th__"`), an escape
+    # (`"__pat\\x68__"`), a backslash-newline inside a string, and an NFKC-normalised identifier (`ｅｘｅｃ` and `ｓｙｓ`
+    # run as `exec` and `sys`). A symlink or a submodule is not parsed here: a tracked link's target is read on its own
+    # or refuses by the landing rule. PY_FACTS_GREP now feeds only UNPARSED_SUSPECT (a file that does not parse).
+    listed = {p for p, mode in tracked.items() if p.endswith(".py") and mode in ("100644", "100755") and not excluded(p)}
+    # Root's B1 of the slice 3 CHANGES: the files scan()'s parse set a sys.path entry aside in are read here too, so an
+    # entry the grep misses (`sys .path.insert`, `sys.\` + newline) is never suppressed there and unread here.
+    listed |= {p for p in parsed_files if p in tracked and not excluded(p)}
+    for path in sorted(listed):
         package = owner(path)
         if package is None:
             # A Python file outside every package: its loaders are checked, since its unit runs them (fix 2). Its
-            # sys.path entries stay a documented residual.
-            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path)[2])
+            # sys.path entries stay a documented residual; a path-mutation capability no rule consumes refuses it as it
+            # refuses a package file (R6-2: python_file_facts holds the single refuse point for every Python file read).
+            check_python_sites(path, python_file_facts(read_source(repo, path, revision, environment), path, test_only)[2])
             continue
-        entries, file_names, sites = python_file_facts(read_source(repo, path, revision, environment), path)
+        text = read_source(repo, path, revision, environment)
+        entries, file_names, sites = python_file_facts(text, path, test_only)
         parsed_names.setdefault(package, set()).update(file_names)
-        for kind, value in entries:
-            apply_entry(package, path, kind, value, path)
+        mark = len(residual_sites)
+        for kind, value, key, tail in entries:
+            apply_entry(package, path, kind, value, path, key=key, tail=tail)
+        # Root's B2 of the round-5 STACK CHANGES (GENERAL, N03, N50-N53): a file is READ only when EVERY sys.path site
+        # in it resolves by a read rule. A residual entry (rule (b) above) beside an entry that resolves refuses the
+        # whole file, as main refused it. R6-2 (root's ruling of 2026-11-12): a site that records no entry (a
+        # reassignment, site.addsitedir, an alias of sys.path) and every other path-mutation capability refuse inside
+        # python_file_facts itself, whatever else the file holds; the carve-out that read a file whose sites were ALL
+        # such forms is gone with the shape list it read.
+        unjudged = [key for _, key in residual_sites[mark:]]
+        if unjudged and len(entries) > len(residual_sites) - mark:
+            raise ValueError(f"unresolved (the sys.path site `{unjudged[0]}` in {path} resolves by no read rule, so the "
+                             "file's other sys.path entries are not read either: a file reads only when every one of "
+                             f"its sys.path sites resolves) in {path}")
         check_python_sites(path, sites)
     # pytest's `pythonpath`: the nearest config walking up from each Python package (pytest's rootdir/inifile rule),
     # each entry relative to that config's directory, applied like a sys.path entry.
@@ -3827,12 +5608,8 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
             if d in ("", "."):
                 break
             d = posixpath.dirname(d)
-    tracked_dirs = {posixpath.dirname(p) for p in tracked}
-    for d in list(tracked_dirs):
-        while d:
-            d = posixpath.dirname(d)
-            tracked_dirs.add(d)
-    for package, entries in sorted(outside_entries.items()):
+    for package in sorted(outside_entries):
+        entries = outside_entries.get(package, [])
         # Every top-level name the package's Python files import; one grep per package, not one parse per file. A
         # pathspec `*` crosses `/`, so this reaches every Python file beneath the package directory.
         found = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-h", "-I", "-E",
@@ -3968,7 +5745,7 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     # (named_paths, rule 1); any other file each ./ word that names a tracked path. Its ../ routes are already edges.
     dot_routes: dict[str, set[str]] = {}
     listing = run_git(["git", "--no-replace-objects", "-C", str(repo), "grep", "--no-color", "-l", "-z", "-I", "-E",
-                              r"(^|[^A-Za-z0-9_./$-])\.\.?/[A-Za-z0-9_@]", *([revision] if revision else []), "--", ".",
+                              r"""(^|[^A-Za-z0-9_./$-])\.\.?/([A-Za-z0-9_@{%]|\$\{|['"`] *(\+|\.concat\())""", *([revision] if revision else []), "--", ".",
                               *excludes], capture_output=True, timeout=60, env={**environment, "LC_ALL": "C"})
     grep_read_everything(listing, "the reader scan")
     for p in sorted(x[len(revision) + 1:] if revision else x
@@ -4024,6 +5801,14 @@ def import_closure(repo, es, roots, owner, by_dir, revision, environment, exclud
     stale = [f"{f}: {n}" for (f, n) in sorted(by_name) if (f, n) not in names_used]
     stale += [f"{f}: {d['name']}" for f, _, d in name_globs if (f, d["name"]) not in names_used]
     unused = [f"{d['file']}: {d['expr']}" for d in declared if (d["file"], " ".join(d["expr"].split())) not in used]
+    # The RC1B stale-key rule (root's R-c r4 item 2 and ruling (b), 2026-11-12): an entry naming a tracked Python file
+    # whose text matches none of its sys.path entries or loader sites (a mis-keyed twin, a glob, which computed_imports
+    # has no form for) refuses here, in scan(), with check mode's text; an entry on a file no longer tracked stays a
+    # check-mode failure only (assess, below).
+    for d in declared:
+        if d["file"].endswith(".py") and d["file"] in tracked and (d["file"], " ".join(d["expr"].split())) not in used:
+            raise ValueError(f"stale computed_imports entry: {d['file']}: {d['expr']} matches no import call (a Python "
+                             "file the scan parsed: key the entry by the site's text as written, or remove it)")
     unused += [f"unresolved_names {entry}" for entry in stale]
     # Round 3 of #33, the backstop's attribution: a tracked file -> the files outside every package whose RECORDED
     # routes (grep edges, ./ routes, a reached file's named paths) resolve to it, a directory route to everything beneath.

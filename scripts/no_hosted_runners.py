@@ -216,7 +216,7 @@ def check(root, vars_, repo_private, fetch=fetch_public, repo=""):
                         findings.append(f"{rel} [{job}]: runs-on could not be evaluated ({e}); write it so it can be, or add '# hosted-ok: <reason>'")
                         continue
                     if is_hosted(eff) and hosted_exempt(repo, rel, job):
-                        notes.append(f"{rel} [{job}]: hosted by the one named exception for {repo}")
+                        notes.append(f"{rel} [{job}]: hosted by a named exception for {repo}")
                     elif is_hosted(eff):
                         findings.append(f"{rel} [{job}]: runs-on resolves to {eff} with this repo's vars")
             u = re.search(r"^    uses:\s*(\S+)(.*)$", block, re.M)
@@ -259,7 +259,8 @@ def check(root, vars_, repo_private, fetch=fetch_public, repo=""):
 
 
 def self_test_exemption():
-    """The hosted exception admits EXACTLY vagarylabs/.github + trusted-protected-paths.yml + job trusted-protected-paths."""
+    """The hosted exceptions admit EXACTLY three triples, each in vagarylabs/.github: trusted-protected-paths.yml with job
+    trusted-protected-paths, and trusted-secret-scan.yml with jobs trusted-gitleaks and trusted-trufflehog (F-16)."""
     import tempfile
     line = ("    runs-on: \x24{{ fromJSON((github.repository == 'vagarylabs/.github' || vars.TRUSTED_LIGHT_RUNNER == 'hosted') && "
             "'\"ubuntu-latest\"' || '[\"self-hosted\",\"Linux\",\"X64\",\"vl-light\"]') }}\n")
@@ -272,15 +273,21 @@ def self_test_exemption():
             return check(d, {}, True, repo=repo)[0]
 
     paths = ("trusted-protected-paths.yml", "trusted-protected-paths")
-    assert run("vagarylabs/.github", *paths, line) == [], "the named case is exempt"
-    assert run("vagarylabs/.github", *paths, flat) == [], "the named case is exempt even as a literal"
-    # a PRIVATE consumer resolves the same expression to the bridge: not hosted, so nothing to refuse
-    assert run("vagarylabs/vagary-core", *paths, line) == []
+    named = (paths, ("trusted-secret-scan.yml", "trusted-gitleaks"), ("trusted-secret-scan.yml", "trusted-trufflehog"))
+    for case in named:
+        assert run("vagarylabs/.github", *case, line) == [], ("the named case is exempt", case)
+        assert run("vagarylabs/.github", *case, flat) == [], ("the named case is exempt even as a literal", case)
+        # a PRIVATE consumer resolves the same expression to the bridge: not hosted, so nothing to refuse
+        assert run("vagarylabs/vagary-core", *case, line) == [], case
     # NEGATIVE: a hosted runs-on anywhere else still fails
     for repo, fname, job in (("vagarylabs/vagary-core", *paths), ("vagarylabs/vagary-core", "trusted-protected-paths.yml", "other"),
                              ("vagarylabs/.github", "ci.yml", "trusted-protected-paths"),
                              ("vagarylabs/.github", "trusted-protected-paths.yml", "other"),
-                             ("vagarylabs/.github-x", *paths), ("", *paths)):
+                             ("vagarylabs/.github-x", *paths), ("", *paths),
+                             # the secret-scan file with another job, a scan job in ci.yml, a scan job in a private repo
+                             ("vagarylabs/.github", "trusted-secret-scan.yml", "other"),
+                             ("vagarylabs/.github", "ci.yml", "trusted-gitleaks"),
+                             ("vagarylabs/vagary-core", "trusted-secret-scan.yml", "trusted-trufflehog")):
         assert len(run(repo, fname, job, flat)) == 1, (repo, fname, job)
 
 

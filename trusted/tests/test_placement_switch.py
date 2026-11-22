@@ -58,12 +58,15 @@ class PlacementSwitch(unittest.TestCase):
                         got = place(expr, PRIVATE, {"TRUSTED_LIGHT_RUNNER": value})
                         self.assertEqual(got, "ubuntu-latest" if value.lower() == "hosted" else BRIDGE)
 
-    def test_the_public_source_repo_stays_hosted_only_for_protected_paths(self):
+    def test_the_public_source_repo_is_hosted_only_for_protected_paths_and_secret_scan(self):
+        # F-16 (root 2026-11-22): both secret scanners join the protected-paths judge, hosted in the public repo;
+        # trusted-workflow-integrity stays on the bridge expression there (it is skipped by its own guard).
+        hosted_in_source_repo = ("trusted-protected-paths.yml", "trusted-secret-scan.yml")
         for name in WORKFLOWS:
             for expr in expressions(name):
                 with self.subTest(workflow=name):
                     got = place(expr, "vagarylabs/.github", {})
-                    self.assertEqual(got, "ubuntu-latest" if name == "trusted-protected-paths.yml" else BRIDGE)
+                    self.assertEqual(got, "ubuntu-latest" if name in hosted_in_source_repo else BRIDGE)
 
     def test_the_switch_resolves_to_exactly_two_placements(self):
         outcomes = set()

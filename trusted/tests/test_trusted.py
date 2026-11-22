@@ -502,17 +502,23 @@ class WorkflowTests(unittest.TestCase):
                 self.assertTrue(jobs)
                 bridge = '\'["self-hosted","Linux","X64","vl-light"]\''
                 switch = "${{ fromJSON(vars.TRUSTED_LIGHT_RUNNER == 'hosted' && '\"ubuntu-latest\"' || " + bridge + ") }}"
+                # the hosted exceptions (public vagarylabs/.github) joined with the switch; the bridge otherwise. They are
+                # the protected-paths judge and, since F-16 (root 2026-11-22), both secret scanners: every job of those two
+                # workflows, and no job of any other.
+                exception = ("${{ fromJSON((github.repository == 'vagarylabs/.github' || "
+                             "vars.TRUSTED_LIGHT_RUNNER == 'hosted') && '\"ubuntu-latest\"' || " + bridge + ") }}")
                 if name == "trusted-protected-paths":
-                    # the ONE hosted exception (public vagarylabs/.github) joined with the switch; the bridge otherwise
-                    self.assertEqual(jobs, ["${{ fromJSON((github.repository == 'vagarylabs/.github' || "
-                                            "vars.TRUSTED_LIGHT_RUNNER == 'hosted') && '\"ubuntu-latest\"' || " + bridge + ") }}"])
+                    self.assertEqual(jobs, [exception])
+                elif name == "trusted-secret-scan":
+                    self.assertEqual(jobs, [exception, exception])
                 else:
                     self.assertEqual(set(jobs), {switch})
                 # ubuntu-latest appears only as the switch's quoted JSON literal (one per job) and in comments; never bare.
                 self.assertNotRegex(text, r"runs-on: ubuntu-latest")
                 self.assertEqual(text.count("'\"ubuntu-latest\"'"), len(jobs))
-                # D2: trusted-protected-paths judges vagarylabs/.github too (no guard); the others still skip it.
-                guards = 0 if name == "trusted-protected-paths" else len(jobs)
+                # D2: trusted-protected-paths and (F-16) trusted-secret-scan judge vagarylabs/.github too (no guard);
+                # trusted-workflow-integrity still skips it.
+                guards = 0 if name in ("trusted-protected-paths", "trusted-secret-scan") else len(jobs)
                 self.assertEqual(text.count("if: github.repository != 'vagarylabs/.github'"), guards)
                 self.assertEqual(text.count("persist-credentials: false"), len(jobs))
                 for use in re.findall(r"uses: (\S+)", text):

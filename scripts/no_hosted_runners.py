@@ -24,14 +24,19 @@ import urllib.request
 HOSTED = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|\d[\w.]*)\b")
 ALLOW = re.compile(r"#\s*hosted-ok:\s*\S")
 PUBLIC_REUSABLE_OWNER = "vagarylabs/.github"
-# The ONE hosted exception (root, 2026-11-01): the PUBLIC vagarylabs/.github runs its own judge job hosted, per the
-# 10-21 rule that public repos stay hosted and never use the bridge. Repository, workflow file AND job are all named;
-# any other repository, workflow or job is not exempt.
-HOSTED_EXEMPT = ("vagarylabs/.github", ".github/workflows/trusted-protected-paths.yml", "trusted-protected-paths")
+# The hosted exceptions: the PUBLIC vagarylabs/.github runs these judge jobs hosted, per the 10-21 rule that public
+# repos stay hosted and never use the bridge: its own protected-paths judge (root, 2026-11-01) and both secret
+# scanners (F-16, root 2026-11-22). Repository, workflow file AND job are all named, one triple each; any other
+# repository, workflow or job is not exempt.
+HOSTED_EXEMPT = (
+    ("vagarylabs/.github", ".github/workflows/trusted-protected-paths.yml", "trusted-protected-paths"),
+    ("vagarylabs/.github", ".github/workflows/trusted-secret-scan.yml", "trusted-gitleaks"),
+    ("vagarylabs/.github", ".github/workflows/trusted-secret-scan.yml", "trusted-trufflehog"),
+)
 
 
 def hosted_exempt(repo, rel, job):
-    return (repo, str(rel), job) == HOSTED_EXEMPT
+    return (repo, str(rel), job) in HOSTED_EXEMPT
 
 
 # ── a small evaluator for the GitHub expression subset runs-on lines use ─────────────────────────────────────────
